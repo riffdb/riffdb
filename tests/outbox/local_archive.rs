@@ -42,6 +42,45 @@ fn validated(archive: &mut DurableLocalArchive) {
     panic!("small fixture must finish bounded validation");
 }
 
+// req: EFF-002, EFF-003, STO-020, END-008
+#[test]
+fn native_archive_timings_count_real_attempts_without_conferring_delivery_or_mutating_quota() {
+    let root = private_directory();
+    let mut archive =
+        DurableLocalArchive::open(root.path(), database(1), NonZeroU64::new(4096).unwrap())
+            .unwrap();
+    let census = archive.native_census_v1();
+    assert_eq!(census.snapshot(), [[0; 3]; 3]);
+    assert!(!archive.admits(&record(1, 1)).unwrap());
+    assert_eq!(
+        archive.accept(&record(1, 1)),
+        Err(LocalArchiveError::Unavailable)
+    );
+    assert_eq!(census.snapshot().map(|row| row[0]), [1, 1, 0]);
+    validated(&mut archive);
+    assert!(archive.admits(&record(1, 1)).unwrap());
+    archive.accept(&record(1, 1)).unwrap();
+    let durable = archive.observation().unwrap();
+    assert_eq!(census.snapshot().map(|row| row[0]), [2, 2, 1]);
+    archive.accept(&record(1, 1)).unwrap();
+    assert_eq!(archive.observation().unwrap(), durable);
+    assert_eq!(census.snapshot().map(|row| row[0]), [3, 3, 1]);
+    assert_eq!(
+        archive.accept(&record(1, 2)),
+        Err(LocalArchiveError::Integrity)
+    );
+    assert_eq!(archive.observation().unwrap(), durable);
+    assert_eq!(census.snapshot().map(|row| row[0]), [4, 4, 1]);
+    for [_, sum, maximum] in census.snapshot() {
+        assert!(sum >= maximum);
+    }
+    drop(archive);
+    let reopened = DurableLocalArchive::open_existing(root.path(), database(1)).unwrap();
+    assert_eq!(reopened.native_census_v1().snapshot(), [[0; 3]; 3]);
+    assert_eq!(reopened.observation().unwrap(), durable);
+    assert_eq!(census.snapshot().map(|row| row[0]), [4, 4, 1]);
+}
+
 #[test]
 fn restart_and_equal_retry_preserve_one_exact_record_and_atomic_accounting() {
     let root = private_directory();

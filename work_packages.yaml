@@ -28670,6 +28670,16 @@ work_packages:
       namespace on Linux; preserve foreign and unknown legacy ownership instead
       of interpreting peer PIDs through the current sandbox's proc inventory.
       Keep same-namespace orphan cleanup, panic cleanup and kept evidence.
+    - Advance only captured bounded read-only source pages during the existing
+      checkpoint wait, stopping at exact end without requesting a writer turn
+      or capturing a new root. Preserve wait slices, recheck deadline, writer
+      residence rest, admission, deletion bounds and independent checkpoint
+      authority; release invalidated, failed and completed validation pins.
+    - Observe graph-owned native archive admission, acceptance and per-record
+      commit attempts with bounded numeric timing counters. Emit beside primary
+      writer timings after leases are released and at worker retirement; counts
+      are attempts and overlapping durations confer no delivery authority.
+      Preserve two-phase Immediate commits, syncs, quota and equal-retry rules.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

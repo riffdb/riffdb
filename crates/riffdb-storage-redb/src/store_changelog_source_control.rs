@@ -445,6 +445,40 @@ impl ReplicationSourceControl {
         self.source_admission_census
     }
 
+    /// Advances only the already captured candidate. This cannot capture a
+    /// root, request a writer turn, drain a journal or delete a receipt. Exact
+    /// end leaves a certificate for the next ordinarily paced admission.
+    pub(crate) fn advance_validation_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        if self
+            .online_validation
+            .as_ref()
+            .is_some_and(|walk| !walk.qualifies(epoch))
+        {
+            self.online_validation = None;
+            return Ok([0, 0, 1]);
+        }
+        let Some(walk) = self.online_validation.as_mut() else {
+            return Ok([0; 3]);
+        };
+        walk.clear_step_rows();
+        if !walk.is_complete()
+            && let Err(error) = walk.advance(
+                riffdb_storage_api::EvidencePageLimit::new(256)
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+            )
+        {
+            self.online_validation = None;
+            return Err(error);
+        }
+        let [initial, continued] = walk.step_rows();
+        walk.release_completed_pin();
+        Ok([initial, continued, 0])
+    }
+
     pub(crate) fn retire_online_validation(&mut self) {
         self.online_validation = None;
     }

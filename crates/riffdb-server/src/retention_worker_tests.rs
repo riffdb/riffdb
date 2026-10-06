@@ -9,6 +9,115 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{RedbOperationalPorts, RedbStore};
 use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
+// req: STO-030, STO-031, END-008
+#[test]
+fn checkpoint_wait_continues_pages_until_exact_end_without_inventing_a_checkpoint() {
+    let control = LaneControl::default();
+    let mut waits = 0;
+    let mut pages = 0;
+    let checkpoint = wait_with_source_validation(
+        &control,
+        7,
+        true,
+        |slice| {
+            assert_eq!(slice, Duration::from_millis(100));
+            waits += 1;
+            if waits == 4 { 8 } else { 7 }
+        },
+        || Duration::from_millis(100),
+        || {
+            pages += 1;
+            Ok(pages < 2)
+        },
+    )
+    .unwrap();
+    assert!(checkpoint);
+    assert_eq!((waits, pages), (4, 2));
+}
+
+// req: STO-030, STO-031, END-008
+#[test]
+fn checkpoint_wait_preserves_deadline_and_cancellation_before_page_work() {
+    for cancel in [false, true] {
+        let control = LaneControl::default();
+        let checkpoint = wait_with_source_validation(
+            &control,
+            7,
+            true,
+            |slice| {
+                assert_eq!(slice, RETENTION_LANE_CHECKPOINT_SLICE);
+                if cancel {
+                    control.stop();
+                }
+                7
+            },
+            || {
+                if cancel {
+                    Duration::ZERO
+                } else {
+                    RETENTION_LANE_RECHECK
+                }
+            },
+            || panic!("expired or cancelled wait must not advance a page"),
+        )
+        .unwrap();
+        assert!(!checkpoint);
+    }
+    let control = LaneControl::default();
+    control.stop();
+    assert!(
+        !wait_with_source_validation(
+            &control,
+            7,
+            true,
+            |_| panic!("stopped wait must not block"),
+            || panic!("stopped wait must not inspect time"),
+            || panic!("stopped wait must not advance"),
+        )
+        .unwrap()
+    );
+}
+
+// req: STO-030, STO-031, END-008
+#[test]
+fn checkpoint_wait_does_not_capture_missing_validation_and_propagates_failure() {
+    let control = LaneControl::default();
+    let mut slices = 0;
+    assert!(
+        wait_with_source_validation(
+            &control,
+            7,
+            false,
+            |_| {
+                slices += 1;
+                if slices == 2 { 8 } else { 7 }
+            },
+            || Duration::ZERO,
+            || panic!("no candidate must not start validation"),
+        )
+        .unwrap()
+    );
+    assert_eq!(slices, 2);
+    let error = wait_with_source_validation(
+        &control,
+        7,
+        true,
+        |_| 7,
+        || Duration::ZERO,
+        || {
+            Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::CorruptData,
+                None,
+            ))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+}
+
 // req: STO-030, END-007, END-008
 #[test]
 fn native_retention_refusal_preserves_closed_failure_phase_and_kind() {

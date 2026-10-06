@@ -1328,8 +1328,9 @@ lifecycle qualification. No 24-hour run has started.
 Full CI passes on frozen native revision `f7402c87`, including workspace tests,
 four-language operational conformance, lifecycle preparations and release source
 installation. Its clean source and CI-log digest are retained privately. The
-unchanged 900-second sink-outage diagnostic has started on the required host;
-its result remains pending. This is diagnostic work, not the seven-fault short
+unchanged 900-second sink-outage diagnostic failed on the required host:
+delivery remained degraded after access restoration and the last two windows
+overflowed the latency histogram. This is diagnostic work, not the seven-fault short
 rehearsal or a 24-hour qualification.
 
 A separate failing test reproduces shared testkit scratch cleanup deleting
@@ -1339,6 +1340,8 @@ panic cleanup and kept-evidence behavior remain required; foreign namespace
 and legacy names of unknown ownership survive. The change affects test fixture
 lifecycle only. It does not explain the earlier archive-publication failure:
 that storage suite already has its own namespace isolation.
+Frozen integrated testkit revision `4fbb44a5` also passes full CI and release
+source installation. This receipt excludes the later checkpoint-wait changes.
 
 PR note: Package WP-825 (open); Tier internal implementation within the
 guarantee package; Behavior: isolate testkit stale-scratch cleanup by PID
@@ -1346,5 +1349,68 @@ namespace; Checks: baseline deletion reproduced, all 42 testkit tests and all
 13 scoped acceptance checks pass; Compatibility: no database/application API,
 storage format, workload, native validation or test-deadline changes; Updated
 handbook: contributing, this handoff and live observations; Hazards/follow-ups:
-unknown legacy scratch directories need deliberate owner cleanup, and the host
-diagnostic, native byte measurements and full short rehearsal remain required.
+unknown legacy scratch directories need deliberate owner cleanup, and native
+delivery/latency repair, byte measurements and full short rehearsal remain required.
+
+## Captured source validation during checkpoint waiting
+
+The native retention worker previously left an existing read-only source
+candidate unadvanced during its checkpoint wait. It now advances one bounded
+page between the existing 100-ms wait slices, stopping page work at exact end.
+It does not capture another root or request a writer turn. Writer admission,
+deletion, independent checkpoint licensing and full writer-residence rest
+remain in the ordinary step. Cancellation and validation errors stop the work;
+stale qualification discards the candidate and exact end releases its reader.
+
+This repairs a separate native coupling, not the observed host failure: the
+failed diagnostic recorded zero logical checkpoint-wait holds. Its final lane
+was cancelled without an incident, removed 113,922 source receipts and recycled
+one extent, while incoming source history advanced faster. All 90,000 commands
+and 360,000 reads completed without retries. Final sink health remained degraded;
+state/archive reconciliation did not run after the controller refused recovery.
+These results cannot qualify a rehearsal or prove a cause for the latency.
+Complete canonical archive validation on a private copy observes 142,532
+records and 36,980,305 encoded bytes, below the 1-GiB quota. The record count is
+13,004 below the expected acknowledged workload; complete identity/payload
+reconciliation remains unproved. Original failed data is preserved.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: continue captured
+read-only validation inside the existing checkpoint wait; Checks: baseline
+writer-admission regression fails, three deterministic worker scheduling tests
+and eight storage drain/validation tests pass; Compatibility: unchanged public
+interfaces, ordering, holds, durable formats, fsyncs, page/deletion bounds and
+writer rest; Updated handbook: this handoff and live observations; Hazards and
+follow-ups: scoped acceptance, final-source full CI, host delivery/latency
+diagnosis, native byte accounting and the complete short rehearsal remain
+required. No 24-hour run has started.
+The retention change's scoped acceptance passes all 13 checks and all 1,840
+tests, with ten existing skips. Subsequent archive timing instrumentation is
+separately tested below and still requires integrated final-source acceptance.
+
+## Native archive cost observations
+
+The native worker now emits bounded timing observations for archive admission,
+acceptance and per-record commit beside its existing primary-writer stages.
+Each graph owns its counters; restart starts a new census and the worker's
+retirement prints the final snapshot. A read-only timing handle retains no
+archive, reader, writer lease or delivery capability. It cannot acknowledge
+an event, grant reclamation, or turn failed delivery into healthy status.
+
+Counters measure attempts, including refusals and equal retries. Commit timing
+is included in acceptance timing; an equal retry may also call admission from
+acceptance. Do not sum overlapping stages or treat attempt counts as deliveries.
+Archive creation/initial validation and startup timings are outside these
+per-record observations. Two-phase Immediate commits, sync boundaries, quota,
+deduplication, fault duration, offered load and all qualification gates remain.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: native archive timing
+observations for diagnosis; Checks: missing-observation test fails before the
+implementation, real archive retry/refusal/accounting and concurrent-counter
+tests pass; Compatibility: no application protocol, health label, durable
+format or persistence-policy change; Updated handbook: this handoff and live
+observations; Hazards and follow-ups: final-source acceptance/CI and required-host
+delivery/latency attribution remain required. Diagnostic counters alone do not
+qualify a rehearsal.
+All 33 outbox tests, both server diagnostic-format tests and all-feature Clippy
+for the three affected crates pass. These receipts do not replace final-source
+CI or the failed host recovery/latency gates.

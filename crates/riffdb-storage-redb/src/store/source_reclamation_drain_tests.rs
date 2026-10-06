@@ -4,6 +4,120 @@ use super::*;
 use crate::journal::{JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable};
 
 #[test]
+fn source_validation_pages_finish_without_requesting_a_writer_turn() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    let live_pins = || {
+        ports
+            .shared
+            .extent_roots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|root| root.strong_count() != 0)
+            .count()
+    };
+    let pins_before = live_pins();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(control.receipt_validation_pending());
+    assert_eq!(live_pins(), pins_before + 1);
+    let durable_epoch = ports.shared.durable_commit_epoch();
+    let before = ports.shared.mutation_gate.source_census().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    for _ in 0..16 {
+        if !control.receipt_validation_pending() {
+            break;
+        }
+        let [initial, continued, invalidated] = control.advance_validation_off_gate().unwrap();
+        assert!(initial + continued <= 256);
+        assert_eq!(invalidated, 0);
+        assert_eq!(
+            ports.shared.mutation_gate.source_census().unwrap(),
+            before,
+            "read-only validation must not request a source turn at exact end"
+        );
+    }
+    assert!(!control.receipt_validation_pending());
+    assert_eq!(ports.shared.durable_commit_epoch(), durable_epoch);
+    assert_eq!(
+        live_pins(),
+        pins_before,
+        "exact end releases the captured pin"
+    );
+    assert_eq!(control.advance_validation_off_gate().unwrap(), [0; 3]);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), before);
+    assert!(ports.shared.mutation_gate.is_held());
+    drop(writer);
+}
+
+#[test]
+fn off_gate_validation_never_captures_a_missing_or_invalidated_candidate() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    let before = ports.shared.mutation_gate.source_census().unwrap();
+    assert_eq!(control.advance_validation_off_gate().unwrap(), [0; 3]);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), before);
+    assert!(!control.receipt_validation_pending());
+    assert!(ports.shared.journal_runtime.lock().unwrap().is_none());
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(control.receipt_validation_pending());
+    let before = ports.shared.mutation_gate.source_census().unwrap();
+    ports.shared.invalidate_source_continuation();
+    assert_eq!(control.advance_validation_off_gate().unwrap(), [0, 0, 1]);
+    assert!(!control.receipt_validation_pending());
+    assert_eq!(control.advance_validation_off_gate().unwrap(), [0; 3]);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), before);
+    assert!(ports.shared.journal_runtime.lock().unwrap().is_none());
+    assert!(
+        ports
+            .shared
+            .extent_roots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|root| root.strong_count() == 0)
+    );
+}
+
+#[test]
+fn off_gate_validation_corruption_releases_proof_and_reader_without_a_writer_turn() {
+    let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
+    let transaction = ports.shared.database.begin_write().unwrap();
+    transaction
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .unwrap()
+        .insert(
+            states[2].tail().sequence().get().to_be_bytes().as_slice(),
+            b"invalid-receipt".as_slice(),
+        )
+        .unwrap();
+    ports.shared.commit_durable(transaction).unwrap();
+    let mut control = ports.replication_source_control();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(control.receipt_validation_pending());
+    let before = ports.shared.mutation_gate.source_census().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    let durable_epoch = ports.shared.durable_commit_epoch();
+    let error = control.advance_validation_off_gate().unwrap_err();
+    assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+    assert!(!control.receipt_validation_pending());
+    assert_eq!(control.advance_validation_off_gate().unwrap(), [0; 3]);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), before);
+    assert_eq!(ports.shared.durable_commit_epoch(), durable_epoch);
+    assert!(
+        ports
+            .shared
+            .extent_roots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|root| root.strong_count() == 0)
+    );
+    assert!(ports.shared.mutation_gate.is_held());
+    drop(writer);
+}
+
+#[test]
 fn unfinished_extent_publication_yields_before_spending_or_waiting_for_a_root_pin() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let mut roots = Vec::new();

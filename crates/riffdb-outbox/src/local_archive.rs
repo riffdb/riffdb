@@ -6,6 +6,7 @@ use std::num::NonZeroU64;
 use std::ops::Bound;
 use std::path::Path;
 
+use crate::local_archive_census::{LocalArchiveNativeCensus, Stage};
 use crate::local_archive_custody::ArchiveCustody;
 use redb::{
     Database, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition, TableHandle,
@@ -90,6 +91,7 @@ pub struct DurableLocalArchive {
     quota: NonZeroU64,
     validation: Validation,
     hooks: crate::local_archive_hooks::Hooks,
+    native_census: LocalArchiveNativeCensus,
 }
 impl fmt::Debug for DurableLocalArchive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -211,6 +213,7 @@ impl DurableLocalArchive {
             quota,
             validation: Validation::default(),
             hooks,
+            native_census: LocalArchiveNativeCensus::new(),
         };
         value.check_metadata()?;
         Ok(value)
@@ -308,6 +311,13 @@ impl DurableLocalArchive {
         self.custody.physical_bytes()
     }
 
+    /// Borrows only numeric timing observations for first-party diagnostics.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn native_census_v1(&self) -> LocalArchiveNativeCensus {
+        self.native_census.clone()
+    }
+
     /// Reads and validates one exact record for independent operator reconciliation.
     pub fn read(
         &self,
@@ -331,6 +341,7 @@ impl DurableLocalArchive {
 
     /// Preflight before a delivery claim. Equal retries fit even at full quota.
     pub fn admits(&self, record: &LocalOutboxArchiveRecordV1) -> Result<bool, LocalArchiveError> {
+        let _timing = self.native_census.measure(Stage::Admission);
         self.custody.verify()?;
         if !self.validation.ready {
             return Ok(false);
@@ -357,6 +368,7 @@ impl DurableLocalArchive {
     /// Acknowledges only after one two-phase Immediate engine commit and
     /// directory publication. Immutable equal retries never add rows or bytes.
     pub fn accept(&mut self, record: &LocalOutboxArchiveRecordV1) -> Result<(), LocalArchiveError> {
+        let _timing = self.native_census.measure(Stage::Accept);
         if !self.validation.ready {
             return Err(LocalArchiveError::Unavailable);
         }
@@ -402,7 +414,9 @@ impl DurableLocalArchive {
             counters.insert(1, after_count).map_err(unavailable)?;
         }
         self.hooks.record_before_commit();
+        let committing = self.native_census.measure(Stage::RecordCommit);
         write.commit().map_err(unavailable)?;
+        drop(committing);
         self.hooks.record_after_commit();
         self.custody.verify()?;
         Ok(())

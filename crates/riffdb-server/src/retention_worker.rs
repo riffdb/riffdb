@@ -426,6 +426,23 @@ fn format_retention_refusal(
     format!("riffdb-retention-refusal-v1\tphase={phase}\tkind={kind}")
 }
 
+fn refuse_lane(
+    status: &RetentionLaneStatus,
+    sinks: &RetentionLaneFailureSinks,
+    phase: RetentionRefusalPhase,
+    kind: riffdb_storage_api::StorageErrorKind,
+) {
+    eprintln!("{}", format_retention_refusal(phase, kind));
+    if let Ok(incident) = sinks.incident_ids.next_incident_id() {
+        sinks.diagnostics.record_internal(InternalError::new(
+            incident,
+            DefectScope::Process,
+            RetentionLaneRefused,
+        ));
+    }
+    status.set(RetentionLaneState::Refused);
+}
+
 /// The owner of one online retention lane. Shutdown stops and joins it.
 pub(crate) struct RunningRetentionLane {
     status: RetentionLaneStatus,
@@ -548,6 +565,32 @@ fn gate_residence_rest(gate_held: Duration) -> Duration {
         .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
 }
 
+/// Continues captured read-only pages inside the existing checkpoint wait.
+/// Completion stops page work; only a checkpoint changes the next-step hint.
+fn wait_with_source_validation(
+    control: &LaneControl,
+    seen: u64,
+    mut pending: bool,
+    mut wait: impl FnMut(Duration) -> u64,
+    mut elapsed: impl FnMut() -> Duration,
+    mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    loop {
+        if control.stop_requested() {
+            return Ok(false);
+        }
+        if wait(RETENTION_LANE_CHECKPOINT_SLICE) != seen {
+            return Ok(true);
+        }
+        if elapsed() >= RETENTION_LANE_RECHECK || control.stop_requested() {
+            return Ok(false);
+        }
+        if pending {
+            pending = advance()?;
+        }
+    }
+}
+
 fn run_lane(
     lane: &RedbOnlineRetentionLane,
     retain: NonZeroU64,
@@ -615,18 +658,7 @@ fn run_lane(
                 return;
             }
             Err(error) => {
-                eprintln!(
-                    "{}",
-                    format_retention_refusal(RetentionRefusalPhase::Step, error.kind())
-                );
-                if let Ok(incident) = sinks.incident_ids.next_incident_id() {
-                    sinks.diagnostics.record_internal(InternalError::new(
-                        incident,
-                        DefectScope::Process,
-                        RetentionLaneRefused,
-                    ));
-                }
-                status.set(RetentionLaneState::Refused);
+                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
                 return;
             }
         };
@@ -652,21 +684,12 @@ fn run_lane(
                     return;
                 }
                 Err(error) => {
-                    eprintln!(
-                        "{}",
-                        format_retention_refusal(
-                            RetentionRefusalPhase::PrefixRefresh,
-                            error.kind()
-                        )
+                    refuse_lane(
+                        status,
+                        sinks,
+                        RetentionRefusalPhase::PrefixRefresh,
+                        error.kind(),
                     );
-                    if let Ok(incident) = sinks.incident_ids.next_incident_id() {
-                        sinks.diagnostics.record_internal(InternalError::new(
-                            incident,
-                            DefectScope::Process,
-                            RetentionLaneRefused,
-                        ));
-                    }
-                    status.set(RetentionLaneState::Refused);
                     return;
                 }
             }
@@ -694,20 +717,26 @@ fn run_lane(
             // Step right after the next journal checkpoint, while its suffix
             // is nearly empty; look for shutdown between short waits.
             let waiting = std::time::Instant::now();
-            loop {
-                if control.stop_requested() {
+            match wait_with_source_validation(
+                control,
+                checkpoints_seen,
+                receipt_validation_pending,
+                |slice| lane.wait_for_journal_checkpoint(checkpoints_seen, slice),
+                || waiting.elapsed(),
+                || {
+                    let phases = lane.advance_source_validation_off_gate()?;
+                    status.note_phases(&phases);
+                    Ok(phases.receipt_validation_pending)
+                },
+            ) {
+                Ok(checkpoint) => after_checkpoint = checkpoint,
+                Err(_) if control.stop_requested() => {
                     status.set(RetentionLaneState::Cancelled);
                     return;
                 }
-                if lane
-                    .wait_for_journal_checkpoint(checkpoints_seen, RETENTION_LANE_CHECKPOINT_SLICE)
-                    != checkpoints_seen
-                {
-                    after_checkpoint = true;
-                    break;
-                }
-                if waiting.elapsed() >= RETENTION_LANE_RECHECK {
-                    break;
+                Err(error) => {
+                    refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                    return;
                 }
             }
             continue;

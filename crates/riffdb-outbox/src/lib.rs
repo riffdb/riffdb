@@ -11,6 +11,7 @@ mod connector;
 mod error;
 mod failpoint;
 mod local_archive;
+mod local_archive_census;
 mod local_archive_custody;
 mod local_archive_hooks;
 mod policy;
@@ -23,6 +24,7 @@ pub use connector::*;
 pub use error::*;
 pub use failpoint::*;
 pub use local_archive::*;
+pub use local_archive_census::{LOCAL_ARCHIVE_NATIVE_STAGE_LABELS_V1, LocalArchiveNativeCensus};
 #[cfg(feature = "test-fixtures")]
 pub use local_archive_hooks::{LocalArchiveCrashHooks, LocalArchiveCrashPoint};
 pub use policy::*;

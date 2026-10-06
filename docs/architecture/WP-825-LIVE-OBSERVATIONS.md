@@ -1208,4 +1208,88 @@ current namespace. This test-infrastructure repair does not relax a native
 assertion, deadline or campaign gate. The earlier archive-publication failure
 remains unexplained; its storage-local scratch implementation was already
 namespace-isolated. All 42 testkit tests and all 13 scoped acceptance checks
-pass. Full CI on the integrated testkit source remains required.
+pass. Full CI on frozen integrated testkit revision `4fbb44a5` also passes,
+including release source installation. It excludes the subsequent checkpoint-wait
+validation changes; those still require their own final-source full CI.
+
+
+## Completed sink diagnostic and checkpoint-wait validation
+
+The frozen `f7402c87` required-host 900-second sink diagnostic exits 1 with
+`sink_outage_incomplete`. Every offered command (90,000) and read (360,000)
+completed with no retries and the unchanged 28 load plus four auxiliary slots.
+The final public samples keep only outbox degraded. The second and third
+five-minute windows have 17,465 and 16,065 latency overflows respectively;
+these failed samples are retained, not assigned a finite percentile.
+No panic, stack overflow, native retention refusal or internal incident was
+observed. Joined retention ends cancelled with 418 steps and 66,060 logical
+sequences, 113,922 source receipts removed, zero extents deleted and one
+recycled. Source tail 358,429 and resume 113,667 show it falling behind;
+these sequence values are not eligible-byte measurements. Sink recovery
+refusal occurs before final state/archive reconciliation, so it remains unproved.
+An additional private-copy diagnostic uses the frozen native archive owner's
+complete canonical validation. It observes 142,532 records, 36,980,305 encoded
+bytes and 44,011,520 physical bytes. The count is 13,004 below the acknowledged
+workload's expected 155,536 events; the 1-GiB quota is not exhausted. This
+diagnostic preserves the original failed data and does not substitute for
+complete acknowledged-event identity/payload reconciliation.
+
+Actual outbox transition-stage observations include maximum suffix application
+3,398,863 us and gate wait 2,769,738 us. These maxima identify native work to
+investigate; they do not establish a causal attribution for all latency.
+No offered-load, recovery deadline, delivery guarantee or evidence gate changes.
+The timing maxima include preparation. Successive periodic stage observations
+after the pause add roughly 14,000–16,000 claim/completion operations per nominal
+minute, not that many delivered events. Count/sum differences are retained
+privately; exact delivery rates and causal profiling remain separate evidence.
+
+A separate native regression shows captured source validation requesting a
+writer turn at exact end when called through ordinary reclamation, even with
+an ordinary writer held. A read-only continuation now advances one existing
+bounded page and leaves complete authority for the next paced admission.
+Actual gate census is unchanged; exact end, stale qualification and corruption
+release the reader pin. It never captures an absent candidate or initializes
+an absent journal. Eight focused storage tests and three deterministic worker
+wait tests pass. The worker uses these pages only inside its existing checkpoint
+wait, preserving checkpoint wake, the recheck deadline and cancellation.
+The failed host run recorded zero logical checkpoint-wait holds, so this
+repair cannot explain that failure. Scoped acceptance and final-source full CI
+remain required; no 24-hour qualification has started.
+The retention change subsequently passes all 13 scoped acceptance checks and
+all 1,840 tests with ten existing skips. Archive timing instrumentation added
+after that test build has separate focused evidence and still needs integrated
+final-source acceptance/CI.
+
+
+## Native archive timing instrumentation
+
+The failed host observation motivates measuring the external archive separately
+from the existing primary outbox transition stages. The native graph now owns
+three bounded timing stages: admission, acceptance and per-record commit. The
+worker emits their count/sum/max values after operations release writer leases
+and once at retirement; the retained handle owns only atomic numeric counters.
+Restart resets these process-local observations. No event, principal, path,
+credential, payload or new public health field is logged.
+
+Counts are attempts, including refusals. Equal retries and identity conflicts
+still preserve the original record/accounting; they issue no additional record
+commit. Commit is inside acceptance, and an equal retry's acceptance calls
+admission: durations overlap and are not additive. Creation/initial validation
+is excluded. Two-phase Immediate commits, syncs, quota, recovery policy, load,
+request slots and every campaign gate remain unchanged.
+The new test fails to compile on the prior source because no observation handle
+exists. Actual archive operations and a deterministic concurrent-counter test
+pass after implementation; final-source acceptance/CI and required-host timing
+observations remain pending. No batching, commit-profile change or hidden retry
+has been introduced. No 24-hour run has started.
+All 33 outbox tests, both server diagnostic-format tests and three-crate
+all-feature Clippy pass. The failing test is a missing-method compilation
+failure establishing the new observation surface, not a reproduced durability
+bug; the separately retained writer-admission regression is a semantic failure.
+
+A separate private-copy pending-scan diagnostic exhausted 45-second and
+300-second investigation ceilings without reaching structural exact end. Those
+binaries are unoptimized debug tools, not the frozen production server or a
+backup/rehearsal arm; their elapsed times cannot establish production restart
+performance or weaken its 60-second gate. The canonical archive count remains
+valid, while source pending-count and full event reconciliation remain unproved.

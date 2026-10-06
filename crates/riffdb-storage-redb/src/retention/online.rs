@@ -191,6 +191,27 @@ impl RedbOnlineRetentionLane {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retire_online_validation();
     }
+
+    /// Continues one captured receipt/audit page while the worker waits for a
+    /// checkpoint. Never requests a writer turn or captures another reader.
+    /// Existing page bounds, qualification and exact-end checks still apply.
+    #[doc(hidden)]
+    pub fn advance_source_validation_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
+        let mut source = self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let [initial, continued, invalidated] = source.advance_validation_off_gate()?;
+        Ok(OnlineRetentionPhases {
+            source_initial_rows: initial,
+            source_continuation_rows: continued,
+            source_validation_invalidations: invalidated,
+            receipt_validation_pending: source.receipt_validation_pending(),
+            ..OnlineRetentionPhases::default()
+        })
+    }
     /// Runs one step, as [`RedbOperationalPorts::online_retention_step`] does,
     /// except that history still in the journal suffix is materialized only
     /// when no transition was journaled since this lane's previous step: a busy

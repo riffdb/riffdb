@@ -142,6 +142,7 @@ fn run(
             }
         }
     };
+    diagnostics.archive = Some(archive.native_census_v1());
     let mut connector = DurableLocalConnector::new(archive, incarnation);
     loop {
         if stopping(stop) {
@@ -253,6 +254,7 @@ fn delivery_policy() -> DeliveryPolicy {
 
 struct NativeStageDiagnostics {
     source: riffdb_storage_redb::RedbSharedPorts,
+    archive: Option<riffdb_outbox::LocalArchiveNativeCensus>,
     began: std::time::Instant,
     next: Option<Duration>,
 }
@@ -260,6 +262,7 @@ impl NativeStageDiagnostics {
     fn new(source: riffdb_storage_redb::RedbSharedPorts) -> Self {
         Self {
             source,
+            archive: None,
             began: std::time::Instant::now(),
             next: Some(Duration::ZERO),
         }
@@ -272,6 +275,13 @@ impl NativeStageDiagnostics {
             "{}",
             format_native_stages(self.source.outbox_stage_census_v1())
         );
+        if let Some(archive) = &self.archive {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                format_archive_stages(archive.snapshot())
+            );
+        }
     }
     fn emit_if_due(&mut self) {
         let elapsed = self.began.elapsed();
@@ -298,8 +308,43 @@ fn format_native_stages(values: [[u64; 3]; 8]) -> String {
     line
 }
 
+fn format_archive_stages(values: [[u64; 3]; 3]) -> String {
+    use std::fmt::Write as _;
+    let mut line = String::from("riffdb-outbox-archive-stages-v1");
+    for (label, [count, sum, maximum]) in riffdb_outbox::LOCAL_ARCHIVE_NATIVE_STAGE_LABELS_V1
+        .into_iter()
+        .zip(values)
+    {
+        let _ = write!(line, "\t{label}={count},{sum},{maximum}");
+    }
+    line
+}
+
 #[cfg(test)]
 mod native_stage_diagnostic_tests {
+    // req: EFF-002, STO-020, END-008
+    #[test]
+    fn archive_stage_diagnostic_is_closed_bounded_numeric_and_distinct_from_primary_timings() {
+        let line = super::format_archive_stages([[u64::MAX; 3]; 3]);
+        assert!(line.len() <= 384);
+        let fields: Vec<_> = line.split('\t').collect();
+        assert_eq!(fields[0], "riffdb-outbox-archive-stages-v1");
+        assert_eq!(fields.len(), 4);
+        for (field, expected) in fields[1..]
+            .iter()
+            .zip(riffdb_outbox::LOCAL_ARCHIVE_NATIVE_STAGE_LABELS_V1)
+        {
+            let (label, values) = field.split_once('=').unwrap();
+            assert_eq!(label, expected);
+            assert_eq!(
+                values
+                    .split(',')
+                    .map(|value| value.parse::<u64>().unwrap())
+                    .collect::<Vec<_>>(),
+                vec![u64::MAX; 3]
+            );
+        }
+    }
     // req: STO-030, STO-031, END-008
     #[test]
     fn outbox_native_stage_diagnostic_is_closed_bounded_and_numeric() {
