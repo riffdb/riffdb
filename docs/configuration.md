@@ -178,8 +178,11 @@ holds, and registered followers' acknowledged frontiers. An unreadable fencing
 source stops the lane with an internal incident until the next restart; it never
 prunes past it. Lane state is internal. No RPC, health member, or MCP tool
 reports or drives it, and application principals have no retention operation.
-The shutdown release census line records its closed state, the name of the
-fence that last held it, and its step and sequence counts. The separate
+The shutdown release census line records its state after graph teardown has
+joined the lane, the name of the fence that last held it, and its final step and
+sequence counts. An enabled lane normally ends as `cancelled`; a refused lane
+remains `refused`, and a configured hold that starts no worker remains `holding`.
+The graph and process release receipts share that frozen observation. The separate
 `riffdb-retention-extents-v1` line records files deleted or recycled, passes held
 by references or readers, and off-writer reclamation microseconds. Logical
 sequence progress does not imply physical space reclamation.

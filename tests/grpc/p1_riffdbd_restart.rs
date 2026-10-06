@@ -548,6 +548,47 @@ fn streamable_budget_fixture_compiles_and_proves_application_routing() {
     let _ = module.identity();
 }
 
+// req: STO-030, END-007, END-008
+#[test]
+fn shutdown_census_observes_retention_after_the_lane_joins() -> TestResult<()> {
+    for enabled in [false, true] {
+        let temporary = TemporaryDirectory::new()?;
+        let database_path = temporary.path().join("riffdb.redb");
+        let capability_keys_path = temporary.path().join("capability.keys");
+        let idempotency_keys_path = temporary.path().join("idempotency.keys");
+        let config_path = temporary.path().join("riffdb.toml");
+        write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+        write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+        write_protected_file(
+            &config_path,
+            b"[maintenance.retention]\nretained_sequences = 4\nsequences_per_epoch = 2\n",
+        )?;
+        let mut process = ServerProcess::spawn_with_config(
+            &database_path,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            enabled.then_some(config_path.as_path()),
+        )?;
+        process.wait_for_ready_address()?;
+        process.shutdown_cleanly()?;
+
+        let lines = process.stderr_lines();
+        let releases = lines
+            .iter()
+            .filter(|line| line.starts_with("riffdb-shutdown-release-v1\t"))
+            .collect::<Vec<_>>();
+        assert_eq!(releases.len(), 2, "graph and process release observations");
+        for line in releases {
+            let states = line
+                .split('\t')
+                .filter_map(|field| field.strip_prefix("online_retention="))
+                .collect::<Vec<_>>();
+            assert_eq!(states, [if enabled { "cancelled" } else { "holding" }]);
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn startup_census_observer_waits_after_readiness_for_stderr_delivery() -> TestResult<()> {
     let (ready_sender, ready) = mpsc::sync_channel(1);
@@ -2419,7 +2460,24 @@ impl ServerProcess {
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
     ) -> io::Result<Self> {
+        Self::spawn_with_config(
+            database_path,
+            capability_keys_path,
+            idempotency_keys_path,
+            None,
+        )
+    }
+
+    fn spawn_with_config(
+        database_path: &Path,
+        capability_keys_path: &Path,
+        idempotency_keys_path: &Path,
+        config_path: Option<&Path>,
+    ) -> io::Result<Self> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
+        if let Some(path) = config_path {
+            command.arg("--config").arg(path);
+        }
         command
             .arg("--database")
             .arg(database_path)
