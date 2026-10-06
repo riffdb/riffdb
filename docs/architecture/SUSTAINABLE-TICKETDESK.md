@@ -1464,3 +1464,26 @@ collector regression, twelve provider-accounting/coverage/log tests and all
 format and all workload/service gates preserved; Updated handbook: this
 milestone handoff; Hazards and follow-ups: real final-source preparation and
 complete campaign resource accounting remain unproved. No 24-hour run is started.
+
+## Bounded shutdown evidence collection
+
+The extent observer streams the closed daemon diagnostic log instead of loading
+the whole file. Its fixed limits are 16 MiB total, 4 KiB per complete line and
+262,144 lines. It retains at most three copies of each shutdown record kind,
+allowing the existing one-or-two-copy check to reject duplicates. A changed,
+replaced, linked, oversized or incomplete log refuses collection.
+
+The previous 1-MiB whole-file limit rejected a complete native shutdown census
+behind an otherwise bounded volume of diagnostics. This repair changes evidence
+collection only. Native deletion/reuse counters alone still cannot qualify a
+particular physically reclaimed generation: its disappearance must have been
+observed on this volume. Missing or refused maintenance still fails, and measured
+extent observations survive a terminal maintenance refusal.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: bounded streaming of
+shutdown evidence; Checks: the larger-log regression fails before the repair;
+all 81 lifecycle checker tests pass, including log replacement, size, line-count,
+partial-line and custody refusals; Compatibility: no runtime, durable format,
+application interface or qualification threshold change; Updated handbook: this
+milestone handoff; Hazards and follow-ups: final-source checks and an actual
+complete short rehearsal remain required. No 24-hour run is started.

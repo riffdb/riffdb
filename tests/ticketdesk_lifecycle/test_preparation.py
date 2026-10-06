@@ -389,6 +389,68 @@ class PhysicalInventory(unittest.TestCase):
     def census(self, deleted=0, recycled=0):
         return dict(deleted=deleted, recycled=recycled, held_references=0, held_readers=0, reclaim_us=0)
 
+    def test_complete_native_shutdown_census_survives_a_bounded_day_of_diagnostics(self):
+        from lib.ticketdesk_lifecycle_inventory import InventoryMonitor
+        # Diagnostic volume is unrelated to whether physical reclamation occurred.
+        # Each line is small; the complete bounded log exceeds the old 1-MiB cap.
+        unrelated = b"[riffdbd-diag] trigger=other available=true\n" * 30000
+        extent = (b"riffdb-retention-extents-v1\tdeleted=3\trecycled=0\t"
+                  b"held_references=0\theld_readers=0\treclaim_us=3\n")
+        terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "server.stderr").write_bytes(unrelated + extent + terminal)
+            observed = InventoryMonitor(root).finish(root)
+            self.assertEqual(observed["census"]["deleted"], 3)
+            self.assertEqual(observed["physically_removed_generations"], [])
+
+    def test_shutdown_log_bounds_and_immutable_custody_remain_required(self):
+        from lib import ticketdesk_lifecycle_inventory as inventory
+        valid = (b"riffdb-retention-extents-v1\tdeleted=0\trecycled=0\t"
+                 b"held_references=0\theld_readers=0\treclaim_us=3\n"
+                 b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n")
+        for mutation in ("oversize", "long_line", "partial", "symlink", "replaced"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "server.stderr"
+                path.write_bytes(valid)
+                if mutation == "oversize":
+                    with path.open("r+b") as output:
+                        output.truncate(inventory.MAX_LOG_BYTES + 1)
+                elif mutation == "long_line":
+                    path.write_bytes(b"x" * inventory.MAX_LOG_LINE_BYTES + b"\n" + valid)
+                elif mutation == "partial":
+                    path.write_bytes(valid[:-1])
+                elif mutation == "symlink":
+                    path.rename(root / "alternate")
+                    path.symlink_to(root / "alternate")
+                if mutation == "replaced":
+                    real_fstat = os.fstat
+                    calls = 0
+
+                    def replace_before_final_fstat(descriptor):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            path.rename(root / "alternate")
+                            path.write_bytes(valid)
+                        return real_fstat(descriptor)
+
+                    with patch.object(inventory.os, "fstat", side_effect=replace_before_final_fstat):
+                        with self.assertRaises(inventory.InventoryError):
+                            inventory.shutdown_diagnostics(path)
+                else:
+                    with self.assertRaises(inventory.InventoryError):
+                        inventory.shutdown_diagnostics(path)
+
+    def test_shutdown_log_line_count_cannot_exhaust_the_scan_budget(self):
+        from lib import ticketdesk_lifecycle_inventory as inventory
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.stderr"
+            path.write_bytes(b"\n" * (inventory.MAX_LOG_LINES + 1))
+            with self.assertRaises(inventory.InventoryError):
+                inventory.shutdown_diagnostics(path)
+
     def test_refused_or_missing_retention_lane_cannot_pass_preparation(self):
         from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
         extent = (b"riffdb-retention-extents-v1\tdeleted=0\trecycled=0\t"

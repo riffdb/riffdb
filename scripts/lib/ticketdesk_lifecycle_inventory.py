@@ -7,6 +7,10 @@ import re
 import stat
 import threading
 
+MAX_LOG_BYTES = 16 * 1024 * 1024
+MAX_LOG_LINE_BYTES = 4096
+MAX_LOG_LINES = 262144
+
 
 class InventoryError(ValueError):
     """Closed diagnostics never include a path or directory entry."""
@@ -15,6 +19,43 @@ class InventoryError(ValueError):
 def require(condition, code):
     if not condition:
         raise InventoryError(code)
+
+
+def shutdown_diagnostics(path):
+    """Stream a closed log, retaining only the two native shutdown record kinds.
+
+    Three copies are enough to reject duplication; further copies retain no
+    additional memory. Neither log length nor an aggregate deletion count proves
+    that this observer saw any particular reclaimed generation.
+    """
+    found, terminal = [], []
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            require(stat.S_ISREG(before.st_mode) and before.st_size <= MAX_LOG_BYTES,
+                    "inventory_census_bound")
+            total, count = 0, 0
+            while line := source.readline(MAX_LOG_LINE_BYTES + 1):
+                total += len(line)
+                count += 1
+                require(total <= MAX_LOG_BYTES and count <= MAX_LOG_LINES
+                        and len(line) <= MAX_LOG_LINE_BYTES and line.endswith(b"\n"),
+                        "inventory_census_bound")
+                if line.startswith(b"riffdb-retention-extents-v1\t") and len(found) < 3:
+                    found.append(line.rstrip(b"\n"))
+                if line.startswith(b"riffdb-shutdown-release-v1\t") and len(terminal) < 3:
+                    terminal.append(line.rstrip(b"\n"))
+            after = os.fstat(source.fileno())
+            named = path.lstat()
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                 info.st_mtime_ns, info.st_ctime_ns)
+        require(total == before.st_size and stat.S_ISREG(named.st_mode)
+                and identity(before) == identity(after) == identity(named),
+                "inventory_census_changed")
+        return found, terminal
+    except OSError as error:
+        raise InventoryError("inventory_census_unavailable") from error
 
 
 class ExtentInventory:
@@ -96,10 +137,7 @@ class InventoryMonitor:
 
     def finish(self, root):
         path = Path(root) / "server.stderr"
-        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 1048576,
-                "inventory_census_bound")
-        lines = path.read_bytes().splitlines()
-        found = [line for line in lines if line.startswith(b"riffdb-retention-extents-v1\t")]
+        found, terminal = shutdown_diagnostics(path)
         # The graph and process shutdown boundaries both emit the same frozen
         # retention census. Validate both copies; never add their counters.
         require(1 <= len(found) <= 2 and len(found[0]) <= 256
@@ -119,7 +157,6 @@ class InventoryMonitor:
         # survived. Preserve the measured inventory, then refuse an absent,
         # malformed or stopped lane. Normal owner shutdown ends in Cancelled;
         # Refused is terminal and must never be mistaken for that cancellation.
-        terminal = [line for line in lines if line.startswith(b"riffdb-shutdown-release-v1\t")]
         require(1 <= len(terminal) <= 2, "inventory_retention_terminal")
         for line in terminal:
             require(len(line) <= 4096, "inventory_retention_terminal")
