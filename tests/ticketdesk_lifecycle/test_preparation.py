@@ -328,9 +328,15 @@ class ChildOwnership(unittest.TestCase):
                         released = True
                         os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
 
-                with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation):
+                # These child fixtures produce process memory, not native pool diagnostics.
+                # Keep the real process-memory oracle; pool semantics have independent tests.
+                with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
+                        patch.object(preparation, "ProviderLog", autospec=True) as provider_log:
+                    provider_log.return_value.finish.return_value = {}
                     preparation.observed_load(root, str(worker), dict(os.environ), 1,
                         children[1], preparation.queue.Queue(maxsize=1), False, server=children[0])
+                    self.assertTrue(provider_log.return_value.poll.called)
+                    provider_log.return_value.__exit__.assert_called_once()
                 records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["processes"].keys(), {"controller", "server", "load", "observer"})

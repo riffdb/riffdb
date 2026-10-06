@@ -1432,3 +1432,34 @@ qualify a rehearsal.
 All 33 outbox tests, both server diagnostic-format tests and all-feature Clippy
 for the three affected crates pass. These receipts do not replace final-source
 CI or the failed host recovery/latency gates.
+
+## Native provider-budget observations in preparation
+
+Observed population preparations also collect the daemon's existing
+`exact_provider_lifecycle` census. The pool's charge is the sum of fixed owner
+bytes, retained owned bytes and reserved unpublished work, checked against the
+unchanged aggregate 1-GiB limit. This is independent of RSS and the conservative
+whole-process virtual-address-space observations. A smaller VmSize does not
+prove provider retirement or complete provider charge accounting.
+
+The bounded collector starts at the load-ready boundary and reads only new
+complete diagnostic lines. Each five-minute window needs actual samples; gaps
+above 75 seconds, unavailable counters, counter rewinds within one pool,
+inconsistent ownership, changed log identity and over-budget charges refuse the
+preparation. The native census is due every 60 seconds. Partial lines remain
+pending; old seeding samples cannot fill load-window coverage. Output contains
+numeric counters and closed labels, with private exclusive publication.
+
+The observation explicitly does not qualify the complete campaign resource
+model. Transient process accounting, eligible-history bytes, all lifecycle
+faults and the six final fault-free hours remain required. This collector
+changes preparation evidence only; database ownership, admission, requests,
+durable bytes and application interfaces are unchanged.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: independently collect
+native aggregate-provider charges during observed preparations; Checks: missing
+collector regression, eleven provider-accounting/coverage/log tests and all
+77 lifecycle checker tests pass; Compatibility: existing native diagnostic
+format and all workload/service gates preserved; Updated handbook: this
+milestone handoff; Hazards and follow-ups: real final-source preparation and
+complete campaign resource accounting remain unproved. No 24-hour run is started.
