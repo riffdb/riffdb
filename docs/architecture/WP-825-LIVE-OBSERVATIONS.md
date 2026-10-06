@@ -1190,3 +1190,22 @@ temporary storage. The isolated rerun changes no native assertion or deadline.
 Final-source CI and host validation remain pending.
 Native refusal diagnosis, complete resource evidence and the continuous short
 rehearsal remain required. No 24-hour run has started.
+
+## Final native CI and shared-scratch regression
+
+Frozen revision `f7402c87` passes full CI, including release source installation
+and the public maintenance background-drain crash/recovery regression. The
+required host built the same clean native/controller revision and started only
+the unchanged 900-second sink-outage diagnostic. Its source and binary hashes
+are retained privately. No 24-hour run has started, and the diagnostic is not
+the complete short rehearsal.
+
+The shared testkit scratch regression independently fails because cleanup
+deletes a fixture with unknown PID-namespace ownership. Linux construction and
+sweeping now use the actual kernel namespace in the scratch family, retaining
+foreign/unknown ownership while preserving dead-session cleanup within the
+current namespace. This test-infrastructure repair does not relax a native
+assertion, deadline or campaign gate. The earlier archive-publication failure
+remains unexplained; its storage-local scratch implementation was already
+namespace-isolated. All 42 testkit tests and all 13 scoped acceptance checks
+pass. Full CI on the integrated testkit source remains required.
