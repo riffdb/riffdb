@@ -58,10 +58,19 @@ class NativeProviderBudget(unittest.TestCase):
     def test_nonprovider_diagnostics_are_ignored_without_interpreting_their_payload(self):
         self.assertIsNone(parse_sample(b"[riffdbd-diag] trigger=unrelated private input\n"))
 
+    def test_released_allocations_are_cumulative_while_live_allocations_can_shrink(self):
+        sample = parse_sample(line(allocations=3, released_allocations=10))
+        self.assertEqual(sample["allocations"], 3)
+        self.assertEqual(sample["released_allocations"], 10)
+        self.assertEqual(sample["charged_bytes"], 12800)
+        empty = parse_sample(line(allocations=0, released_allocations=99, owned_bytes=0,
+                                  reserved_bytes=0, reserved_work=0, pinned_owners=0, pins=0))
+        self.assertEqual(empty["charged_bytes"], 512)
+
     def test_impossible_lifecycle_and_allocation_counters_refuse(self):
-        for changes in (dict(released_allocations=10), dict(pinned_owners=7),
+        for changes in (dict(allocations=0), dict(pinned_owners=7),
                         dict(pins=0), dict(reserved_work=0),
-                        dict(owned_bytes=0), dict(allocations=3)):
+                        dict(owned_bytes=0), dict(allocations=8193)):
             with self.subTest(changes=changes):
                 with self.assertRaisesRegex(ProviderBudgetError, "^provider_budget_accounting$"):
                     parse_sample(line(**changes))
@@ -99,8 +108,8 @@ class ProviderSampleCoverage(unittest.TestCase):
             with ProviderSamples(Path(directory), 300) as samples:
                 samples.observe(line(), 0)
                 with self.assertRaisesRegex(ProviderBudgetError, "^provider_budget_counter_rewind$"):
-                    samples.observe(line(allocations=8), 60000000000)
-                samples.observe(line(owned_bytes=4096, released_allocations=6), 60000000000)
+                    samples.observe(line(released_allocations=2), 60000000000)
+                samples.observe(line(owned_bytes=4096, allocations=3, released_allocations=9), 60000000000)
                 self.assertEqual(samples.last["charged_bytes"], 8704)
 
     def test_absent_last_minute_and_incomplete_window_fail_with_preserved_samples(self):

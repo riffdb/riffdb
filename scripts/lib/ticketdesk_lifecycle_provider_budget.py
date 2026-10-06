@@ -48,9 +48,11 @@ def parse_sample(encoded):
             and values["fixed_owner_bytes"] == FIXED_OWNER_BYTES, "provider_budget_identity")
     charged = values["fixed_owner_bytes"] + values["owned_bytes"] + values["reserved_bytes"]
     require(charged <= LIMIT_BYTES, "provider_budget_limit")
-    live = values["allocations"] - values["released_allocations"]
+    # Native allocations is a live gauge; released_allocations is cumulative.
+    live = values["allocations"]
     owners = values["active_owners"] + values["retiring_owners"]
-    require(live >= 0 and (live == 0) == (values["owned_bytes"] == 0)
+    require((live == 0) == (values["owned_bytes"] == 0)
+            and live <= values["owned_bytes"]
             and (values["reserved_work"] == 0) == (values["reserved_bytes"] == 0)
             and values["reserved_work"] <= values["reserved_bytes"]
             and values["pinned_owners"] <= owners
@@ -98,7 +100,7 @@ class ProviderSamples:
         require(elapsed_ns - (self.last_ns or 0) <= 75000000000, "provider_budget_sample_gap")
         if self.last is not None:
             require(all(value[name] >= self.last[name] for name in
-                        ("allocations", "released_allocations", "released_owners")),
+                        ("released_allocations", "released_owners")),
                     "provider_budget_counter_rewind")
         require(self.output is not None and self.count < 2048, "provider_budget_sample_bound")
         record = dict(value, schema="riffdb.ticketdesk-lifecycle-provider-sample/v1",

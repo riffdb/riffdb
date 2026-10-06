@@ -1446,7 +1446,8 @@ The bounded collector starts at the load-ready boundary and reads only new
 complete diagnostic lines. Each five-minute window needs actual samples; gaps
 above 75 seconds, unavailable counters, counter rewinds within one pool,
 inconsistent ownership, changed log identity and over-budget charges refuse the
-preparation. The native census is due every 60 seconds. Partial lines remain
+preparation. Allocation count is a live gauge that may fall during retirement;
+released allocations and released owners are cumulative counters. The native census is due every 60 seconds. Partial lines remain
 pending; old seeding samples cannot fill load-window coverage. Output contains
 numeric counters and closed labels, with private exclusive publication.
 
@@ -1458,8 +1459,8 @@ durable bytes and application interfaces are unchanged.
 
 PR note: Package WP-825 (open); Tier internal; Behavior: independently collect
 native aggregate-provider charges during observed preparations; Checks: missing
-collector regression, eleven provider-accounting/coverage/log tests and all
-77 lifecycle checker tests pass; Compatibility: existing native diagnostic
+collector regression, twelve provider-accounting/coverage/log tests and all
+78 lifecycle checker tests pass; Compatibility: existing native diagnostic
 format and all workload/service gates preserved; Updated handbook: this
 milestone handoff; Hazards and follow-ups: real final-source preparation and
 complete campaign resource accounting remain unproved. No 24-hour run is started.
