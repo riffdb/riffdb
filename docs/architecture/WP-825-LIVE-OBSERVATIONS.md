@@ -1308,3 +1308,60 @@ again for the repaired source. No 24-hour run has started.
 The repaired production-budget test passes with its complete capture-lifetime
 and accounting assertions. Handbook, requirement coverage and ADR obligations
 also pass; integrated acceptance and full CI remain pending.
+
+The optimized private-copy diagnostic subsequently completes the native source
+structural and catalog validation, then reaches pending-outbox exact end:
+13,004 source events remain pending. The canonical archive has 142,532 records;
+these counts sum to the failed preparation's 155,536 expected emitted events.
+This confirms a real pending-delivery backlog and count agreement, not complete
+identity/payload reconciliation or a passing sink-recovery receipt. The original
+failed database and archive remain untouched.
+
+The diagnostic's complete structural walk takes about 193 seconds, catalog
+validation completes at about 202 seconds, and pending scan ends at about
+224 seconds. This tool explicitly requests complete native evidence on a copy;
+it does not exercise the production daemon's bounded startup path or measure
+time to its first successful write. A host release build overlaps part of the
+inspection. These timings cannot establish or waive the 60-second restart gate.
+
+The archive-instrumentation acceptance run completes all 1,875 tests with
+ten existing skips. Twelve checks pass; only the handbook step fails because
+its environment cannot find the pinned `lychee` executable. With the pinned
+tool explicitly available, the same frozen source's handbook check passes.
+The original failed acceptance receipt remains unchanged.
+
+Full CI then passes on `81644271`, including the repaired capture-retirement
+test, archive publication, recovery, application adapters and verified release
+installation. The source remains clean and frozen. All 13 final server-scoped
+acceptance checks pass, including 638 tests with eight existing skips. The
+host's locked release build succeeds, and its guarded 900-second sink-outage
+diagnostic launches only after both successful validation receipts. Native
+artifacts are preserved with their hashes before launch. This is implementation
+validation and a diagnostic, not host qualification; no 24-hour run has started.
+
+The diagnostic finishes with `sink_outage_incomplete`. All 90,000 commands and
+360,000 reads complete with zero retries, using 28 load slots and four reserved
+auxiliary slots. The first five-minute window reports p95 28,783 microseconds
+and p99 88,439 microseconds. The following two windows overflow the latency
+histogram; their maximum-integer percentiles are sentinels, not measured times.
+These windows overlap the fault and recovery and cannot certify normal latency.
+The run ends about 595 seconds after resumption, so it does not establish that
+the complete 600-second recovery deadline was exceeded. It still supplies no
+successful recovery receipt or final application/archive reconciliation.
+
+There are no panic, stack-overflow, fatal-runtime or retention-refusal markers
+and no incidents. Joined maintenance ends Cancelled with `undelivered_outbox`,
+431 logical steps and 66,099 sequences. It removes 115,970 source receipts and
+reports one recycled extent, zero deleted extents and zero logical checkpoint-
+wait holds. Existing sealed-file names cannot prove three physical reclamations.
+
+Matched periodic observations after resumption contain roughly 7,000–8,200
+archive acceptance attempts per reporting interval. Mean archive record-commit
+cost is about 1.27–1.47 milliseconds per attempt; primary commit-finish cost is
+about 1.58–1.75 milliseconds per transition, with two primary transitions per
+acceptance attempt. Intervals are at least 60 seconds, not exact throughput
+windows. Counts are attempts, durations overlap, and primary commit-finish
+includes receipt sealing, engine commit, frontier refresh, journal cleanup and
+index publication. These measurements neither isolate fsync nor prove a causal
+delivery rate. They identify native transaction granularity as the next concrete
+review target, while preserving archive durability and all campaign gates.
