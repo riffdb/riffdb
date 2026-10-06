@@ -1107,8 +1107,8 @@ comparison. All 51 evidence/preparation tests pass, including rejection of
 JSON numbers, malformed decimals and overflow. The failed preparation remains
 preserved. This correction changes no native interface, query semantics or
 milestone gate. The repeated consumer preparation collected queried projection
-samples successfully; the separate sink preparation is now running with the
-same native binaries and the preparation memory collector.
+samples successfully. The separate sink preparation collected 48 samples before
+the native retention thread's stack overflow described below.
 
 ## WP-825 preparation memory observations
 
@@ -1134,9 +1134,9 @@ process-memory or reclaimable-history growth.
 
 All 61 checker/preparation tests pass, including real owned child collection,
 deterministic replacement during a sample, reused process identity, missing
-window coverage and preservation of private failed observations. Required-host
-repetition is running in the separate sink preparation. Complete campaign
-resource accounting remains pending.
+window coverage and preservation of private failed observations. The required-host
+sink repetition collected 48 observations before a native stack overflow. Complete
+campaign resource accounting and a successful repetition remain pending.
 
 PR note: Package WP-825 (open); Tier internal; Behavior: bounded private
 preparation memory diagnostics with explicit incomplete scope and conservative
@@ -1159,8 +1159,8 @@ zero removed files never becomes proof of reclamation.
 
 The new regression fails on the previous collector for all seven hostile
 terminal inputs and passes after the correction. All 62 checker/preparation
-tests and all five scoped acceptance checks pass. The active sink preparation uses its frozen preceding controller
-and will require this additional terminal-state review when it ends.
+tests and all five scoped acceptance checks pass. The separate sink preparation
+used its frozen preceding controller; its native fatal failure is recorded below.
 
 PR note: Package WP-825 (open); Tier internal; Behavior: refuse online-retention
 preparation success when native maintenance stopped or its terminal evidence is
@@ -1170,3 +1170,52 @@ unchanged native behavior, public interfaces and qualification thresholds;
 Updated handbook: this handoff and lifecycle example; Hazards/follow-ups:
 native refusal diagnosis and repair, measured reclamation and complete short
 rehearsal remain required. No 24-hour run has started.
+
+## WP-825 closed native refusal diagnostics
+
+Terminal maintenance refusal now emits one private, bounded observation naming
+only numeric codes for the failing phase and existing closed storage error kind.
+Phase 1 is `step`; phase 2 is `prefix_refresh`. Kind codes 1–8 mean unavailable,
+unknown commit status, corrupt data, incompatible format, limit exceeded,
+invariant violation, sequence exhausted and pruned history, respectively.
+The previous handler discarded this cause before recording
+its generic incident. The observation includes no source error, incident
+identity, filesystem path, payload or caller text. Normal shutdown cancellation
+remains separate; native refusal still stops the lane without retrying past it.
+No public health field, RPC, durable format or maintenance policy changes.
+
+The regression fails on the previous generic diagnostic and checks every
+storage error kind in both phases. All six focused retention-worker tests pass,
+including actual native refusal, terminal-state preservation, cancellation and
+unchanged source pacing. The broader test run passes all 633 server tests across
+17 binaries, with eight existing skips. Its initial acceptance fails formatting;
+after correcting the formatting and narrowing the diagnostic to numeric codes,
+all six focused worker tests and six scoped non-test checks pass. Required-host
+reproduction with these diagnostics is
+still pending; the exact native refusal cause has not yet been measured.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: retain closed private
+phase/kind evidence at the existing terminal refusal; Checks: six focused native
+worker tests, 633 broader server tests, 62 checker/preparation tests and six scoped
+non-test checks pass; Compatibility: unchanged
+public interfaces, native refusal, durable formats, ordering and pacing;
+Updated handbook: this handoff; Hazards/follow-ups: exact native reproduction
+and repair, full CI and complete lifecycle qualification.
+
+## WP-825 sink diagnostic native stack overflow
+
+The separate `15f133c7` controller / native `6a6128fb` sink-outage diagnostic
+failed around 241 seconds into offered load, during the archive pause. The
+server's native `riffdb-retention` thread overflowed its stack and aborted the
+daemon. The next sampled health call produced no response before its deadline;
+observer and daemon cleanup also failed. No complete load window or final state,
+archive or extent reconciliation was produced. All failed artifacts are retained.
+
+There were 48 successful projection and four-process memory observations before
+the abort. The last memory observation recorded server RSS 689,913,856 bytes
+and virtual address space 4,540,047,360 bytes; these sampled values do not measure
+the failing thread's stack or establish complete resource accounting. An earlier
+native source floor plan observed resume 89,826 and prior checkpoint 148,863;
+these positions are not byte measurements or a substitute for the missing final
+removal census. The fatal native stack path needs diagnosis and repair. Increasing
+sampling deadlines or hiding the abort cannot qualify this milestone.

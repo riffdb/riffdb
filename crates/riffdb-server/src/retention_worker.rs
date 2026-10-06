@@ -396,6 +396,36 @@ impl fmt::Display for RetentionLaneRefused {
 
 impl std::error::Error for RetentionLaneRefused {}
 
+#[derive(Clone, Copy)]
+enum RetentionRefusalPhase {
+    Step,
+    PrefixRefresh,
+}
+
+fn format_retention_refusal(
+    phase: RetentionRefusalPhase,
+    kind: riffdb_storage_api::StorageErrorKind,
+) -> String {
+    use riffdb_storage_api::StorageErrorKind as K;
+    // Only closed discriminants enter this private observation: no engine
+    // source, incident identity, path, payload or caller-provided text.
+    let phase = match phase {
+        RetentionRefusalPhase::Step => 1,
+        RetentionRefusalPhase::PrefixRefresh => 2,
+    };
+    let kind = match kind {
+        K::Unavailable => 1,
+        K::CommitStatusUnknown => 2,
+        K::CorruptData => 3,
+        K::IncompatibleFormat => 4,
+        K::LimitExceeded => 5,
+        K::InvariantViolation => 6,
+        K::SequenceExhausted => 7,
+        K::HistoryPruned => 8,
+    };
+    format!("riffdb-retention-refusal-v1\tphase={phase}\tkind={kind}")
+}
+
 /// The owner of one online retention lane. Shutdown stops and joins it.
 pub(crate) struct RunningRetentionLane {
     status: RetentionLaneStatus,
@@ -576,7 +606,11 @@ fn run_lane(
                 status.set(RetentionLaneState::Cancelled);
                 return;
             }
-            Err(_) => {
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    format_retention_refusal(RetentionRefusalPhase::Step, error.kind())
+                );
                 if let Ok(incident) = sinks.incident_ids.next_incident_id() {
                     sinks.diagnostics.record_internal(InternalError::new(
                         incident,
@@ -609,7 +643,14 @@ fn run_lane(
                     status.set(RetentionLaneState::Cancelled);
                     return;
                 }
-                Err(_) => {
+                Err(error) => {
+                    eprintln!(
+                        "{}",
+                        format_retention_refusal(
+                            RetentionRefusalPhase::PrefixRefresh,
+                            error.kind()
+                        )
+                    );
                     if let Ok(incident) = sinks.incident_ids.next_incident_id() {
                         sinks.diagnostics.record_internal(InternalError::new(
                             incident,

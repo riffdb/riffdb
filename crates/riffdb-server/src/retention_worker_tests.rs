@@ -9,6 +9,35 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{RedbOperationalPorts, RedbStore};
 use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
+// req: STO-030, END-007, END-008
+#[test]
+fn native_retention_refusal_preserves_closed_failure_phase_and_kind() {
+    use riffdb_storage_api::StorageErrorKind as K;
+    let kinds = [
+        (K::Unavailable, 1),
+        (K::CommitStatusUnknown, 2),
+        (K::CorruptData, 3),
+        (K::IncompatibleFormat, 4),
+        (K::LimitExceeded, 5),
+        (K::InvariantViolation, 6),
+        (K::SequenceExhausted, 7),
+        (K::HistoryPruned, 8),
+    ];
+    for (phase, name) in [
+        (RetentionRefusalPhase::Step, 1),
+        (RetentionRefusalPhase::PrefixRefresh, 2),
+    ] {
+        for (kind, label) in kinds {
+            let line = format_retention_refusal(phase, kind);
+            assert_eq!(
+                line,
+                format!("riffdb-retention-refusal-v1\tphase={name}\tkind={label}")
+            );
+            assert!(line.len() < 128);
+        }
+    }
+}
+
 // req: STO-030, STO-031, END-008
 #[test]
 fn completed_source_deletion_is_progress_even_when_logical_retention_is_idle() {
