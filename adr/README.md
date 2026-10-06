@@ -309,6 +309,7 @@ record with no front matter.
 | [0272](0272-source-progress-aware-maintenance-rechecks.md) | Source Progress Aware Maintenance Rechecks | Accepted | guarantee |
 | [0273](0273-bounded-native-outbox-completion-groups.md) | Bounded Native Outbox Completion Groups | Accepted | guarantee |
 | [0274](0274-shared-immutable-declared-outcome-values.md) | Shared Immutable Declared Outcome Values | Proposed | surface |
+| [0275](0275-retention-independent-bounded-startup-eligibility.md) | Retention Independent Bounded Startup Eligibility | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
