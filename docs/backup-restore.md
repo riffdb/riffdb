@@ -86,10 +86,11 @@ riffdb --config "$HOME/.config/riffdb/client.toml" \
 ```
 
 The server durably creates or resolves the external maintenance receipt before
-reporting acceptance. It then stops ordinary admission, drains accepted work
-under a fixed deadline, closes the database, publishes the complete immutable
-backup, and performs the full startup validation again before returning to
-readiness.
+reporting acceptance. It then stops ordinary admission, joins the local outbox,
+online retention, and background scrub owners before draining the coordinator,
+drains accepted work under a fixed deadline, closes the database, publishes the
+complete immutable backup, and performs the full startup validation again
+before returning to readiness.
 
 ## Remote container disaster drill
 

@@ -59,6 +59,11 @@ impl RunningLocalOutbox {
         Self { stop, task }
     }
 
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn is_joined(&self) -> bool {
+        self.task.is_none()
+    }
+
     pub(crate) fn shutdown(&mut self) {
         let (lock, wake) = &*self.stop;
         *lock

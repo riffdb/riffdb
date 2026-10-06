@@ -1282,3 +1282,43 @@ focused all-feature worker tests and all 633 scoped server tests pass, with
 interfaces, ordering and maintenance policy; Updated handbook: this handoff and
 live observations; Hazards/follow-ups: final-source acceptance, CI, native refusal
 diagnosis and unchanged host workload before lifecycle qualification.
+
+## WP-825 maintenance worker drain
+
+Ordinary shutdown explicitly joins the durable-local dispatcher, online
+retention owner and background scrub before draining the coordinator. The
+maintenance path omitted those joins and deferred them to field destruction
+after its drain boundary and graceful close. A real public backup regression,
+with a configured local archive and online retention, reaches `DrainComplete`
+with background task handles still owned. The dedicated crash fixture refuses
+that boundary rather than reporting the expected crash. The failed run remains
+failed.
+
+Maintenance now explicitly joins those same owners before coordinator drain.
+The process fixture checks actual task ownership at the crash boundary; it
+does not inspect source text or change the production crash controller. Its
+recovery arm also checks the original command outcome and provenance, a first
+successful subsequent write, and that write's exact idempotent replay. The
+preparation gate runs this arm before TicketDesk lifecycle smokes. The release
+regression passes. Scoped acceptance passes all 15 checks and all 798 tests,
+with eight existing skips, using owned temporary storage. Full CI and the
+unchanged required-host diagnostic on the final source remain pending.
+
+The earlier full CI on the joined-census source fails one archive-publication
+test at sealing with `Unavailable`. The unchanged exact test and the complete
+parallel storage suite subsequently pass (876 tests, one existing skip). Those
+passes do not explain the original failure or replace full CI. A separate older
+CI stops at the redirected TypeScript build because its isolated checkout lacks
+the pinned Node type definitions. Required CI checkouts need the complete locked
+TypeScript dependency installation, not just a compiler on `PATH`. No host
+diagnostic or 24-hour qualification started after either failed CI.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: join native background
+owners before the maintenance drain and CLEAN boundary; Checks: real baseline
+crash-boundary refusal, passing release recovery/replay regression, 798 scoped
+tests and 15 acceptance checks; Compatibility: unchanged public maintenance
+receipts, durable bytes, command ordering and durability profiles; Updated
+handbook: backup and restore, this handoff and live observations;
+Hazards/follow-ups: final-source full CI and host repetition, the unresolved
+earlier archive-publication failure, native eligible-history bytes and complete
+lifecycle qualification. No 24-hour run has started.

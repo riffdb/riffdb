@@ -1,5 +1,27 @@
 # WP-825 native blockers and bounded live observation proposal
 
+## Maintenance drain repair: scoped validation passes
+
+A public backup with native retention and a durable-local archive reaches the
+maintenance drain boundary without explicitly joining those owners or the
+background scrub. Ordinary shutdown already joins them before coordinator
+drain. The process regression checks actual task ownership at `DrainComplete`
+and refuses the crash fixture's expected abort when a task remains unjoined;
+the baseline fails. Maintenance now uses the same explicit joins, preserving
+the existing receipt, authoritative ordering, durability and CLEAN protocol.
+The recovery regression also exercises original outcome/provenance replay and
+a successful subsequent command with exact idempotent replay. The release
+regression and scoped acceptance pass: 798 tests, eight existing skips and
+15 checks. Final-source full CI and host repetition remain pending; no rehearsal
+or 24-hour run is qualified.
+
+The joined-census source's full CI fails one native archive-publication test
+with `Unavailable` while sealing. Its unchanged exact regression and complete
+parallel storage suite subsequently pass: 876 tests and one existing skip.
+The initial failure is retained and its cause is not established. A different
+older CI fails the redirected TypeScript build with missing pinned Node type
+definitions. Neither failed CI permits host workload launch.
+
 WP-825 is open. The maintainer approved expanding scope to cover necessary
 native fixes in session on 2026-10-04: "okay, i approve expanding the scope to
 cover any necessary fixes". The separate widening commit records the identified

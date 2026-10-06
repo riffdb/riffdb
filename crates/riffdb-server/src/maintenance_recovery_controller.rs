@@ -37,6 +37,18 @@ impl MaintenanceRecoveryController {
         }
     }
 
+    /// In the dedicated drain-crash fixture, refuse the crash receipt if an
+    /// independently owned background task still exists at the drain boundary.
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn verify_background_drain(self, joined: [bool; 3]) {
+        if self.armed == Some(MaintenanceRecoveryBoundary::DrainComplete)
+            && !joined.into_iter().all(|value| value)
+        {
+            eprintln!("riffdb-maintenance-background-drain-v1\tjoined=0");
+            std::process::exit(1);
+        }
+    }
+
     pub(crate) fn reached(self, boundary: MaintenanceRecoveryBoundary) {
         #[cfg(not(feature = "test-fixtures"))]
         let _ = boundary;
