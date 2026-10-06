@@ -217,6 +217,67 @@ impl ColumnarSnapshot {
 
         Some(merged)
     }
+
+    /// Borrowing counterpart of [`Self::merged_org_bounded_with_segment_filter`]
+    /// for the query read path.
+    ///
+    /// Produces the same key-ordered, supersession-resolved view, but each entry
+    /// borrows the winning row's key and cells from the segment or delta rather
+    /// than deep-cloning them. The borrows are valid for the snapshot borrow
+    /// `&self`, which every query executor holds for the whole call, so no row
+    /// is cloned up front — including rows a predicate later rejects and cells a
+    /// query never projects. Only cells actually selected into a result are
+    /// cloned, at the point they must outlive the snapshot.
+    pub(crate) fn merged_org_ref_bounded_with_segment_filter<'s>(
+        &'s self,
+        org: &OrgKey,
+        maximum: usize,
+        mut include_segment: impl FnMut(&Segment) -> bool,
+    ) -> Option<BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>>> {
+        let mut merged: BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>> = BTreeMap::new();
+
+        // Segments oldest → newest so later segments overwrite.
+        for segment in &self.segments {
+            if &segment.org != org || !include_segment(segment) {
+                continue;
+            }
+            for (key, row) in &segment.rows {
+                merged.insert(key, MergedRowRef::from_live(row));
+                if merged.len() > maximum {
+                    return None;
+                }
+            }
+        }
+
+        if let Some(delta) = self.delta.get(org) {
+            for (key, row) in delta {
+                let replace = match merged.get(key) {
+                    None => true,
+                    Some(existing) => supersession_should_replace(
+                        existing.entity_version.get(),
+                        row.entity_version.get(),
+                    ),
+                };
+                if replace {
+                    merged.insert(key, MergedRowRef::from_live(row));
+                    if merged.len() > maximum {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        Some(merged)
+    }
+
+    /// Bounded borrowing merge over every segment for one org.
+    pub(crate) fn merged_org_ref_bounded<'s>(
+        &'s self,
+        org: &OrgKey,
+        maximum: usize,
+    ) -> Option<BTreeMap<&'s PrimaryKeyBytes, MergedRowRef<'s>>> {
+        self.merged_org_ref_bounded_with_segment_filter(org, maximum, |_| true)
+    }
 }
 
 /// One row after merge (live only).
@@ -226,6 +287,30 @@ pub struct MergedRow {
     pub entity_version: EntityVersion,
     /// Projected cells.
     pub cells: Vec<CanonicalValue>,
+}
+
+/// A borrowed merged row for the query read path.
+///
+/// Mirrors [`MergedRow`] but borrows its cells from the snapshot's segment or
+/// delta instead of owning a cloned `Vec`. Field names match `MergedRow` so the
+/// `row.cells[idx]` / `row.entity_version` access shape is identical at every
+/// consumer. The lifetime `'s` is the snapshot borrow held for the whole query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MergedRowRef<'s> {
+    /// Entity version of the surviving image.
+    pub entity_version: EntityVersion,
+    /// Projected cells borrowed from the winning segment or delta row.
+    pub cells: &'s [CanonicalValue],
+}
+
+impl<'s> MergedRowRef<'s> {
+    #[inline]
+    fn from_live(row: &'s LiveRow) -> Self {
+        Self {
+            entity_version: row.entity_version,
+            cells: &row.cells,
+        }
+    }
 }
 
 /// Working (unpublished) state mutated by apply; published via Arc swap.
@@ -278,32 +363,40 @@ pub(crate) fn supersession_should_replace(existing_version: u64, incoming_versio
 }
 
 /// Extracts projected cells + org value from a field map.
+///
+/// `fields` is a [`riffdb_types::CanonicalRecord`] field slice, which is guaranteed to be in
+/// strictly increasing stable-`FieldId` order with no duplicates. That lets each
+/// projected field be located with a binary search rather than a linear scan,
+/// so projection is O(projected × log fields) instead of O(projected × fields)
+/// per record on the apply, rebuild, and generation-build paths.
 pub(crate) fn project_cells(
     fields: &[(FieldId, CanonicalValue)],
     projected: &[FieldId],
     org_field: FieldId,
 ) -> Result<(CanonicalValue, Vec<CanonicalValue>), ColumnarError> {
-    let mut org = None;
+    // The slice is sorted by `FieldId::get()` (see `CanonicalRecord::new`), so a
+    // key-wise binary search over that ordering is exact.
+    let find = |field_id: FieldId| {
+        fields
+            .binary_search_by_key(&field_id.get(), |(id, _)| id.get())
+            .ok()
+            .map(|index| &fields[index].1)
+    };
+
     let mut cells = Vec::with_capacity(projected.len());
     for field_id in projected {
-        let value = fields
-            .iter()
-            .find(|(id, _)| id == field_id)
-            .map(|(_, value)| value.clone())
+        let value = find(*field_id)
             .ok_or(ColumnarError::Projection(
                 "projected field missing from entity",
-            ))?;
+            ))?
+            .clone();
         cells.push(value);
     }
-    for (id, value) in fields {
-        if *id == org_field {
-            org = Some(value.clone());
-            break;
-        }
-    }
-    let org = org.ok_or(ColumnarError::Projection(
-        "org scope field missing from entity",
-    ))?;
+    let org = find(org_field)
+        .ok_or(ColumnarError::Projection(
+            "org scope field missing from entity",
+        ))?
+        .clone();
     Ok((org, cells))
 }
 
@@ -361,5 +454,143 @@ mod tests {
         let merged = snapshot.merged_org(&org);
         assert_eq!(merged[&pk(1)].cells, vec![CanonicalValue::U64(30)]);
         assert_eq!(merged[&pk(1)].entity_version.get(), 3);
+    }
+
+    // req: OQ-019
+    #[test]
+    fn borrowed_merge_preserves_precedence_bounds_and_snapshot_backing() {
+        let org = OrgKey(vec![1]);
+        let other = OrgKey(vec![2]);
+        let mut snapshot = ColumnarSnapshot::empty();
+        for (name, organization, rows) in [
+            ("old", org.clone(), vec![(1, 8, 80), (2, 1, 10), (3, 1, 10)]),
+            ("other", other.clone(), vec![(1, 99, 990)]),
+            ("new", org.clone(), vec![(1, 3, 30), (2, 2, 20), (4, 4, 40)]),
+        ] {
+            snapshot.segments.push(Arc::new(Segment {
+                id: SegmentId(name.into()),
+                org: organization,
+                rows: rows
+                    .into_iter()
+                    .map(|(key, version, cell)| (pk(key), live(version, cell)))
+                    .collect(),
+                checksum: [0; 32],
+                pruning: None,
+            }));
+        }
+        snapshot.delta.insert(
+            org.clone(),
+            BTreeMap::from([
+                (pk(1), live(2, 20)),
+                (pk(2), live(2, 20)),
+                (pk(3), live(9, 333)),
+                (pk(5), live(1, 555)),
+            ]),
+        );
+        snapshot
+            .delta
+            .insert(other.clone(), BTreeMap::from([(pk(6), live(1, 666))]));
+
+        let merged = snapshot
+            .merged_org_ref_bounded(&org, 5)
+            .expect("exact bound");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|(key, row)| (
+                    key.as_bytes()[0],
+                    row.entity_version.get(),
+                    row.cells[0].clone()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, 3, CanonicalValue::U64(30)),
+                (2, 2, CanonicalValue::U64(20)),
+                (3, 9, CanonicalValue::U64(333)),
+                (4, 4, CanonicalValue::U64(40)),
+                (5, 1, CanonicalValue::U64(555)),
+            ]
+        );
+        // A later segment wins by segment order. Older delta versions do not
+        // replace it; equal and newer versions borrow the delta's actual cells.
+        assert!(std::ptr::eq(
+            merged[&pk(1)].cells,
+            snapshot.segments[2].rows[&pk(1)].cells.as_slice()
+        ));
+        for key in [2, 3, 5] {
+            assert!(std::ptr::eq(
+                merged[&pk(key)].cells,
+                snapshot.delta[&org][&pk(key)].cells.as_slice()
+            ));
+        }
+
+        for organization in [&org, &other, &OrgKey(vec![3])] {
+            for maximum in 0..=6 {
+                for omit_new in [false, true] {
+                    let include = |segment: &Segment| !omit_new || segment.id.file_name() != "new";
+                    let owned = snapshot.merged_org_bounded_with_segment_filter(
+                        organization,
+                        maximum,
+                        include,
+                    );
+                    let borrowed = snapshot
+                        .merged_org_ref_bounded_with_segment_filter(organization, maximum, include)
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|(key, row)| {
+                                    (
+                                        key.clone(),
+                                        MergedRow {
+                                            entity_version: row.entity_version,
+                                            cells: row.cells.to_vec(),
+                                        },
+                                    )
+                                })
+                                .collect::<BTreeMap<_, _>>()
+                        });
+                    assert_eq!(borrowed, owned);
+                }
+            }
+        }
+    }
+
+    // req: PRJ-004
+    #[test]
+    fn projection_lookup_uses_canonical_field_order_and_preserves_missing_field_errors() {
+        let first = FieldId::new(1).expect("field");
+        let org = FieldId::new(255).expect("field");
+        let next = FieldId::new(256).expect("field");
+        let last = FieldId::new(u32::MAX).expect("field");
+        let missing = FieldId::new(2).expect("field");
+        let record = riffdb_types::CanonicalRecord::new(vec![
+            (last, CanonicalValue::U64(4)),
+            (next, CanonicalValue::U64(3)),
+            (first, CanonicalValue::U64(1)),
+            (org, CanonicalValue::U64(2)),
+        ])
+        .expect("canonical record normalizes shuffled fields");
+        assert_eq!(
+            project_cells(record.fields(), &[last, first, next], org).expect("project"),
+            (
+                CanonicalValue::U64(2),
+                vec![
+                    CanonicalValue::U64(4),
+                    CanonicalValue::U64(1),
+                    CanonicalValue::U64(3)
+                ]
+            )
+        );
+        assert!(matches!(
+            project_cells(record.fields(), &[missing], missing),
+            Err(ColumnarError::Projection(
+                "projected field missing from entity"
+            ))
+        ));
+        assert!(matches!(
+            project_cells(record.fields(), &[first], missing),
+            Err(ColumnarError::Projection(
+                "org scope field missing from entity"
+            ))
+        ));
     }
 }

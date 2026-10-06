@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::BinaryHeap;
 
-pub(super) type MatchedRow = (PrimaryKeyBytes, Vec<CanonicalValue>, MergedRow);
+pub(super) type MatchedRow<'s> = (&'s PrimaryKeyBytes, Vec<CanonicalValue>, MergedRowRef<'s>);
 
 pub(super) struct ResolvedOrder {
     index: usize,
@@ -31,7 +31,11 @@ pub(super) fn resolve(
         .collect()
 }
 
-pub(super) fn compare(order: &[ResolvedOrder], left: &MatchedRow, right: &MatchedRow) -> Ordering {
+pub(super) fn compare(
+    order: &[ResolvedOrder],
+    left: &MatchedRow<'_>,
+    right: &MatchedRow<'_>,
+) -> Ordering {
     for term in order {
         let (left, right) = if term.primary_key {
             (&left.1[term.index], &right.1[term.index])
@@ -47,36 +51,36 @@ pub(super) fn compare(order: &[ResolvedOrder], left: &MatchedRow, right: &Matche
             return cmp;
         }
     }
-    left.0.cmp(&right.0)
+    left.0.cmp(right.0)
 }
 
-struct RankedRow<'a> {
+struct RankedRow<'a, 's> {
     order: &'a [ResolvedOrder],
-    row: MatchedRow,
+    row: MatchedRow<'s>,
 }
-impl PartialEq for RankedRow<'_> {
+impl PartialEq for RankedRow<'_, '_> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
-impl Eq for RankedRow<'_> {}
-impl PartialOrd for RankedRow<'_> {
+impl Eq for RankedRow<'_, '_> {}
+impl PartialOrd for RankedRow<'_, '_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for RankedRow<'_> {
+impl Ord for RankedRow<'_, '_> {
     fn cmp(&self, other: &Self) -> Ordering {
         compare(self.order, &self.row, &other.row)
     }
 }
 
-pub(super) struct TopRows<'a> {
+pub(super) struct TopRows<'a, 's> {
     order: &'a [ResolvedOrder],
     limit: usize,
-    heap: BinaryHeap<RankedRow<'a>>,
+    heap: BinaryHeap<RankedRow<'a, 's>>,
 }
-impl<'a> TopRows<'a> {
+impl<'a, 's> TopRows<'a, 's> {
     pub(super) fn new(order: &'a [ResolvedOrder], limit: usize) -> Self {
         Self {
             order,
@@ -85,7 +89,7 @@ impl<'a> TopRows<'a> {
         }
     }
 
-    pub(super) fn push(&mut self, row: MatchedRow) {
+    pub(super) fn push(&mut self, row: MatchedRow<'s>) {
         if self.limit == 0 {
             return;
         }
@@ -102,7 +106,7 @@ impl<'a> TopRows<'a> {
         }
     }
 
-    pub(super) fn into_rows(self) -> Vec<MatchedRow> {
+    pub(super) fn into_rows(self) -> Vec<MatchedRow<'s>> {
         self.heap
             .into_sorted_vec()
             .into_iter()
@@ -118,18 +122,30 @@ mod tests {
     // req: OQ-020
     #[test]
     fn bounded_rows_match_full_order_with_nulls_mixed_directions_and_key_ties() {
-        let rows = (0_u64..200)
+        // Owned backing data the borrowing MatchedRow refs point into.
+        let keys = (0_u64..200)
+            .map(|key| PrimaryKeyBytes::from_entity_key_bytes(key.to_be_bytes().to_vec()))
+            .collect::<Vec<_>>();
+        let pk_cells = (0_u64..200)
+            .map(|key| vec![CanonicalValue::U64(key)])
+            .collect::<Vec<_>>();
+        let cell_rows = (0_u64..200)
             .map(|key| {
+                vec![if key % 5 == 0 {
+                    CanonicalValue::Null
+                } else {
+                    CanonicalValue::U64(key % 7)
+                }]
+            })
+            .collect::<Vec<_>>();
+        let rows = (0_usize..200)
+            .map(|i| {
                 (
-                    PrimaryKeyBytes::from_entity_key_bytes(key.to_be_bytes().to_vec()),
-                    vec![CanonicalValue::U64(key)],
-                    MergedRow {
+                    &keys[i],
+                    pk_cells[i].clone(),
+                    MergedRowRef {
                         entity_version: EntityVersion::new(1).unwrap(),
-                        cells: vec![if key % 5 == 0 {
-                            CanonicalValue::Null
-                        } else {
-                            CanonicalValue::U64(key % 7)
-                        }],
+                        cells: &cell_rows[i],
                     },
                 )
             })
