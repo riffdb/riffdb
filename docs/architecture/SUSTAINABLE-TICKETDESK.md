@@ -1077,16 +1077,23 @@ the final source-installation check. The first CI attempt stopped because its
 environment omitted the pinned TypeScript compiler from `PATH`; that attempt
 is preserved. Repeating the complete battery with the repository's locked
 TypeScript 7.0.2 compiler passes on unchanged source. A fresh required-host
-900-second consumer-outage preparation has started with the exact verified
-native binaries. Its result remains pending and cannot support closure yet.
+900-second consumer-outage preparation completed with the exact verified
+native binaries. All 90,000 commands and 360,000 reads completed without retries;
+full state and archive reconciliation passed. The final normal window measured
+p95 56,425 us and p99 77,406 us. Consumer recovery took 8.674 seconds after its
+300-second pause. These results cannot support closure: native retention entered
+its terminal `refused` state after 54 recorded attempts, removing no source
+receipts, advancing no logical retention steps and retiring no physical extents.
+Latency with that stopped lane does not prove sustainable lifecycle performance.
 
 PR note: Package WP-825 (open); Tier guarantee; Behavior: actual committed source
 deletion receives progress rechecks with unchanged gate rest; Checks: native
 scheduling, rest and worker lifecycle tests, nine scoped checks and full CI at
 `6a6128fb`; Compatibility: unchanged public controls, formats, ordering, holds,
 checkpoint evidence and durability; Updated handbook: this handoff;
-Hazards/follow-ups: required-host latency and all remaining campaign gates must
-still pass. This repair does not qualify a rehearsal or start the 24-hour run.
+Hazards/follow-ups: diagnose the native terminal refusal, then establish
+required-host latency with actual reclamation and all remaining campaign gates.
+This repair does not qualify a rehearsal or start the 24-hour run.
 
 ## WP-825 native health wire correction
 
@@ -1099,7 +1106,9 @@ and sink oracle now validate the native decimal representation before numeric
 comparison. All 51 evidence/preparation tests pass, including rejection of
 JSON numbers, malformed decimals and overflow. The failed preparation remains
 preserved. This correction changes no native interface, query semantics or
-milestone gate; its host repetition remains pending.
+milestone gate. The repeated consumer preparation collected queried projection
+samples successfully; the separate sink preparation is now running with the
+same native binaries and the preparation memory collector.
 
 ## WP-825 preparation memory observations
 
@@ -1126,7 +1135,8 @@ process-memory or reclaimable-history growth.
 All 61 checker/preparation tests pass, including real owned child collection,
 deterministic replacement during a sample, reused process identity, missing
 window coverage and preservation of private failed observations. Required-host
-repetition and complete campaign resource accounting remain pending.
+repetition is running in the separate sink preparation. Complete campaign
+resource accounting remains pending.
 
 PR note: Package WP-825 (open); Tier internal; Behavior: bounded private
 preparation memory diagnostics with explicit incomplete scope and conservative
@@ -1136,3 +1146,27 @@ request limit and campaign gates; Documentation: this handoff and the lifecycle
 example; Hazards/follow-ups: transient process accounting, observed peaks,
 native eligible-history bytes, host repetition and the complete short rehearsal
 remain required before qualification.
+
+## WP-825 native maintenance refusal acceptance gap
+
+The consumer preparation returned success despite the native shutdown census
+reporting `online_retention=refused`. Its command, state and archive checks were
+valid, but omitted this independent maintenance outcome. Online-retention
+preparations now require the native lane's normal `cancelled` owner-shutdown
+state. Missing, malformed, repeated inconsistently or refused terminal evidence
+fails preparation. Actual extent observations are retained before that refusal;
+zero removed files never becomes proof of reclamation.
+
+The new regression fails on the previous collector for all seven hostile
+terminal inputs and passes after the correction. All 62 checker/preparation
+tests and all five scoped acceptance checks pass. The active sink preparation uses its frozen preceding controller
+and will require this additional terminal-state review when it ends.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: refuse online-retention
+preparation success when native maintenance stopped or its terminal evidence is
+missing or malformed; Checks: 62 checker/preparation tests and five scoped
+acceptance checks; Compatibility:
+unchanged native behavior, public interfaces and qualification thresholds;
+Updated handbook: this handoff and lifecycle example; Hazards/follow-ups:
+native refusal diagnosis and repair, measured reclamation and complete short
+rehearsal remain required. No 24-hour run has started.

@@ -195,6 +195,10 @@ Latency limits apply to normal preparation windows. Only windows overlapping
 the measured pause and backlog drain receive the campaign checker's fault
 exception; all offered/completed counts, errors, concurrency and final state
 checks remain binding. At least one complete normal window is required.
+Online-retention preparations also require the native lane's normal cancelled
+shutdown state. A refused lane, missing terminal observation or malformed census
+fails preparation even if workload latency and reconciliation pass. Measured
+extent observations remain available in the private failed root.
 
 The Rust load driver supports private quiescence and release controls for the
 fault controller. Admission stops while the offered clock keeps filling the

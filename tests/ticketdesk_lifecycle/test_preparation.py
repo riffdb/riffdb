@@ -349,6 +349,26 @@ class PhysicalInventory(unittest.TestCase):
     def census(self, deleted=0, recycled=0):
         return dict(deleted=deleted, recycled=recycled, held_references=0, held_readers=0, reclaim_us=0)
 
+    def test_refused_or_missing_retention_lane_cannot_pass_preparation(self):
+        from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
+        extent = (b"riffdb-retention-extents-v1\tdeleted=0\trecycled=0\t"
+                  b"held_references=0\theld_readers=0\treclaim_us=3\n")
+        terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
+        for suffix in (b"", terminal.replace(b"cancelled", b"refused"),
+                       terminal.replace(b"cancelled", b"holding"),
+                       terminal.replace(b"cancelled", b"unknown"),
+                       terminal.replace(b"\n", b"\tonline_retention=cancelled\n"),
+                       terminal + terminal.replace(b"cancelled", b"refused"),
+                       terminal * 3):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "server.stderr").write_bytes(extent + suffix)
+                with self.assertRaises(InventoryError):
+                    InventoryMonitor(root).finish(root)
+                # The measured extent observations survive the refusal.
+                self.assertEqual(json.loads((root / "extent-observation.json").read_bytes())
+                                 ["physically_removed_generations"], [])
+
     def test_shutdown_boundaries_repeat_one_census_without_double_counting(self):
         from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
         line = (b"riffdb-retention-extents-v1\tdeleted=1\trecycled=0\t"
@@ -358,7 +378,8 @@ class PhysicalInventory(unittest.TestCase):
                                 (line + line.replace(b"deleted=1", b"deleted=2"), False)):
             with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                (root / "server.stderr").write_bytes(lines)
+                terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
+                (root / "server.stderr").write_bytes(lines + terminal * 2)
                 monitor = InventoryMonitor(root)
                 if accepted:
                     observed = monitor.finish(root)

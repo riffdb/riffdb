@@ -115,4 +115,20 @@ class InventoryMonitor:
         with os.fdopen(descriptor, "w") as output:
             json.dump(observation, output, sort_keys=True)
             output.write("\n")
+        # A healthy command path does not establish that native maintenance
+        # survived. Preserve the measured inventory, then refuse an absent,
+        # malformed or stopped lane. Normal owner shutdown ends in Cancelled;
+        # Refused is terminal and must never be mistaken for that cancellation.
+        terminal = [line for line in lines if line.startswith(b"riffdb-shutdown-release-v1\t")]
+        require(1 <= len(terminal) <= 2, "inventory_retention_terminal")
+        for line in terminal:
+            require(len(line) <= 4096, "inventory_retention_terminal")
+            fields = {}
+            for item in line.split(b"\t")[1:]:
+                name, separator, value = item.partition(b"=")
+                require(separator and name not in fields and len(fields) < 64
+                        and re.fullmatch(rb"[a-z_]+", name), "inventory_retention_terminal")
+                fields[name] = value
+            require(fields.get(b"online_retention") == b"cancelled",
+                    "inventory_retention_terminal")
         return observation

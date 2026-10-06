@@ -1131,3 +1131,26 @@ boundaries; Updated handbook: known limitations and sustainable milestone;
 Hazards/follow-ups: final-source full CI, unchanged required-host latency
 and sustained retirement, all lifecycle faults and complete short rehearsal.
 Acceptance of the decision does not qualify a rehearsal or start the 24-hour run.
+
+## Source-progress host repetition and stopped maintenance
+
+The native `6a6128fb` required-host consumer-outage preparation completed all
+90,000 commands and 360,000 reads with zero retries, reconciled every ticket and
+155,536 archived events, and measured p95 56,425 us / p99 77,406 us in the final
+600–900-second normal window. The consumer resumed after its five-minute pause
+and recovered in 8.674 seconds. Queried projection observations were collected.
+
+The native shutdown census independently reports terminal retention refusal,
+54 attempts, zero logical steps, zero source receipts removed and zero physical
+extents retired. The file observer saw four sealed generations and no observed
+disappearance. These are failed lifecycle observations, despite the preceding
+controller's zero exit. They cannot demonstrate sustainable reclamation or
+attribute the latency improvement to ADR-0272's deletion progress policy.
+
+The collector regression now rejects refused or missing/malformed terminal
+maintenance evidence while preserving measured file observations. All 62
+checker/preparation tests pass. A separate 900-second sink-outage diagnostic
+uses the same native binaries and the frozen `15f133c7` memory-observation
+controller; its result remains pending and needs the new terminal-state review.
+Native refusal diagnosis, complete resource evidence and the continuous short
+rehearsal remain required. No 24-hour run has started.
