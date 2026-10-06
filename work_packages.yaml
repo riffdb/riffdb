@@ -28703,6 +28703,11 @@ work_packages:
       inside 900 seconds. Preserve both modes and every outage, latency, rate,
       concurrency, resource coverage and final reconciliation gate; the added
       windows provide observations rather than an exemption or qualification.
+    - Release the ordered writer after capturing the original prefix-refresh
+      publication binding and before native background session construction.
+      Preserve complete validation and stale-candidate refusal; deterministic
+      writer-admission and intervening-publication regressions prove the boundary.
+      This implementation repair grants no new checkpoint or recovery authority.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

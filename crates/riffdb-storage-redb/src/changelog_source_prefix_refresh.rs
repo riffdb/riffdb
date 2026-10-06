@@ -24,11 +24,42 @@ impl PendingPrefixRefresh {
         inputs: riffdb_storage_api::StartupValidationInputs,
         cancellation: Arc<AtomicBool>,
     ) -> Result<(Option<crate::startup::RedbBackgroundScrubSession>, u64), StorageError> {
+        Self::begin_if_needed_impl(
+            shared,
+            inputs,
+            cancellation,
+            crate::startup::begin_background_scrub_on_shared,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_if_needed_with_open(
+        shared: &Arc<SharedRedb>,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+        open: impl FnOnce(
+            &Arc<SharedRedb>,
+            riffdb_storage_api::StartupValidationInputs,
+        ) -> Result<crate::startup::RedbBackgroundScrubSession, StorageError>,
+    ) -> Result<(Option<crate::startup::RedbBackgroundScrubSession>, u64), StorageError> {
+        Self::begin_if_needed_impl(shared, inputs, cancellation, open)
+    }
+
+    fn begin_if_needed_impl(
+        shared: &Arc<SharedRedb>,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+        open: impl FnOnce(
+            &Arc<SharedRedb>,
+            riffdb_storage_api::StartupValidationInputs,
+        ) -> Result<crate::startup::RedbBackgroundScrubSession, StorageError>,
+    ) -> Result<(Option<crate::startup::RedbBackgroundScrubSession>, u64), StorageError> {
         let started = std::time::Instant::now();
         let Some(lease) = shared.mutation_gate.try_acquire()? else {
             return Ok((None, 0));
         };
         if !super::transaction::drained_for_validation(shared)? {
+            drop(lease);
             return Ok((None, elapsed_us(started, std::time::Instant::now())));
         }
         let read = shared.capture_checkpoint_root()?;
@@ -39,15 +70,23 @@ impl PendingPrefixRefresh {
             .map_err(precommit_storage_error)?
             .is_some()
         {
+            drop(meta);
+            drop(read);
+            drop(lease);
             return Ok((None, elapsed_us(started, std::time::Instant::now())));
         }
         drop(meta);
         drop(read);
-        let mut scrub = crate::startup::begin_background_scrub_on_shared(shared, inputs)?;
+        // Session construction scans the audit stream and retained tombstone
+        // chain. It belongs outside the ordered writer just like the later
+        // page walks. Keep only the original publication binding: any writer
+        // that runs before or during setup makes this candidate stale, never
+        // a validation or publication permit for a different snapshot.
+        drop(lease);
+        let held_us = elapsed_us(started, std::time::Instant::now());
+        let mut scrub = open(shared, inputs)?;
         scrub.set_cancellation(cancellation);
         scrub.bind_prefix_refresh(publication);
-        let held_us = elapsed_us(started, std::time::Instant::now());
-        drop(lease);
         Ok((Some(scrub), held_us))
     }
 
@@ -146,5 +185,82 @@ impl PendingPrefixRefresh {
             PrefixRefreshPublication::Unchanged
         };
         Ok((disposition, elapsed_us(start, std::time::Instant::now())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riffdb_storage_api::{
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs,
+    };
+    use riffdb_types::{DigestKeyId, Timestamp};
+
+    fn inputs() -> StartupValidationInputs {
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
+        StartupValidationInputs::new(
+            Timestamp::new(0, 0).unwrap(),
+            ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+            ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+        )
+    }
+
+    // req: STO-030, STO-031, END-008
+    #[test]
+    fn prefix_refresh_session_setup_releases_the_ordered_writer() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let mut opened = false;
+        let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed_with_open(
+            &ports.shared,
+            inputs(),
+            Arc::new(AtomicBool::new(false)),
+            |shared, inputs| {
+                let writer = shared
+                    .mutation_gate
+                    .try_acquire()
+                    .unwrap()
+                    .expect("background session setup must not retain the ordered writer");
+                drop(writer);
+                opened = true;
+                crate::startup::begin_background_scrub_on_shared(shared, inputs)
+            },
+        )
+        .unwrap();
+        assert!(opened);
+        assert!(scrub.is_some());
+    }
+
+    // req: STO-030, STO-032, REC-001, END-008
+    #[test]
+    fn prefix_refresh_publication_during_session_setup_discards_the_candidate() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let (scrub, _) = crate::store::PendingPrefixRefresh::begin_if_needed_with_open(
+            &ports.shared,
+            inputs(),
+            Arc::new(AtomicBool::new(false)),
+            |shared, inputs| {
+                let writer = shared
+                    .mutation_gate
+                    .try_acquire()
+                    .unwrap()
+                    .expect("ordinary publication must progress during background setup");
+                shared
+                    .commit_durable(shared.database.begin_write().unwrap())
+                    .unwrap();
+                drop(writer);
+                crate::startup::begin_background_scrub_on_shared(shared, inputs)
+            },
+        )
+        .unwrap();
+        let mut scrub = scrub.unwrap();
+        let epoch = ports.shared.durable_commit_epoch();
+        let stale = scrub.prefix_refresh_staleness().unwrap();
+        assert_eq!(
+            scrub.validate_retained_history().unwrap_err().kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(stale.load(Ordering::Acquire));
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     }
 }

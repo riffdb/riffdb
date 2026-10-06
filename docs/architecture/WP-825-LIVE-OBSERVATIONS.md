@@ -1446,3 +1446,49 @@ archive semantics and final reconciliation requirements are unchanged. The
 900-second mode and its refusal remain intact. Duration and memory-coverage
 regressions fail on the earlier controller and pass after this change; fresh
 controller acceptance and a measured normal window remain required.
+
+## Extended preparation and populated recovery blockers
+
+The isolated controller at `4c8e493d` passes 66 focused Python tests and all
+11 controller-scoped acceptance checks. Its native artifacts remain the
+CI-validated `34c94324` artifacts; unrelated native changes are excluded from
+this diagnostic. This does not substitute for final integrated-source CI.
+
+The 1,500-second diagnostic exits with `probe_latency`. Its actual sink pause
+is 300.029 seconds, starting at 5.017 seconds; delivery drains under continuing
+load 310.711 seconds after access returns. Recovery meets the unchanged
+600-second bound, with public write and live-query progress during the outage.
+Both complete normal windows, 900–1,200 and 1,200–1,500 seconds, overflow the
+250-millisecond latency histogram. Maximum-integer percentiles are overflow
+sentinels, not latency measurements. There are zero retries, but 200 commands
+and 692 reads finish after the load deadline. All 150,000 commands and 600,000
+reads eventually finish; public state reconciliation checks all 65,536 tickets.
+Eventual completion does not satisfy the normal latency, rate or drain gates.
+
+The final native census reports 103,682 removed source receipts, one deleted
+extent and two recycled extents. Its source plan has ceiling 327,977 and resume
+103,427, a sequence gap of 224,550. These counts do not measure eligible-history
+bytes or prove three distinct qualified physical generations: refusal precedes
+the controller's final extent receipt. No panic, fatal-runtime or retention
+refusal marker is observed. The failed run remains preserved.
+
+An independent, stopped-source private-copy diagnostic reconciles all 215,536
+archive records, including canonical payloads and policy anchors: 53,552,213
+encoded bytes and 88,023,040 physical bytes. Starting that populated copy then
+declines the clean-close shortcut with `bounded_roots_unavailable` and does not
+reach readiness within 60 seconds. It has not attempted a fresh write or an
+actual restart fault. This is neither public backup/restore evidence nor a
+passing recovery campaign. Required full validation remains fail closed.
+
+Investigation finds native prefix-refresh session construction holding the
+ordered writer lease while scanning the full audit stream and tombstone chain.
+The repair releases that lease after capturing the original publication binding,
+before session construction. Deterministic tests first fail because an ordinary
+writer cannot acquire the lease during setup; they then pass after the repair.
+A second test performs a real publication during setup and proves the original
+candidate is discarded without a checkpoint write. Existing complete validation,
+exact-binding publication and process-crash regressions also pass. No format,
+ordering, public interface or validation guarantee changes. Broader acceptance
+and final-source CI remain required; moving setup off the gate alone does not
+prove sustainable reclamation or bounded populated startup. WP-825 remains open
+and no 24-hour run has started.

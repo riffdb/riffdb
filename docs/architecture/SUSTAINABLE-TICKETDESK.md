@@ -64,6 +64,15 @@ cross-route write, recovery of a committed command whose reply was lost, and
 fencing an old owner before promotion. No new token, route counter, quorum,
 or distributed implementation is authorized by this milestone.
 
+The latest 1,500-second preparation meets sink catch-up but fails normal-window
+latency and finishes some requests after the load deadline. A stopped-source
+private copy passes complete archive reconciliation, then fails to reach
+readiness within 60 seconds after pruning. Prefix-refresh setup is repaired
+to release the ordered writer before population work while preserving exact
+binding and stale-candidate refusal. These native blockers still require
+measured resolution; component tests do not establish rehearsal readiness.
+See the [actual observations](WP-825-LIVE-OBSERVATIONS.md#extended-preparation-and-populated-recovery-blockers).
+
 ## Evidence checker
 
 Run the hostile-evidence tests with:
