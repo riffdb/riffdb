@@ -1400,3 +1400,20 @@ indexes prevents catalog and command identity resolution after a known successfu
 commit. That change is removed. Actual commit/publication failure invalidation
 and write fencing remain unchanged. The failed run is retained; fresh validation
 of the corrected final source is required.
+
+At revision `34c94324`, fresh frozen-source acceptance passes all 17 checks:
+2,441 tests pass, with ten existing skips and no failure or timeout. Nine
+focused regressions also pass, including both earlier semantic failures and
+both timed-out recovery cases. Every assertion and test deadline is preserved;
+the fresh run uses dedicated scratch storage and four concurrent test slots.
+Full repository CI passes, including operational conformance, generated assets,
+public-source authoring acceptance and release source installation. The earlier
+failed run remains retained rather than replaced by these successful receipts.
+
+The required host's locked release build also passes. After verifying the
+frozen source, acceptance and CI receipt identities and log hashes, the guarded
+controller launches one unchanged 900-second sink diagnostic with 100 commands/s,
+400 reads/s, 28 workload slots plus four observer/sampling slots, and a
+300-second sink outage. Its result remains pending. Component validation does
+not establish delivery catch-up, sustained reclamation, normal-window latency,
+the complete short campaign or 24-hour readiness. WP-825 remains open.
