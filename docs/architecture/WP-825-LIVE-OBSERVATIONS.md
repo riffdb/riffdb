@@ -1151,6 +1151,11 @@ The collector regression now rejects refused or missing/malformed terminal
 maintenance evidence while preserving measured file observations. All 62
 checker/preparation tests pass. A separate 900-second sink-outage diagnostic
 uses the same native binaries and the frozen `15f133c7` memory-observation
-controller; its result remains pending and needs the new terminal-state review.
+controller. It aborted around 241 seconds into load with a stack overflow in the
+native retention thread, before completing a load window or final reconciliation.
+An isolated storage test independently reproduces recursive destruction of the
+supported publication-lineage depth on the existing maintenance stack. Iterative
+retirement passes the storage unit suite; the exact host abort call path and
+required-host repair validation remain pending.
 Native refusal diagnosis, complete resource evidence and the continuous short
 rehearsal remain required. No 24-hour run has started.

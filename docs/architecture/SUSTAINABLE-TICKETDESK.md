@@ -1219,3 +1219,36 @@ native source floor plan observed resume 89,826 and prior checkpoint 148,863;
 these positions are not byte measurements or a substitute for the missing final
 removal census. The fatal native stack path needs diagnosis and repair. Increasing
 sampling deadlines or hiding the abort cannot qualify this milestone.
+
+## WP-825 iterative publication-lineage retirement
+
+A process-isolated storage regression reproduces a native stack overflow when
+the default destructor retires the supported 65,536-node publication lineage
+on a 384-KiB maintenance stack. The lineage fits the existing allocation bound.
+This demonstrates a database defect independently of the workload controller.
+It does not yet establish the call path of the required-host abort.
+
+Retirement now detaches uniquely owned predecessor links iteratively, using
+`Arc::into_inner` to preserve ownership when snapshot owners retire concurrently.
+Shared predecessor nodes remain intact until their final owner releases them.
+The regression checks surviving snapshot contents and ancestry, final release
+of every node, and concurrent release from distinct successors sharing a chain.
+Stack sizes, overlay limits, qualification checks, durable encodings, writer
+ordering and maintenance pacing remain unchanged.
+
+The initial regression aborts before the repair; all 325 storage API unit tests
+pass afterward. All eight scoped acceptance checks pass, including 555 tests
+with all features enabled. The strengthened retirement regression also passes
+in the release profile. Required-host testing and full CI on the final source
+remain pending. A local debugger workload did not reproduce the host abort;
+it ended with incomplete sink recovery and supplies no qualifying evidence.
+No 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: retire supported
+publication ancestry without recursive stack growth while preserving shared
+snapshot pins; Checks: failing process-isolated reproduction, 325 unit tests,
+555 all-feature scoped tests, release-profile regression and eight scoped checks;
+Compatibility: unchanged public interfaces, durable bytes, ordering and limits;
+Updated handbook: this handoff and live observations; Hazards/follow-ups: confirm
+the host crash call path, diagnose terminal refusal, run final-source full CI
+and repeat the unchanged required-host workload.

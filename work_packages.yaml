@@ -28651,6 +28651,14 @@ work_packages:
   - An accepted decision, normative requirement, guarantee, or declared path scope changes.
   - A new durable identity, public interface, or critical dependency lacks accepted authority.
   exit_gate: A short real rehearsal covers every lifecycle and failure path through public interfaces and produces evidence that passes the same checks except the explicitly unmet 24-hour duration.
+  closure:
+    status: open
+    decisions_taken:
+    - Retire uniquely owned publication-lineage predecessors iteratively with
+      Arc::into_inner, preserving shared snapshot ancestry under concurrent owner
+      release, supported overlay limits and the 384 KiB maintenance stack.
+      Process-isolated regression, release-profile test and scoped acceptance pass;
+      the host abort call path and full lifecycle qualification remain unproven.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

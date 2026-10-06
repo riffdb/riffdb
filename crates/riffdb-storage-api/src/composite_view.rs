@@ -1448,6 +1448,23 @@ struct OverlayLineageNode {
     keys: Box<[(CompositeTableV1, Box<[u8]>)]>,
 }
 
+impl Drop for OverlayLineageNode {
+    fn drop(&mut self) {
+        // Supported publication ancestry is much deeper than the maintenance
+        // stack. Detach unique predecessors before dropping their keys; a
+        // shared predecessor stays intact for its remaining snapshot owners.
+        let mut predecessor = self.predecessor.take();
+        while let Some(node) = predecessor {
+            // Unlike try_unwrap().ok(), into_inner also guarantees one owner
+            // extracts the node when the last Arc clones retire concurrently.
+            let Some(mut node) = Arc::into_inner(node) else {
+                break;
+            };
+            predecessor = node.predecessor.take();
+        }
+    }
+}
+
 fn overlay_lineage_successor(
     predecessor: Option<Arc<OverlayLineageNode>>,
     predecessor_bytes: usize,
@@ -1943,6 +1960,10 @@ fn sequence_delta(
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
+
+#[cfg(test)]
+#[path = "composite_lineage_drop_tests.rs"]
+mod lineage_drop_tests;
 
 #[cfg(test)]
 mod tests {
