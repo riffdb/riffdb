@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/ticketdesk-lifecycle-smoke"
 sys.path.insert(0, str(SOURCE.parent))
@@ -22,6 +22,42 @@ loader = importlib.machinery.SourceFileLoader("preparation", str(SOURCE))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 preparation = importlib.util.module_from_spec(spec)
 loader.exec_module(preparation)
+
+
+class DriverShutdownDiagnostics(unittest.TestCase):
+    def stop(self, root, *, status, timed_out=False):
+        driver = Mock()
+        driver.poll.return_value = None
+        driver.returncode = status
+        driver.wait.side_effect = ([subprocess.TimeoutExpired("owned-driver", 15), status]
+                                  if timed_out else [status])
+        with patch.object(preparation.time, "monotonic_ns", side_effect=[100, 500]):
+            preparation.stop_driver(root, driver)
+        return driver
+
+    def test_clean_shutdown_records_only_closed_numeric_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = self.stop(root, status=0)
+            value = json.loads((root / "driver-shutdown.json").read_text())
+            self.assertEqual(value, {
+                "schema": "riffdb.ticketdesk-lifecycle-driver-shutdown/v1",
+                "timed_out": False, "exit_code": 0, "elapsed_ns": 400})
+            driver.terminate.assert_called_once_with()
+            driver.kill.assert_not_called()
+            self.assertNotIn(str(root), json.dumps(value))
+
+    def test_signal_exit_and_timeout_remain_failures_after_diagnostic_publication(self):
+        for status, timed_out in [(-15, False), (1, False), (-9, True), (0, True)]:
+            with self.subTest(status=status, timed_out=timed_out), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with self.assertRaisesRegex(preparation.SmokeError, "^driver_shutdown$"):
+                    self.stop(root, status=status, timed_out=timed_out)
+                value = json.loads((root / "driver-shutdown.json").read_text())
+                self.assertEqual(value["timed_out"], timed_out)
+                self.assertEqual(value["exit_code"], status)
+                self.assertEqual(value["elapsed_ns"], 400)
 
 
 class PreparationDurationBoundaries(unittest.TestCase):

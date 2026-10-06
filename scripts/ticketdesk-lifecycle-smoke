@@ -625,6 +625,28 @@ def other_language_smokes(root, repository, python_native, port):
             language + "_observation")
 
 
+def stop_driver(root, driver):
+    """Keep the existing deadline/refusal; retain the actual failure class."""
+    started = time.monotonic_ns()
+    timed_out = False
+    if driver.poll() is None:
+        driver.terminate()
+    try:
+        driver.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        driver.kill()
+        driver.wait(timeout=5)
+    elapsed = time.monotonic_ns() - started
+    require(type(driver.returncode) is int and -255 <= driver.returncode <= 255
+            and 0 <= elapsed <= 60000000000, "driver_shutdown_observation")
+    write(root, "driver-shutdown.json", json.dumps({
+        "schema": "riffdb.ticketdesk-lifecycle-driver-shutdown/v1",
+        "timed_out": timed_out, "exit_code": driver.returncode,
+        "elapsed_ns": elapsed}, sort_keys=True) + "\n")
+    require(not timed_out and driver.returncode == 0, "driver_shutdown")
+
+
 def typescript_smoke(root, repository, driver_binary, port, python_native=None):
     runtime = repository / "clients/typescript/runtime"
     compiler = runtime / "node_modules/.bin/tsc"
@@ -689,15 +711,7 @@ streams_per_connection = 4
             if python_native:
                 other_language_smokes(root, repository, python_native, port)
         finally:
-            if driver.poll() is None:
-                driver.terminate()
-            try:
-                driver.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                driver.kill()
-                driver.wait(timeout=5)
-                raise SmokeError("driver_shutdown")
-            require(driver.returncode == 0, "driver_shutdown")
+            stop_driver(root, driver)
 
 
 def validate_projection(projection, projection_id, frontier, updates, plan_hash):

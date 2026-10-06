@@ -1492,3 +1492,32 @@ ordering, public interface or validation guarantee changes. Broader acceptance
 and final-source CI remain required; moving setup off the gate alone does not
 prove sustainable reclamation or bounded populated startup. WP-825 remains open
 and no 24-hour run has started.
+
+## Registry-completion candidate: driver shutdown refusal
+
+Frozen source `411daf6d` passes all 20 scoped acceptance checks, including the
+reviewed writer-3 fixture assertions. Full CI passes workspace tests,
+documentation and the bounded operational-query corpus, then stops in the real
+TicketDesk preparation with `driver_shutdown`. TypeScript, Go and Python smoke
+observations passed before cleanup. The driver stderr is empty; the original
+controller did not record whether cleanup timed out or observed a nonzero exit.
+Neither cause is inferred from that missing evidence. Both required-host gates
+remain closed; the prebuilt host artifacts have started no workload.
+
+Fresh TypeScript-only and full four-language reproductions with the unchanged
+binaries pass; the latter measures a normal driver exit in 3.24 milliseconds.
+The intermittent failure remains unresolved. Preparation now retains a closed
+numeric shutdown diagnostic with the actual timeout flag, exit code and elapsed
+time, excluding paths, credentials and process identities. The existing
+15-second graceful wait, five-second kill wait and refusal are preserved.
+Tests require signal exits and timeouts to remain failures, including a process
+that returns zero only after its graceful deadline expired. All 90 lifecycle
+checker tests pass; this diagnostic is not a native repair or rehearsal evidence.
+
+Package: WP-825, open. Tier: internal. Behavior: retain the actual driver
+shutdown failure class without changing pass conditions. Checks: failing
+missing-diagnostic regression and 90 lifecycle checker tests. Compatibility:
+native behavior and application interfaces are unchanged. Updated handbook:
+this observation page. All five scoped acceptance checks also pass.
+Hazards/follow-ups: reproduce and fix any native lifecycle
+defect, repeat final-source full CI, and complete required-host preparations.
