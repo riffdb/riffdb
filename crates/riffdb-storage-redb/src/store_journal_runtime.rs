@@ -206,6 +206,9 @@ impl SharedRedb {
                 .is_some_and(RedbTestController::take_checkpoint_test_request);
         #[cfg(not(feature = "test-fixtures"))]
         let requested = false;
+        let requested = requested
+            || (runtime.suffix_transitions != 0
+                && self.mutation_gate.source_checkpoint_requested()?);
         if !requested
             && !runtime.reanchor_required
             && runtime.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
@@ -400,6 +403,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(error);
         }
+        self.mutation_gate.clear_source_checkpoint_request()?;
         Ok(())
     }
 }

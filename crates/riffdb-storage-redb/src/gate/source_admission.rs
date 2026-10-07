@@ -8,6 +8,9 @@ const ADMISSION_WAIT: Duration = Duration::from_millis(100);
 pub(super) struct State {
     slot: Option<Slot>,
     retired: bool,
+    // One nondurable hint for an ordinary writer's existing checkpoint. The
+    // same gate mutex couples it to irreversible source-owner retirement.
+    checkpoint_requested: bool,
     // queued, granted, expired, cancelled, capacity/refused, wait us,
     // full lease residence us, bounded-drain yields. Diagnostic only.
     census: [u64; 8],
@@ -96,6 +99,7 @@ impl ExclusiveGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.source.retired = true;
+        state.source.checkpoint_requested = false;
         if let Some(ticket) = state.source.slot.as_ref().map(|slot| slot.ticket) {
             state.cancel_source_ticket(ticket, 3);
         }
@@ -108,6 +112,32 @@ impl ExclusiveGate {
             .lock()
             .map(|state| state.source.census)
             .map_err(|_| poisoned_gate())
+    }
+
+    pub(crate) fn note_source_checkpoint_request(&self) -> Result<(), StorageError> {
+        let mut state = self.inner.state.lock().map_err(|_| poisoned_gate())?;
+        if !state.source.retired {
+            state.source.checkpoint_requested = true;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn source_checkpoint_requested(&self) -> Result<bool, StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map(|state| state.source.checkpoint_requested)
+            .map_err(|_| poisoned_gate())
+    }
+
+    pub(crate) fn clear_source_checkpoint_request(&self) -> Result<(), StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map_err(|_| poisoned_gate())?
+            .source
+            .checkpoint_requested = false;
+        Ok(())
     }
 
     pub(crate) fn note_source_drain_yield(&self) -> Result<(), StorageError> {

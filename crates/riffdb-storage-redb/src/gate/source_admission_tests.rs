@@ -1,6 +1,36 @@
 use super::*;
 use std::sync::mpsc;
 
+// req: STO-030, STO-031, STO-032, END-008
+#[test]
+fn retirement_discards_checkpoint_requests_in_both_held_source_turn_schedules() {
+    for requested_before in [true, false] {
+        let gate = Arc::new(ExclusiveGate::default());
+        let worker_gate = Arc::clone(&gate);
+        let (entered, ready) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let source = worker_gate.acquire_source().unwrap().unwrap();
+            if requested_before {
+                worker_gate.note_source_checkpoint_request().unwrap();
+            }
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            if !requested_before {
+                worker_gate.note_source_checkpoint_request().unwrap();
+            }
+            drop(source);
+        });
+        ready.recv().unwrap();
+        gate.retire_source_admission();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!gate.source_checkpoint_requested().unwrap());
+        assert!(gate.acquire_source().unwrap().is_none());
+        drop(gate.acquire().unwrap());
+    }
+}
+
 // req: STO-030, STO-031, END-008
 #[test]
 fn source_gate_bookkeeping_has_one_population_independent_fixed_capacity() {

@@ -8,6 +8,44 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
+## Source progress below the ordinary capacity trigger
+
+A populated required-host preparation passed its first five-minute service
+window at 100 commands and 400 reads per second, with p95 29 ms and p99 67 ms,
+but failed the frozen 95-second source-byte sample gap. Native counters recorded
+538 pending-journal admission yields. The closed source drain admits at most
+256 transitions and 1 MiB; ordinary asynchronous checkpointing otherwise starts
+at 32,768 transitions or 128 MiB. Continuous published work between those limits
+can prevent fresh source barriers even when FIFO source turns are granted.
+The failed preparation is preserved and does not qualify the milestone.
+
+For a completely published, consistently accounted oversized suffix, the native
+source owner now records one private hint for the next ordinary writer to start
+the existing asynchronous checkpoint. The source turn still yields without
+draining, rotating or waiting under its lease. Unknown, unpublished or
+inconsistent accounting creates no hint. The ordinary checkpoint retains its
+existing limits, canonical validation, publication and crash-recovery protocol;
+empty work creates no checkpoint. Source reclamation still requires complete
+current authority, actual independent progress and every current hold.
+
+The hint lives in the existing gate's fixed state and disappears on consumption
+or irreversible source retirement. Deterministic schedules cover a granted
+turn requesting before and after retirement. The real native regression first
+acknowledges 257 typed service audits, proves source admission yields without
+materialization, then exercises an ordinary asynchronous checkpoint and exact
+audit preservation. This repair changes internal checkpoint scheduling within
+the accepted decisions; it adds no application control or durable identity.
+
+PR note: Package WP-825 (open); Tier guarantee implementation under ADR-0265,
+ADR-0271 and D-003; Behavior: allow ordinary checkpoint progress after a known
+source backlog exceeds the closed drain limit; Checks: native failing progress
+regression and deterministic retirement schedules, with broader validation in
+progress; Compatibility: no command ordering, authorization, source cut,
+encoding, dependency or acknowledged-durability change; Updated handbook: this
+milestone handoff; Hazards and follow-ups: full checks, real required-host
+pressure and the qualifying short campaign remain unproved. No 24-hour run is
+started, and the previous failed preparation is not reclassified.
+
 ## Persistent child launch and exit observations
 
 The preparation now retains a private, exclusive usage record for each server,
@@ -351,6 +389,12 @@ empty prefix and release before probe-object drop after completion, expiry or
 census-bound refusal. Collector integration, independent aggregate modeling,
 full final-source checks and actual required-host pressure remain required.
 This component does not fill `eligible_history_bytes` or authorize qualification.
+
+The native barrier-release fixture also drives the production physical-byte
+emitter before retirement. Independent collector parsing of its actual records
+checks the real diagnostic boundary, including allocated bytes, original
+eligibility and pin release. It remains local fixture evidence rather than a
+populated required-host qualification.
 
 ## Actual logical-history byte observations
 

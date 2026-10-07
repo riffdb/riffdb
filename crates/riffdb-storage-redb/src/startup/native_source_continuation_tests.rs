@@ -471,6 +471,14 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
         assert_eq!(physical.eligible_allocated_bytes, expected_allocated);
         assert_eq!(physical.protected_allocated_bytes, 0);
         assert_eq!(physical.sealed_extents, 1);
+        // Exercise the actual production emitter as well as the measurement
+        // helper. The independent collector parses these real numeric records
+        // in the native producer/collector integration check.
+        let mut physical_observer =
+            crate::store::extent_reclamation::physical_bytes::Observer::default();
+        for _ in 0..32 {
+            physical_observer.tick(&ports.shared);
+        }
         let reclaimed = ports.shared.reclaim_one_extent().unwrap();
         assert_eq!(reclaimed.retired_generation, Some(footer.generation));
         assert_eq!(

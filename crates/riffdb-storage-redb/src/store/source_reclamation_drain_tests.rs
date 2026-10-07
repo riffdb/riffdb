@@ -194,6 +194,107 @@ fn source_capture_does_not_initialize_an_absent_native_journal_lane() {
     assert!(!ports.shared.mutation_gate.is_held());
 }
 
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoint() {
+    use riffdb_storage_api::{
+        AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
+        ServiceAuditGroupAppend,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
+    };
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    for ordinal in 1..=257_u64 {
+        let intent = ServiceAuditAppendIntentV1::new(
+            RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
+            Timestamp::new(1700000000, 0).unwrap(),
+            ServiceOperationV1::GetHealth,
+            ServiceAuditPhaseV1::Denied,
+            AuditPrincipalV1::new(
+                ActorId::new("checkpoint-fixture").unwrap(),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
+                std::num::NonZeroU64::MIN,
+            ),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .unwrap();
+        let ServiceAuditGroupAppend::Submitted(fence) =
+            ports.submit_service_audit_group(&[intent]).unwrap()
+        else {
+            panic!("the standard native writer must acknowledge through its journal");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let audit_before = ports
+        .begin_composite_read()
+        .unwrap()
+        .read_range_to(JournalTable::Audit, &[], None, 300)
+        .unwrap();
+    assert_eq!(audit_before.len(), 257);
+    let publication_before = ports.shared.capture_checkpoint_root().unwrap().identity();
+    {
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::PendingJournal
+        ));
+        assert_eq!(
+            ports.shared.capture_checkpoint_root().unwrap().identity(),
+            publication_before
+        );
+        assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+        assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+        drop(lease);
+    }
+    // An ordinary subsequent writer performs existing checkpoint preparation;
+    // the refused source turn neither drains nor waits under its lease.
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    assert!(
+        ports.shared.async_checkpoint_in_flight().unwrap(),
+        "a known source backlog must not wait for the much larger capacity trigger"
+    );
+    ordinary.abort().unwrap();
+    {
+        let writer = ports.shared.mutation_gate.acquire().unwrap();
+        ports.shared.poll_async_checkpoint_locked(true).unwrap();
+        drop(writer);
+    }
+    ports.shared.join_journal_sealer();
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
+    assert!(ports.shared.capture_checkpoint_root().unwrap().identity() > publication_before);
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap(),
+        audit_before
+    );
+    let lease = ports
+        .shared
+        .mutation_gate
+        .acquire_source()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        ports.shared.prepare_online_source_root().unwrap(),
+        Readiness::Ready
+    ));
+    drop(lease);
+}
+
 fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x82; 10]).unwrap();
@@ -291,6 +392,10 @@ fn source_metadata_refuses_every_unknown_or_unpublished_charge_before_materializ
             _ => unreachable!(),
         }
         assert!(!suffix_is_bounded(&runtime), "unknown charge {changed}");
+        assert!(
+            published_suffix_counts(&runtime).is_none(),
+            "unknown accounting cannot request ordinary checkpoint work: {changed}"
+        );
         // The accounting check has neither submitted nor taken a frame.
         assert_eq!(
             crate::journal::scan_journal(

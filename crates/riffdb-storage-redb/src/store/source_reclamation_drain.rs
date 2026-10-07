@@ -62,7 +62,17 @@ impl SharedRedb {
             let Some(runtime) = runtime.as_ref() else {
                 return Ok(Readiness::Ready);
             };
-            if !suffix_is_bounded(runtime) {
+            let counts = published_suffix_counts(runtime);
+            if !counts.is_some_and(|counts| {
+                counts[0] <= crate::journal::SOURCE_SUFFIX_TRANSITIONS
+                    && counts[3] <= crate::journal::SOURCE_SUFFIX_BYTES
+            }) {
+                if counts.is_some() {
+                    // Only suggest the existing ordinary checkpoint. This
+                    // refused source turn does not materialize, rotate, join
+                    // or alter the authority of any acknowledged frame.
+                    self.mutation_gate.note_source_checkpoint_request()?;
+                }
                 self.mutation_gate.note_source_drain_yield()?;
                 return Ok(Readiness::PendingJournal);
             }
@@ -82,8 +92,10 @@ impl SharedRedb {
     }
 }
 
-fn suffix_is_bounded(runtime: &JournalRuntime) -> bool {
-    use crate::journal::{SOURCE_SUFFIX_BYTES, SOURCE_SUFFIX_TRANSITIONS};
+fn published_suffix_counts(runtime: &JournalRuntime) -> Option<[usize; 4]> {
+    use crate::journal::{
+        MAX_JOURNAL_FRAME_BYTES, MAX_JOURNAL_SUFFIX_BYTES, MAX_JOURNAL_SUFFIX_TRANSITIONS,
+    };
     if runtime.unpublished_transitions != 0
         || runtime.unpublished_bytes != 0
         || runtime.unpublished_commands != 0
@@ -91,21 +103,22 @@ fn suffix_is_bounded(runtime: &JournalRuntime) -> bool {
         || runtime.last_sequence != runtime.published_sequence
         || runtime.last_administration_sequence != runtime.published_administration_sequence
         || runtime.last_hash != runtime.published_hash
-        || runtime.suffix_transitions > SOURCE_SUFFIX_TRANSITIONS
-        || runtime.suffix_bytes > SOURCE_SUFFIX_BYTES
-        || runtime.suffix_frames.len() > SOURCE_SUFFIX_TRANSITIONS
+        || runtime.suffix_transitions > MAX_JOURNAL_SUFFIX_TRANSITIONS
+        || runtime.suffix_bytes > MAX_JOURNAL_SUFFIX_BYTES
+        || runtime.suffix_frames.len() > MAX_JOURNAL_SUFFIX_TRANSITIONS
     {
-        return false;
+        return None;
     }
     let mut counts = [0_usize; 4];
     for frame in &runtime.suffix_frames {
         let length = frame.encoded.as_bytes().len();
         if frame.transition_count == 0
             || length == 0
-            || length > SOURCE_SUFFIX_BYTES
+            || length > MAX_JOURNAL_FRAME_BYTES
+            || frame.database_id != runtime.database_id
             || crate::journal::extent_frame_bytes(length) != Some(frame.placement.padded_len)
         {
-            return false;
+            return None;
         }
         for (total, added) in counts.iter_mut().zip([
             usize::from(frame.transition_count),
@@ -113,19 +126,26 @@ fn suffix_is_bounded(runtime: &JournalRuntime) -> bool {
             usize::from(frame.audit_count),
             length,
         ]) {
-            let Some(next) = total.checked_add(added) else {
-                return false;
-            };
+            let next = total.checked_add(added)?;
             *total = next;
         }
     }
-    counts
+    (counts
         == [
             runtime.suffix_transitions,
             runtime.suffix_commands,
             runtime.suffix_audits,
             runtime.suffix_bytes,
-        ]
+        ])
+    .then_some(counts)
+}
+
+#[cfg(test)]
+fn suffix_is_bounded(runtime: &JournalRuntime) -> bool {
+    published_suffix_counts(runtime).is_some_and(|counts| {
+        counts[0] <= crate::journal::SOURCE_SUFFIX_TRANSITIONS
+            && counts[3] <= crate::journal::SOURCE_SUFFIX_BYTES
+    })
 }
 
 #[cfg(test)]
