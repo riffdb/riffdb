@@ -28662,6 +28662,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Preserve the intentional Health-only native initializing stage and strict
+      storage-failure visibility. After a real failed transport submission,
+      the small restart preparation waits for the controller's actual-readiness
+      barrier before replaying its original input. Bound the delay by the
+      original 60-second deadline. Successful local restart, kill and rotation
+      fixtures do not qualify continuous load or the required-host campaign.
     - Propose ADR-0279 after the actual native checkpoint regression removes
       only 256 of 1030 independently covered receipts and the unchanged host
       preparation fails source-byte coverage. Preserve the failed evidence;

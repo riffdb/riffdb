@@ -101,6 +101,42 @@ tests pass; Compatibility: native formats, observations and limits unchanged;
 Updated handbook: this page; Hazards and follow-ups: native reclamation/accounting,
 final-source CI and all measured rehearsal gates remain open.
 
+## Restart preparation waits for actual ordinary readiness
+
+The strict final-worker diagnostic initially fails graceful restart with closed
+`RDB-STORAGE-0101`: its retry races the native Health-only initializing stage.
+The specification deliberately rejects ordinary admission before activation.
+The native classifier remains strict. The small interruption controller now
+publishes its private resume barrier only after observing actual daemon
+readiness, after the worker has emitted one actual failed transport submission.
+The worker then resubmits the original immutable input. Waiting for the barrier
+counts against the original 60-second recovery deadline; missing or malformed
+control cannot create success. This is lifecycle orchestration, with no retry
+of an admitted native storage failure and no initialization-authority bypass.
+
+Actual locked debug-artifact fixture diagnostics now pass graceful restart,
+process kill and capability rotation. Restart recovery takes 561,484,518 ns and
+kill recovery 518,601,038 ns, each with one settled failed submission, exact
+original identity and public state reconciliation. The unchanged native server
+and CLI come from `f153ae48`; the controller and worker overlay are independently
+hash-bound. The failed first attempt remains separate and intact. These small
+local fixtures do not prove required-host performance, continuous-load fault
+coverage, populated restore or the complete campaign.
+
+Two explicit async barrier/refusal tests and all 32 native workload tests pass.
+The general recovery loop also bounds its delay future by the remaining
+original deadline, keeping the fixed attempt ceiling and native refusal
+classification. Final-source CI and the measured campaign remain required.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: resume interrupted
+fixture input only after observed ordinary readiness while preserving the first
+real transport failure and the original deadline; Checks: actual predecessor
+fixture fails, 32 native workload tests and three actual public fixture
+invocations pass; Compatibility: public lifecycle refusal, authorization,
+command identity, native errors and durable formats unchanged; Updated handbook:
+this page; Hazards and follow-ups: full checks and continuous-load integration,
+ADR-0279 acceptance and native implementation, all measured rehearsal gates.
+
 ## Interruption recovery preserves native failure visibility
 
 The generated load worker now recovers only actual transport interruption or

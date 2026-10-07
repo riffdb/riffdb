@@ -186,6 +186,10 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
             pump = threading.Thread(target=pump_ready, args=(server, restarted, ready), daemon=True)
             pump.start()
             require(ready.get(timeout=30) is True, "recovery_readiness")
+            # The native initializing route is Health-only. Resume the same
+            # input only after actual activation, retaining the prior failed
+            # transport submission and the original interruption deadline.
+            write(root, "recovery.resume", "ready\n")
             retries = 1
             while True:
                 require(time.monotonic() - started < 60 and process.poll() in (None, 0),

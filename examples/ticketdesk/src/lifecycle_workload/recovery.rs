@@ -149,7 +149,10 @@ pub(super) async fn run<A: Attempt>(
     run_inner(
         attempt,
         || planned_fault(root),
-        || tokio::time::sleep(Duration::from_millis(250)),
+        || async {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            Ok(())
+        },
     )
     .await
 }
@@ -163,7 +166,7 @@ where
     A: Attempt,
     P: FnMut() -> Result<bool>,
     D: FnMut() -> F,
-    F: std::future::Future<Output = ()> + Send,
+    F: std::future::Future<Output = Result<()>> + Send,
 {
     let started = Instant::now();
     let mut admitted = false;
@@ -181,7 +184,9 @@ where
             Err(error) => {
                 admitted |= planned()?;
                 budget.failure(&error, admitted, started.elapsed())?;
-                delay().await;
+                tokio::time::timeout(DEADLINE.saturating_sub(started.elapsed()), delay())
+                    .await
+                    .map_err(|_| "original_identity_recovery_bound")??;
             }
         }
     }
@@ -215,7 +220,7 @@ pub(super) async fn smoke() -> Result<()> {
             println!(
                 "{{\"schema\":\"riffdb.ticketdesk-lifecycle-recovery-retry/v1\",\"retry\":{retry}}}"
             );
-            tokio::time::sleep(Duration::from_millis(250))
+            wait_for_resume(&root)
         },
     )
     .await?;
@@ -251,6 +256,34 @@ pub(super) async fn smoke() -> Result<()> {
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-recovery-smoke/v1\",\"retries\":{retries},\"original_identity\":true,\"state_reconciled\":true}}"
     );
     Ok(())
+}
+
+async fn wait_for_resume(root: &Path) -> Result<()> {
+    let path = root.join("recovery.resume");
+    loop {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if !metadata.is_file() || metadata.len() != 6 {
+                    return Err("recovery_resume_control");
+                }
+                let mut encoded = Vec::with_capacity(7);
+                std::fs::File::open(&path)
+                    .map_err(|_| "recovery_resume_control")?
+                    .take(7)
+                    .read_to_end(&mut encoded)
+                    .map_err(|_| "recovery_resume_control")?;
+                return if encoded == b"ready\n" {
+                    Ok(())
+                } else {
+                    Err("recovery_resume_control")
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(_) => return Err("recovery_resume_control"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -438,6 +471,59 @@ mod tests {
 
     // req: END-003, END-007, END-008
     #[tokio::test]
+    async fn interrupted_original_input_waits_for_explicit_readiness_before_resubmission() {
+        let input = super::super::model::update(0).unwrap();
+        let expected = input.clone();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (resume, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut attempt = ImmutableUpdate {
+                input: input.clone(),
+                seen: Vec::new(),
+            };
+            let mut gate = Some((entered, ready));
+            let result = run_inner(
+                &mut attempt,
+                || Ok(true),
+                || {
+                    let (entered, ready) = gate.take().unwrap();
+                    async move {
+                        entered.send(()).map_err(|_| "recovery_resume_control")?;
+                        ready.await.map_err(|_| "recovery_resume_control")
+                    }
+                },
+            )
+            .await;
+            (result, attempt.seen)
+        });
+        waiting.await.unwrap();
+        assert!(!task.is_finished(), "no second submission before readiness");
+        resume.send(()).unwrap();
+        let (result, seen) = task.await.unwrap();
+        assert_eq!(result.unwrap(), (73, 1, true));
+        assert_eq!(seen, vec![expected.clone(), expected]);
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
+    async fn failed_readiness_gate_never_resubmits_or_invents_success() {
+        let input = super::super::model::update(0).unwrap();
+        let mut attempt = ImmutableUpdate {
+            input: input.clone(),
+            seen: Vec::new(),
+        };
+        let result = run_inner(
+            &mut attempt,
+            || Ok(true),
+            || async { Err("recovery_resume_control") },
+        )
+        .await;
+        assert_eq!(result, Err("recovery_resume_control"));
+        assert_eq!(attempt.seen, vec![input]);
+    }
+
+    // req: END-003, END-007, END-008
+    #[tokio::test]
     async fn recovery_keeps_the_original_key_input_and_revision_when_the_fault_marker_clears() {
         let input = super::super::model::update(0).unwrap();
         let mut attempt = ImmutableUpdate {
@@ -451,7 +537,7 @@ mod tests {
             || Ok(planned.load(std::sync::atomic::Ordering::Acquire)),
             || {
                 after_failure.store(false, std::sync::atomic::Ordering::Release);
-                std::future::ready(())
+                std::future::ready(Ok(()))
             },
         )
         .await
