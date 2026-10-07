@@ -191,8 +191,15 @@ class ProcessMemory:
             current = memory(encoded, self.pid)
             value = dict(current, **memory_peaks(encoded, current))
             peaks = (value["rss_peak_bytes"], value["allocator_peak_bytes"])
-            require(self.peaks is None or all(current >= previous for current, previous
-                    in zip(peaks, self.peaks)), "resource_measurement")
+            # RSS counters are asynchronous on Linux. Keep the actual reported
+            # reading, and never lower the maximum already observed for this
+            # same live incarnation. Virtual-address high water still cannot
+            # rewind; replacement, missing fields and invalid units still fail.
+            require(self.peaks is None or peaks[1] >= self.peaks[1], "resource_measurement")
+            value["reported_rss_peak_bytes"] = peaks[0]
+            value["reported_allocator_peak_bytes"] = peaks[1]
+            peaks = (max(peaks[0], self.peaks[0] if self.peaks else 0), peaks[1])
+            value["rss_peak_bytes"] = peaks[0]
             require(children == thread_children(directory), "resource_process_inventory")
             require(before == identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid),
                     "resource_process_identity")
@@ -229,7 +236,8 @@ class OwnedProcessMemory:
         require(type(elapsed_ns) is int and 0 <= elapsed_ns <= MAX_U64, "resource_measurement")
         values, edges = {}, {}
         known = {owner.pid for owner in self.owners.values()}
-        fields = ("rss_bytes", "allocator_bytes", "rss_peak_bytes", "allocator_peak_bytes")
+        fields = ("rss_bytes", "allocator_bytes", "rss_peak_bytes", "allocator_peak_bytes",
+                  "reported_rss_peak_bytes", "reported_allocator_peak_bytes")
         for role, owner in self.owners.items():
             sample, children = owner.tree_sample()
             require(children <= known and owner.pid not in children, "resource_process_inventory")
@@ -252,10 +260,14 @@ class OwnedProcessMemory:
             require(children == edges[owner.pid], "resource_process_inventory")
             for name in ("rss_peak_bytes", "allocator_peak_bytes"):
                 values[role][name] = max(values[role][name], later[name])
+            values[role]["later_reported_rss_peak_bytes"] = later["reported_rss_peak_bytes"]
+            values[role]["later_reported_allocator_peak_bytes"] = later["reported_allocator_peak_bytes"]
         totals = {name: sum(value[name] for value in values.values()) for name in fields}
         require(all(value <= MAX_U64 for value in totals.values()), "resource_measurement")
         return {"schema": "riffdb.ticketdesk-lifecycle-owned-memory/v1", "elapsed_ns": elapsed_ns,
                 "allocator_basis": ALLOCATOR_BASIS,
+                "rss_peak_basis": "maximum_observed_asynchronous_kernel_high_water_counter",
+                "rss_observation_basis": "asynchronous_linux_kernel_rss_counter",
                 "scope": "verified_owned_descendant_tree_at_sample", "processes": values,
                 "rss_bytes": totals["rss_bytes"], "allocator_bytes": totals["allocator_bytes"],
                 "rss_peak_upper_bound_bytes": totals["rss_peak_bytes"],

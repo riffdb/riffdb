@@ -298,6 +298,28 @@ ADR-0265. Compatibility: no public interface, durable encoding, authorization,
 dependency or reviewed compatibility-fixture change. Updated handbook: this
 page. Six focused collector tests pass; native and required-host evidence remain
 required. This component authorizes no 24-hour qualification.
+## Linux RSS counter observations
+
+A preparation failed closed at resource collection. A bounded allocation-only
+host reproducer, with no database workload, also reached the collector's
+high-water monotonicity refusal. Linux's RSS accounting is asynchronous; its
+reported high-water counter can decrease between reads. The collector now
+preserves each raw reported reading and the maximum already observed for the
+same live process incarnation. Both bracketing tree passes retain their raw
+values. The observation explicitly labels the asynchronous RSS basis.
+
+Virtual-address high water still cannot rewind. Missing, malformed, oversized,
+inconsistent, replaced-process or unowned-child measurements still refuse.
+Neither the workload nor any latency, recovery, memory or coverage limit changes.
+Reported RSS counters remain approximate; this repair does not establish precise
+RSS, complete transient launch/exit coverage, or campaign resource qualification.
+See the [Linux process accounting documentation](https://docs.kernel.org/filesystems/proc.html).
+
+Package: WP-825, open. Tier: internal. Compatibility: no database semantics,
+public API, durable format, authorization, dependency or reviewed compatibility
+fixture change. Updated handbook: this page. Preserve the failed preparation;
+repeat unchanged-host preparation after the repair's checks, and investigate any
+remaining failure rather than assuming the original refusal had this cause.
 
 ## Actual source-receipt byte observations
 

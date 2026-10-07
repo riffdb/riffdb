@@ -43,6 +43,10 @@ class OwnedProcessObservations(unittest.TestCase):
             self.assertEqual(sample["allocator_bytes"], 5 * 101 * 1024)
             self.assertEqual(sample["rss_peak_upper_bound_bytes"], 5 * 19 * 1024)
             self.assertEqual(sample["allocator_peak_upper_bound_bytes"], 5 * 127 * 1024)
+            self.assertEqual(sample["rss_peak_basis"], "maximum_observed_asynchronous_kernel_high_water_counter")
+            for value in sample["processes"].values():
+                self.assertEqual(value["reported_rss_peak_bytes"],19*1024)
+                self.assertEqual(value["later_reported_rss_peak_bytes"],19*1024)
             self.assertEqual(sample["scope"], "verified_owned_descendant_tree_at_sample")
             self.assertNotIn('"pid"', json.dumps(sample))
             self.assertNotIn(str(root), json.dumps(sample))
@@ -55,6 +59,31 @@ class OwnedProcessObservations(unittest.TestCase):
             self.fixture(root, 123, children=tuple(self.roles.values())[1:] + (128,))
             with self.assertRaisesRegex(ResourceError, "^resource_process_inventory$"):
                 resources.OwnedProcessMemory(self.roles, proc_root=root).sample(5)
+
+    def test_asynchronous_rss_high_water_retains_raw_readings_and_running_maximum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            process=self.fixture(root,123)
+            owner=resources.ProcessMemory(123,proc_root=root)
+            first,_=owner.tree_sample()
+            self.assertEqual(first["rss_peak_bytes"],19*1024)
+            status=process/"status"
+            status.write_text(status.read_text().replace("VmHWM:\t19 kB","VmHWM:\t18 kB"))
+            second,_=owner.tree_sample()
+            self.assertEqual(second["rss_peak_bytes"],19*1024)
+            self.assertEqual(second["reported_rss_peak_bytes"],18*1024)
+            self.assertEqual(second["reported_allocator_peak_bytes"],127*1024)
+            self.assertEqual(second["rss_bytes"],13*1024)
+
+    def test_virtual_high_water_rewind_still_refuses_even_above_current_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            process=self.fixture(root,123)
+            owner=resources.ProcessMemory(123,proc_root=root)
+            owner.tree_sample()
+            status=process/"status"
+            status.write_text(status.read_text().replace("VmPeak:\t127 kB","VmPeak:\t126 kB"))
+            with self.assertRaises(ResourceError):owner.tree_sample()
 
     def test_children_from_another_controller_thread_are_also_inventoried(self):
         with tempfile.TemporaryDirectory() as directory:
