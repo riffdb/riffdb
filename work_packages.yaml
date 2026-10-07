@@ -28731,6 +28731,12 @@ work_packages:
       flags, complete writer rest, deadlines, page bounds and freshness. A
       completed-publication wake advances one existing page before returning;
       this creates no root, census, checkpoint or reclamation authority.
+    - Continue an existing complete source certificate onto a newer qualified
+      installed checkpoint before requesting drained writer admission. Keep
+      incomplete work on its original pin, recheck actual-mutation qualification,
+      and preserve exact-end validation, pin bounds, current fencing, writer
+      rest and every drain or deletion limit. This is off-gate proof preparation
+      within ADR-0268, not new reclamation or checkpoint authority.
     - Apply ADR-0277 with safe principal-available fstatvfs on the source directory
       and a streamed logical-length inventory. Include retained lifecycle working
       and publication staging files, reject nonregular artifacts before receipt

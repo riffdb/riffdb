@@ -23,6 +23,43 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Continue installed source checkpoints before admission
+
+The unchanged preparation on `cde795b5` fails `source_bytes_sample_gap`.
+Logical observations remain fresh under load, but source observations stop
+after one sample at approximately nine seconds. The native drain reports
+repeated oversized suffixes, and its shutdown census also reports bounded
+catch-up refusals. Preserve the failed population and artifacts; the queued
+populated restore is cancelled without launching. No qualification follows.
+
+A deterministic regression establishes a separate continuation gap: a complete
+source certificate does not start validating an already installed successor
+checkpoint until drained admission succeeds. A newer oversized active suffix
+can block that admission even though the installed checkpoint is available
+for read-only validation. This is a native scheduling defect, not a reason to
+relax the harness freshness gate or drain bounds.
+
+At the beginning of a native attempt, an existing complete certificate now
+continues on a newer stable installed checkpoint before requesting the writer.
+It uses the existing actual-mutation qualification, checked successor metadata,
+canonical validators and bounded pages. An incomplete candidate finishes its
+original pin before replacement; changed qualification retires the candidate.
+This follows ADR-0268's qualified append continuation and D-003. No authority
+is gained until the existing exact-current drained barrier and complete fencing
+checks pass. The off-gate wait continuation still captures no new root.
+
+PR note: Package WP-825 (open); Tier guarantee implementation; Behavior: advance
+qualified installed-checkpoint catch-up before source admission; Checks: failing
+held-writer regression, exactly 300 new receipts and 300 audit rows, pin release,
+unchanged oversized-suffix refusal and all seventeen source-drain tests pass;
+six continuation tests, twenty-six source-control tests, all-target storage
+Clippy and all twelve scoped non-test checks pass; Compatibility: public
+interfaces, durable formats, writer ordering, drain and deletion bounds, rest
+and freshness unchanged; Updated handbook: this milestone page; Hazards and
+follow-ups: this local repair does not prove required-host progress. Repeat
+final-source CI and unchanged preparation, then populated restore and the
+remaining complete campaign gates. No 24-hour run has started.
+
 ## Captured byte progress during native maintenance waits
 
 The debugging preparation on `8119dfcc` fails `logical_bytes_sample_gap` and

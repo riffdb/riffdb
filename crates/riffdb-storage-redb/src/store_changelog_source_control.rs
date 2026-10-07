@@ -371,6 +371,28 @@ impl ReplicationSourceControl {
             self.online_validation = None;
             self.online_validation_phases[2] = 1;
         }
+        // A completed ancestor may lag an already installed checkpoint even
+        // when the newer active suffix cannot admit a drained source turn.
+        // Continue its qualified proof outside the writer before admission;
+        // leave incomplete candidates on their original pin until exact end.
+        if let Some(walk) = self.online_validation.as_mut() {
+            let publication = self.shared.durable_root_publication.load(Ordering::Acquire);
+            if walk.is_complete()
+                && publication.is_multiple_of(2)
+                && publication != walk.root_identity()
+            {
+                let root = self.shared.capture_checkpoint_root()?;
+                let epoch = self
+                    .shared
+                    .source_continuation_epoch
+                    .load(Ordering::Acquire);
+                if !walk.continue_on(root, epoch)? {
+                    self.online_validation = None;
+                    self.online_validation_phases[2] = 1;
+                    return Ok(0);
+                }
+            }
+        }
         if self.online_validation.is_none() {
             let (root, qualification) =
                 match Barrier::try_validation_capture_observed(&self.shared)? {

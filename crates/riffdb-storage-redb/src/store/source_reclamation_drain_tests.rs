@@ -4,6 +4,114 @@ use super::*;
 use crate::journal::{JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable};
 use std::num::NonZeroU64;
 
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn completed_source_proof_catches_published_checkpoint_before_requesting_admission() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    for _ in 0..16 {
+        control.advance_validation_off_gate().unwrap();
+        if !control.receipt_validation_pending() {
+            break;
+        }
+    }
+    assert!(!control.receipt_validation_pending());
+    let original_root = ports.shared.capture_checkpoint_root().unwrap().identity();
+    let qualification = ports
+        .shared
+        .source_continuation_epoch
+        .load(Ordering::Acquire);
+    append_acknowledged_audits(&mut ports, 300);
+    ports
+        .shared
+        .mutation_gate
+        .note_source_publication_request()
+        .unwrap();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    ports.shared.join_journal_sealer();
+    assert!(ports.shared.capture_checkpoint_root().unwrap().identity() > original_root);
+    assert_eq!(
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+        qualification
+    );
+
+    // A newer oversized active suffix prevents another drained source turn.
+    // The already installed checkpoint still contains qualified work that the
+    // existing certificate can validate without waiting for that admission.
+    for ordinal in 301..=557 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the distinct audit retains its original completion fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    let census = ports.shared.mutation_gate.source_census().unwrap();
+    let epoch = ports.shared.durable_commit_epoch();
+    let live_pins = || {
+        ports
+            .shared
+            .extent_roots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|root| root.strong_count() != 0)
+            .count()
+    };
+    let pins_before = live_pins();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(
+        control.receipt_validation_pending(),
+        "installed checkpoint continuation must start before a new source turn"
+    );
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
+    assert_eq!(live_pins(), pins_before + 1);
+    let [initial, mut continued_rows, invalidated, _] = control.validation_phases();
+    assert_eq!(initial, 0);
+    assert_eq!(invalidated, 0);
+    assert!(continued_rows <= 256);
+    for _ in 0..16 {
+        let [initial, continued, invalidated] = control.advance_validation_off_gate().unwrap();
+        assert_eq!(initial, 0);
+        assert!(continued <= 256);
+        assert_eq!(invalidated, 0);
+        continued_rows += continued;
+        if !control.receipt_validation_pending() {
+            break;
+        }
+    }
+    assert!(!control.receipt_validation_pending());
+    assert_eq!(
+        continued_rows, 600,
+        "only the 300 new receipts and their audit rows are validated"
+    );
+    assert_eq!(
+        live_pins(),
+        pins_before,
+        "exact end releases the replacement pin"
+    );
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert!(ports.shared.mutation_gate.is_held());
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    drop(writer);
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert_eq!(control.admission_yields()[1], 1);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+}
+
 #[test]
 fn source_validation_pages_finish_without_requesting_a_writer_turn() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
