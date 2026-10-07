@@ -105,6 +105,11 @@ class NativeProcessOwnership(unittest.TestCase):
                 self.assertEqual(owner.samples.transport_attempts, 6)
             self.assertEqual(process.returncode, 0)
             self.assertFalse(owner.reader.is_alive())
+            usage = json.loads((root / 'native-observer.process-usage.json').read_bytes())
+            self.assertTrue(usage['exit_observed'])
+            self.assertEqual(usage['exit_code'], 0)
+            self.assertGreater(usage['exit_rss_peak_bytes'], 0)
+            self.assertIsNone(usage['exit_allocator_peak_bytes'])
             records = [json.loads(line) for line in (root / 'native-observations.jsonl').read_bytes().splitlines()]
             self.assertEqual([record['index'] for record in records], [0, 1])
 

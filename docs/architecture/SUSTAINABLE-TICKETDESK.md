@@ -8,6 +8,32 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
+## Persistent child launch and exit observations
+
+The preparation now retains a private, exclusive usage record for each server,
+load worker, event observer, native sampler and language driver incarnation.
+Polling, joining and signaling share one child owner. Reaping always uses Linux
+`wait4` so ordinary liveness polling cannot discard that child's kernel RSS high
+water. Restart records belong to separate owners and files. A timeout keeps the
+child owned until the existing exact-descriptor kill and bounded join complete;
+it still fails the preparation. Failed launch, unavailable launch memory and
+descriptor admission failure remain explicit unknowns.
+
+The record contains numeric observations and closed labels, without arguments,
+process identities, paths or credentials. Final allocator peak remains unknown.
+These observations do not prove every descendant's lifetime, simultaneous
+aggregate peak or the complete campaign resource model. Existing live inventory,
+service thresholds and fail-closed qualification checks remain required.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: preserve persistent
+owned-child launch and exit RSS evidence across polling and restart; Checks:
+actual allocation, timeout/kill, independent restart, concurrent wait/signal,
+invalid usage, failed launch and descriptor-refusal regressions; Compatibility:
+no database, application, durable format or dependency change; Updated handbook:
+this milestone handoff; Hazards and follow-ups: final allocator and complete
+descendant accounting and the actual qualifying campaign remain unproved.
+No 24-hour run is started.
+
 The target is 65,536 seeded tickets across 64 organizations, 100 commands/s
 plus 400 named reads/s, at most 32 in flight, and recovery to the first
 successful write within 60 seconds. Qualification uses an inventoried 8-vCPU,

@@ -21,6 +21,7 @@ import threading
 import time
 
 from lib.ticketdesk_lifecycle_transient_usage import run_transient_observed
+from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
@@ -153,7 +154,8 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
     environment = dict(environment, RIFFDB_LIFECYCLE_LOAD_CONTROL=str(root))
     messages = queue.Queue(maxsize=256)
     with (root / "recovery.stdout").open("xb") as output, (root / "recovery.stderr").open("xb") as errors:
-        process = subprocess.Popen([worker, "recovery-smoke"], env=environment,
+        process = ObservedProcess([worker, "recovery-smoke"], env=environment,
+                                   observation=root / "recovery.process-usage.json",
                                    stdout=subprocess.PIPE, stderr=errors)
         reader = threading.Thread(target=pump_load, args=(process, output, messages), daemon=True)
         reader.start()
@@ -178,7 +180,8 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
             restarted.mkdir(mode=0o700)
             ready = queue.Queue(maxsize=1)
             with (restarted / "server.stderr").open("xb") as errors:
-                server = subprocess.Popen([server_binary, "--config", str(config)],
+                server = ObservedProcess([server_binary, "--config", str(config)],
+                    observation=restarted / "server.process-usage.json",
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
             pump = threading.Thread(target=pump_ready, args=(server, restarted, ready), daemon=True)
             pump.start()
@@ -523,7 +526,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
     physical_bytes = None
     deadline = time.monotonic() + duration + 120
     with (root / "load.stdout").open("xb") as output, (root / "load.stderr").open("xb") as errors:
-        process = subprocess.Popen([worker, "probe"], env=environment,
+        process = ObservedProcess([worker, "probe"], env=environment,
+                                   observation=root / "load.process-usage.json",
                                    stdout=subprocess.PIPE, stderr=errors)
         pump = threading.Thread(target=pump_load, args=(process, output, messages), daemon=True)
         pump.start()
@@ -783,7 +787,8 @@ pool_connections = 1
 streams_per_connection = 4
 ''')
     with (root / "driver.stdout").open("xb") as output, (root / "driver.stderr").open("xb") as errors:
-        driver = subprocess.Popen([str(driver_binary), str(config)], stdout=output, stderr=errors)
+        driver = ObservedProcess([str(driver_binary), str(config)],
+            observation=root / "driver.process-usage.json", stdout=output, stderr=errors)
         with owned_driver(root, driver):
             deadline = time.monotonic() + 30
             while not (root / "application.sock").is_socket() and driver.poll() is None:
@@ -965,7 +970,8 @@ tls_server_name = "127.0.0.1"
     latest = queue.Queue(maxsize=1)
     inventory = InventoryMonitor(root / "data") if args.online_retention else None
     with (root / "server.stderr").open("xb") as errors:
-        server = subprocess.Popen([server_binary, "--config", str(config)],
+        server = ObservedProcess([server_binary, "--config", str(config)],
+                                  observation=root / "server.process-usage.json",
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
         pump = threading.Thread(target=pump_ready, args=(server, root, ready), daemon=True)
         pump.start()
@@ -1018,7 +1024,8 @@ tls_server_name = "127.0.0.1"
                 environment["RIFFDB_LIFECYCLE_OBSERVER_STOP"] = str(root / "observer.stop")
                 observer_ready = queue.Queue(maxsize=1)
                 with (root / "observer.stderr").open("xb") as observer_errors:
-                    observer = subprocess.Popen([worker, "observe"], env=environment,
+                    observer = ObservedProcess([worker, "observe"], env=environment,
+                                                observation=root / "observer.process-usage.json",
                                                 stdout=subprocess.PIPE, stderr=observer_errors)
                 observer_pump = threading.Thread(target=pump_observer,
                     args=(observer, root, observer_ready, latest), daemon=True)

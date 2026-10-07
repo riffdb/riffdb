@@ -7,6 +7,8 @@ import re
 import subprocess
 import threading
 
+from .ticketdesk_lifecycle_persistent_usage import ObservedProcess
+
 MAX_LINE_BYTES = 4096
 MAX_SAMPLES = 86400
 MAX_U64 = 2**64 - 1
@@ -120,7 +122,8 @@ class NativeObserverProcess:
         self.last_elapsed_ns = None
         try:
             with (self.root / "native-observer.stderr").open("xb") as errors:
-                self.process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
+                self.process = ObservedProcess(command, env=environment, stdin=subprocess.PIPE,
+                                                observation=self.root / "native-observer.process-usage.json",
                                                 stdout=subprocess.PIPE, stderr=errors)
             self.reader = threading.Thread(target=self._read, daemon=True)
             self.reader.start()
