@@ -23,6 +23,35 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Complete bounded load observation streams
+
+The private `CampaignLoadStream` reader accepts exactly one native readiness
+record, the declared 73–288 contiguous five-minute window records, a reconciled
+terminal record and end of file. Each line remains bounded to 4 KiB; the total
+byte ceiling derives from the exact window count. The separate small preparation
+and recovery readers keep their existing limits.
+
+The reader checks the native worker's 28 load slots and four auxiliary slots,
+exact offered counts, actual completion and retry arithmetic, terminal totals,
+integer widths, duplicate fields and record order. It preserves actual retries
+and latency overflow for the campaign checker to judge against measured fault
+intervals and unchanged service levels. A stopped record without end of file,
+missing window, trailing record or malformed observation cannot complete.
+
+Seven synthetic framing/accounting tests cover a full 288-window stream above
+64 KiB and hostile or incomplete evidence. They do not prove actual load,
+transport success, faults or campaign qualification. The actual controller must
+use this reader, retain the child's exit result and reconcile observations with
+independent state and resource evidence before qualification.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: exact day-sized private
+load framing without enlarging small diagnostic readers; Checks: missing-module
+baseline fails, seven semantic reader tests, all 175 lifecycle tests and all
+11 scoped acceptance checks pass; Compatibility: native
+schemas, worker limits and campaign service levels unchanged; Updated handbook:
+this milestone handoff; Hazards and follow-ups: actual campaign integration and
+all final-source qualification gates remain required.
+
 ## Lifetime bounds for owned campaign processes
 
 Private transient and persistent launchers can freeze a Linux hard `RLIMIT_AS`

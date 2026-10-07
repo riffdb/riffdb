@@ -28660,6 +28660,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Give the actual campaign a separate exact-window bounded load reader with
+      one readiness record, 73-288 contiguous windows, reconciled terminal
+      totals and EOF. Preserve the 4 KiB line ceiling, native request slots,
+      actual retries and overflow, and smaller preparation/recovery limits.
+      Parsing evidence does not establish native success or qualification.
     - Record the maintainer's ADR-0278 fixture approval and index its review
       note in the handbook. Correct the server startup refusal test to the
       accepted writer-4 identity while preserving untouched-source assertions.
