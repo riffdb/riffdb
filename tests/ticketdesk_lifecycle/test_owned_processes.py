@@ -7,6 +7,7 @@ import sys
 import select
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -166,6 +167,112 @@ class OwnedProcessObservations(unittest.TestCase):
                     child.kill()
                     child.wait(timeout=5)
                 child.stdout.close()
+
+    def test_thread_exit_during_task_open_restarts_the_complete_live_process_census(self):
+        release = threading.Event()
+        ready = threading.Event()
+        identity = []
+
+        def worker():
+            identity.append(threading.get_native_id())
+            ready.set()
+            self.assertTrue(release.wait(5))
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        self.assertTrue(ready.wait(5))
+        original = os.open
+        retired = False
+
+        def retire_before_open(path, flags, *args, **kwargs):
+            nonlocal retired
+            if path == str(identity[0]) and not retired:
+                retired = True
+                release.set()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+            return original(path, flags, *args, **kwargs)
+
+        try:
+            with patch.object(resources.os, "open", side_effect=retire_before_open):
+                sample, children = resources.ProcessMemory(os.getpid()).tree_sample()
+            self.assertTrue(retired)
+            self.assertEqual(sample["task_census_restarts"], 1)
+            self.assertEqual(children, set())
+            self.assertGreater(sample["rss_bytes"], 0)
+        finally:
+            release.set()
+            thread.join(5)
+
+    def test_missing_children_file_on_a_live_thread_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = self.fixture(root, 123)
+            (process / "task/123/children").unlink()
+            owner = resources.ProcessMemory(123, proc_root=root)
+            with self.assertRaisesRegex(ResourceError, "^resource_process_unavailable$"):
+                owner.tree_sample()
+            self.assertEqual(owner.task_census_restarts, 0)
+
+    def test_census_restarts_are_bounded_and_do_not_discard_observed_children_or_identity(self):
+        for mutation in ("churn", "lost_child", "replacement"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.fixture(root, 123)
+                calls = []
+
+                def changed(_directory):
+                    calls.append(1)
+                    if mutation == "churn" or len(calls) == 1:
+                        if mutation == "replacement":
+                            self.fixture(root, 123, start=10)
+                        raise resources._TaskCensusChanged({128} if mutation == "lost_child" else set())
+                    return set()
+
+                owner = resources.ProcessMemory(123, proc_root=root)
+                with patch.object(resources, "thread_children", side_effect=changed):
+                    with self.assertRaises(ResourceError):
+                        owner.tree_sample()
+                self.assertLessEqual(owner.task_census_restarts, 3)
+                if mutation == "churn":
+                    self.assertEqual(len(calls), 3)
+
+    def test_second_task_census_retirement_preserves_first_census_child_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root, 123)
+            calls = iter(({128}, resources._TaskCensusChanged(set()), set(), set()))
+
+            def census(_directory):
+                value = next(calls)
+                if isinstance(value, Exception):
+                    raise value
+                return value
+
+            with patch.object(resources, "thread_children", side_effect=census):
+                with self.assertRaisesRegex(ResourceError, "^resource_process_inventory$"):
+                    resources.ProcessMemory(123, proc_root=root).tree_sample()
+
+    def test_census_restart_preserves_high_water_read_before_the_retiring_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = self.fixture(root, 123)
+            calls = 0
+
+            def census(_directory):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    status = process / "status"
+                    status.write_text(status.read_text().replace("VmHWM:\t19 kB", "VmHWM:\t18 kB"))
+                    raise resources._TaskCensusChanged(set())
+                return set()
+
+            with patch.object(resources, "thread_children", side_effect=census):
+                sample, _children = resources.ProcessMemory(123, proc_root=root).tree_sample()
+            self.assertEqual(sample["rss_peak_bytes"], 19 * 1024)
+            self.assertEqual(sample["reported_rss_peak_bytes"], 18 * 1024)
+            self.assertEqual(sample["task_census_restarts"], 1)
 
 
 if __name__ == "__main__":

@@ -226,6 +226,17 @@ lifetime peaks is a conservative upper bound, not a simultaneous measured peak.
 Transient descendants between censuses still require launch/exit accounting.
 These collector tests do not establish the campaign resource-model check.
 
+An enumerated Linux thread can retire before its child-list file is opened
+while the process remains live. The collector verifies that the task itself
+disappeared, then restarts the complete incarnation and memory census, with at
+most three passes and no wait or sleep. It preserves every child already seen
+and every observed high-water mark across those passes. A vanished process,
+replacement, missing child-list file on a live task, lost child evidence or
+exhausted attempt bound still refuses the observation. Owned-process samples
+disclose cumulative `task_census_restarts` separately from memory byte totals.
+This correction does not establish transient launch/exit coverage or qualify
+an earlier failed preparation.
+
 Package: WP-825, open. Tier: guarantee under accepted ADR-0265 decision 11.
 Behavior: native delivery-count observation and preparatory public-client/process
 collection. Compatibility: existing statistics fields and capability checks;

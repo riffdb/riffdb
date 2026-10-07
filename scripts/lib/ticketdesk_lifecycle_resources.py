@@ -6,6 +6,7 @@ It also includes executable and file mappings, stacks and reserved/free address
 space. It is never presented as allocated live bytes. VmData is not substituted
 for an allocator measurement. A campaign must freeze this basis and its limit.
 """
+import errno
 import os
 import json
 from pathlib import Path
@@ -26,6 +27,23 @@ OWNED_ROLES = frozenset({"controller", "server", "load", "observer", "native_sam
 
 class ResourceError(ValueError):
     """Closed diagnostics contain no process name, identity, path or input text."""
+
+
+class _TaskCensusChanged(Exception):
+    """An enumerated thread retired; retain every child already observed."""
+
+    def __init__(self, children):
+        self.children = frozenset(children)
+
+
+def retired_task(task, name, error, children):
+    if error.errno in (errno.ENOENT, errno.ESRCH):
+        try:
+            os.stat(name, dir_fd=task, follow_symlinks=False)
+        except OSError as later:
+            if later.errno in (errno.ENOENT, errno.ESRCH):
+                raise _TaskCensusChanged(children) from error
+    raise error
 
 
 def require(condition, code):
@@ -121,11 +139,17 @@ def thread_children(directory):
                 require(count <= MAX_OWNED_THREADS, "resource_process_inventory")
                 tid = number(entry.name.encode())
                 require(0 < tid <= 2**31 - 1, "resource_process_inventory")
-                thread = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                 dir_fd=task)
                 try:
-                    descriptor = os.open("children", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                                         dir_fd=thread)
+                    thread = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=task)
+                except OSError as error:
+                    retired_task(task, entry.name, error, children)
+                try:
+                    try:
+                        descriptor = os.open("children", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                             dir_fd=thread)
+                    except OSError as error:
+                        retired_task(task, entry.name, error, children)
                     with os.fdopen(descriptor, "rb") as source:
                         require(stat.S_ISREG(os.fstat(source.fileno()).st_mode),
                                 "resource_process_inventory")
@@ -159,6 +183,7 @@ class ProcessMemory:
         self.root = Path(proc_root)
         self.start = None
         self.peaks = None
+        self.task_census_restarts = 0
 
     def sample(self):
         descriptor = None
@@ -180,12 +205,28 @@ class ProcessMemory:
 
     def tree_sample(self):
         """Bracket memory with task-child and process-incarnation observations."""
+        observed = set()
+        for _attempt in range(3):
+            try:
+                value, children = self._tree_sample_once()
+                require(observed <= children, "resource_process_inventory")
+                value["task_census_restarts"] = self.task_census_restarts
+                return value, children
+            except _TaskCensusChanged as error:
+                observed.update(error.children)
+                self.task_census_restarts += 1
+                require(self.task_census_restarts <= MAX_U64, "resource_process_inventory")
+        raise ResourceError("resource_process_inventory")
+
+    def _tree_sample_once(self):
         directory = None
         try:
             directory = os.open(self.root / str(self.pid),
                                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             before = identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid)
             require(self.start is None or before == self.start, "resource_process_identity")
+            # Pin the incarnation even if a disappearing task aborts this pass.
+            self.start = before
             children = thread_children(directory)
             encoded = read_bounded(directory, "status", MAX_STATUS_BYTES)
             current = memory(encoded, self.pid)
@@ -200,7 +241,12 @@ class ProcessMemory:
             value["reported_allocator_peak_bytes"] = peaks[1]
             peaks = (max(peaks[0], self.peaks[0] if self.peaks else 0), peaks[1])
             value["rss_peak_bytes"] = peaks[0]
-            require(children == thread_children(directory), "resource_process_inventory")
+            self.peaks = peaks
+            try:
+                later_children = thread_children(directory)
+            except _TaskCensusChanged as error:
+                raise _TaskCensusChanged(children | error.children) from error
+            require(children == later_children, "resource_process_inventory")
             require(before == identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid),
                     "resource_process_identity")
             self.start = before
@@ -243,6 +289,7 @@ class OwnedProcessMemory:
             require(children <= known and owner.pid not in children, "resource_process_inventory")
             edges[owner.pid] = children
             values[role] = {name: sample[name] for name in fields}
+            values[role]["task_census_restarts"] = sample["task_census_restarts"]
         # Every non-root belongs to exactly one owner, and all owners connect
         # to the controller. A disconnected cycle must not look like a tree.
         parents = [pid for children in edges.values() for pid in children]
@@ -262,6 +309,7 @@ class OwnedProcessMemory:
                 values[role][name] = max(values[role][name], later[name])
             values[role]["later_reported_rss_peak_bytes"] = later["reported_rss_peak_bytes"]
             values[role]["later_reported_allocator_peak_bytes"] = later["reported_allocator_peak_bytes"]
+            values[role]["task_census_restarts"] = later["task_census_restarts"]
         totals = {name: sum(value[name] for value in values.values()) for name in fields}
         require(all(value <= MAX_U64 for value in totals.values()), "resource_measurement")
         return {"schema": "riffdb.ticketdesk-lifecycle-owned-memory/v1", "elapsed_ns": elapsed_ns,
