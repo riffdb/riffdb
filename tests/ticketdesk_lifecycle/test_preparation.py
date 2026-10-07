@@ -395,15 +395,26 @@ class ChildOwnership(unittest.TestCase):
                     # These child fixtures produce process memory, not native pool diagnostics.
                     # Keep the real process-memory oracle; pool semantics have independent tests.
                     with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
-                            patch.object(preparation, "ProviderLog", autospec=True) as provider_log:
+                            patch.object(preparation, "ProviderLog", autospec=True) as provider_log, \
+                            patch.object(preparation, "SourceBytesLog", autospec=True) as source_log:
                         provider_log.return_value.finish.return_value = {}
+                        source_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
                         sampler = Mock(spec=preparation.NativeProjectionSampler) if native else None
                         if sampler is not None:
-                            sampler.native = Mock(process=children[2])
+                            sampler.native = Mock(process=children[2], samples=Mock(last={"history_incarnation": 7}))
                         preparation.observed_load(root, str(worker), dict(os.environ), 1,
-                            children[1], preparation.queue.Queue(maxsize=1), False, server=children[0], projection=sampler)
+                            children[1], preparation.queue.Queue(maxsize=1), False, server=children[0],
+                            projection=sampler, collect_source_bytes=native)
                         self.assertTrue(provider_log.return_value.poll.called)
                         provider_log.return_value.__exit__.assert_called_once()
+                        if native:
+                            self.assertEqual(source_log.call_args.args[2](), 7)
+                            self.assertTrue(source_log.return_value.poll.called)
+                            source_log.return_value.__exit__.assert_called_once()
+                            summary = json.loads((root / "source-byte-observation.json").read_text())
+                            self.assertFalse(summary["qualifies_complete_resource_model"])
+                        else:
+                            source_log.assert_not_called()
                     records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
                     self.assertEqual(len(records), 1)
                     roles = {"controller", "server", "load", "observer"} | ({"native_sampler"} if native else set())

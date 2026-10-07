@@ -24,6 +24,7 @@ from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
 from lib.ticketdesk_lifecycle_provider_budget import ProviderBudgetError, ProviderLog
+from lib.ticketdesk_lifecycle_source_bytes import SourceBytesLog
 from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess, NativeObservationError
 from lib.ticketdesk_lifecycle_resources import (
     MAX_PREPARATION_SAMPLE_SECONDS, ResourceError, PreparationMemorySamples,
@@ -501,7 +502,7 @@ class NativeProjectionSampler(ProjectionSampler):
 
 
 def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None,
-                  projection=None, server=None):
+                  projection=None, server=None, collect_source_bytes=False):
     """Monitor child liveness and time a real outage against the offered clock."""
     messages = queue.Queue(maxsize=256)
     oracle = ConsumerOutageOracle()
@@ -513,6 +514,7 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
     pause_finished = False
     memory = None
     providers = None
+    source_bytes = None
     deadline = time.monotonic() + duration + 120
     with (root / "load.stdout").open("xb") as output, (root / "load.stderr").open("xb") as errors:
         process = subprocess.Popen([worker, "probe"], env=environment,
@@ -544,6 +546,14 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                             memory.__enter__()
                             providers = ProviderLog(root, duration)
                             providers.__enter__()
+                            if collect_source_bytes:
+                                require(isinstance(projection, NativeProjectionSampler),
+                                        "source_bytes_sampler")
+                                def incarnation():
+                                    sample = projection.native.samples.last
+                                    return None if sample is None else sample["history_incarnation"]
+                                source_bytes = SourceBytesLog(root, duration, incarnation)
+                                source_bytes.__enter__()
                         if projection is not None:
                             projection.start(started)
                 except queue.Empty:
@@ -553,6 +563,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     memory.poll(int((now - started) * 1000000000))
                 if providers is not None:
                     providers.poll(int((now - started) * 1000000000))
+                if source_bytes is not None:
+                    source_bytes.poll(int((now - started) * 1000000000))
                 if projection is not None:
                     projection.poll()
                 if sink is not None and started is not None:
@@ -585,6 +597,9 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             if providers is not None:
                 summary = providers.finish(int((time.monotonic() - started) * 1000000000))
                 write(root, "provider-budget-observation.json", json.dumps(summary, sort_keys=True) + "\n")
+            if source_bytes is not None:
+                summary = source_bytes.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "source-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
             if memory is not None:
                 memory.finish()
             if projection is not None:
@@ -605,6 +620,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     "paused_events": oracle.first["events_checked"], "drained_events": 2048,
                     "observed_samples": oracle.samples, "live_progress_during_pause": True}))
         finally:
+            if source_bytes is not None:
+                source_bytes.__exit__(None, None, None)
             if providers is not None:
                 providers.__exit__(None, None, None)
             if memory is not None:
@@ -1011,11 +1028,13 @@ tls_server_name = "127.0.0.1"
                             sink = SinkOutagePreparation(root, base, custody)
                             observed_load(root, worker, environment, args.population_probe_seconds,
                                           observer, latest, False, sink=sink, projection=projection_sampler,
-                                          server=server)
+                                          server=server,
+                                          collect_source_bytes=args.online_retention and args.native_observations)
                     else:
                         observed_load(root, worker, environment, args.population_probe_seconds,
                                       observer, latest, args.consumer_outage, projection=projection_sampler,
-                                      server=server)
+                                      server=server,
+                                      collect_source_bytes=args.online_retention and args.native_observations)
                 finally:
                     projection_sampler.stop()
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)

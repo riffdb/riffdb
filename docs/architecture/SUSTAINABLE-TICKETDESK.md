@@ -234,6 +234,7 @@ credential or fixture change. Updated handbook: this page and Driver Host.
 Follow-ups: repeat actual nested four-language preparation, then complete
 final-source full CI and required-host validation.
 
+
 ## Actual source-receipt byte observations
 
 The online source owner can report `riffdb-retention-source-bytes-v1` after
@@ -286,6 +287,37 @@ It failed the existing latency gate: p95 was 105.306 ms, above 100 ms; p99 was
 157.170 ms. Archive reconciliation was not reached after that refusal. Its
 source-receipt byte collector was absent. This failed five-second diagnostic on
 the local host is not required-host or campaign performance qualification.
+
+## Source-byte evidence during observed preparation
+
+Preparations with online retention and native observations now collect the
+native `riffdb-retention-source-bytes-v1` records after the load-ready boundary.
+They preserve canonical receipt and key bytes separately, original root and
+uncapped range, row count, collection time and capture age. The independently
+sampled public history incarnation must match. Seed-time lines cannot fill load
+coverage; a partial line stays pending, and replaced or oversized logs refuse.
+
+Every five-minute window requires a complete measurement. Collection refuses
+missing observations and gaps above 95 seconds: the native 60-second capture
+cadence plus strictly less than 30 seconds to complete, with five seconds for
+collector scheduling. This is a new component bound; existing provider and
+projection coverage limits remain intact. Native stale or incomplete scans
+cannot be reported as zero, and unknown diagnostic versions refuse.
+
+This component never fills `eligible_history_bytes` or qualifies the complete
+resource model. Logical command/event/outbox history, physical extent
+eligibility, process lifetime accounting and real collection pressure remain
+required. Collection adds no RPC or sampling thread and reuses the bounded
+diagnostic log reader. It does not change native reclamation or admission.
+
+Package: WP-825, open. Tier: internal. Decisions: component evidence under
+ADR-0265 and D-003, with no new database surface or guarantee. Checks: collector
+regression fails before implementation; all 106 lifecycle checker tests and all
+five scoped acceptance checks pass. A real native record from the source-control
+regression also parses with its original receipt and key counts. Updated handbook:
+this page. Follow-ups: integrated final-source CI, real observed preparation and
+complete campaign accounting. Synthetic checker tests are not host qualification.
+
 
 ## Current handoff
 
