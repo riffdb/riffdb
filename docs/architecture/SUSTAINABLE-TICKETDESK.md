@@ -23,6 +23,32 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Interruption recovery preserves native failure visibility
+
+The generated load worker now recovers only actual transport interruption or
+an uncertain outcome during a declared restart/restore fault. It keeps the
+same immutable input and idempotency key, exact attempt accounting, 240-attempt
+ceiling and 60-second deadline. A generic retry action no longer authorizes the
+harness to retry storage unavailability, capacity overload, projection failure,
+freshness failure or a native deadline. Those failures stop the invocation even
+when another operation has already entered recovery. The refusal retains only
+the closed registered error code, making the native cause diagnosable without
+printing error context.
+
+The predecessor regression accepts `storage_unavailable` during a planned
+interruption and fails the required refusal assertion. All 30 native workload
+tests pass after restricting the classifier, including positive transport and
+typed uncertainty recovery and exact input preservation. Actual public restart
+and restore measurements against this final worker remain required.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: fail the rehearsal on
+native database failures rather than retrying them under a fault marker; Checks:
+predecessor regression fails, 30 workload tests, all-target/all-feature Clippy
+and all nine scoped acceptance checks pass; Compatibility: public
+error registries, application semantics and uncertainty recovery unchanged;
+Updated handbook: this milestone handoff; Hazards and follow-ups: final-source
+CI and actual fault qualification remain required.
+
 ## Complete bounded load observation streams
 
 The private `CampaignLoadStream` reader accepts exactly one native readiness

@@ -28660,6 +28660,13 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Restrict the generated workload's interruption recovery to actual
+      transport unavailability or uncertain outcomes. Generic Retry metadata
+      must not hide native storage, capacity, projection, freshness or deadline
+      failures during a planned fault or an already recovering invocation.
+      Retain only the closed registered refusal code for native diagnostics.
+      Preserve immutable inputs, exact attempts and the existing 60-second,
+      240-attempt ceilings; require actual final-worker fault measurements.
     - Give the actual campaign a separate exact-window bounded load reader with
       one readiness record, 73-288 contiguous windows, reconciled terminal
       totals and EOF. Preserve the 4 KiB line ceiling, native request slots,
