@@ -487,12 +487,16 @@ class PhysicalInventory(unittest.TestCase):
         extent = (b"riffdb-retention-extents-v1\tdeleted=3\trecycled=0\t"
                   b"held_references=0\theld_readers=0\treclaim_us=3\n")
         terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
+        retired = b"".join(
+            f"riffdb-retention-extent-retired-v1\troot=8\tgeneration={generation}\tdeleted=1\trecycled=0\n".encode()
+            for generation in (1, 2, 3))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "server.stderr").write_bytes(unrelated + extent + terminal)
+            (root / "server.stderr").write_bytes(unrelated + retired + extent + terminal)
             observed = InventoryMonitor(root).finish(root)
             self.assertEqual(observed["census"]["deleted"], 3)
             self.assertEqual(observed["physically_removed_generations"], [])
+            self.assertEqual(observed["native_retired_generations"], [1, 2, 3])
 
     def test_shutdown_log_bounds_and_immutable_custody_remain_required(self):
         from lib import ticketdesk_lifecycle_inventory as inventory
@@ -571,7 +575,8 @@ class PhysicalInventory(unittest.TestCase):
             with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
-                (root / "server.stderr").write_bytes(lines + terminal * 2)
+                retired = b"riffdb-retention-extent-retired-v1\troot=8\tgeneration=7\tdeleted=1\trecycled=0\n"
+                (root / "server.stderr").write_bytes(retired + lines + terminal * 2)
                 monitor = InventoryMonitor(root)
                 if accepted:
                     observed = monitor.finish(root)

@@ -83,6 +83,8 @@ impl Cursor {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Observation {
+    // Present only after namespace retirement and parent-directory durability.
+    pub(crate) retired_generation: Option<u64>,
     pub(crate) deleted: u64,
     pub(crate) recycled: u64,
     pub(crate) held_references: u64,
@@ -288,6 +290,13 @@ impl SharedRedb {
         self.before_test_commit(RedbTestOperation::RetentionExtentDirectory)?;
         journal::sync_parent_directory_with_media(media, &path).map_err(journal_io_error)?;
         self.after_test_commit(RedbTestOperation::RetentionExtentDirectory)?;
+        observation.retired_generation = Some(generation);
+        if let Some(generation) = observation.retired_generation {
+            eprintln!(
+                "riffdb-retention-extent-retired-v1\troot={version}\tgeneration={generation}\tdeleted={}\trecycled={}",
+                observation.deleted, observation.recycled
+            );
+        }
         Ok(observation)
     }
 }

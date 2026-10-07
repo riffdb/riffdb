@@ -236,6 +236,32 @@ final-source full CI and required-host validation.
 
 
 
+## Exact physical retirement witnesses
+
+After native eligibility and reader checks, namespace retirement and successful
+parent-directory sync, the native owner emits one closed numeric
+`riffdb-retention-extent-retired-v1` record naming its publication root,
+physical generation and deletion or recycling action. A held or failed pass
+emits no successful retirement witness. The record grants no deletion authority
+and changes neither the existing eligibility checks nor the writer lane.
+
+The preparation collector validates at most 4,096 witnesses in its existing
+bounded, immutable shutdown log. Within that one owned daemon incarnation it
+refuses duplicate generations, rewound publication roots, unknown formats,
+missing witnesses, mismatched deletion/recycling totals, still-present sampled
+files or sampled disappearances of a different generation. Repeated shutdown
+censuses are validated as copies, never added. Exact native identities are
+reported separately from the periodically sampled file inventory, which can
+miss a file's entire lifetime. Neither view establishes eligible allocated
+bytes, complete resource accounting or 24-hour qualification.
+
+Package: WP-825, open. Tier: guarantee, implementation evidence under ADR-0265
+and D-003. Compatibility: no public interface, durable encoding, authorization,
+ordering, dependency, fixture or threshold change. Updated handbook: this page.
+The native barrier-release regression first exposes the missing witness;
+collector hostile tests cover exact counts and generation correlation.
+Final-source acceptance and actual required-host evidence remain required.
+
 ## Actual logical-history byte observations
 
 The native online lane can emit `riffdb-retention-logical-bytes-v1` after

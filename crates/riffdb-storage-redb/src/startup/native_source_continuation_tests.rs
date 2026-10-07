@@ -185,7 +185,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     }
 }
 
-// req: STO-030, STO-031, STO-032, END-008, REC-001
+// req: STO-030, STO-031, STO-032, END-007, END-008, REC-001
 #[test]
 fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_generation_holes() {
     for blocker in ["reader", "scrub", "writer", "source"] {
@@ -340,6 +340,7 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             crate::store::extent_reclamation::reserve_writer_for_test(&ports.shared).unwrap()
         });
         let held = ports.shared.reclaim_one_extent().unwrap();
+        assert!(held.retired_generation.is_none());
         assert_eq!(
             (
                 held.deleted,
@@ -376,6 +377,7 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             epoch = ports.shared.durable_commit_epoch();
         }
         let reclaimed = ports.shared.reclaim_one_extent().unwrap();
+        assert_eq!(reclaimed.retired_generation, Some(footer.generation));
         assert_eq!(
             reclaimed.deleted + reclaimed.recycled,
             1,

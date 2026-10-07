@@ -10,6 +10,9 @@ import threading
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_LOG_LINE_BYTES = 4096
 MAX_LOG_LINES = 262144
+MAX_RETIREMENTS = 4096
+RETIREMENT_FAMILY = b"riffdb-retention-extent-retired-"
+RETIREMENT_PREFIX = RETIREMENT_FAMILY + b"v1\t"
 
 
 class InventoryError(ValueError):
@@ -21,14 +24,34 @@ def require(condition, code):
         raise InventoryError(code)
 
 
-def shutdown_diagnostics(path):
+def parse_retirement(encoded):
+    require(type(encoded) is bytes, "inventory_retirement")
+    if not encoded.startswith(RETIREMENT_FAMILY):
+        return None
+    require(encoded.startswith(RETIREMENT_PREFIX) and len(encoded) <= 256
+            and encoded.endswith(b"\n"), "inventory_retirement")
+    fields = {}
+    for item in encoded[len(RETIREMENT_PREFIX):-1].split(b"\t"):
+        match = re.fullmatch(rb"([a-z_]+)=(0|[1-9][0-9]{0,19})", item)
+        require(match is not None, "inventory_retirement")
+        name, value = match[1].decode("ascii"), int(match[2])
+        require(name not in fields and value <= 2**64 - 1, "inventory_retirement")
+        fields[name] = value
+    require(fields.keys() == {"root", "generation", "deleted", "recycled"}
+            and fields["root"] > 0 and fields["root"] % 2 == 0
+            and fields["generation"] > 0
+            and fields["deleted"] + fields["recycled"] == 1, "inventory_retirement")
+    return fields
+
+
+def shutdown_diagnostics(path, *, with_retirements=False):
     """Stream a closed log, retaining only the two native shutdown record kinds.
 
     Three copies are enough to reject duplication; further copies retain no
     additional memory. Neither log length nor an aggregate deletion count proves
     that this observer saw any particular reclaimed generation.
     """
-    found, terminal = [], []
+    found, terminal, retirements = [], [], []
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as source:
@@ -42,6 +65,10 @@ def shutdown_diagnostics(path):
                 require(total <= MAX_LOG_BYTES and count <= MAX_LOG_LINES
                         and len(line) <= MAX_LOG_LINE_BYTES and line.endswith(b"\n"),
                         "inventory_census_bound")
+                retired = parse_retirement(line)
+                if retired is not None:
+                    require(len(retirements) < MAX_RETIREMENTS, "inventory_retirement_bound")
+                    retirements.append(retired)
                 if line.startswith(b"riffdb-retention-extents-v1\t") and len(found) < 3:
                     found.append(line.rstrip(b"\n"))
                 if line.startswith(b"riffdb-shutdown-release-v1\t") and len(terminal) < 3:
@@ -53,7 +80,7 @@ def shutdown_diagnostics(path):
         require(total == before.st_size and stat.S_ISREG(named.st_mode)
                 and identity(before) == identity(after) == identity(named),
                 "inventory_census_changed")
-        return found, terminal
+        return (found, terminal, retirements) if with_retirements else (found, terminal)
     except OSError as error:
         raise InventoryError("inventory_census_unavailable") from error
 
@@ -137,7 +164,7 @@ class InventoryMonitor:
 
     def finish(self, root):
         path = Path(root) / "server.stderr"
-        found, terminal = shutdown_diagnostics(path)
+        found, terminal, retirements = shutdown_diagnostics(path, with_retirements=True)
         # The graph and process shutdown boundaries both emit the same frozen
         # retention census. Validate both copies; never add their counters.
         require(1 <= len(found) <= 2 and len(found[0]) <= 256
@@ -148,6 +175,20 @@ class InventoryMonitor:
             require(name not in census and re.fullmatch(r"0|[1-9][0-9]{0,19}", value), "inventory_census")
             census[name] = int(value)
         observation = self.inventory.observation(census)
+        generations = set()
+        prior_root = 0
+        for retired in retirements:
+            require(retired["generation"] not in generations
+                    and retired["root"] >= prior_root, "inventory_retirement_identity")
+            generations.add(retired["generation"])
+            prior_root = retired["root"]
+        require(self.inventory.removed <= generations
+                and self.inventory.present.isdisjoint(generations)
+                and all(sum(retired[name] for retired in retirements) == census[name]
+                        for name in ("deleted", "recycled")), "inventory_retirement_reconciliation")
+        observation.update(native_retired_generations=sorted(generations),
+                           native_retirement_records=retirements,
+                           qualifies_complete_resource_model=False)
         path = Path(root) / "extent-observation.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
