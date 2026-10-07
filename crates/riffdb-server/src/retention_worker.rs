@@ -363,7 +363,12 @@ impl LaneControl {
     }
 
     /// Waits for stop, an explicit wake, or `timeout`; true when stopping.
+    #[cfg(test)]
     fn pause(&self, timeout: Duration) -> bool {
+        self.pause_observation_slice(timeout).0
+    }
+
+    fn pause_observation_slice(&self, timeout: Duration) -> (bool, bool) {
         let signals = self
             .signals
             .lock()
@@ -372,8 +377,9 @@ impl LaneControl {
             .changed
             .wait_timeout_while(signals, timeout, |signals| !signals.stop && !signals.wake)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let woke = signals.wake;
         signals.wake = false;
-        signals.stop
+        (signals.stop, woke)
     }
 }
 
@@ -591,6 +597,41 @@ fn wait_with_source_validation(
     }
 }
 
+/// Continue only a captured physical census during the mandatory writer rest.
+/// Read-only pages never authorize a new writer turn or shorten its rest.
+fn pause_with_physical_observation(
+    duration: Duration,
+    mut pending: bool,
+    mut elapsed: impl FnMut() -> Duration,
+    mut wait: impl FnMut(Duration) -> (bool, bool),
+    mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    if duration.is_zero() {
+        return Ok(wait(duration).0);
+    }
+    loop {
+        let remaining = duration.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let slice = if pending {
+            remaining.min(RETENTION_LANE_CHECKPOINT_SLICE)
+        } else {
+            remaining
+        };
+        let (stopped, woke) = wait(slice);
+        if stopped || woke {
+            return Ok(stopped);
+        }
+        if elapsed() >= duration {
+            return Ok(false);
+        }
+        if pending {
+            pending = advance()?;
+        }
+    }
+}
+
 fn run_lane(
     lane: &RedbOnlineRetentionLane,
     retain: NonZeroU64,
@@ -713,6 +754,17 @@ fn run_lane(
         // Rest in proportion to the time the attempt held the writer gate,
         // never less than the outcome's own recheck interval.
         let rest = gate_residence_rest(gate_held);
+        let physical_pending = match lane.physical_observation_pending() {
+            Ok(pending) => pending,
+            Err(_) if control.stop_requested() => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Err(error) => {
+                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                return;
+            }
+        };
         if await_checkpoint && rest.is_zero() {
             // Step right after the next journal checkpoint, while its suffix
             // is nearly empty; look for shutdown between short waits.
@@ -720,13 +772,13 @@ fn run_lane(
             match wait_with_source_validation(
                 control,
                 checkpoints_seen,
-                receipt_validation_pending,
+                receipt_validation_pending || physical_pending,
                 |slice| lane.wait_for_journal_checkpoint(checkpoints_seen, slice),
                 || waiting.elapsed(),
                 || {
                     let phases = lane.advance_source_validation_off_gate()?;
                     status.note_phases(&phases);
-                    Ok(phases.receipt_validation_pending)
+                    Ok(phases.receipt_validation_pending || lane.physical_observation_pending()?)
                 },
             ) {
                 Ok(checkpoint) => after_checkpoint = checkpoint,
@@ -741,9 +793,28 @@ fn run_lane(
             }
             continue;
         }
-        if control.pause(pause.max(rest)) {
-            status.set(RetentionLaneState::Cancelled);
-            return;
+        let waiting = std::time::Instant::now();
+        let paused = pause_with_physical_observation(
+            pause.max(rest),
+            physical_pending,
+            || waiting.elapsed(),
+            |slice| control.pause_observation_slice(slice),
+            || lane.advance_physical_observation_off_gate(),
+        );
+        match paused {
+            Ok(true) => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Ok(false) => {}
+            Err(_) if control.stop_requested() => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Err(error) => {
+                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                return;
+            }
         }
     }
 }

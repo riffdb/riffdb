@@ -265,6 +265,17 @@ pub(crate) struct Observer {
 }
 
 impl Observer {
+    pub(crate) fn pending(&self) -> bool {
+        self.probe.is_some()
+    }
+
+    pub(crate) fn continue_captured(&mut self, shared: &Arc<SharedRedb>) -> bool {
+        if self.pending() {
+            self.tick(shared);
+        }
+        self.pending()
+    }
+
     pub(crate) fn retire(&mut self) {
         self.probe = None;
     }

@@ -293,6 +293,46 @@ fn ordinary_retention_steps_observe_physical_bytes_without_a_checkpoint_wait() {
     );
 }
 
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn captured_physical_pages_finish_off_gate_without_writer_turns_or_new_captures() {
+    let (scope, mut ports) = fixture();
+    complete_first_event(&mut ports);
+    assert!(matches!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced { through: 1, .. }
+    ));
+    ports.shared.join_journal_sealer();
+    // Actual media-directory pagination above the one-second-per-page
+    // policy's 30-page lifetime, without synthetic measurement records.
+    for index in 0..2048 {
+        std::fs::write(scope.join(&format!("unrelated-{index}")), []).unwrap();
+    }
+    let lane = ports.online_retention_lane();
+    assert!(!lane.physical_observation_pending().unwrap());
+    assert!(!lane.advance_physical_observation_off_gate().unwrap());
+    lane.step(NonZeroU64::new(16_384).unwrap(), NonZeroU64::MIN)
+        .unwrap();
+    assert!(lane.physical_observation_pending().unwrap());
+    let epoch = ports.shared.durable_commit_epoch();
+    let mut pages = 0;
+    while lane.physical_observation_pending().unwrap() {
+        assert!(
+            pages < 34,
+            "the complete bounded directory must reach exact end"
+        );
+        lane.advance_physical_observation_off_gate().unwrap();
+        pages += 1;
+    }
+    assert!(pages >= 31);
+    assert_eq!(lane.physical_observations_for_test(), 1);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert!(!lane.advance_physical_observation_off_gate().unwrap());
+    assert_eq!(lane.physical_observations_for_test(), 1);
+}
+
 // req: REC-005, REC-006, REC-007, STO-030, STO-032, END-008
 #[test]
 fn pruned_v2_startup_uses_registry_completion_without_population_walk() {

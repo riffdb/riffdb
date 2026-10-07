@@ -561,3 +561,144 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         assert_eq!(status.state(), state, "terminal states never transition");
     }
 }
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn writer_rest_continues_captured_physical_pages_without_starting_another_writer() {
+    use std::cell::Cell;
+    // An idle lane's old one-second pause cannot finish a 31-page census
+    // inside its unchanged 30-second lifetime. Exercise the actual worker
+    // wait policy with a deterministic clock, without wall-clock sleeps.
+    let clock = Cell::new(Duration::ZERO);
+    let pages = Cell::new(0);
+    let waits = Cell::new(0);
+    let rest = Duration::from_secs(19);
+    assert!(
+        !pause_with_physical_observation(
+            rest,
+            true,
+            || clock.get(),
+            |slice| {
+                waits.set(waits.get() + 1);
+                clock.set(clock.get() + slice);
+                (false, false)
+            },
+            || {
+                pages.set(pages.get() + 1);
+                // Charge actual page execution time to the same rest clock.
+                clock.set(clock.get() + Duration::from_millis(10));
+                Ok(pages.get() < 31)
+            },
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        pages.get(),
+        31,
+        "captured pages must not wait for writer turns"
+    );
+    assert_eq!(
+        clock.get(),
+        rest,
+        "read-only work cannot shorten writer rest"
+    );
+    assert_eq!(
+        waits.get(),
+        32,
+        "exact end stops page work and sleeps the remainder"
+    );
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
+    for pending in [false, true] {
+        for (stopped, woke) in [(true, false), (false, true)] {
+            assert_eq!(
+                pause_with_physical_observation(
+                    Duration::from_secs(19),
+                    pending,
+                    || Duration::ZERO,
+                    |_| (stopped, woke),
+                    || panic!("stop or explicit wake must precede physical page work"),
+                )
+                .unwrap(),
+                stopped
+            );
+        }
+    }
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut waits = 0;
+    assert!(
+        !pause_with_physical_observation(
+            RETENTION_LANE_RECHECK,
+            false,
+            || clock.get(),
+            |slice| {
+                assert_eq!(slice, RETENTION_LANE_RECHECK);
+                clock.set(slice);
+                waits += 1;
+                (false, false)
+            },
+            || panic!("idle wait must not capture a new census"),
+        )
+        .unwrap()
+    );
+    assert_eq!(waits, 1);
+    let error = pause_with_physical_observation(
+        RETENTION_LANE_RECHECK,
+        true,
+        || Duration::ZERO,
+        |_| (false, false),
+        || {
+            Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            ))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn physical_census_rest_charges_page_time_and_does_not_work_past_the_rest_deadline() {
+    let clock = std::cell::Cell::new(Duration::ZERO);
+    let mut pages = 0;
+    assert!(
+        !pause_with_physical_observation(
+            Duration::from_millis(150),
+            true,
+            || clock.get(),
+            |slice| {
+                clock.set(clock.get() + slice);
+                (false, false)
+            },
+            || {
+                pages += 1;
+                clock.set(clock.get() + Duration::from_millis(200));
+                Ok(true)
+            },
+        )
+        .unwrap()
+    );
+    assert_eq!(pages, 1);
+    assert_eq!(clock.get(), Duration::from_millis(300));
+    assert!(
+        pause_with_physical_observation(
+            Duration::ZERO,
+            true,
+            || panic!("zero rest must not inspect the clock"),
+            |slice| {
+                assert!(slice.is_zero());
+                (true, false)
+            },
+            || panic!("zero rest must not advance a page"),
+        )
+        .unwrap()
+    );
+}

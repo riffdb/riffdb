@@ -128,6 +128,14 @@ def main():
                 and records[0]["eligible_allocated_bytes"] == 0
                 and records[0]["protected_allocated_bytes"] == 0,
                 "native_ordinary_physical_byte_meaning")
+        records = verify(root, 4,
+            "captured_physical_pages_finish_off_gate_without_writer_turns_or_new_captures",
+            physical, 1)
+        require(records[0]["sealed_extents"] == 0
+                and records[0]["pages"] >= 32
+                and records[0]["eligible_allocated_bytes"] == 0
+                and records[0]["protected_allocated_bytes"] == 0,
+                "native_rest_physical_byte_meaning")
     except ValueError as error:
         code = str(error)
         if re.fullmatch(r"[a-z_]{1,64}", code) is None:

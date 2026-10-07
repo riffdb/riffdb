@@ -403,6 +403,18 @@ checkpoint waits, before writer admission. An idle or progressing lane therefore
 does not depend on a checkpoint stall to begin or continue its census. Both
 paths share the same observer, capture cadence, page limit and retirement owner.
 
+A populated host preparation exposed a scheduling defect: one physical page per
+ordinary turn could expire the census while the worker slept between turns.
+The worker now continues already captured read-only pages during its idle and
+writer-residence rest, using the existing 100-ms cancellation slice. Page time
+counts toward the same rest clock; completion stops page work and waits the
+remaining rest. Stop and explicit wake retain their existing behavior. This
+continuation cannot capture a new census or start a writer turn. Checkpoint
+waits continue physical pages even when source-receipt validation is complete.
+The 30-second capture lifetime, 60-second capture cadence, complete-prefix
+validation and all file/reference checks remain unchanged. The failed host
+preparation remains failed and cannot qualify a later source revision.
+
 Completion, expiry, refusal and joined worker retirement release the diagnostic
 pin, engine snapshot and directory capability. `riffdb-retention-physical-bytes-v1`
 reports the original root, incarnation, watermark, resume, cutoff, complete

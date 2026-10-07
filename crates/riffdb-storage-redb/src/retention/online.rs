@@ -183,6 +183,28 @@ impl RedbOnlineRetentionLane {
         self.physical_bytes.lock().unwrap().completed_for_test
     }
 
+    /// Whether the first-party worker owns an incomplete physical census.
+    /// This is nondurable observation state and confers no writer authority.
+    #[doc(hidden)]
+    pub fn physical_observation_pending(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .pending())
+    }
+
+    /// Advance one existing physical census page during worker rest. Never
+    /// capture a new census here, shorten writer rest, or authorize retirement.
+    #[doc(hidden)]
+    pub fn advance_physical_observation_off_gate(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .continue_captured(&self.shared))
+    }
+
     /// First-party worker retirement cancels pending source requests under the
     /// gate lock, leaving ordinary writers and granted atomic turns intact.
     #[doc(hidden)]
