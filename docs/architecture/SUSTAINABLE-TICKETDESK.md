@@ -23,6 +23,37 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Proposed journaled source-reclamation boundary
+
+The preparation on `e6a4005b` still fails `source_bytes_sample_gap`: no fresh
+source-byte observation appears under load, while logical observations remain
+fresh. The frozen native validation passes all 1,272 storage tests and all
+thirteen scoped checks. Those checks do not qualify the failed preparation.
+Full CI remains pending; the queued populated restore is cancelled unlaunched.
+
+A separate deterministic regression performs an actual independent checkpoint,
+then publishes 257 later audit transitions and attempts a licensed bounded
+source cut. The current drained barrier refuses every attempt. The deliberately
+failing regression is preserved privately for the proposed implementation;
+no test exemption or altered native bound is applied.
+
+ADR-0278 (`adr/0278-journaled-bounded-source-reclamation.md`) is **proposed**.
+It would validate the acknowledged composite source and journal a closed bounded
+source cut through the existing ordered writer. Its new V5 frame and writer-4
+identity require a reviewed backup-bound offline upgrade. Complete source
+validation, current holds, independent checkpoint licensing, source cut limits,
+writer rest, physical reference protection and public interface safety remain
+required. This behavior is unavailable until exact human acceptance and its
+implementation checks pass. No 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier guarantee proposal; Behavior: none added;
+Checks: actual failed preparation, deterministic oversized-tail regression and
+proposal governance checks; Compatibility: the running candidate remains
+writer 3, with no proposed frame emitted; Updated handbook: this milestone page;
+Hazards and follow-ups: obtain exact ADR review, implement and test the closed
+journal path and compatibility edge, then repeat final-source CI, unchanged
+preparation, populated restore and the complete short campaign.
+
 ## Continue installed source checkpoints before admission
 
 The unchanged preparation on `cde795b5` fails `source_bytes_sample_gap`.
