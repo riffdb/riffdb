@@ -522,7 +522,12 @@ mod tests {
         assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
         assert_eq!(initial.admission_yields(), [0, 0, 1, 0, 0]);
         assert!(!initial.receipt_validation_pending());
-        assert!(ports.shared.source_checkpoint_publication_pending().unwrap());
+        assert!(
+            ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap()
+        );
         assert_eq!(
             validation_drain_yield(&ports.shared).unwrap(),
             Some(AdmissionYield::CheckpointPublication)
@@ -541,7 +546,12 @@ mod tests {
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         release.send(()).unwrap();
         ports.shared.join_journal_sealer();
-        assert!(!ports.shared.source_checkpoint_publication_pending().unwrap());
+        assert!(
+            !ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap()
+        );
         assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
         assert_eq!(initial.admission_yields(), [0; 5]);
         assert!(initial.receipt_validation_pending());
