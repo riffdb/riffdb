@@ -8,10 +8,35 @@ pub(super) fn inspect_journal_with_media(
     database_id: DatabaseId,
     recover: bool,
 ) -> Result<(), JournalIoError> {
+    let snapshot = database.begin_read().map_err(|_| JournalIoError::Io)?;
+    if crate::changelog_v3_journal::has_recovery_roots(&snapshot)
+        .map_err(|_| JournalIoError::Corrupt)?
+    {
+        drop(snapshot);
+        return super::recovery_stream::inspect(media, database, path, database_id, recover);
+    }
+    drop(snapshot);
+    let retained_limit = super::recovery_memory::legacy_retained_limit()?;
+    let mut retained_bytes = 0_usize;
     let mut frames = Vec::new();
     let mut locators = Vec::new();
     let Some((header, tail)) =
         scan_located_journal_with_media(media, path, database_id, |frame, locator| {
+            if crate::changelog_v3_journal::has_receipt_source(frame) {
+                return Err(JournalIoError::Corrupt);
+            }
+            let bytes = super::recovery_memory::frame_owned_bound(frame)?
+                .checked_add(
+                    2 * std::mem::size_of::<JournalFrame>()
+                        + 3 * std::mem::size_of::<Option<StubLocator>>(),
+                )
+                .ok_or(JournalIoError::Capacity)?;
+            // Reserve descriptor growth before either push; boxed payloads
+            // themselves are cloned once and have exact capacities.
+            retained_bytes = retained_bytes
+                .checked_add(bytes)
+                .filter(|bytes| *bytes <= retained_limit)
+                .ok_or(JournalIoError::Capacity)?;
             frames.push(frame.clone());
             locators.push(locator);
             Ok(())
@@ -25,59 +50,14 @@ pub(super) fn inspect_journal_with_media(
         header.checkpoint_administration_sequence(),
     );
     let tail_frontier = (tail.last_sequence, tail.last_administration_sequence);
-    let snapshot = database.begin_read().map_err(|_| JournalIoError::Io)?;
-    let v3 = crate::changelog_v3_journal::has_recovery_roots(&snapshot)
-        .map_err(|_| JournalIoError::Corrupt)?
-        || frames
-            .iter()
-            .any(crate::changelog_v3_journal::has_receipt_source);
-    if v3 {
-        let plan = crate::changelog_v3_journal::plan_recovery(
-            &snapshot,
-            &frames,
-            riffdb_types::DualFrontier::new(redb_frontier.0, redb_frontier.1),
-        )
-        .map_err(|_| JournalIoError::Corrupt)?;
-        drop(snapshot);
-        if frames.is_empty() && !tail.incomplete_tail && redb_frontier == checkpoint_frontier {
-            return Ok(());
-        }
-        if frames.is_empty()
-            && (checkpoint_frontier.0 > redb_frontier.0 || checkpoint_frontier.1 > redb_frontier.1)
-        {
-            return Err(JournalIoError::Corrupt);
-        }
-        if !recover {
-            return if plan.replay_from == frames.len() && !tail.incomplete_tail {
-                Ok(())
-            } else {
-                Err(JournalIoError::Io)
-            };
-        }
-        if plan.replay_from < frames.len() {
-            replay_frames(
-                database,
-                &frames[plan.replay_from..],
-                &locators[plan.replay_from..],
-            )?;
-        }
-        #[cfg(test)]
-        crate::changelog_v3_journal::recovery_crash_edge("before-reclaim");
-        advance_journal_anchor_with_media(
-            media,
-            path,
-            &JournalFileHeader::with_frontiers(
-                database_id,
-                plan.covered.application(),
-                plan.covered.administration(),
-                tail.last_hash,
-            ),
-        )?;
-        #[cfg(test)]
-        crate::changelog_v3_journal::recovery_crash_edge("reclaimed");
-        return Ok(());
+    // An inactive or partial root cannot borrow the bounded V3 recovery
+    // owner. The legacy path admits no receipt allocator or source cut.
+    if frames
+        .iter()
+        .any(crate::changelog_v3_journal::has_receipt_source)
+    {
+        return Err(JournalIoError::Corrupt);
     }
-    drop(snapshot);
     // An exact empty recovered extent needs no mutation. Preserving its
     // selected canonical header is required by ADR-0157 clean-close binding;
     // recycling an already-empty exact extent would manufacture a new header
@@ -118,7 +98,7 @@ pub(super) fn inspect_journal_with_media(
             replay_frames(database, &frames, &locators)?;
         }
     } else if redb_frontier == tail_frontier && !frames.is_empty() {
-        verify_replayed_tail(database, &frames)?;
+        super::recovery_memory::verify_legacy_tail(database, frames)?;
     } else {
         return Err(JournalIoError::Corrupt);
     }

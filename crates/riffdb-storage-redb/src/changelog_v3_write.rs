@@ -360,7 +360,7 @@ impl CapturedImmediateWrite {
 /// and apply the exact source first, and abort the transaction on any failure.
 pub(crate) struct PreparedHistoryAdvance {
     successor: ChangelogHistoryStateV3,
-    encoded: Vec<u8>,
+    encoded: Option<Vec<u8>>,
     encoded_history: Vec<u8>,
     encoded_allocator: Vec<u8>,
 }
@@ -375,6 +375,15 @@ impl PreparedHistoryAdvance {
         Self::from_captured_predecessor(transaction, history, receipt)
     }
 
+    pub(crate) fn prepare_stub(
+        transaction: &WriteTransaction,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        let history = read_checkpoint_roots_for_write(transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+        Self::from_predecessor(transaction, history, receipt, false)
+    }
+
     // Private to this owner. CapturedImmediateWrite validated these roots before
     // its first tracked mutation and cannot change any control row. Application
     // and administration metadata may now contain their tracked post-images;
@@ -383,6 +392,15 @@ impl PreparedHistoryAdvance {
         transaction: &WriteTransaction,
         history: ChangelogHistoryStateV3,
         receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        Self::from_predecessor(transaction, history, receipt, true)
+    }
+
+    fn from_predecessor(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        receipt: &AuthoritativeTransactionV3,
+        encode_receipt: bool,
     ) -> Result<Self, StorageError> {
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
@@ -415,7 +433,9 @@ impl PreparedHistoryAdvance {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let successor = history.advance(receipt).map_err(value_error)?;
-        let encoded = receipt.encode().map_err(value_error)?;
+        let encoded = encode_receipt
+            .then(|| receipt.encode().map_err(value_error))
+            .transpose()?;
         let encoded_history = encode_changelog_history_state_v3(successor)
             .map_err(codec_error)?
             .into_bytes();
@@ -468,7 +488,8 @@ impl PreparedHistoryAdvance {
                     .get()
                     .to_be_bytes()
                     .as_slice(),
-                stub.unwrap_or(self.encoded.as_slice()),
+                stub.or(self.encoded.as_deref())
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
             )
             .map_err(precommit_storage_error)?;
         #[cfg(test)]

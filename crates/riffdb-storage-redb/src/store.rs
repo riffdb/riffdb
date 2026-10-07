@@ -1742,6 +1742,7 @@ struct JournalRuntime {
 
 #[derive(Clone)]
 struct ValidatedCheckpointFrame {
+    source_reclamation: Option<Arc<crate::journal::SourceReclamationProof>>,
     changelog_binding: Option<riffdb_storage_api::AuthoritativeTransactionBindingV3>,
     database_id: DatabaseId,
     predecessor_sequence: Option<CommitSequence>,
@@ -1827,6 +1828,7 @@ struct RetentionPrunePublication {
 struct ServiceAuditPublication {
     audit_count: usize,
     prune: Option<RetentionPrunePublication>,
+    source_reclamation: bool,
     successor: Arc<CheckpointRoot>,
     transition_count: usize,
     encoded_bytes: usize,
@@ -1943,6 +1945,7 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
     covered_sequence: Option<CommitSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
     publication_ticket: PublicationTicket,
+    source_successor: Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)>,
     completed: bool,
 }
 
@@ -6955,6 +6958,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    source_reclamation: None,
                     segment_summaries: Arc::from(segment_summaries),
                     extent_generation: runtime.lane.generation(),
                     placement,
@@ -7115,7 +7119,11 @@ impl SharedRedb {
         if online_source {
             changelog_source_control::crash_edge("source-drain-staged");
         }
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("checkpoint-staged");
         self.commit_with_source_footprint(transaction, footprint)?;
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         if online_source {
             changelog_source_control::crash_edge("source-drain-committed");
         }
@@ -7501,6 +7509,9 @@ impl SharedRedb {
                     through: prune.through,
                     segments: prune.segments,
                 });
+        }
+        if publication.source_reclamation {
+            changelog_source_control::crash_edge("reclamation-before-publication");
         }
         let published_snapshot = Arc::clone(&publication.composite_successor);
         if let Err(error) = self.publish_composite_successor(
@@ -8520,6 +8531,12 @@ impl riffdb_storage_api::DeferredServiceAuditFence for RedbSubmittedServiceAudit
 }
 
 impl RedbSubmittedServiceAuditFence {
+    pub(crate) fn source_successor(
+        &self,
+    ) -> Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)> {
+        self.source_successor.clone()
+    }
+
     fn publish_fenced(
         &mut self,
         fenced: crate::journal::JournalFence,

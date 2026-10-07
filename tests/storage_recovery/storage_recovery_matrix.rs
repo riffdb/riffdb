@@ -6119,6 +6119,7 @@ fn retention_multi_prune_resumes_tombstone_chain() {
     );
 }
 
+// req: REC-005, REC-006, STO-032
 #[test]
 fn retention_prune_refuses_when_commit_rows_missing_in_range() {
     // Pre-delete verification: a commit row already missing inside the
@@ -6127,9 +6128,16 @@ fn retention_prune_refuses_when_commit_rows_missing_in_range() {
     let path = TestDatabasePath::new("retention-predelete-verification");
     let _ = prepare_committed_command_database(&path.0);
     retention_deliver_outbox_status_raw(&path.0, 1);
-    retention_delete_raw_row(&path.0, "commits", &1u64.to_be_bytes());
     let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
     maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    retention_delete_raw_row(&path.0, "commits", &1u64.to_be_bytes());
+    let hold_error = maintenance
+        .add_hold("after-corruption", 5, "must refuse")
+        .expect_err("offline preparation must reject corruption before another hold write");
+    assert_eq!(
+        hold_error.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
     let err = maintenance
         .prune_to(1)
         .expect_err("prune over a missing commit row must refuse");

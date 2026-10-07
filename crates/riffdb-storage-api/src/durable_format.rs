@@ -11,9 +11,11 @@ use sha2::{Digest, Sha256};
 use crate::{BackupManifestVersion, StorageFormatVersion};
 
 /// Current logical writer-journal frame format.
-/// Version 4 adds fenced retention-prune transitions (ADR-0263 Amendment 5).
-/// Versions 2 and 3 remain readable.
-pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 4;
+/// Version 5 adds closed source reclamation (ADR-0278).
+/// Versions 2, 3 and 4 remain readable.
+pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 5;
+/// Fenced retention-prune frame format, still read during recovery.
+pub const DURABILITY_JOURNAL_FRAME_VERSION_V4: u16 = 4;
 /// Changelog-bound logical frame format, still read during recovery.
 pub const DURABILITY_JOURNAL_FRAME_VERSION_V3: u16 = 3;
 /// Previous logical frame format, still read during recovery.
@@ -58,6 +60,7 @@ const WRITABLE_REGISTRY_VERSIONS: &[u32] = &[DURABLE_RECORD_REGISTRY_VERSION];
 const READABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[
     DURABILITY_JOURNAL_FRAME_VERSION_V2,
     DURABILITY_JOURNAL_FRAME_VERSION_V3,
+    DURABILITY_JOURNAL_FRAME_VERSION_V4,
     DURABILITY_JOURNAL_FRAME_VERSION,
 ];
 const WRITABLE_JOURNAL_FRAME_VERSIONS: &[u16] = &[DURABILITY_JOURNAL_FRAME_VERSION];
@@ -409,7 +412,7 @@ impl DurableFormatReleaseEdge {
 }
 
 const CURRENT_EPOCH: AlphaFormatEpoch = AlphaFormatEpoch(NonZeroU32::MIN);
-const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(3);
+const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(4);
 // Exact retained writer-1/2 registry and writer-2 corpus (ADR-0276).
 const PRE_COMPLETION_REGISTRY: [u8; 32] = [
     0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
@@ -465,8 +468,28 @@ const PRE_COMPLETION_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
     target: CURRENT_IDENTITY,
     action: PRE_PRUNE_EDGE.action,
 };
-const RELEASE_EDGES: &[DurableFormatReleaseEdge] =
-    &[PRE_MANIFEST_EDGE, PRE_PRUNE_EDGE, PRE_COMPLETION_EDGE];
+// Exact frozen writer-3 predecessor (ADR-0278).
+const PRE_SOURCE_CUT_REGISTRY: [u8; 32] = [
+    0x2b, 0xca, 0x7f, 0x16, 0x9f, 0xdc, 0xe9, 0x7a, 0xf9, 0xf3, 0x2f, 0x62, 0xb3, 0x21, 0x25, 0x9e,
+    0xdf, 0x40, 0x74, 0x36, 0x36, 0xe3, 0xd1, 0xbf, 0xbd, 0x60, 0xd8, 0x84, 0x99, 0xe6, 0xfa, 0x6c,
+];
+const PRE_SOURCE_CUT_FIXTURE_DIGEST: [u8; 32] = [
+    0x70, 0xa0, 0x1a, 0x3e, 0xd4, 0xf6, 0x19, 0xd7, 0x59, 0xa0, 0x27, 0x18, 0x9a, 0x65, 0xec, 0xba,
+    0x3c, 0xdd, 0x58, 0x04, 0x02, 0x2c, 0x03, 0x5f, 0x2d, 0xf9, 0x46, 0xed, 0xec, 0x6b, 0xf3, 0xdd,
+];
+const PRE_SOURCE_CUT_EDGE: DurableFormatReleaseEdge = DurableFormatReleaseEdge {
+    source_release: "0.1.0-registry-completion-v3",
+    target_release: CURRENT_RELEASE,
+    source: DurableFormatIdentity::new(CURRENT_EPOCH, DurableFormatWriter(3)),
+    target: CURRENT_IDENTITY,
+    action: PRE_PRUNE_EDGE.action,
+};
+const RELEASE_EDGES: &[DurableFormatReleaseEdge] = &[
+    PRE_MANIFEST_EDGE,
+    PRE_PRUNE_EDGE,
+    PRE_COMPLETION_EDGE,
+    PRE_SOURCE_CUT_EDGE,
+];
 
 /// Exact generated durable-format statement carried by one release artifact.
 #[derive(Clone, Copy, Debug)]
@@ -737,6 +760,12 @@ fn preflight_marker_for_manifest(
     {
         return Err(DurableFormatMarkerError::ManifestMismatch);
     }
+    if marker.identity() == PRE_SOURCE_CUT_EDGE.source
+        && (marker.registry_digest().as_bytes() != &PRE_SOURCE_CUT_REGISTRY
+            || marker.compatibility_fixture_digest().as_bytes() != &PRE_SOURCE_CUT_FIXTURE_DIGEST)
+    {
+        return Err(DurableFormatMarkerError::ManifestMismatch);
+    }
     if action == DurableFormatAction::OpenCurrent
         && (marker.registry_digest() != manifest.registry_digest()
             || marker.compatibility_fixture_digest() != manifest.compatibility_fixture_digest())
@@ -864,7 +893,11 @@ mod predecessor_tests {
             preflight_marker_for_manifest(old_marker, predecessor),
             Ok(DurableFormatAction::OpenCurrent)
         );
-        let successor = current_durable_format_marker();
+        let successor = DurableFormatMarker::new(
+            DurableFormatIdentity::new(CURRENT_EPOCH, DurableFormatWriter(3)),
+            SchemaHash::from_bytes(PRE_SOURCE_CUT_REGISTRY),
+            CompatibilityFixtureDigest::from_bytes(PRE_SOURCE_CUT_FIXTURE_DIGEST),
+        );
         assert_eq!(
             preflight_marker_for_manifest(successor, predecessor),
             Err(DurableFormatMarkerError::ManifestMismatch)
@@ -888,5 +921,74 @@ mod predecessor_tests {
             ),
             Err(DurableFormatMarkerError::ManifestMismatch)
         );
+    }
+    // req: AFC-001, AFC-002, STO-030, STO-032, REC-001
+    #[test]
+    fn frozen_writer_three_preopen_policy_refuses_writer_four_without_source_access() {
+        const IDENTITY: DurableFormatIdentity =
+            DurableFormatIdentity::new(CURRENT_EPOCH, DurableFormatWriter(3));
+        const EDGES: &[DurableFormatReleaseEdge] = &[
+            DurableFormatReleaseEdge {
+                target: IDENTITY,
+                ..PRE_MANIFEST_EDGE
+            },
+            DurableFormatReleaseEdge {
+                target: IDENTITY,
+                ..PRE_PRUNE_EDGE
+            },
+            DurableFormatReleaseEdge {
+                target: IDENTITY,
+                ..PRE_COMPLETION_EDGE
+            },
+        ];
+        let predecessor = DurableFormatManifest {
+            identity: IDENTITY,
+            release: CURRENT_RELEASE,
+            release_edges: EDGES,
+            registry_digest: SchemaHash::from_bytes(PRE_SOURCE_CUT_REGISTRY),
+            compatibility_fixture_digest: CompatibilityFixtureDigest::from_bytes(
+                PRE_SOURCE_CUT_FIXTURE_DIGEST,
+            ),
+        };
+        let marker = DurableFormatMarker::new(
+            IDENTITY,
+            predecessor.registry_digest(),
+            predecessor.compatibility_fixture_digest(),
+        );
+        assert_eq!(
+            preflight_marker_for_manifest(marker, predecessor),
+            Ok(DurableFormatAction::OpenCurrent)
+        );
+        assert!(matches!(
+            preflight_durable_format_marker(marker),
+            Ok(DurableFormatAction::OfflineInPlace { .. })
+        ));
+        assert_eq!(
+            preflight_marker_for_manifest(current_durable_format_marker(), predecessor),
+            Err(DurableFormatMarkerError::ManifestMismatch)
+        );
+        assert_eq!(
+            preflight_for_manifest(CURRENT_IDENTITY, predecessor)
+                .unwrap_err()
+                .next_command(),
+            SafeFormatCommand::UseMatchingBinary
+        );
+        for (registry, fixtures) in [
+            (
+                SchemaHash::from_bytes([1; 32]),
+                marker.compatibility_fixture_digest(),
+            ),
+            (
+                marker.registry_digest(),
+                CompatibilityFixtureDigest::from_bytes([1; 32]),
+            ),
+        ] {
+            assert_eq!(
+                preflight_durable_format_marker(DurableFormatMarker::new(
+                    IDENTITY, registry, fixtures
+                )),
+                Err(DurableFormatMarkerError::ManifestMismatch)
+            );
+        }
     }
 }

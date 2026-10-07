@@ -278,6 +278,7 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
 /// physical AUDIT row at or beyond the allocator (a sequence the next
 /// administration write would reissue) is an authoritative header finding
 /// before readiness, and the session writes nothing.
+// req: REC-005, REC-006
 #[test]
 fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
     let path = TestDatabasePath::new("v3-bounded-dirty-audit-tail");
@@ -310,9 +311,8 @@ fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
         )
         .unwrap();
     write.commit().unwrap();
-    drop(store);
-
-    let store = RedbStore::open(&path.0).unwrap();
+    // Use the already opened handle to exercise the structural header itself.
+    // A fresh recovery open also checks this fixed root and refuses earlier.
     let epoch = store.shared.durable_commit_epoch();
     let before = control_bytes(&store.shared);
     let shared = Arc::clone(&store.shared);
@@ -337,6 +337,14 @@ fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
         control_bytes(&shared) == before,
         "a refused header writes nothing"
     );
+    drop(shared);
+    assert_eq!(
+        RedbStore::open(&path.0).err().unwrap().kind(),
+        StorageErrorKind::CorruptData,
+        "a fresh recovery open must reject the same inconsistent audit tail"
+    );
+    let database = redb::Builder::new().open(&path.0).unwrap();
+    assert_eq!(control_bytes_from_database(&database), before);
 }
 
 #[test]
@@ -640,7 +648,11 @@ fn actual_v3_startup_and_scrub_refuse_missing_or_corrupt_interior_history_before
 type ControlBytes = (Vec<(String, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>);
 
 fn control_bytes(shared: &crate::store::SharedRedb) -> ControlBytes {
-    let read = shared.database.begin_read().unwrap();
+    control_bytes_from_database(&shared.database)
+}
+
+fn control_bytes_from_database(database: &redb::Database) -> ControlBytes {
+    let read = database.begin_read().unwrap();
     let meta = read
         .open_table(META)
         .unwrap()

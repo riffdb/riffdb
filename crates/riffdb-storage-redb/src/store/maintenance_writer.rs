@@ -34,7 +34,7 @@ impl RedbWriteAccess {
         self,
         results: Vec<riffdb_storage_api::ServiceAuditAppendResult>,
     ) -> Result<RedbSubmittedServiceAuditFence, StorageError> {
-        self.submit_maintenance(results, None)
+        self.submit_maintenance(results, None, None)
     }
 
     pub(crate) fn submit_retention_prune(
@@ -45,13 +45,22 @@ impl RedbWriteAccess {
         self.submit_maintenance(
             Vec::new(),
             Some(RetentionPrunePublication { through, segments }),
+            None,
         )
+    }
+
+    pub(crate) fn submit_source_reclamation(
+        self,
+        proof: crate::journal::SourceReclamationProof,
+    ) -> Result<RedbSubmittedServiceAuditFence, StorageError> {
+        self.submit_maintenance(Vec::new(), None, Some(proof))
     }
 
     fn submit_maintenance(
         mut self,
         results: Vec<riffdb_storage_api::ServiceAuditAppendResult>,
         prune: Option<RetentionPrunePublication>,
+        source_cut: Option<crate::journal::SourceReclamationProof>,
     ) -> Result<RedbSubmittedServiceAuditFence, StorageError> {
         let ownership = self
             .ownership
@@ -69,18 +78,26 @@ impl RedbWriteAccess {
                 )
             })
             .count();
-        let transition_count = if prune.is_some() { 1 } else { audit_count };
+        let transition_count = if prune.is_some() || source_cut.is_some() {
+            1
+        } else {
+            audit_count
+        };
         let operation = if prune.is_some() {
             RedbTestOperation::OnlineRetentionStep
         } else {
             RedbTestOperation::ServiceAudit
         };
-        let attribution = if prune.is_some() {
+        let attribution = if source_cut.is_some() {
+            riffdb_storage_api::ChangelogAttributionV3::HistoryReclamation
+        } else if prune.is_some() {
             riffdb_storage_api::ChangelogAttributionV3::RetentionPrune
         } else {
             riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit
         };
-        let kind = if prune.is_some() {
+        let kind = if source_cut.is_some() {
+            riffdb_storage_api::CompositeFrameKindV1::SourceReclamation
+        } else if prune.is_some() {
             riffdb_storage_api::CompositeFrameKindV1::RetentionPrune
         } else {
             riffdb_storage_api::CompositeFrameKindV1::ServiceAudit
@@ -102,21 +119,38 @@ impl RedbWriteAccess {
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
                 .borrow_mut(),
         )?;
-        let prospective_encoded_bytes = self
+        let mut prospective_encoded_bytes = self
             .journal_mutations
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .borrow()
             .encoded_frame_len()
             .map_err(journal_storage_error)?;
+        if let Some(proof) = &source_cut {
+            prospective_encoded_bytes = prospective_encoded_bytes
+                .checked_add(4)
+                .and_then(|n| n.checked_add(proof.encode().ok()?.len()))
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        }
         let prospective_physical_bytes =
             crate::journal::extent_frame_bytes(prospective_encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-        let checkpoint_rebased = self.shared.ensure_journal_frame_headroom(
-            transition_count,
-            prospective_encoded_bytes,
-            prospective_physical_bytes,
-        )?;
+        let checkpoint_rebased = if source_cut.is_some() {
+            if !self.shared.has_journal_frame_headroom(
+                transition_count,
+                prospective_encoded_bytes,
+                prospective_physical_bytes,
+            )? {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            false
+        } else {
+            self.shared.ensure_journal_frame_headroom(
+                transition_count,
+                prospective_encoded_bytes,
+                prospective_physical_bytes,
+            )?
+        };
         if checkpoint_rebased {
             self.composite_predecessor = Some(self.shared.capture_or_initialize_composite_view()?);
         }
@@ -150,7 +184,7 @@ impl RedbWriteAccess {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let covered_sequence = composite_predecessor.overlay().published_application();
-        let covered_administration_sequence = if prune.is_some() {
+        let covered_administration_sequence = if prune.is_some() || source_cut.is_some() {
             composite_predecessor.overlay().published_administration()
         } else {
             results
@@ -193,7 +227,28 @@ impl RedbWriteAccess {
                 DualFrontier::new(covered_sequence, covered_administration_sequence),
                 composite_stage.staged_mutations(),
             )?;
-            let frame = if prune.is_some() {
+            let frame = if let Some(proof) = &source_cut {
+                if Some(proof.predecessor()) != changelog_predecessor {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                let frame = crate::journal::JournalFrame::source_reclamation(
+                    proof.clone(),
+                    runtime.last_hash,
+                )
+                .map_err(journal_storage_error)?;
+                let exact = frame
+                    .mutations()
+                    .iter()
+                    .map(|mutation| mutation.composite())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                if exact.as_slice() != composite_stage.staged_mutations()
+                    || mutations.mutation_count() != 1
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                frame.encode().map_err(journal_storage_error)?
+            } else if prune.is_some() {
                 crate::journal::JournalFrame::encode_buffered_retention_prune(
                     runtime.database_id,
                     predecessor_sequence,
@@ -290,6 +345,9 @@ impl RedbWriteAccess {
                 Arc::clone(&checkpoint_mutations),
                 encoded_bytes,
             )?;
+            if let Some(proof) = &source_cut {
+                composite_successor.apply_source_cut(proof)?;
+            }
             let composite_successor = Arc::new(composite_successor);
             let retained_frame = frame.clone();
             let predecessor = RedbReadAccess::Composite(Arc::clone(&composite_predecessor));
@@ -317,11 +375,20 @@ impl RedbWriteAccess {
                             .map(|(key, value)| (key.into_vec(), value.into_vec())))
                     },
                 )?;
-            if changelog_successor.is_none() || !footprint.is_append_only() {
+            if source_cut.is_some() || changelog_successor.is_none() || !footprint.is_append_only()
+            {
                 self.shared.invalidate_source_continuation();
             }
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
-            runtime.changelog_history = changelog_successor.map(|(_, history)| history);
+            runtime.changelog_history = if source_cut.is_some() {
+                crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(Arc::clone(
+                    &composite_successor,
+                )))
+                .map(Some)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?
+            } else {
+                changelog_successor.map(|(_, history)| history)
+            };
             runtime.last_administration_sequence = covered_administration_sequence;
             runtime.last_hash = frame_hash;
             runtime.suffix_transitions = next_transitions;
@@ -334,6 +401,7 @@ impl RedbWriteAccess {
             )
             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                source_reclamation: source_cut.as_ref().map(|proof| Arc::new(proof.clone())),
                 segment_summaries: Arc::from(Vec::new()),
                 extent_generation: runtime.lane.generation(),
                 placement,
@@ -371,12 +439,21 @@ impl RedbWriteAccess {
             return Err(error);
         }
         let successor = composite_predecessor.checkpoint_root_shared();
+        let source_successor = source_cut.as_ref().map(|_| {
+            (
+                Arc::clone(&composite_successor),
+                self.shared
+                    .source_continuation_epoch
+                    .load(Ordering::Acquire),
+            )
+        });
         let publication_payload =
             PendingPublicationPayload::ServiceAudit(ServiceAuditPublication {
                 successor: Arc::clone(&successor),
                 transition_count,
                 audit_count,
                 prune,
+                source_reclamation: source_cut.is_some(),
                 encoded_bytes,
                 predecessor_sequence,
                 covered_sequence,
@@ -403,6 +480,7 @@ impl RedbWriteAccess {
             covered_administration_sequence,
             publication_ticket,
             completed: false,
+            source_successor,
         };
         self.shared.finish_source_requested_publication()?;
         drop(ownership);
@@ -411,6 +489,100 @@ impl RedbWriteAccess {
 }
 
 impl SharedRedb {
+    pub(super) fn capture_source_validation_pin(
+        &self,
+    ) -> Result<crate::source_validation_pin::ValidationSource, StorageError> {
+        let published = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(published) = published.as_ref() {
+            return published
+                .capture()
+                .map(crate::source_validation_pin::ValidationSource::Composite);
+        }
+        drop(published);
+        // A validation capture must not populate the reusable application cache.
+        self.capture_checkpoint_root()
+            .map(crate::source_validation_pin::ValidationSource::Checkpoint)
+    }
+
+    pub(super) fn source_composite_for_write(
+        self: &Arc<Self>,
+        source: crate::source_validation_pin::ValidationSource,
+    ) -> Result<Arc<crate::composite_view::RedbCompositeReadView>, StorageError> {
+        if let crate::source_validation_pin::ValidationSource::Composite(view) = source {
+            return Ok(view);
+        }
+        // A legal source cut can precede the first application journal write.
+        // Initialize the same closed lane under the granted sole-writer lease;
+        // this performs no suffix drain and its full residence is charged.
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if frontier.is_none() {
+            *frontier = Some(Arc::clone(source.checkpoint_pin()));
+        }
+        self.retire_current_read_root();
+        drop(frontier);
+        drop(self.journal_runtime()?);
+        self.capture_or_initialize_composite_view()
+    }
+
+    pub(super) fn has_journal_frame_headroom(
+        &self,
+        transitions: usize,
+        bytes: usize,
+        physical_bytes: usize,
+    ) -> Result<bool, StorageError> {
+        let (checkpoint_transitions, checkpoint_bytes) = self.async_checkpoint_charge()?;
+        let runtime = self.journal_runtime()?;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        Ok(JournalCapacityCharge {
+            checkpoint_transitions,
+            checkpoint_bytes,
+            suffix_transitions: runtime.suffix_transitions,
+            suffix_bytes: runtime.suffix_bytes,
+            suffix_physical_bytes: runtime.suffix_physical_bytes,
+            unpublished_transitions: runtime.unpublished_transitions,
+            unpublished_bytes: runtime.unpublished_bytes,
+        }
+        .admits(transitions, bytes, physical_bytes))
+    }
+
+    pub(super) fn begin_source_journal_write(
+        self: &Arc<Self>,
+        lease: ExclusiveLease,
+        predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
+    ) -> Result<RedbWriteAccess, StorageError> {
+        if self.write_fenced.load(Ordering::Acquire)
+            || self.is_follower_mode()
+            || self.application_commit_profile != RedbCommitProfile::Standard
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        // The source owner supplied its ordinarily granted FIFO lease and exact
+        // acknowledged pin. No checkpoint polling, headroom drain or lane creation.
+        let stage = crate::composite_view::RedbCompositeMutationStage::from_published(&predecessor);
+        Ok(RedbWriteAccess {
+            shared: Arc::clone(self),
+            transaction: None,
+            ownership: Some(RedbWriteOwnership::ServiceAudit { _lease: lease }),
+            direct_changelog_attribution: None,
+            journal_mutations: Some(RefCell::new(
+                crate::journal::JournalMutationBuffer::default(),
+            )),
+            journal_mutation_start: 0,
+            journal_checkpoint: None,
+            composite_predecessor: Some(predecessor),
+            composite_stage: Some(RefCell::new(stage)),
+            command_prefix_capture: RefCell::default(),
+        })
+    }
+
     pub(super) fn finish_source_requested_publication(&self) -> Result<(), StorageError> {
         if self.mutation_gate.source_publication_requested()? {
             self.publish_pending_journal_prefix()?;

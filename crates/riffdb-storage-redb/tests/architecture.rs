@@ -2641,6 +2641,9 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("history_stub.rs", "hydrate_history_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
+        // Bounded V3 replay owns the same exclusive pre-readiness recovery
+        // transaction; no operational reader can select its intermediate root.
+        ("journal_recovery_stream.rs", "replay"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a
         // separate redb engine; operational readers of the primary never
         // select its roots, and command commits never wait on it.

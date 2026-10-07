@@ -455,6 +455,14 @@ mod tests {
     #[test]
     fn admission_observations_preserve_busy_writer_state_and_reset_per_step() {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        // Validate the fixed source FIFO at capture, before a certificate can
+        // bypass needless admission when no independent progress exists.
+        let mut first = ports.replication_source_control();
+        let lease = ports.shared.mutation_gate.acquire().unwrap();
+        assert_eq!(first.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(first.validation_phases()[3], 1);
+        assert_eq!(first.admission_yields(), [1, 0, 0, 0, 0]);
+        drop(lease);
         let mut control = ports.replication_source_control();
         for _ in 0..32 {
             control.reclaim_history_online().unwrap();
@@ -470,8 +478,8 @@ mod tests {
         let epoch = ports.shared.durable_commit_epoch();
         let lease = ports.shared.mutation_gate.acquire().unwrap();
         assert_eq!(control.reclaim_history_online().unwrap().0, 0);
-        assert_eq!(control.validation_phases()[3], 1);
-        assert_eq!(control.admission_yields(), [1, 0, 0, 0, 0]);
+        assert_eq!(control.validation_phases()[3], 0);
+        assert_eq!(control.admission_yields(), [0; 5]);
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         assert!(ports.shared.mutation_gate.is_held());
         drop(lease);

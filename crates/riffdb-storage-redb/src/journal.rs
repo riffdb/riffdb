@@ -11,6 +11,10 @@
 
 #[path = "journal_offline_integrity.rs"]
 mod offline_integrity;
+#[path = "journal_recovery_memory.rs"]
+mod recovery_memory;
+#[path = "journal_recovery_stream.rs"]
+mod recovery_stream;
 
 use crate::history_stub::StubLocator;
 use std::collections::BTreeMap;
@@ -122,6 +126,8 @@ const FRAME_BINDING_BYTES: usize = 8 + 8 + 8 + 8 + HASH_BYTES + HASH_BYTES;
 /// Fixed header of the current (version 3) logical frame.
 const FRAME_HEADER_BYTES: usize = FRAME_HEADER_BYTES_V2 + FRAME_BINDING_BYTES;
 const FRAME_VERSION_V2: u16 = 2;
+const FRAME_VERSION_V4: u16 = 4;
+const FRAME_VERSION_V5: u16 = 5;
 const FRAME_FOOTER_BYTES: usize = 8 + 8 + HASH_BYTES;
 const MUTATION_HEADER_BYTES: usize = 1 + 1 + 1 + 1 + 4 + 4 + HASH_BYTES;
 
@@ -137,6 +143,7 @@ pub(crate) const MAX_JOURNAL_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
 
 mod source_suffix_scan;
+pub(crate) use recovery_memory::admit_native_frame as admit_native_recovery_frame;
 pub(crate) use source_suffix_scan::{
     SOURCE_SUFFIX_BYTES, SOURCE_SUFFIX_TRANSITIONS, scan_online_source_suffix_with_media,
 };
@@ -455,6 +462,7 @@ pub(crate) enum JournalFrameKind {
     Command = 1,
     ServiceAudit = 2,
     RetentionPrune = 3,
+    SourceReclamation = 4,
 }
 
 impl JournalFrameKind {
@@ -463,6 +471,7 @@ impl JournalFrameKind {
             1 => Ok(Self::Command),
             2 => Ok(Self::ServiceAudit),
             3 => Ok(Self::RetentionPrune),
+            4 => Ok(Self::SourceReclamation),
             _ => Err(JournalCodecError::UnknownVersion),
         }
     }
@@ -832,6 +841,7 @@ impl JournalMutationBuffer {
                         || audit_count != 0
                         || !self.retention_prune_shape.valid(covered_sequence)
                 }
+                JournalFrameKind::SourceReclamation => true,
                 JournalFrameKind::ServiceAudit => {
                     transition_count != audit_count
                         || command_count != 0
@@ -841,6 +851,18 @@ impl JournalMutationBuffer {
             }
         {
             return Err(JournalCodecError::InvalidValue);
+        }
+        if changelog.is_some() {
+            let count = usize::try_from(self.mutation_count)
+                .map_err(|_| JournalCodecError::LimitExceeded)?;
+            let payload = payload_len
+                .checked_sub(
+                    count
+                        .checked_mul(MUTATION_HEADER_BYTES)
+                        .ok_or(JournalCodecError::LimitExceeded)?,
+                )
+                .ok_or(JournalCodecError::InvalidValue)?;
+            recovery_memory::admit_native_layout(count, payload)?;
         }
         let header = &mut self.bytes[..FRAME_HEADER_BYTES];
         header[0..8].copy_from_slice(&FRAME_MAGIC);
@@ -964,6 +986,9 @@ fn logical_command_audits_in_commit_value(value: &[u8]) -> Result<u16, JournalCo
 #[path = "journal/retention_frame.rs"]
 mod retention_frame;
 
+mod source_reclamation;
+pub(crate) use source_reclamation::{SourceReceiptPreimage, SourceReclamationProof};
+
 fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
     match mutation.table() {
         JournalTable::Audit | JournalTable::AuditByRequest => mutation.value().is_some(),
@@ -1081,7 +1106,10 @@ impl JournalFileHeader {
             return Err(JournalCodecError::Truncated);
         }
         if bytes[..8] != FILE_MAGIC
-            || !matches!(read_u16(bytes, 8)?, FRAME_VERSION_V3 | FORMAT_VERSION)
+            || !matches!(
+                read_u16(bytes, 8)?,
+                FRAME_VERSION_V3 | FRAME_VERSION_V4 | FRAME_VERSION_V5
+            )
         {
             return Err(JournalCodecError::UnknownVersion);
         }
@@ -1339,6 +1367,7 @@ pub(crate) struct JournalFrame {
     previous_hash: [u8; HASH_BYTES],
     mutations: Vec<JournalMutation>,
     changelog: Option<FrameChangelogBinding>,
+    source_reclamation: Option<SourceReclamationProof>,
 }
 
 /// The V3 changelog binding a journaled frame's receipt is derived with, beyond
@@ -1686,6 +1715,13 @@ impl JournalFrame {
                             covered_sequence,
                         )
                 }
+                JournalFrameKind::SourceReclamation => {
+                    transition_count != 1
+                        || command_count != 0
+                        || audit_count != 0
+                        || mutations.len() != 1
+                        || crate::changelog_v3::journal_allocator_assignment(&mutations[0]).is_err()
+                }
                 JournalFrameKind::ServiceAudit => {
                     transition_count != audit_count
                         || command_count != 0
@@ -1710,6 +1746,7 @@ impl JournalFrame {
             previous_hash,
             mutations,
             changelog: None,
+            source_reclamation: None,
         };
         if frame.encoded_len()? > MAX_JOURNAL_FRAME_BYTES {
             return Err(JournalCodecError::LimitExceeded);
@@ -1732,12 +1769,16 @@ impl JournalFrame {
     }
 
     fn encode_as(&self, version: u16) -> Result<EncodedJournalFrame, JournalCodecError> {
+        self.validate_source_reclamation()?;
+        if self.kind == JournalFrameKind::SourceReclamation && version < FRAME_VERSION_V5 {
+            return Err(JournalCodecError::UnknownVersion);
+        }
         let header_bytes = match version {
-            FRAME_VERSION_V3 | FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V3 | FRAME_VERSION_V4 | FRAME_VERSION_V5 => FRAME_HEADER_BYTES,
             FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
             _ => return Err(JournalCodecError::UnknownVersion),
         };
-        if version < FORMAT_VERSION
+        if version < FRAME_VERSION_V4
             && (self.kind == JournalFrameKind::RetentionPrune
                 || self.mutations.iter().any(|m| {
                     matches!(
@@ -1787,6 +1828,15 @@ impl JournalFrame {
         bytes.extend_from_slice(&self.previous_hash);
         if header_bytes == FRAME_HEADER_BYTES {
             bytes.extend_from_slice(&FrameChangelogBinding::encode(self.changelog.as_ref()));
+        }
+        if let Some(proof) = &self.source_reclamation {
+            let proof = proof.encode()?;
+            bytes.extend_from_slice(
+                &u32::try_from(proof.len())
+                    .map_err(|_| JournalCodecError::LimitExceeded)?
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&proof);
         }
         for mutation in &self.mutations {
             bytes.push(mutation.table() as u8);
@@ -1863,7 +1913,7 @@ impl JournalFrame {
             return Err(JournalCodecError::UnknownVersion);
         }
         let header_bytes = match read_u16(bytes, 8)? {
-            FRAME_VERSION_V3 | FORMAT_VERSION => FRAME_HEADER_BYTES,
+            FRAME_VERSION_V3 | FRAME_VERSION_V4 | FRAME_VERSION_V5 => FRAME_HEADER_BYTES,
             FRAME_VERSION_V2 => FRAME_HEADER_BYTES_V2,
             _ => return Err(JournalCodecError::UnknownVersion),
         };
@@ -1909,7 +1959,27 @@ impl JournalFrame {
         if mutation_count > payload_len / MUTATION_HEADER_BYTES {
             return Err(JournalCodecError::InvalidValue);
         }
+        let kind = JournalFrameKind::decode(bytes[26])?;
         let mut cursor = header_bytes;
+        let source_reclamation = if kind == JournalFrameKind::SourceReclamation {
+            if read_u16(bytes, 8)? < FRAME_VERSION_V5 {
+                return Err(JournalCodecError::UnknownVersion);
+            }
+            let length = usize::try_from(read_u32(bytes, cursor)?)
+                .map_err(|_| JournalCodecError::LimitExceeded)?;
+            cursor = cursor
+                .checked_add(4)
+                .ok_or(JournalCodecError::LimitExceeded)?;
+            let end = cursor
+                .checked_add(length)
+                .filter(|end| *end <= footer)
+                .ok_or(JournalCodecError::Truncated)?;
+            let proof = SourceReclamationProof::decode(&bytes[cursor..end])?;
+            cursor = end;
+            Some(proof)
+        } else {
+            None
+        };
         let mut mutations = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
             let table =
@@ -1972,7 +2042,7 @@ impl JournalFrame {
         if cursor != footer {
             return Err(JournalCodecError::InvalidValue);
         }
-        if read_u16(bytes, 8)? < FORMAT_VERSION
+        if read_u16(bytes, 8)? < FRAME_VERSION_V4
             && (bytes[26] == JournalFrameKind::RetentionPrune as u8
                 || mutations.iter().any(|m| {
                     matches!(
@@ -1999,24 +2069,39 @@ impl JournalFrame {
             mutations,
             proven.is_none(),
         )?;
-        Ok((
-            Self {
-                format_version: read_u16(bytes, 8)?,
-                changelog,
-                ..frame
-            },
-            frame_hash,
-        ))
+        let frame = Self {
+            format_version: read_u16(bytes, 8)?,
+            changelog,
+            source_reclamation,
+            ..frame
+        };
+        frame.validate_source_reclamation()?;
+        Ok((frame, frame_hash))
     }
 
     fn payload_len(&self) -> Result<usize, JournalCodecError> {
-        self.mutations.iter().try_fold(0_usize, |total, mutation| {
-            total
-                .checked_add(MUTATION_HEADER_BYTES)
-                .and_then(|value| value.checked_add(mutation.key().len()))
-                .and_then(|value| value.checked_add(mutation.value().map_or(0, <[u8]>::len)))
-                .ok_or(JournalCodecError::LimitExceeded)
-        })
+        let proof_bytes = self
+            .source_reclamation
+            .as_ref()
+            .map(|proof| {
+                proof.encode().and_then(|bytes| {
+                    bytes
+                        .len()
+                        .checked_add(4)
+                        .ok_or(JournalCodecError::LimitExceeded)
+                })
+            })
+            .transpose()?
+            .unwrap_or(0);
+        self.mutations
+            .iter()
+            .try_fold(proof_bytes, |total, mutation| {
+                total
+                    .checked_add(MUTATION_HEADER_BYTES)
+                    .and_then(|value| value.checked_add(mutation.key().len()))
+                    .and_then(|value| value.checked_add(mutation.value().map_or(0, <[u8]>::len)))
+                    .ok_or(JournalCodecError::LimitExceeded)
+            })
     }
 
     fn encoded_len(&self) -> Result<usize, JournalCodecError> {
@@ -2080,6 +2165,9 @@ impl JournalFrame {
             JournalFrameKind::Command => riffdb_storage_api::CompositeFrameKindV1::Command,
             JournalFrameKind::RetentionPrune => {
                 riffdb_storage_api::CompositeFrameKindV1::RetentionPrune
+            }
+            JournalFrameKind::SourceReclamation => {
+                riffdb_storage_api::CompositeFrameKindV1::SourceReclamation
             }
             JournalFrameKind::ServiceAudit => {
                 riffdb_storage_api::CompositeFrameKindV1::ServiceAudit
@@ -3584,6 +3672,12 @@ fn decode_physical_frame(
         return Err(JournalIoError::Corrupt);
     }
     let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
+    if proven.is_none() {
+        recovery_memory::admit_physical_recovery(
+            logical,
+            &read_array::<HASH_BYTES>(physical, 36).map_err(|_| JournalIoError::Corrupt)?,
+        )?;
+    }
     let (frame, frame_hash) = match proven {
         Some(proven) => (JournalFrame::decode_proven(logical, proven), *proven),
         None => match JournalFrame::decode(logical) {
@@ -3882,6 +3976,9 @@ fn walk_extent_frames_with_limits(
             incomplete_tail = true;
             break;
         };
+        // The decoded frame owns its bytes. Release the physical allocation
+        // before receipt planning/materialization creates its bounded scratch.
+        drop(physical);
         if walk == ExtentWalk::FromOrigin && origin.is_none() {
             previous_hash = frame.previous_hash();
             previous_sequence = frame.predecessor_sequence();
@@ -4114,6 +4211,8 @@ fn scan_legacy_journal_with_media(
         encoded.extend_from_slice(&rest);
         let (frame, frame_hash) =
             JournalFrame::decode(&encoded).map_err(|_| JournalIoError::Corrupt)?;
+        drop(rest);
+        drop(encoded);
         if frame.database_id() != expected_database
             || frame.previous_hash() != previous_hash
             || frame.predecessor_sequence() != previous_sequence
@@ -4391,38 +4490,6 @@ fn replay_frames(
     transaction.commit().map_err(|_| JournalIoError::Io)?;
     #[cfg(test)]
     crate::changelog_v3_journal::recovery_crash_edge("committed");
-    Ok(())
-}
-
-fn verify_replayed_tail(
-    database: &Database,
-    frames: &[JournalFrame],
-) -> Result<(), JournalIoError> {
-    let mut final_values = BTreeMap::<(u8, Vec<u8>), Option<Vec<u8>>>::new();
-    for mutation in frames.iter().flat_map(JournalFrame::mutations) {
-        final_values.insert(
-            (mutation.table() as u8, mutation.key().to_vec()),
-            mutation.value().map(<[u8]>::to_vec),
-        );
-    }
-    let transaction = database.begin_read().map_err(|_| JournalIoError::Io)?;
-    for ((table, key), expected) in final_values {
-        let table = JournalTable::decode(table).map_err(|_| JournalIoError::Corrupt)?;
-        let mut actual = read_value(&transaction, table, &key)?;
-        if table == JournalTable::Commits
-            && let Some(stored) = actual.as_deref()
-        {
-            // A replayed segment is a history stub; compare what it resolves to.
-            actual = Some(
-                crate::history_stub::resolve_commits_value(stored)
-                    .map_err(|_| JournalIoError::Corrupt)?
-                    .into_owned(),
-            );
-        }
-        if actual != expected {
-            return Err(JournalIoError::Corrupt);
-        }
-    }
     Ok(())
 }
 
@@ -4746,21 +4813,22 @@ pub(crate) fn apply_byte_mutation_parts(
     let mut table = transaction
         .open_table(definition)
         .map_err(|_| JournalIoError::Corrupt)?;
-    let mut current = table
-        .get(key)
-        .map_err(|_| JournalIoError::Corrupt)?
-        .map(|value| value.value().to_vec());
-    if redb::TableHandle::name(&definition) == redb::TableHandle::name(&COMMITS)
-        && let Some(stored) = current.as_deref()
     {
-        // An expected hash binds a history stub's resolved segment (ADR-0263 C3).
-        current = Some(
-            crate::history_stub::resolve_commits_value(stored)
+        let current = table.get(key).map_err(|_| JournalIoError::Corrupt)?;
+        let stored = current.as_ref().map(|row| row.value());
+        let resolved = if redb::TableHandle::name(&definition) == redb::TableHandle::name(&COMMITS)
+        {
+            // Hash a stub's resolved segment (ADR-0263 C3); ordinary rows
+            // remain borrowed from the engine throughout the before-image check.
+            stored
+                .map(crate::history_stub::resolve_commits_value)
+                .transpose()
                 .map_err(|_| JournalIoError::Corrupt)?
-                .into_owned(),
-        );
+        } else {
+            stored.map(std::borrow::Cow::Borrowed)
+        };
+        validate_before_image_parts(resolved.as_deref(), expected_hash)?;
     }
-    validate_before_image_parts(current.as_deref(), expected_hash)?;
     match value {
         Some(value) => {
             table
@@ -4863,6 +4931,22 @@ fn read_value_inner(
     table: JournalTable,
     key: &[u8],
 ) -> Result<Option<Vec<u8>>, JournalIoError> {
+    read_value_inner_bounded(transaction, table, key, usize::MAX)
+}
+
+fn read_value_inner_bounded(
+    transaction: &redb::ReadTransaction,
+    table: JournalTable,
+    key: &[u8],
+    limit: usize,
+) -> Result<Option<Vec<u8>>, JournalIoError> {
+    let copy = |bytes: &[u8]| {
+        if bytes.len() <= limit {
+            Ok(bytes.to_vec())
+        } else {
+            Err(JournalIoError::Capacity)
+        }
+    };
     if table == JournalTable::Meta {
         let key = std::str::from_utf8(key).map_err(|_| JournalIoError::Corrupt)?;
         return transaction
@@ -4870,7 +4954,7 @@ fn read_value_inner(
             .map_err(|_| JournalIoError::Corrupt)?
             .get(key)
             .map_err(|_| JournalIoError::Corrupt)
-            .map(|value| value.map(|value| value.value().to_vec()));
+            .and_then(|value| value.map(|value| copy(value.value())).transpose());
     }
     let definition = match table {
         JournalTable::Meta => unreachable!("meta returned above"),
@@ -4901,7 +4985,7 @@ fn read_value_inner(
         .map_err(|_| JournalIoError::Corrupt)?
         .get(key)
         .map_err(|_| JournalIoError::Corrupt)
-        .map(|value| value.map(|value| value.value().to_vec()))
+        .and_then(|value| value.map(|value| copy(value.value())).transpose())
 }
 
 pub(crate) fn read_write_value(
@@ -6251,8 +6335,8 @@ mod tests {
     #[test]
     fn retention_frame_version_preserves_frozen_prior_readers() {
         assert_eq!(
-            FORMAT_VERSION, 4,
-            "pruning requires a distinct logical version"
+            FRAME_VERSION_V4, 4,
+            "the frozen pruning format remains distinct"
         );
         for fixture in [
             include_str!("../../../fixtures/compatibility/journal-frame-v2.hex"),

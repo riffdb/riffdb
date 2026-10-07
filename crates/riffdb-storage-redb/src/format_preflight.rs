@@ -313,7 +313,7 @@ fn preflight_existing_marker(
     })
 }
 
-fn read_marker(
+pub(crate) fn read_marker(
     media: &dyn JournalMedia,
     marker_path: &Path,
 ) -> Result<riffdb_storage_api::DurableFormatMarker, RedbDurableFormatPreflightError> {

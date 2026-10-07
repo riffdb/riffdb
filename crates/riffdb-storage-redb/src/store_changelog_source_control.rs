@@ -36,6 +36,8 @@ mod administration;
 mod bootstrap_attachment;
 #[path = "changelog_source_eligible_bytes.rs"]
 mod eligible_bytes;
+#[path = "changelog_source_control_journaled.rs"]
+mod journaled;
 #[path = "primary_fence_control.rs"]
 mod primary_fence;
 #[path = "changelog_registered_ack.rs"]
@@ -358,6 +360,11 @@ impl ReplicationSourceControl {
     }
 
     fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
+        if self.shared.application_commit_profile == RedbCommitProfile::Standard
+            && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
+        {
+            return self.reclaim_history_journaled_online_step();
+        }
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
         let epoch = self
             .shared

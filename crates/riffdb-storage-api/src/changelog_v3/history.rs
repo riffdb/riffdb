@@ -217,11 +217,48 @@ impl ChangelogHistoryStateV3 {
         }
         Ok(())
     }
+    /// First-party source/recovery validation over complete borrowed canonical
+    /// bytes. It performs the same catalog and terminal checks as owned decode.
+    #[doc(hidden)]
+    pub fn validate_terminal_canonical_v1(self, bytes: &[u8]) -> Result<(), ChangelogV3Error> {
+        let (row, hash) =
+            AuthoritativeTransactionV3::inspect_canonical(bytes, self.lineage.catalog_digest())?;
+        if row.database_id != self.lineage.database_id
+            || row.history_incarnation != self.lineage.history_incarnation
+            || ChangelogHistoryPointV3::new(row.sequence, hash, row.covered_frontier) != self.tail
+        {
+            return Err(ChangelogV3Error::PredecessorMismatch);
+        }
+        Ok(())
+    }
+
+    /// First-party bounded source-chain continuation; complete canonical input
+    /// is checked without copying its payloads. This is no durability permit.
+    #[doc(hidden)]
+    pub fn advance_canonical_v1(self, bytes: &[u8]) -> Result<Self, ChangelogV3Error> {
+        let (row, hash) =
+            AuthoritativeTransactionV3::inspect_canonical(bytes, self.lineage.catalog_digest())?;
+        self.advance_checked(
+            row,
+            ChangelogHistoryPointV3::new(row.sequence, hash, row.covered_frontier),
+        )
+    }
+
     /// Derives an unchanged-or-successful successor value from the original receipt.
     /// The caller persists it only with that receipt in the same engine transaction.
     pub fn advance(self, receipt: &AuthoritativeTransactionV3) -> Result<Self, ChangelogV3Error> {
         super::frame::validate_receipt_catalog(receipt, self.lineage.catalog_digest())?;
-        let row = receipt.binding();
+        self.advance_checked(
+            receipt.binding(),
+            ChangelogHistoryPointV3::from_receipt(receipt)?,
+        )
+    }
+
+    fn advance_checked(
+        self,
+        row: super::AuthoritativeTransactionBindingV3,
+        point: ChangelogHistoryPointV3,
+    ) -> Result<Self, ChangelogV3Error> {
         if row.database_id != self.lineage.database_id
             || row.history_incarnation != self.lineage.history_incarnation
             || row.predecessor != Some(self.tail.sequence)
@@ -230,12 +267,7 @@ impl ChangelogHistoryStateV3 {
         {
             return Err(ChangelogV3Error::PredecessorMismatch);
         }
-        Self::new(
-            self.lineage,
-            self.anchor,
-            ChangelogHistoryPointV3::from_receipt(receipt)?,
-            self.minimum_resume,
-        )
+        Self::new(self.lineage, self.anchor, point, self.minimum_resume)
     }
 }
 

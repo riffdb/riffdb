@@ -14,6 +14,8 @@ use crate::{RedbOperationalPorts, RedbStore};
 
 #[path = "changelog_bootstrap_attachment_tests.rs"]
 mod bootstrap_attachment_tests;
+#[path = "changelog_source_journal_crash_tests.rs"]
+mod journal_crashes;
 #[path = "changelog_source_control_refusal_tests.rs"]
 mod refusal_tests;
 
@@ -23,6 +25,10 @@ fn history(ports: &RedbOperationalPorts) -> ChangelogHistoryStateV3 {
     )
     .unwrap()
     .unwrap()
+}
+
+fn published_history(ports: &RedbOperationalPorts) -> ChangelogHistoryStateV3 {
+    crate::changelog_v3_cursor::history(&ports.begin_composite_read().unwrap()).unwrap()
 }
 
 fn append(ports: &RedbOperationalPorts, value: &[u8]) -> ChangelogHistoryStateV3 {
@@ -125,7 +131,7 @@ fn online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimu
     for _ in 0..3 {
         assert_eq!(control.reclaim_history_online().unwrap().0, 0);
     }
-    assert_eq!(history(&ports).minimum_resume(), states[0].tail());
+    assert_eq!(published_history(&ports).minimum_resume(), states[0].tail());
     drop(lease);
     let mut removed = 0;
     for _ in 0..3 {
@@ -135,12 +141,15 @@ fn online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimu
         removed,
         bootstrap.fence().sequence().get() - states[0].tail().sequence().get()
     );
-    assert_eq!(history(&ports).minimum_resume(), bootstrap.fence());
-    let exact = history(&ports);
+    assert_eq!(
+        published_history(&ports).minimum_resume(),
+        bootstrap.fence()
+    );
+    let exact = published_history(&ports);
     for _ in 0..6 {
         assert_eq!(control.reclaim_history_online().unwrap().0, 0);
     }
-    assert_eq!(history(&ports), exact);
+    assert_eq!(published_history(&ports), exact);
 }
 
 #[test]
@@ -460,7 +469,11 @@ fn v3_source_control_crash_child() {
     let Some(path) = std::env::var_os("RIFFDB_V3_SOURCE_CONTROL_PATH") else {
         return;
     };
-    let store = RedbStore::open(path).unwrap();
+    let store = if std::env::var("RIFFDB_SOURCE_NATIVE_CRASH").as_deref() == Ok("true") {
+        RedbStore::open_with_commit_profile(path, crate::RedbCommitProfile::Hardened).unwrap()
+    } else {
+        RedbStore::open(path).unwrap()
+    };
     let ports = RedbOperationalPorts {
         shared: store.shared,
     };
@@ -539,6 +552,7 @@ fn source_control_crash_cases(online: bool) {
             .env("RIFFDB_V3_SOURCE_CONTROL_PATH", &path)
             .env("RIFFDB_V3_SOURCE_CONTROL_EDGE", edge)
             .env("RIFFDB_V3_SOURCE_CONTROL_ONLINE", online.to_string())
+            .env("RIFFDB_SOURCE_NATIVE_CRASH", "true")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

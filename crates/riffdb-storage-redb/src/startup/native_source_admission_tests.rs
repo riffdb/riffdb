@@ -75,7 +75,7 @@ fn registry_completion_writer_upgrade_preserves_predecessor_and_refuses_old_bina
     let current =
         riffdb_storage_api::decode_durable_format_marker(&std::fs::read(&marker_path).unwrap())
             .unwrap();
-    assert_eq!(current.identity().writer().get(), 3);
+    assert_eq!(current.identity().writer().get(), 4);
     // These are distinct physical identities. The frozen predecessor pre-open
     // policy is exercised by frozen_writer_two_preopen_policy_refuses_writer_three
     // in the API crate, using the same source-free classifier as production.
@@ -137,7 +137,7 @@ fn open_existing_at(
 
 // req: STO-030, STO-031, STO-032, END-008, REC-001, LOG-001
 #[test]
-fn source_capture_drains_one_real_published_prune_without_reclaiming_or_changing_outcomes() {
+fn source_capture_preserves_one_real_published_prune_without_draining_or_changing_outcomes() {
     let (directory, mut ports) = fixture();
     let frozen: Vec<_> = std::fs::read_to_string(directory.join("expected-outcomes.hex"))
         .unwrap()
@@ -190,8 +190,8 @@ fn source_capture_drains_one_real_published_prune_without_reclaiming_or_changing
     assert_eq!(removed, 0, "first capture has no reclamation authority");
     assert_eq!(
         ports.shared.journal_suffix_activity().unwrap().1,
-        0,
-        "source admission must durably materialize this bounded acknowledged suffix; turn census {:?}",
+        1,
+        "source capture must retain the acknowledged suffix without materialization; turn census {:?}",
         source.source_admission_census()
     );
     assert_eq!(
@@ -201,11 +201,15 @@ fn source_capture_drains_one_real_published_prune_without_reclaiming_or_changing
             .load(Ordering::Acquire),
         epoch
     );
-    let after = crate::changelog_v3_roots::validate_retained_history(
-        &ports.shared.database.begin_read().unwrap(),
-    )
-    .unwrap()
-    .unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &ports.shared.database.begin_read().unwrap()
+        )
+        .unwrap(),
+        Some(before)
+    );
+    let after =
+        crate::changelog_v3_cursor::history(&ports.begin_composite_read().unwrap()).unwrap();
     assert_eq!(after.minimum_resume(), before.minimum_resume());
     assert_eq!(
         after.tail().sequence().get(),
@@ -441,8 +445,10 @@ fn source_drain_crash_child() {
     ));
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 1);
     ports.shared.join_journal_sealer();
-    let mut source = ports.replication_source_control();
-    source.reclaim_history_online().unwrap();
+    // Online capture no longer drains. Exercise the preserved closed native
+    // materializer directly, so every original staged/committed/anchor edge
+    // still proves the acknowledged prune and its original evidence.
+    ports.shared.checkpoint_offline_source_for_test().unwrap();
     panic!("selected process crash edge must execute");
 }
 
@@ -581,5 +587,177 @@ fn registry_completion_upgrade_crash_retry_never_grants_completed_eligibility() 
             riffdb_storage_api::RecordRegistryValidation::Pending,
             "{variable}/{edge}"
         );
+    }
+}
+
+// req: AFC-001, AFC-002, REC-001, REC-005, STO-032
+#[test]
+fn source_reclamation_writer_upgrade_refuses_predecessor_before_mutation() {
+    let directory = crate::test_path::ScopedDirectory::new("source-writer-upgrade");
+    restore_fixture_bytes(
+        &directory.join(""),
+        include_str!("../../../../fixtures/storage/writer-3-native-commands-and-backup.sparsehex"),
+        &[
+            "backup/database.redb",
+            "backup/format.riffdb",
+            "backup/journal.riffextent",
+            "backup/manifest.riffdb",
+            "db.redb",
+            "db.redb.riffdb-format-v1",
+            "db.redb.riffdb-format-upgrade-v1",
+            "db.redb.riffjournal",
+            "expected-outcomes.hex",
+        ],
+    );
+    let database = directory.join("db.redb");
+    let marker_path = crate::durable_format_marker_path(&database);
+    let marker_bytes = std::fs::read(&marker_path).unwrap();
+    let marker = riffdb_storage_api::decode_durable_format_marker(&marker_bytes).unwrap();
+    assert_eq!(marker.identity().writer().get(), 3);
+    let before = std::fs::read(&database).unwrap();
+    let journal = std::fs::read(crate::journal::journal_path(&database)).unwrap();
+    let receipt_path = crate::durable_format_upgrade_receipt_path(&database);
+    let receipt_before = std::fs::read(&receipt_path).unwrap();
+    assert_eq!(
+        RedbStore::open(&database).err().unwrap().kind(),
+        StorageErrorKind::IncompatibleFormat
+    );
+    assert!(
+        crate::RedbDurableFormatUpgrade::bind(&database, directory.join("missing-backup"))
+            .run()
+            .is_err()
+    );
+    for (registry, fixtures) in [
+        (
+            riffdb_types::SchemaHash::from_bytes([1; 32]),
+            marker.compatibility_fixture_digest(),
+        ),
+        (
+            marker.registry_digest(),
+            riffdb_storage_api::CompatibilityFixtureDigest::from_bytes([1; 32]),
+        ),
+    ] {
+        std::fs::write(
+            &marker_path,
+            riffdb_storage_api::encode_durable_format_marker(
+                riffdb_storage_api::DurableFormatMarker::new(marker.identity(), registry, fixtures),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            RedbStore::open(&database).err().unwrap().kind(),
+            StorageErrorKind::IncompatibleFormat
+        );
+        assert!(
+            crate::RedbDurableFormatUpgrade::bind(&database, directory.join("backup"))
+                .run()
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert_eq!(
+            std::fs::read(crate::journal::journal_path(&database)).unwrap(),
+            journal
+        );
+        assert_eq!(std::fs::read(&receipt_path).unwrap(), receipt_before);
+    }
+    std::fs::write(&marker_path, &marker_bytes).unwrap();
+    // A valid self-checksum does not authorize treating an incomplete or
+    // differently bound earlier upgrade as historical completion evidence.
+    for (offset, replacement) in [
+        (10, vec![1]),                      // Accepted instead of Complete.
+        (15, 3_u32.to_be_bytes().to_vec()), // Source is not an earlier writer.
+        (23, 4_u32.to_be_bytes().to_vec()), // Target is not this predecessor.
+        (27, vec![receipt_before[27] ^ 1]), // Another database identity.
+        (75, vec![receipt_before[75] ^ 1]), // Another fixture corpus.
+    ] {
+        let mut forged = receipt_before.clone();
+        forged[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        let checksum_at = forged.len() - 32;
+        let checksum = crate::journal::content_digest(&forged[..checksum_at]);
+        forged[checksum_at..].copy_from_slice(&checksum);
+        std::fs::write(&receipt_path, &forged).unwrap();
+        assert!(matches!(
+            crate::RedbDurableFormatUpgrade::bind(&database, directory.join("backup")).run(),
+            Err(crate::RedbDurableFormatUpgradeError::ReceiptInvalid)
+        ));
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert_eq!(
+            std::fs::read(crate::journal::journal_path(&database)).unwrap(),
+            journal
+        );
+        assert_eq!(std::fs::read(&marker_path).unwrap(), marker_bytes);
+        assert_eq!(std::fs::read(&receipt_path).unwrap(), forged);
+    }
+    std::fs::write(&receipt_path, &receipt_before).unwrap();
+    let backup_before: Vec<_> = [
+        "database.redb",
+        "format.riffdb",
+        "journal.riffextent",
+        "manifest.riffdb",
+    ]
+    .iter()
+    .map(|name| {
+        (
+            *name,
+            std::fs::read(directory.join(&format!("backup/{name}"))).unwrap(),
+        )
+    })
+    .collect();
+    let result = crate::RedbDurableFormatUpgrade::bind(&database, directory.join("backup"))
+        .run()
+        .expect("a completed older upgrade cannot block the exact next backup-bound edge");
+    let receipt = result.receipt().unwrap();
+    assert_eq!(receipt.source(), marker.identity());
+    assert_eq!(receipt.target().writer().get(), 4);
+    assert_eq!(
+        receipt.phase(),
+        crate::RedbDurableFormatUpgradePhase::Complete
+    );
+    for (name, bytes) in &backup_before {
+        assert_eq!(
+            std::fs::read(directory.join(&format!("backup/{name}"))).unwrap(),
+            *bytes
+        );
+    }
+    let expected: Vec<_> = std::fs::read_to_string(directory.join("expected-outcomes.hex"))
+        .unwrap()
+        .lines()
+        .take(3)
+        .map(|line| {
+            assert!(line.len() <= 32 * 1024 && line.len().is_multiple_of(2));
+            let bytes: Vec<_> = line
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            (
+                codec::decode_stored_outcome_v1(&bytes)
+                    .unwrap()
+                    .into_parts()
+                    .0,
+                bytes,
+            )
+        })
+        .collect();
+    assert_eq!(expected.len(), 2);
+    for _ in 0..2 {
+        let ports = open_existing(&directory.join(""));
+        for (outcome, canonical) in &expected {
+            let actual = ports
+                .read_stored_outcome(outcome.identity())
+                .unwrap()
+                .unwrap();
+            assert_eq!(&actual, outcome);
+            assert_eq!(
+                codec::encode_stored_outcome_v1(&actual).unwrap().as_bytes(),
+                canonical
+            );
+            assert!(
+                ports
+                    .read_provenance(outcome.provenance_id())
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 }

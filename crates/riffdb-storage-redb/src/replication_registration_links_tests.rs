@@ -659,3 +659,60 @@ fn source_receipts_allow_only_current_or_older_incarnations_of_the_same_database
         assert!(check(None, &[record]).is_err());
     }
 }
+
+// The closed continuation must fit its bookkeeping budget at the supported
+// durable hold ceiling, before any partial audit pass can grant authority.
+#[test]
+fn maximum_registration_census_fits_closed_continuation_bookkeeping() {
+    let scope = crate::test_path::ScopedDirectory::new("registration-bookkeeping");
+    let database = redb::Database::create(scope.join("db.redb")).unwrap();
+    let write = database.begin_write().unwrap();
+    let count = riffdb_storage_api::MAX_REPLICATION_SOURCE_HOLDS_V1;
+    {
+        let mut holds = write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap();
+        for ordinal in 1..=count {
+            let mut id = [0; 16];
+            id[8..].copy_from_slice(&ordinal.to_be_bytes());
+            let current = Policy::new(
+                Hold::new(
+                    ReplicationSourceHoldIdV1::new(id).unwrap(),
+                    Kind::FollowerAcknowledgement,
+                    lineage(),
+                    point(8, 3, 2),
+                ),
+                point(8, 3, 2),
+                FollowerHoldBudget::new(2).unwrap(),
+                CommitSequence::new(9),
+                Phase::AwaitingBootstrap,
+                None,
+            )
+            .unwrap();
+            let encoded = encode_replication_source_hold_v2(current).unwrap();
+            holds
+                .insert(current.hold().storage_key().as_slice(), encoded.as_bytes())
+                .unwrap();
+        }
+    }
+    write.commit().unwrap();
+    let read = database.begin_read().unwrap();
+    let holds = read
+        .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+        .unwrap();
+    let history =
+        History::new(lineage(), point(1, 0, 0), point(20, 12, 8), point(1, 0, 0)).unwrap();
+    let validation = super::RegistrationLinksValidation::new(&holds, history).unwrap();
+    // The boxed census has no heap-bearing children; count its entire owned
+    // allocation and the continuation object itself.
+    let retained_bytes = validation.evidence.len() * std::mem::size_of::<super::Evidence>()
+        + std::mem::size_of_val(&validation);
+    assert!(
+        retained_bytes <= 64 * 1024,
+        "registration bookkeeping alone retains {retained_bytes} bytes"
+    );
+    assert!(
+        validation.finish().is_err(),
+        "a complete hold census is not a complete audit proof"
+    );
+}

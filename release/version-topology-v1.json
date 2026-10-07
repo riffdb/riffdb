@@ -450,51 +450,54 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(3);"
+          "literal": "const CURRENT_WRITER: DurableFormatWriter = DurableFormatWriter(4);"
         }
       ],
       "readable_identities": [
         "epoch-1/writer-0",
         "epoch-1/writer-1",
         "epoch-1/writer-2",
-        "epoch-1/writer-3"
+        "epoch-1/writer-3",
+        "epoch-1/writer-4"
       ],
       "writable_identities": [
-        "epoch-1/writer-3"
+        "epoch-1/writer-4"
       ],
       "current_identities": [
-        "epoch-1/writer-3"
+        "epoch-1/writer-4"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Only manifest-declared release edges authorize an offline transition; decoder success alone does not.",
       "breaking_when": "The epoch changes, or a writer transition lacks the exact receipted upgrade and refusal ceremony.",
-      "supported_release_posture": "Writers 0, 1 and 2 require declared backup-bound offline upgrades; writer 3 is current in alpha epoch 1.",
+      "supported_release_posture": "Writers 0, 1, 2 and 3 require declared backup-bound offline upgrades; writer 4 is current in alpha epoch 1.",
       "lifecycle": {
         "active": [
-          "epoch-1/writer-3"
+          "epoch-1/writer-4"
         ],
         "read_only": [
           "epoch-1/writer-0",
           "epoch-1/writer-1",
-          "epoch-1/writer-2"
+          "epoch-1/writer-2",
+          "epoch-1/writer-3"
         ],
         "retirement_candidate": [],
         "retired": []
       },
       "reserved_identity_policy": "Epoch/writer pairs are monotonic identities and are never reused.",
       "evidence": [
-        "fixtures/compatibility/release-pairs-v1.json"
+        "fixtures/compatibility/release-pairs-v1.json",
+        "fixtures/storage/writer-3-native-commands-and-backup.sparsehex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
         "classification": "writer_transition",
-        "decision": "ADR-0276/WP-825 declares the exact registry-completion writer edge"
+        "decision": "ADR-0278/WP-825 declares the exact journaled-source-reclamation writer edge"
       },
       "manifest_scalar_assertions": {
         "alpha_epoch": 1,
-        "writer": 3,
+        "writer": 4,
         "minimum_supported_source_release": "0.1.0-pre-format-manifest",
         "maximum_supported_source_release": "0.1.0"
       }
@@ -1311,31 +1314,33 @@
         {
           "kind": "literal",
           "path": "crates/riffdb-storage-api/src/durable_format.rs",
-          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 4;"
+          "literal": "pub const DURABILITY_JOURNAL_FRAME_VERSION: u16 = 5;"
         }
       ],
       "readable_identities": [
         "2",
         "3",
-        "4"
+        "4",
+        "5"
       ],
       "writable_identities": [
-        "4"
+        "5"
       ],
       "current_identities": [
-        "4"
+        "5"
       ],
       "writer_policy": "single_current",
       "compatibility_rule": "Frames are bounded, checksummed, position-bound, and replayed only after validation.",
       "breaking_when": "Frame bytes or replay semantics change under a previously published logical version.",
-      "supported_release_posture": "Journal frame V4 adds closed retention-prune transitions; frozen V2 and V3 frames remain readable for recovery.",
+      "supported_release_posture": "Journal frame V5 adds the closed source-reclamation transition; frozen V2, V3 and V4 frames remain readable for recovery.",
       "lifecycle": {
         "active": [
-          "4"
+          "5"
         ],
         "read_only": [
           "2",
-          "3"
+          "3",
+          "4"
         ],
         "retirement_candidate": [],
         "retired": []
@@ -1345,14 +1350,15 @@
         "fixtures/compatibility/physical-formats-v1.json",
         "fixtures/compatibility/journal-frame-v2.hex",
         "fixtures/compatibility/journal-frame-v3.hex",
-        "fixtures/compatibility/journal-frame-v4.hex"
+        "fixtures/compatibility/journal-frame-v4.hex",
+        "fixtures/compatibility/journal-frame-v5-source-reclamation.hex"
       ],
       "checks": [
         "./scripts/check-durable-format-manifest"
       ],
       "last_change": {
         "classification": "writer_transition",
-        "decision": "ADR-0263 Amendment 5/WP-815 closed bounded prune frames with unchanged application and administration frontiers"
+        "decision": "ADR-0278/WP-825 closed bounded source cuts with unchanged application and administration frontiers"
       },
       "durable_manifest": {
         "readable_key": "readable_journal_frame_versions",

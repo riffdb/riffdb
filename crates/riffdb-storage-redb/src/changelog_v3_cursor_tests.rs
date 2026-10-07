@@ -356,6 +356,7 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
         attribution: receipt.attribution(),
         history: anchor.advance(&receipt).unwrap(),
         mutations,
+        reclaimed_resume: None,
         encoded_bytes: frame.encode().unwrap().as_bytes().len(),
     });
     let weak = Arc::downgrade(&source);
@@ -368,6 +369,7 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
                 head = Some(Arc::new(SourceNode {
                     predecessor: head,
                     source: Arc::clone(&source),
+                    ancestors: Box::new([]),
                 }));
             }
             drop(head);
@@ -617,4 +619,85 @@ fn provider_receipt_open_admission_accounts_cursor_data_and_refuses_unguarded_pr
     drop(complete);
     assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
+
+// req: REC-001, STO-012, STO-032, PERF-007
+#[test]
+fn composite_source_index_finds_full_bounded_suffix_and_releases_retired_ancestors() {
+    let (_scope, store, anchor) = fixture();
+    let root = Arc::new(CheckpointRoot::new(
+        store.shared.database.begin_read().unwrap(),
+        1,
+    ));
+    let mut suffix = ChangelogSuffix::from_checkpoint(&root).unwrap();
+    let mut history = anchor;
+    let mut middle_pin = None;
+    let mut witnesses = Vec::new();
+    for index in 0..MAX_JOURNAL_SUFFIX_TRANSITIONS {
+        let (frame, receipt, mutations) = source(
+            history,
+            if index == 0 {
+                None
+            } else {
+                Some(b"same".as_slice())
+            },
+            Some(b"same"),
+        );
+        history = history.advance(&receipt).unwrap();
+        suffix
+            .append(
+                Some((receipt.binding(), history)),
+                receipt.attribution(),
+                mutations,
+                frame.encode().unwrap().as_bytes().len(),
+            )
+            .unwrap();
+        let head = suffix.head.as_ref().unwrap();
+        assert!(head.ancestors.len() <= 17);
+        // Each stored link names precisely 2^level earlier receipt nodes.
+        for (level, ancestor) in head.ancestors.iter().enumerate() {
+            assert_eq!(
+                ancestor.upgrade().unwrap().source.binding.sequence.get(),
+                receipt.binding().sequence.get() - (1_u64 << level)
+            );
+        }
+        if index == 0
+            || index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS / 2
+            || index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS
+        {
+            witnesses.push((Arc::downgrade(head), Arc::downgrade(&head.source)));
+        }
+        if index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS / 2 {
+            middle_pin = Some(suffix.clone());
+        }
+    }
+    for sequence in 2..=history.tail().sequence().get() {
+        let receipt = suffix
+            .read_receipt(&root, ChangelogTransactionSequence::new(sequence).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.binding().sequence.get(), sequence);
+        assert!(!receipt.mutations().is_empty());
+        assert_eq!(
+            receipt.attribution(),
+            ChangelogAttributionV3::JournaledApplicationGroup
+        );
+    }
+    assert!(
+        suffix
+            .read_receipt(&root, history.tail().sequence().checked_next().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    drop(suffix);
+    assert!(witnesses[2].0.upgrade().is_none());
+    assert!(witnesses[2].1.upgrade().is_none());
+    assert!(witnesses[0].0.upgrade().is_some());
+    assert!(witnesses[1].0.upgrade().is_some());
+    drop(middle_pin);
+    assert!(
+        witnesses
+            .iter()
+            .all(|(node, source)| node.upgrade().is_none() && source.upgrade().is_none())
+    );
 }

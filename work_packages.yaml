@@ -28742,6 +28742,43 @@ work_packages:
       and a streamed logical-length inventory. Include retained lifecycle working
       and publication staging files, reject nonregular artifacts before receipt
       open, and keep deterministic space observations private to native tests.
+    - Implement ADR-0278 with a closed V5 SourceReclamation frame and exact
+      writer-3 to writer-4 backup-bound transition. Pin one immutable published
+      composite for complete source and continuation validation; separately
+      capture the actual installed checkpoint licensing a deletion. Retain the
+      checked cut proof in live descriptors, rebase only its own publication,
+      and preserve independent progress, current holds and physical references.
+    - Keep registration evidence as bounded per-hold ordinal flags and reborrow
+      canonical policies from the same immutable pin. Index the bounded source
+      chain with weak binary ancestors and retire uniquely owned nodes iteratively.
+    - Stream V3 recovery in two exact journal passes with no suffix-sized decoded
+      frame vector or unrelated source-population walk. Preserve actual referenced
+      overlap and preimage checks, complete scrub and first-access validation.
+    - Use the existing canonical receipt owner for borrowed source-chain checks,
+      streaming history hashes and byte-exact comparison. Fold immutable original
+      sources through bounded sorted indices, preserving every intermediate
+      expected-state edge and copying final net values once. Stub preparation
+      retains all root checks without creating unused canonical encoding scratch.
+    - Require a new exact immutable backup for each successive offline edge;
+      recognize a prior Complete receipt only when it matches the exact current
+      predecessor marker and supported historical transition. Preserve incomplete
+      retry binding and refusal before mutation.
+    - Admit legacy retained journal ownership before cloning frames or building
+      the exact-overlap map; drop original suffix owners before resolving actual
+      rows. Refuse oversized recovery state with the existing typed capacity
+      defect before mutation. Verify actual over-budget suffix refusal and a
+      legal maximum-size frame, without changing the compiled 64 MiB ceiling.
+    - Reserve the CI runner for the repeated bootstrap-publication crash campaign
+      after concurrent durable-copy work exhausted its watchdog. Its isolated
+      rerun passes in 24 seconds; preserve the 120-second deadline and every
+      crash schedule, assertion and production qualification bound.
+    - Include original frame descriptors, indexed fold, canonical scratch and
+      one nested terminal/preimage reconstruction in compiled native admission.
+      Apply the same conservative bound before live buffered publication and
+      before recorded-frame decode or replay; preserve typed limit refusal and
+      the 64 MiB ceiling. Bound native resolver inventory before collection.
+      Large wire-valid work can refuse before acknowledgement; no public bypass
+      is added. Actual maximum canonical source preimages remain reclaimable.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

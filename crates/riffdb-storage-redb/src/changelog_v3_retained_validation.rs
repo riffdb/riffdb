@@ -4,7 +4,6 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
-use redb::ReadableTableMetadata;
 use riffdb_storage_api::{
     AuthoritativeStateCatalogV2, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogHistoryStateV3, EvidencePageLimit, MAX_CHANGELOG_FRAME_BYTES, StorageError,
@@ -17,6 +16,11 @@ use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::layout::{AUDIT, AUDIT_BY_REQUEST, META};
 use crate::primary_fence_write::state::FenceValidation;
 use crate::promotion_cutover::PromotionValidation;
+use crate::source_validation_pin::{SourceIdentity, ValidationSource};
+use crate::source_validation_read::{CompositePoints, ReceiptRead};
+
+#[path = "changelog_v3_retained_composite.rs"]
+mod composite;
 use crate::replication_registration_links::RegistrationLinksValidation;
 
 const MAX_ROWS_PER_STEP: usize = 256;
@@ -30,7 +34,8 @@ enum Phase {
 }
 
 pub(crate) struct RetainedHistoryValidation {
-    root: Option<Arc<CheckpointRoot>>,
+    root: Option<ValidationSource>,
+    source_identity: SourceIdentity,
     root_identity: u64,
     history: ChangelogHistoryStateV3,
     covered: ChangelogHistoryStateV3,
@@ -51,13 +56,17 @@ pub(crate) struct RetainedHistoryValidation {
 
 /// Sealed result of the exhaustive exact-end pass over this one immutable pin.
 pub(crate) struct ValidatedRetainedHistory {
-    root: Arc<CheckpointRoot>,
+    root: ValidationSource,
     history: ChangelogHistoryStateV3,
     independent_sequence: u64,
 }
 
 impl ValidatedRetainedHistory {
     pub(crate) fn root(&self) -> &Arc<CheckpointRoot> {
+        self.root.checkpoint_pin()
+    }
+
+    pub(crate) fn source(&self) -> &ValidationSource {
         &self.root
     }
 
@@ -74,11 +83,14 @@ impl ValidatedRetainedHistory {
 
 impl RetainedHistoryValidation {
     pub(crate) fn new(root: Arc<CheckpointRoot>) -> Result<Option<Self>, StorageError> {
-        let Some(history) = crate::changelog_v3_roots::read_checkpoint_roots(&root)? else {
+        Self::new_source(ValidationSource::Checkpoint(root))
+    }
+
+    pub(crate) fn new_source(root: ValidationSource) -> Result<Option<Self>, StorageError> {
+        let Some(history) = root.history()? else {
             return Ok(None);
         };
-        let receipts = root.open_table(HISTORY).map_err(table_error)?;
-        let empty = receipts.is_empty().map_err(precommit_storage_error)?;
+        let empty = root.empty()?;
         let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let registrations = RegistrationLinksValidation::new(&holds, history)?;
         let fence = if !empty
@@ -99,6 +111,7 @@ impl RetainedHistoryValidation {
         .map_err(|_| corrupt())?;
         Ok(Some(Self {
             root_identity: root.identity(),
+            source_identity: root.publication(),
             root: Some(root),
             history,
             covered,
@@ -165,7 +178,7 @@ impl RetainedHistoryValidation {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         Ok(ValidatedRetainedHistory {
-            root: Arc::clone(
+            root: Clone::clone(
                 self.root
                     .as_ref()
                     .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
@@ -183,15 +196,22 @@ impl RetainedHistoryValidation {
         root: Arc<CheckpointRoot>,
         epoch: u64,
     ) -> Result<bool, StorageError> {
+        self.continue_source(ValidationSource::Checkpoint(root), epoch)
+    }
+
+    pub(crate) fn continue_source(
+        &mut self,
+        root: ValidationSource,
+        epoch: u64,
+    ) -> Result<bool, StorageError> {
         if !self.qualifies(epoch) || !self.is_complete() {
             return Ok(false);
         }
-        if root.identity() == self.root_identity {
+        if root.publication() == self.source_identity {
             self.root = Some(root);
             return Ok(true);
         }
-        let history =
-            crate::changelog_v3_roots::read_checkpoint_roots(&root)?.ok_or_else(corrupt)?;
+        let history = root.history()?.ok_or_else(corrupt)?;
         if history.lineage() != self.history.lineage()
             || history.anchor() != self.history.anchor()
             || history.minimum_resume() != self.history.minimum_resume()
@@ -201,6 +221,7 @@ impl RetainedHistoryValidation {
         }
         self.rebind_native_evidence(&root, history)?;
         self.root_identity = root.identity();
+        self.source_identity = root.publication();
         self.root = Some(root);
         self.history = history;
         self.phase = if self.covered == history {
@@ -213,7 +234,7 @@ impl RetainedHistoryValidation {
 
     fn rebind_native_evidence(
         &mut self,
-        root: &CheckpointRoot,
+        root: &ValidationSource,
         history: ChangelogHistoryStateV3,
     ) -> Result<(), StorageError> {
         self.registrations.rebind_unchanged(history)?;
@@ -248,11 +269,18 @@ impl RetainedHistoryValidation {
         root: Arc<CheckpointRoot>,
         epoch: u64,
     ) -> Result<(), StorageError> {
+        self.rebase_own_source_deletion(ValidationSource::Checkpoint(root), epoch)
+    }
+
+    pub(crate) fn rebase_own_source_deletion(
+        &mut self,
+        root: ValidationSource,
+        epoch: u64,
+    ) -> Result<(), StorageError> {
         if !self.is_complete() || epoch == u64::MAX {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let history =
-            crate::changelog_v3_roots::read_checkpoint_roots(&root)?.ok_or_else(corrupt)?;
+        let history = root.history()?.ok_or_else(corrupt)?;
         if history.lineage() != self.history.lineage()
             || history.anchor() != self.history.anchor()
             || history.minimum_resume().sequence() <= self.history.minimum_resume().sequence()
@@ -273,6 +301,7 @@ impl RetainedHistoryValidation {
         )
         .map_err(|_| corrupt())?;
         self.root_identity = root.identity();
+        self.source_identity = root.publication();
         self.root = Some(root);
         self.history = history;
         self.phase = Phase::Receipts;
@@ -308,6 +337,9 @@ impl RetainedHistoryValidation {
     }
 
     fn receipts(&mut self, limit: usize) -> Result<bool, StorageError> {
+        if matches!(self.root.as_ref(), Some(ValidationSource::Composite(_))) {
+            return self.composite_receipts(limit);
+        }
         let root = self
             .root
             .as_ref()
@@ -375,12 +407,16 @@ impl RetainedHistoryValidation {
     }
 
     fn audit(&mut self, limit: usize) -> Result<bool, StorageError> {
+        if matches!(self.root.as_ref(), Some(ValidationSource::Composite(_))) {
+            return self.composite_audit(limit);
+        }
         let root = self
             .root
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         let audit = root.open_table(AUDIT).map_err(table_error)?;
         let indexes = root.open_table(AUDIT_BY_REQUEST).map_err(table_error)?;
+        let holds = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
         let receipts = root.open_table(HISTORY).map_err(table_error)?;
         let low = self
             .after_audit
@@ -414,7 +450,7 @@ impl RetainedHistoryValidation {
                 self.rows_read[1] += 1;
             }
             self.registrations
-                .observe(key.value(), encoded.value(), &receipts)?;
+                .observe(key.value(), encoded.value(), &holds, &receipts)?;
             if let Some(fence) = &mut self.fence {
                 fence.observe(key.value(), encoded.value(), &receipts)?;
             }

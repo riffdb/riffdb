@@ -28,6 +28,7 @@ mod backup;
 #[doc(hidden)]
 pub mod benchmark_support;
 mod changelog;
+mod changelog_source_reclamation_journal;
 mod changelog_v3;
 mod changelog_v3_activation;
 mod changelog_v3_capture;
@@ -40,6 +41,8 @@ mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
 mod outbox_stage_census;
+mod source_validation_pin;
+mod source_validation_read;
 #[doc(hidden)]
 pub use outbox_stage_census::OUTBOX_NATIVE_STAGE_LABELS_V1;
 mod checkpoint_rewrite;

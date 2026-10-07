@@ -48,6 +48,13 @@ impl SharedRedb {
         let mut audit_count = 0_usize;
         let mut encoded_bytes = 0_usize;
         for frame in &batch.frames {
+            let source_proof = frame.source_reclamation.as_deref();
+            if (frame.encoded.kind() == crate::journal::JournalFrameKind::SourceReclamation)
+                != source_proof.is_some()
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let mut source_successor = None;
             if frame.database_id != batch.database_id
                 || frame.predecessor_sequence != last_sequence
                 || frame.predecessor_administration_sequence != last_administration_sequence
@@ -93,6 +100,9 @@ impl SharedRedb {
                     crate::journal::JournalFrameKind::ServiceAudit => {
                         ChangelogAttributionV3::JournaledServiceAudit
                     }
+                    crate::journal::JournalFrameKind::SourceReclamation => {
+                        riffdb_storage_api::ChangelogAttributionV3::HistoryReclamation
+                    }
                     crate::journal::JournalFrameKind::RetentionPrune => {
                         ChangelogAttributionV3::RetentionPrune
                     }
@@ -108,7 +118,18 @@ impl SharedRedb {
                 if frame.changelog_binding != Some(binding) {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
-                Some(PreparedHistoryAdvance::prepare(&transaction, &receipt)?)
+                if let Some(proof) = source_proof {
+                    crate::changelog_source_reclamation_journal::verify(&transaction, proof)?;
+                    source_successor = Some(history.advance(&receipt).map_err(value_error)?);
+                    // Submission already invalidated the old source epoch. This
+                    // independently checked materialization installs the same
+                    // acknowledged cut, not another source publication.
+                }
+                Some(if frame.encoded.records_changelog() {
+                    PreparedHistoryAdvance::prepare_stub(&transaction, &receipt)?
+                } else {
+                    PreparedHistoryAdvance::prepare(&transaction, &receipt)?
+                })
             } else {
                 if frame.changelog_binding.is_some() {
                     return Err(storage_error(StorageErrorKind::CorruptData));
@@ -188,6 +209,13 @@ impl SharedRedb {
                     // receipt, so any other keeps the receipt bytes.
                     advance.stage(&transaction)?;
                 }
+            }
+            if let Some(proof) = source_proof {
+                crate::changelog_source_reclamation_journal::stage(
+                    &transaction,
+                    proof,
+                    source_successor.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
+                )?;
             }
             transition_count = transition_count
                 .checked_add(usize::from(frame.transition_count))

@@ -4,6 +4,123 @@ use super::*;
 use crate::journal::{JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable};
 use std::num::NonZeroU64;
 
+// req: STO-030, STO-031, STO-032, REC-001
+#[test]
+fn published_composite_source_validation_matches_materialized_full_oracle() {
+    use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
+    use crate::source_validation_pin::ValidationSource;
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 300);
+    let RedbReadAccess::Composite(view) = ports.begin_composite_read().unwrap() else {
+        panic!("acknowledged journal receipts retain their composite pin");
+    };
+    let expected =
+        crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(Arc::clone(&view))).unwrap();
+    let mut walk = RetainedHistoryValidation::new_source(ValidationSource::Composite(view))
+        .unwrap()
+        .unwrap();
+    let mut pages = 0;
+    while !walk
+        .advance(riffdb_storage_api::EvidencePageLimit::new(1).unwrap())
+        .unwrap()
+    {
+        assert!(walk.proof().is_err());
+        pages += 1;
+        assert!(pages < 1000);
+    }
+    assert!(pages >= 600);
+    assert_eq!(walk.proof().unwrap().history(), expected);
+    assert_eq!(
+        walk.rows_read(),
+        [
+            expected.tail().sequence().get() - expected.minimum_resume().sequence().get() + 1,
+            300
+        ]
+    );
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .checkpoint_published_journal_suffix_for_barrier()
+        .unwrap();
+    let root = ports.shared.capture_checkpoint_root().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&root).unwrap(),
+        Some(expected)
+    );
+    drop(lease);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn source_reclamation_progresses_without_draining_oversized_published_tail() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    for _ in 0..16 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        if control.reclamation_yields()[0] == 1 {
+            break;
+        }
+    }
+    assert_eq!(control.reclamation_yields()[0], 1);
+    append_acknowledged_audits(&mut ports, 300);
+    ports
+        .shared
+        .mutation_gate
+        .note_source_publication_request()
+        .unwrap();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    ports.shared.join_journal_sealer();
+    for ordinal in 301..=557 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the distinct audit retains its original completion fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let publication = ports.shared.capture_checkpoint_root().unwrap().identity();
+    let mut removed = 0;
+    for _ in 0..16 {
+        removed += control.reclaim_history_online().unwrap().0;
+        for _ in 0..16 {
+            if !control.receipt_validation_pending() {
+                break;
+            }
+            control.advance_validation_off_gate().unwrap();
+        }
+        if removed > 0 {
+            break;
+        }
+    }
+    assert!(
+        removed > 0,
+        "a fully published tail must not prevent a bounded licensed source cut"
+    );
+    assert!(removed <= 256);
+    assert_eq!(
+        ports.shared.capture_checkpoint_root().unwrap().identity(),
+        publication,
+        "reclamation must not materialize the oversized active tail"
+    );
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 600)
+            .unwrap()
+            .len(),
+        557
+    );
+}
+
 // req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
 #[test]
 fn completed_source_proof_catches_published_checkpoint_before_requesting_admission() {
@@ -44,9 +161,8 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
         qualification
     );
 
-    // A newer oversized active suffix prevents another drained source turn.
-    // The already installed checkpoint still contains qualified work that the
-    // existing certificate can validate without waiting for that admission.
+    // Both the installed checkpoint and its acknowledged active tail can be
+    // continued off-gate. The ordinary writer below prevents source admission.
     for ordinal in 301..=557 {
         let ServiceAuditGroupAppend::Submitted(fence) = ports
             .submit_service_audit_group(&[source_audit_intent(ordinal)])
@@ -69,6 +185,10 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
             .count()
     };
     let pins_before = live_pins();
+    let published = ports.shared.published_composite_view().unwrap().unwrap();
+    let captured = Arc::downgrade(&published);
+    drop(published);
+    let source_owners_before = captured.strong_count();
     let writer = ports.shared.mutation_gate.acquire().unwrap();
     assert_eq!(control.reclaim_history_online().unwrap().0, 0);
     assert!(
@@ -76,7 +196,12 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
         "installed checkpoint continuation must start before a new source turn"
     );
     assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
-    assert_eq!(live_pins(), pins_before + 1);
+    assert_eq!(
+        live_pins(),
+        pins_before,
+        "the candidate shares the actual published root"
+    );
+    assert_eq!(captured.strong_count(), source_owners_before + 1);
     let [initial, mut continued_rows, invalidated, _] = control.validation_phases();
     assert_eq!(initial, 0);
     assert_eq!(invalidated, 0);
@@ -93,23 +218,30 @@ fn completed_source_proof_catches_published_checkpoint_before_requesting_admissi
     }
     assert!(!control.receipt_validation_pending());
     assert_eq!(
-        continued_rows, 600,
-        "only the 300 new receipts and their audit rows are validated"
+        continued_rows, 1114,
+        "only the 557 new receipts and their audit rows are validated"
     );
     assert_eq!(
         live_pins(),
         pins_before,
         "exact end releases the replacement pin"
     );
+    assert_eq!(captured.strong_count(), source_owners_before);
     assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
     assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     assert!(ports.shared.mutation_gate.is_held());
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
     drop(writer);
     assert_eq!(control.reclaim_history_online().unwrap().0, 0);
-    assert_eq!(control.admission_yields()[1], 1);
+    assert_eq!(
+        control.reclamation_yields()[0],
+        1,
+        "a completed proof alone is not a prior independently durable observation"
+    );
+    assert_eq!(control.admission_yields()[1], 0);
     assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
 }
 
 #[test]
@@ -537,7 +669,7 @@ fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoin
 
 // req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
 #[test]
-fn source_suffix_yield_is_visible_when_logical_retention_is_at_target() {
+fn published_source_suffix_does_not_force_a_checkpoint_when_logical_retention_is_at_target() {
     let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
     append_acknowledged_audits(&mut ports, 257);
     let lane = ports.online_retention_lane();
@@ -548,7 +680,7 @@ fn source_suffix_yield_is_visible_when_logical_retention_is_at_target() {
         step,
         crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::TargetReached)
     );
-    assert_eq!(phases.source_admission_pending_journal, 1);
+    assert_eq!(phases.source_admission_pending_journal, 0);
     assert_eq!(phases.source_admission_checkpoint, 0);
     assert!(
         !lane.source_checkpoint_publication_pending().unwrap(),
@@ -556,19 +688,10 @@ fn source_suffix_yield_is_visible_when_logical_retention_is_at_target() {
     );
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
     let ordinary = ports.begin_deferred_service_audit_write().unwrap();
-    assert!(lane.source_checkpoint_publication_pending().unwrap());
-    ordinary.abort().unwrap();
-    let writer = ports.shared.mutation_gate.acquire().unwrap();
-    ports.shared.poll_async_checkpoint_locked(true).unwrap();
-    drop(writer);
-    ports.shared.join_journal_sealer();
     assert!(!lane.source_checkpoint_publication_pending().unwrap());
-    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
-    let (_, phases) = lane
-        .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
-        .unwrap();
-    assert_eq!(phases.source_admission_pending_journal, 0);
-    assert_eq!(phases.source_admission_checkpoint, 0);
+    ordinary.abort().unwrap();
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
 }
 
 // req: STO-030, STO-031, STO-032, END-007, END-008
@@ -676,6 +799,7 @@ fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
     let length = encoded.as_bytes().len();
     let physical = crate::journal::extent_frame_bytes(length).unwrap();
     let frame = ValidatedCheckpointFrame {
+        source_reclamation: None,
         changelog_binding: None,
         database_id,
         predecessor_sequence: None,

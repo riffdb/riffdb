@@ -289,3 +289,13 @@ fn suffix_is_bounded(runtime: &JournalRuntime) -> bool {
 #[cfg(test)]
 #[path = "source_reclamation_drain_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl SharedRedb {
+    pub(crate) fn checkpoint_offline_source_for_test(self: &Arc<Self>) -> Result<(), StorageError> {
+        let _lease = self.mutation_gate.acquire()?;
+        self.publish_pending_journal_prefix()?;
+        self.poll_async_checkpoint_locked(true)?;
+        self.materialize_published_suffix_for_barrier(true)
+    }
+}

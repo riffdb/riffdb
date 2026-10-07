@@ -123,7 +123,7 @@ impl ChangelogAttributionV3 {
         Self::ALL.into_iter().find(|source| *source as u16 == tag)
     }
 
-    fn validate(
+    pub(super) fn validate(
         self,
         binding: AuthoritativeTransactionBindingV3,
         empty: bool,
@@ -229,20 +229,7 @@ impl AuthoritativeTransactionV3 {
         attribution: ChangelogAttributionV3,
         mutations: Vec<AuthoritativeMutationV3>,
     ) -> Result<Self, ChangelogV3Error> {
-        if binding.history_incarnation == 0 {
-            return Err(ChangelogV3Error::InvalidEncoding);
-        }
-        let expected = match binding.predecessor {
-            Some(previous) => previous.checked_next(),
-            None => ChangelogTransactionSequence::new(1),
-        };
-        if expected != Some(binding.sequence) {
-            return Err(ChangelogV3Error::PredecessorMismatch);
-        }
-        attribution.validate(binding, mutations.is_empty())?;
-        if mutations.len() > MAX_CHANGELOG_FRAME_ENTRIES {
-            return Err(ChangelogV3Error::LimitExceeded);
-        }
+        Self::validate_shape(binding, attribution, mutations.len(), None)?;
         if mutations.windows(2).any(|pair| {
             (pair[0].namespace(), pair[0].key()) >= (pair[1].namespace(), pair[1].key())
         }) {
@@ -259,6 +246,32 @@ impl AuthoritativeTransactionV3 {
             return Err(ChangelogV3Error::LimitExceeded);
         }
         Ok(receipt)
+    }
+
+    pub(super) fn validate_shape(
+        binding: AuthoritativeTransactionBindingV3,
+        attribution: ChangelogAttributionV3,
+        count: usize,
+        bytes: Option<usize>,
+    ) -> Result<(), ChangelogV3Error> {
+        if binding.history_incarnation == 0 {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let expected = binding.predecessor.map_or_else(
+            || ChangelogTransactionSequence::new(1),
+            |previous| previous.checked_next(),
+        );
+        if expected != Some(binding.sequence) {
+            return Err(ChangelogV3Error::PredecessorMismatch);
+        }
+        attribution.validate(binding, count == 0)?;
+        if count > MAX_CHANGELOG_FRAME_ENTRIES
+            || bytes.is_some_and(|bytes| bytes > super::frame::MAX_RECEIPT_BYTES)
+            || Self::binding_transition_count(binding, attribution) > MAX_STAGED_COMMANDS as u64
+        {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        Ok(())
     }
 
     /// Exact checked immutable transaction binding.
@@ -282,7 +295,13 @@ impl AuthoritativeTransactionV3 {
     /// Logical transitions charged to the independent unsplit frame ceiling.
     #[must_use]
     pub fn transition_count(&self) -> u64 {
-        let row = self.binding;
+        Self::binding_transition_count(self.binding, self.attribution)
+    }
+
+    fn binding_transition_count(
+        row: AuthoritativeTransactionBindingV3,
+        attribution: ChangelogAttributionV3,
+    ) -> u64 {
         let app = row.covered_frontier.application().map_or(0, |v| v.get())
             - row
                 .predecessor_frontier
@@ -293,7 +312,7 @@ impl AuthoritativeTransactionV3 {
                 .predecessor_frontier
                 .administration()
                 .map_or(0, |v| v.get());
-        match self.attribution {
+        match attribution {
             ChangelogAttributionV3::JournaledApplicationGroup => app,
             ChangelogAttributionV3::JournaledServiceAudit => admin,
             ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup => {

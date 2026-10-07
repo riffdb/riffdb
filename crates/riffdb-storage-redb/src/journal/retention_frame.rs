@@ -259,10 +259,11 @@ mod tests {
         let mut buffer = JournalMutationBuffer::default();
         buffer.extend(mutations.clone()).expect("buffer");
         let frame = frame(mutations).expect("prune frame");
-        let encoded = frame.encode().expect("V4");
+        let encoded = frame.encode().expect("current frame");
+        let frozen = frame.encode_as(FRAME_VERSION_V4).expect("frozen V4");
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/compatibility/journal-frame-v4.hex");
-        let encoded_hex: String = encoded
+        let encoded_hex: String = frozen
             .as_bytes()
             .iter()
             .map(|byte| format!("{byte:02x}"))

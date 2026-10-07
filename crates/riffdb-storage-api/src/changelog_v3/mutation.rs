@@ -235,6 +235,99 @@ impl AuthoritativeMutationAccumulatorV3 {
         Ok(())
     }
 
+    /// First-party indexed source fold: retain only indices into one immutable
+    /// source, then copy each final net value once. None is a checked control
+    /// mutation excluded by the physical owner. No mutation permit is granted.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn fold_borrowed_indexed_v1<'a>(
+        count: usize,
+        get: impl Fn(
+            usize,
+        ) -> Result<
+            Option<(
+                AuthoritativeNamespaceV1,
+                &'a [u8],
+                Option<[u8; 32]>,
+                Option<&'a [u8]>,
+            )>,
+            ChangelogV3Error,
+        >,
+    ) -> Result<Vec<AuthoritativeMutationV3>, ChangelogV3Error> {
+        if count > MAX_CHANGELOG_FRAME_BYTES / 44 {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        let mut indices = Vec::with_capacity(count);
+        let mut input_bytes = 160_usize;
+        for index in 0..count {
+            let Some((namespace, key, expected, value)) = get(index)? else {
+                continue;
+            };
+            AuthoritativeMutationV3::validate(namespace, key, value.map_or(0, <[u8]>::len))?;
+            if value.is_none() && expected.is_none() {
+                return Err(ChangelogV3Error::InvalidEncoding);
+            }
+            input_bytes = input_bytes
+                .checked_add(44 + key.len() + value.map_or(0, <[u8]>::len))
+                .filter(|bytes| *bytes <= super::frame::MAX_RECEIPT_BYTES)
+                .ok_or(ChangelogV3Error::LimitExceeded)?;
+            indices.push(index);
+        }
+        let mut failure = None;
+        indices.sort_unstable_by(|left, right| match (get(*left), get(*right)) {
+            (Ok(Some((ln, lk, _, _))), Ok(Some((rn, rk, _, _)))) => {
+                (ln, lk, left).cmp(&(rn, rk, right))
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                failure = Some(error);
+                left.cmp(right)
+            }
+            _ => {
+                failure = Some(ChangelogV3Error::InvalidEncoding);
+                left.cmp(right)
+            }
+        });
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let mut result = Vec::with_capacity(indices.len().min(crate::MAX_CHANGELOG_FRAME_ENTRIES));
+        let mut cursor = 0;
+        let mut groups = 0_usize;
+        while cursor < indices.len() {
+            let (namespace, key, original, mut value) =
+                get(indices[cursor])?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+            groups += 1;
+            if groups > crate::MAX_CHANGELOG_FRAME_ENTRIES {
+                return Err(ChangelogV3Error::LimitExceeded);
+            }
+            let mut current_hash = value.map(|value| <[u8; 32]>::from(Sha256::digest(value)));
+            cursor += 1;
+            while cursor < indices.len() {
+                let (next_namespace, next_key, expected, next_value) =
+                    get(indices[cursor])?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+                if (next_namespace, next_key) != (namespace, key) {
+                    break;
+                }
+                if expected != current_hash {
+                    return Err(ChangelogV3Error::PredecessorMismatch);
+                }
+                value = next_value;
+                current_hash = value.map(|value| <[u8; 32]>::from(Sha256::digest(value)));
+                cursor += 1;
+            }
+            if original != current_hash {
+                result.push(match (value, original) {
+                    (Some(value), expected) => {
+                        AuthoritativeMutationV3::put(namespace, key, expected, value)?
+                    }
+                    (None, Some(hash)) => AuthoritativeMutationV3::delete(namespace, key, hash)?,
+                    _ => return Err(ChangelogV3Error::InvalidEncoding),
+                });
+            }
+        }
+        Ok(result)
+    }
+
     /// Consumes the complete successful sequence as canonical namespace/key order.
     /// A previous bound or precondition failure refuses the entire result.
     pub fn finish(self) -> Result<Vec<AuthoritativeMutationV3>, ChangelogV3Error> {

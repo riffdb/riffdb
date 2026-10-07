@@ -1,6 +1,7 @@
 //! Complete V2 source evidence under the closed physical fence transaction.
 //! This reader grants neither a general writer nor production startup readiness.
 use super::*;
+use crate::source_validation_read::ReceiptRead;
 use crate::{
     changelog_v3_activation::{HISTORY, SOURCE_HOLDS},
     changelog_v3_write::table_inventory,
@@ -139,7 +140,7 @@ pub(crate) fn validate_fences(
     history: ChangelogHistoryStateV3,
     admission: &ReplicationPrimaryAdmissionV1,
     audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     let mut validation = FenceValidation::new(history, admission.clone());
     for row in audit.iter().map_err(precommit_storage_error)? {
@@ -185,7 +186,7 @@ impl FenceValidation {
         &mut self,
         key: &[u8],
         encoded: &[u8],
-        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         let history = self.history;
         let decoded = match decode_primary_fence_administration_v1(encoded) {
@@ -231,7 +232,7 @@ impl FenceValidation {
 pub(crate) fn validate_fence_receipt(
     history: ChangelogHistoryStateV3,
     record: &StoredPrimaryFenceAdministrationV1,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     validate_fence_receipt_with_admission(history, record, receipts, None)
 }
@@ -239,7 +240,7 @@ pub(crate) fn validate_fence_receipt(
 pub(crate) fn validate_fence_receipt_with_admission(
     history: ChangelogHistoryStateV3,
     record: &StoredPrimaryFenceAdministrationV1,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
     budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
 ) -> Result<(), StorageError> {
     if record.lineage() != history.lineage()
@@ -255,12 +256,11 @@ pub(crate) fn validate_fence_receipt_with_admission(
         budget,
     )?;
     let expected = receipt::reconstruct(record)?;
-    let row = receipts
-        .get(expected.binding().sequence.get().to_be_bytes().as_slice())
-        .map_err(precommit_storage_error)?
+    let actual = receipts
+        .receipt(expected.binding().sequence, budget)?
         .ok_or_else(corrupt)?;
-    // Check every mutation and beforeimage, not merely the inserted audit row.
-    if row.value() != expected.encode().map_err(|_| corrupt())?.as_slice() {
+    // The same complete canonical receipt, including every mutation/preimage.
+    if actual.encode().map_err(|_| corrupt())? != expected.encode().map_err(|_| corrupt())? {
         return Err(corrupt());
     }
     Ok(())

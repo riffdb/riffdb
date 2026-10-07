@@ -554,12 +554,23 @@ impl RedbCompositeReadView {
             .append(successor, attribution, mutations, encoded_bytes)
     }
 
+    pub(crate) fn apply_source_cut(
+        &mut self,
+        proof: &crate::journal::SourceReclamationProof,
+    ) -> Result<(), StorageError> {
+        self.changelog.apply_source_cut(proof)
+    }
+
     pub(crate) fn checkpoint_root(&self) -> &CheckpointRoot {
         &self.root
     }
 
     pub(crate) fn checkpoint_root_shared(&self) -> Arc<CheckpointRoot> {
         Arc::clone(&self.root)
+    }
+
+    pub(crate) fn checkpoint_root_pin(&self) -> &Arc<CheckpointRoot> {
+        &self.root
     }
 
     pub(crate) fn overlay(&self) -> &FrozenCompositeOverlay {

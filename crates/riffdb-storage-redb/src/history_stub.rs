@@ -360,9 +360,23 @@ impl HistoryResolver {
 }
 
 fn live_resolvers(database_id: DatabaseId) -> Result<Vec<Arc<HistoryResolver>>, StorageError> {
-    Ok(RESOLVERS
+    // One bounded inventory fits the recovery resolver scratch window. Count
+    // under the same registry lock before retaining any Arc descriptors.
+    const MAX_MATCHING_RESOLVERS: usize = 8_192;
+    let registered = RESOLVERS
         .lock()
-        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    if registered
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|resolver| resolver.database_id == database_id)
+        .take(MAX_MATCHING_RESOLVERS + 1)
+        .count()
+        > MAX_MATCHING_RESOLVERS
+    {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    Ok(registered
         .iter()
         .filter_map(Weak::upgrade)
         .filter(|resolver| resolver.database_id == database_id)
@@ -482,6 +496,7 @@ pub(crate) fn resolve_history_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
         recorded.catalog_digest(),
     )
     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    drop(frame);
     receipt
         .encode()
         .map(Cow::Owned)

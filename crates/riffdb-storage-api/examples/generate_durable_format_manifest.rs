@@ -242,6 +242,8 @@ fn render_fixture_inventory(
         "fixtures/compatibility/journal-frame-v2.hex",
         "fixtures/compatibility/journal-frame-v3.hex",
         "fixtures/compatibility/journal-frame-v4.hex",
+        "fixtures/compatibility/journal-frame-v5-source-reclamation.hex",
+        "fixtures/storage/writer-3-native-commands-and-backup.sparsehex",
         "fixtures/compatibility/journal-extent-header-v3.hex",
         "fixtures/compatibility/journal-extent-header-v4.hex",
         "fixtures/compatibility/journal-sealed-footer-v1.hex",

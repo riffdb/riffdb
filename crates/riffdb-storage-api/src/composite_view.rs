@@ -366,6 +366,8 @@ pub enum CompositeFrameKindV1 {
     ServiceAudit,
     /// One bounded prune, with application and administration frontiers unchanged.
     RetentionPrune,
+    /// One closed source-history cut; both application frontiers are unchanged.
+    SourceReclamation,
 }
 
 impl CompositeFrameV1 {
@@ -406,7 +408,7 @@ impl CompositeFrameV1 {
                 app_delta == transitions && (admin_delta == 0 || admin_delta >= transitions)
             }
             CompositeFrameKindV1::ServiceAudit => app_delta == 0 && admin_delta == transitions,
-            CompositeFrameKindV1::RetentionPrune => {
+            CompositeFrameKindV1::RetentionPrune | CompositeFrameKindV1::SourceReclamation => {
                 app_delta == 0 && admin_delta == 0 && transitions == 1
             }
         };

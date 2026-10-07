@@ -35,7 +35,7 @@ fn current_manifest_names_every_closed_format_family() {
     let manifest = current_durable_format_manifest();
 
     assert_eq!(manifest.epoch(), AlphaFormatEpoch::new(1).unwrap());
-    assert_eq!(manifest.writer(), DurableFormatWriter::new(3));
+    assert_eq!(manifest.writer(), DurableFormatWriter::new(4));
     assert_eq!(manifest.release(), env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest.readable_storage_versions(), &[1, 2]);
     assert_eq!(manifest.writable_storage_versions(), &[2]);
@@ -43,8 +43,8 @@ fn current_manifest_names_every_closed_format_family() {
     assert_eq!(manifest.writable_redb_layout_versions(), &[1]);
     assert_eq!(manifest.readable_registry_versions(), &[2]);
     assert_eq!(manifest.writable_registry_versions(), &[2]);
-    assert_eq!(manifest.readable_journal_frame_versions(), &[2, 3, 4]);
-    assert_eq!(manifest.writable_journal_frame_versions(), &[4]);
+    assert_eq!(manifest.readable_journal_frame_versions(), &[2, 3, 4, 5]);
+    assert_eq!(manifest.writable_journal_frame_versions(), &[5]);
     assert_eq!(manifest.readable_journal_extent_versions(), &[3, 4]);
     assert_eq!(manifest.writable_journal_extent_versions(), &[4]);
     assert_eq!(manifest.readable_backup_versions(), &[1]);
@@ -192,7 +192,10 @@ fn prune_writer_requires_backup_bound_offline_upgrade_from_prior_writer() {
         preflight_durable_format_marker(wrong_prior_marker),
         Err(DurableFormatMarkerError::ManifestMismatch)
     );
-    let future = DurableFormatIdentity::new(current.epoch(), DurableFormatWriter::new(4));
+    let future = DurableFormatIdentity::new(
+        current.epoch(),
+        DurableFormatWriter::new(current.writer().get() + 1),
+    );
     assert!(preflight_durable_format(future).is_err());
 }
 
@@ -226,7 +229,7 @@ fn registry_completion_marker_requires_exact_backup_bound_writer_edge() {
     );
     assert_eq!(
         current_durable_format_manifest().writer(),
-        DurableFormatWriter::new(3)
+        DurableFormatWriter::new(4)
     );
     for (registry, corpus) in [
         (SchemaHash::from_bytes([0; 32]), corpus),

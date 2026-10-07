@@ -1,6 +1,8 @@
 //! Actual canonical source-receipt bytes below one validated native floor.
 //! This read-only component never authorizes deletion or claims aggregate history.
 use super::*;
+use crate::source_validation_pin::ValidationSource;
+use crate::source_validation_read::ReceiptRead;
 use std::time::{Duration, Instant};
 
 const MAX_ROWS: usize = 256;
@@ -29,10 +31,20 @@ impl Observer {
         ceiling: u64,
         now: Instant,
     ) -> Result<(), StorageError> {
+        self.capture_source(ValidationSource::Checkpoint(root), history, ceiling, now)
+    }
+
+    pub(super) fn capture_source(
+        &mut self,
+        root: ValidationSource,
+        history: History,
+        ceiling: u64,
+        now: Instant,
+    ) -> Result<(), StorageError> {
         if self.next_capture.is_some_and(|next| now < next) {
             return Ok(());
         }
-        self.probe = Some(Probe::new(root, history, ceiling, now)?);
+        self.probe = Some(Probe::new_source(root, history, ceiling, now)?);
         self.next_capture = Some(
             now.checked_add(CAPTURE_INTERVAL)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?,
@@ -83,7 +95,7 @@ impl Observer {
 }
 
 struct Probe {
-    root: Option<Arc<crate::checkpoint_root::CheckpointRoot>>,
+    root: Option<ValidationSource>,
     root_identity: u64,
     history: History,
     ceiling: u64,
@@ -99,6 +111,15 @@ struct Probe {
 impl Probe {
     fn new(
         root: Arc<crate::checkpoint_root::CheckpointRoot>,
+        history: History,
+        ceiling: u64,
+        now: Instant,
+    ) -> Result<Self, StorageError> {
+        Self::new_source(ValidationSource::Checkpoint(root), history, ceiling, now)
+    }
+
+    fn new_source(
+        root: ValidationSource,
         history: History,
         ceiling: u64,
         now: Instant,
@@ -133,18 +154,18 @@ impl Probe {
         let Some(root) = self.root.as_ref() else {
             return Ok(());
         };
-        let table = root.open_table(HISTORY).map_err(table_error)?;
         let mut page_bytes = 0_usize;
         for _ in 0..limit {
             if self.next >= self.ceiling {
                 break;
             }
             let key = self.next.to_be_bytes();
-            let row = table
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
+            let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            let encoded = crate::history_stub::resolve_history_value(row.value())?;
+            let receipt = root
+                .receipt(sequence, None)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let encoded = receipt.encode().map_err(value_error)?;
             if encoded.len() > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
@@ -154,7 +175,6 @@ impl Probe {
             if next_bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 break;
             }
-            let receipt = AuthoritativeTransactionV3::decode(&encoded).map_err(value_error)?;
             let binding = receipt.binding();
             if binding.sequence.get() != self.next
                 || binding.database_id != self.history.lineage().database_id()

@@ -1,5 +1,6 @@
 //! Exact physical promotion evidence. This module grants no runtime authority.
 use crate::error::{codec_error, precommit_storage_error, storage_error};
+use crate::source_validation_read::{PointRead, ReceiptRead};
 use redb::ReadableTable;
 use riffdb_storage_api::{
     AuthoritativeMutationV3 as Mutation, AuthoritativeNamespaceV1 as N,
@@ -186,9 +187,9 @@ pub(crate) fn history(record: &Record) -> Result<ChangelogHistoryStateV3, Storag
 pub(crate) fn validate_record(
     record: &Record,
     retained: ChangelogHistoryStateV3,
-    audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    audit: &impl PointRead,
+    indexes: &impl PointRead,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     let expected = history(record)?;
     if expected.lineage().database_id() != retained.lineage().database_id()
@@ -200,10 +201,9 @@ pub(crate) fn validate_record(
     for row in record.service_audits().map_err(|_| corrupt())? {
         let encoded = encode_service_audit_record_v3(&row).map_err(codec_error)?;
         if audit
-            .get(crate::keys::encode_audit_key(row.administration_sequence()).as_slice())
-            .map_err(precommit_storage_error)?
+            .point(crate::keys::encode_audit_key(row.administration_sequence()).as_slice())?
             .ok_or_else(corrupt)?
-            .value()
+            .as_slice()
             != encoded.as_bytes()
         {
             return Err(corrupt());
@@ -214,16 +214,15 @@ pub(crate) fn validate_record(
         ))
         .map_err(codec_error)?;
         if indexes
-            .get(
+            .point(
                 crate::keys::encode_audit_by_request_key(
                     row.request_id(),
                     row.administration_sequence(),
                 )
                 .as_slice(),
-            )
-            .map_err(precommit_storage_error)?
+            )?
             .ok_or_else(corrupt)?
-            .value()
+            .as_slice()
             != index.as_bytes()
         {
             return Err(corrupt());
@@ -234,18 +233,11 @@ pub(crate) fn validate_record(
             return Err(corrupt());
         }
         if retained.minimum_resume() == retained.anchor()
-            && !receipts.is_empty().map_err(precommit_storage_error)?
+            && let Some(actual) = receipts.receipt(retained.anchor().sequence(), None)?
+            && actual.encode().map_err(|_| corrupt())?
+                != receipt(record)?.encode().map_err(|_| corrupt())?
         {
-            let encoded = receipt(record)?.encode().map_err(|_| corrupt())?;
-            if receipts
-                .get(1u64.to_be_bytes().as_slice())
-                .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?
-                .value()
-                != encoded
-            {
-                return Err(corrupt());
-            }
+            return Err(corrupt());
         }
     }
     Ok(())
@@ -254,8 +246,8 @@ pub(crate) fn validate_record(
 pub(crate) fn validate_retained(
     retained: ChangelogHistoryStateV3,
     audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    indexes: &impl PointRead,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     let mut validation = PromotionValidation::default();
     for row in audit.iter().map_err(precommit_storage_error)? {
@@ -282,9 +274,9 @@ impl PromotionValidation {
         &mut self,
         row: (&[u8], &[u8]),
         retained: ChangelogHistoryStateV3,
-        audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
-        indexes: &impl ReadableTable<&'static [u8], &'static [u8]>,
-        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        audit: &impl PointRead,
+        indexes: &impl PointRead,
+        receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         let (key, encoded) = row;
         let decoded = match decode_promotion_administration_v1(encoded) {
@@ -311,19 +303,12 @@ impl PromotionValidation {
     pub(crate) fn finish(
         &self,
         retained: ChangelogHistoryStateV3,
-        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         // An orphan Promotion anchor is corruption, including erasure of its control row.
         if retained.minimum_resume() == retained.anchor()
-            && let Some(row) = receipts
-                .get(retained.anchor().sequence().get().to_be_bytes().as_slice())
-                .map_err(precommit_storage_error)?
-            && AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-                row.value(),
-            )?)
-            .map_err(|_| corrupt())?
-            .attribution()
-                == ChangelogAttributionV3::Promotion
+            && let Some(row) = receipts.receipt(retained.anchor().sequence(), None)?
+            && row.attribution() == ChangelogAttributionV3::Promotion
             && !self.current
         {
             return Err(corrupt());

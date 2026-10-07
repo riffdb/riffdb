@@ -274,7 +274,7 @@ impl RedbDurableFormatUpgrade {
         {
             return Err(RedbDurableFormatUpgradeError::ReceiptInvalid);
         }
-        let retained_receipt = read_optional_receipt(&receipt_path)?;
+        let mut retained_receipt = read_optional_receipt(&receipt_path)?;
         let admission_action = match observed {
             RedbDurableFormatPreflight::OfflineUpgradeRequired { action, .. } => action,
             RedbDurableFormatPreflight::OpenCurrent => match retained_receipt.as_ref() {
@@ -359,6 +359,33 @@ impl RedbDurableFormatUpgrade {
             ));
         }
 
+        // A completed prior edge is historical evidence, not an incomplete
+        // receipt for this edge. Recognize it only against the exact checked
+        // predecessor marker and database identity. The new edge still requires
+        // a new immutable backup and an exact source-byte comparison below.
+        if let Some(prior) = retained_receipt.as_ref()
+            && prior.phase == RedbDurableFormatUpgradePhase::Complete
+            && prior.target == current
+        {
+            let marker = crate::format_preflight::read_marker(
+                &crate::media::RealJournalMedia,
+                &crate::durable_format_marker_path(&self.database_path),
+            )
+            .map_err(RedbDurableFormatUpgradeError::Preflight)?;
+            if marker.identity() != current
+                || prior.database_id != backup_identity.database_id()
+                || prior.compatibility_fixture_digest != marker.compatibility_fixture_digest()
+                || prior.source.epoch() != current.epoch()
+                || prior.source.writer() >= current.writer()
+                || !matches!(
+                    preflight_durable_format(prior.source),
+                    Ok(DurableFormatAction::OfflineInPlace { .. })
+                )
+            {
+                return Err(RedbDurableFormatUpgradeError::ReceiptInvalid);
+            }
+            retained_receipt = None;
+        }
         let (receipt, resumed) = match retained_receipt {
             Some(receipt) => {
                 validate_receipt_for_manifest(&receipt, &backup_identity)?;
