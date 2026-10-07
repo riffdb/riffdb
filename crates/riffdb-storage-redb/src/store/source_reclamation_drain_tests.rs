@@ -195,35 +195,37 @@ fn source_capture_does_not_initialize_an_absent_native_journal_lane() {
     assert!(!ports.shared.mutation_gate.is_held());
 }
 
-fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
-    use riffdb_storage_api::{
-        AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
-        ServiceAuditGroupAppend,
-    };
+fn source_audit_intent(ordinal: u64) -> riffdb_storage_api::ServiceAuditAppendIntentV1 {
+    use riffdb_storage_api::{AuditPrincipalV1, ServiceAuditAppendIntentV1};
     use riffdb_types::{
         ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
         ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
     };
+    ServiceAuditAppendIntentV1::new(
+        RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
+        Timestamp::new(1700000000, 0).unwrap(),
+        ServiceOperationV1::GetHealth,
+        ServiceAuditPhaseV1::Denied,
+        AuditPrincipalV1::new(
+            ActorId::new("checkpoint-fixture").unwrap(),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
+            std::num::NonZeroU64::MIN,
+        ),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .unwrap()
+}
+
+fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
     for ordinal in 1..=count {
-        let intent = ServiceAuditAppendIntentV1::new(
-            RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
-            Timestamp::new(1700000000, 0).unwrap(),
-            ServiceOperationV1::GetHealth,
-            ServiceAuditPhaseV1::Denied,
-            AuditPrincipalV1::new(
-                ActorId::new("checkpoint-fixture").unwrap(),
-                ActorKind::Human,
-                CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
-                std::num::NonZeroU64::MIN,
-            ),
-            ServiceIngressKindV1::Grpc,
-            ServiceAuditTargetsV1::empty(),
-            None,
-            ServiceAuditLinkV1::None,
-        )
-        .unwrap();
-        let ServiceAuditGroupAppend::Submitted(fence) =
-            ports.submit_service_audit_group(&[intent]).unwrap()
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
         else {
             panic!("the standard native writer must acknowledge through its journal");
         };
@@ -395,6 +397,14 @@ fn source_drain_observations_distinguish_unpublished_unknown_and_oversized_work(
                 .unwrap(),
             reason == 2
         );
+        assert_eq!(
+            ports
+                .shared
+                .mutation_gate
+                .source_publication_requested()
+                .unwrap(),
+            reason == 2
+        );
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
     }
     let mut guard = ports.shared.journal_runtime.lock().unwrap();
@@ -537,4 +547,188 @@ fn source_metadata_accepts_exact_closed_transition_and_encoded_byte_limits() {
     assert!(suffix_is_bounded(&exact));
     let excess = runtime(&scope.join("excess.riffextent"), value_bytes + 1);
     assert!(!suffix_is_bounded(&excess));
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn source_pending_publication_requests_checkpoint_from_the_next_ordinary_writer() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    for acknowledged in [0, 257] {
+        let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+        append_acknowledged_audits(&mut ports, acknowledged);
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 1)])
+            .unwrap()
+        else {
+            panic!("the native writer must retain its original fence");
+        };
+        ports.shared.join_journal_sealer();
+        let root_before = ports.shared.capture_checkpoint_root().unwrap().identity();
+        let published_before = ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap();
+        assert_eq!(
+            published_before.len(),
+            usize::try_from(acknowledged).unwrap()
+        );
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        let result = ports.shared.prepare_online_source_root();
+        drop(lease);
+        assert!(matches!(result.unwrap(), Readiness::PendingJournal));
+        assert_eq!(
+            ports.shared.capture_checkpoint_root().unwrap().identity(),
+            root_before
+        );
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            1
+        );
+        assert_eq!(
+            ports
+                .begin_composite_read()
+                .unwrap()
+                .read_range_to(JournalTable::Audit, &[], None, 300)
+                .unwrap(),
+            published_before
+        );
+        // Do not complete the original fence before the ordinary writer begins.
+        // This deterministic overlap reproduces a pipeline that never becomes empty.
+        let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+        let checkpoint_started = ports.shared.async_checkpoint_in_flight().unwrap();
+        ordinary.abort().unwrap();
+        let ServiceAuditGroupAppend::Submitted(second) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 2)])
+            .unwrap()
+        else {
+            panic!("the second caller also retains its original fence");
+        };
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            0,
+            "an active source handoff publishes the ordinary writer before releasing its lease"
+        );
+        assert_eq!(second.wait().unwrap().len(), 1);
+        let original = fence.wait().unwrap();
+        assert_eq!(
+            original.len(),
+            1,
+            "the original completion owner keeps its result"
+        );
+        assert!(
+            checkpoint_started,
+            "a source hint must reach the ordinary checkpoint despite an unpublished predecessor"
+        );
+        let writer = ports.shared.mutation_gate.acquire().unwrap();
+        ports.shared.poll_async_checkpoint_locked(true).unwrap();
+        drop(writer);
+        ports.shared.join_journal_sealer();
+        let audits = ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap();
+        assert_eq!(audits.len(), usize::try_from(acknowledged + 2).unwrap());
+        assert_eq!(
+            &audits[..published_before.len()],
+            published_before.as_slice()
+        );
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::Ready
+        ));
+        drop(lease);
+        assert!(
+            !ports
+                .shared
+                .mutation_gate
+                .source_publication_requested()
+                .unwrap()
+        );
+        let ServiceAuditGroupAppend::Submitted(third) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 3)])
+            .unwrap()
+        else {
+            panic!("ordinary pipelining resumes after source capture");
+        };
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            1
+        );
+        assert_eq!(third.wait().unwrap().len(), 1);
+    }
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn unknown_pending_tail_never_requests_publication_or_checkpoint() {
+    for changed in 0..15 {
+        let scope = crate::test_path::ScopedDirectory::new("source-pending-accounting");
+        let mut runtime = runtime(&scope.join("journal.riffextent"), 1);
+        let first = &runtime.suffix_frames[0];
+        runtime.published_sequence = first.predecessor_sequence;
+        runtime.published_administration_sequence = first.predecessor_administration_sequence;
+        runtime.published_hash = first.previous_hash;
+        runtime.unpublished_transitions = runtime.suffix_transitions;
+        runtime.unpublished_commands = runtime.suffix_commands;
+        runtime.unpublished_audits = runtime.suffix_audits;
+        runtime.unpublished_bytes = runtime.suffix_bytes;
+        assert!(unpublished_suffix_is_accounted(&runtime));
+        assert!(published_suffix_counts(&runtime).is_none());
+        match changed {
+            0 => runtime.unpublished_transitions += 1,
+            1 => runtime.unpublished_commands += 1,
+            2 => runtime.unpublished_audits += 1,
+            3 => runtime.unpublished_bytes += 1,
+            4 => runtime.published_sequence = CommitSequence::new(99),
+            5 => runtime.published_hash = [0x67; 32],
+            6 => runtime.suffix_transitions += 1,
+            7 => runtime.suffix_bytes += 1,
+            8 => runtime.suffix_frames[0].frame_hash = [0x67; 32],
+            9 => runtime.suffix_frames[0].placement.padded_len += 4096,
+            10 => runtime.suffix_frames.clear(),
+            11 => runtime.last_hash = [0x67; 32],
+            12 => runtime.last_sequence = CommitSequence::new(99),
+            13 => runtime.suffix_frames[0].transition_count = 0,
+            14 => runtime.suffix_bytes = crate::journal::MAX_JOURNAL_SUFFIX_BYTES + 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            !unpublished_suffix_is_accounted(&runtime),
+            "unknown tail {changed}"
+        );
+    }
 }

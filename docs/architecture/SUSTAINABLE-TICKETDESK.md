@@ -23,6 +23,53 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Ordinary publication handoff for source admission
+
+The diagnostic preparation on `230af6cd` fails the unchanged source-byte sample
+gap with no fresh source sample during load. Its last periodic native drain
+record reports 276 unpublished and 90 oversized refusals, including seeding;
+none report unaccounted metadata. The last refused published suffix contains
+403 transitions and 3,633,327 encoded bytes. This failure is preserved. Full CI
+on the preceding `3979a181` passes; neither result qualifies the required host.
+
+A deterministic native regression reproduces the publication overlap with a
+real submitted audit and its unconsumed original completion fence. The source
+turn yields without materializing or publishing it. Previously the next
+ordinary writer could not start a source-requested checkpoint through that
+unpublished predecessor. The native repair now recognizes an exactly accounted
+pending tail or fully published oversized suffix as a scheduling hint,
+separately from source admission authority.
+It checks the complete frame chain, published boundary, pending counters, frame
+identities and existing ceilings; unknown metadata still creates no hint.
+
+One boolean in the existing fixed gate state keeps the ordinary publication
+handoff active until an actually drained source capture or graph retirement.
+An ordinary writer completes its already submitted FIFO prefix before existing
+checkpoint preparation and publishes its own submitted frame before releasing
+its current writer lease. Completion tickets retain the exact original results
+for their owners. This temporarily changes where ordinary publication waits;
+it changes no fsync boundary, commit profile, ordering, acknowledgement, format,
+source deletion authority or application interface. A source turn still never
+waits for publication and drains only an entirely published suffix within the
+existing 256-transition and 1-MiB limits. Ordinary pipelining resumes after the
+drained capture; retirement clears both scheduling hints irreversibly.
+
+This is an implementation choice under ADR-0271 and D-003: source admission,
+FIFO ticket ordering, bounded drain and maintenance residence pacing retain the
+accepted decisions. The ordinary writer already owns publication of the same
+submitted prefix through the same durability fence. No partial source drain or
+source-owned completion of an unpublished result is introduced.
+
+PR note: Package WP-825 (open); Tier guarantee implementation; Behavior: native
+ordinary publication handoff for a bounded source admission attempt; Checks:
+failing deterministic publication-overlap regression, exact original completion
+ownership, malformed-accounting refusal and retirement schedules, with scoped
+checks and broader native validation in progress; Compatibility: durable and
+public fixtures unchanged; Updated handbook: this milestone page; Hazards and
+follow-ups: actual required-host latency, source progress and full CI on final
+source remain required. The complete campaign/resource model and populated
+restore remain open. No 24-hour run has started.
+
 ## Source progress below the ordinary capacity trigger
 
 A populated required-host preparation passed its first five-minute service
@@ -37,8 +84,9 @@ The failed preparation is preserved and does not qualify the milestone.
 For a completely published, consistently accounted oversized suffix, the native
 source owner now records one private hint for the next ordinary writer to start
 the existing asynchronous checkpoint. The source turn still yields without
-draining, rotating or waiting under its lease. Unknown, unpublished or
-inconsistent accounting creates no hint. The ordinary checkpoint retains its
+draining, rotating or waiting under its lease. Unknown or inconsistent accounting creates no hint. The later ordinary
+publication handoff described above also handles an exactly accounted pending
+tail without admitting it to a source drain. The ordinary checkpoint retains its
 existing limits, canonical validation, publication and crash-recovery protocol;
 empty work creates no checkpoint. Source reclamation still requires complete
 current authority, actual independent progress and every current hold.

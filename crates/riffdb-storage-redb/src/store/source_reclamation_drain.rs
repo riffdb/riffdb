@@ -55,6 +55,7 @@ impl SharedRedb {
             // An unactivated source has no source-control mutation authority.
             // Preserve its previous no-op capture without forcing any drain.
             if crate::changelog_v3_roots::read_checkpoint_roots(&root)?.is_none() {
+                self.mutation_gate.clear_source_publication_request()?;
                 return Ok(Readiness::Ready);
             }
         }
@@ -67,6 +68,7 @@ impl SharedRedb {
                 .lock()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             let Some(runtime) = runtime.as_ref() else {
+                self.mutation_gate.clear_source_publication_request()?;
                 return Ok(Readiness::Ready);
             };
             let counts = published_suffix_counts(runtime);
@@ -74,11 +76,11 @@ impl SharedRedb {
                 counts[0] <= crate::journal::SOURCE_SUFFIX_TRANSITIONS
                     && counts[3] <= crate::journal::SOURCE_SUFFIX_BYTES
             }) {
-                if counts.is_some() {
+                if unpublished_suffix_is_accounted(runtime) || counts.is_some() {
                     // Only suggest the existing ordinary checkpoint. This
                     // refused source turn does not materialize, rotate, join
                     // or alter the authority of any acknowledged frame.
-                    self.mutation_gate.note_source_checkpoint_request()?;
+                    self.mutation_gate.note_source_publication_request()?;
                 }
                 let unpublished = runtime.unpublished_transitions != 0
                     || runtime.unpublished_bytes != 0
@@ -110,6 +112,7 @@ impl SharedRedb {
                 return Ok(Readiness::PendingJournal);
             }
             if runtime.suffix_transitions == 0 {
+                self.mutation_gate.clear_source_publication_request()?;
                 return Ok(Readiness::Ready);
             }
             runtime.database_id
@@ -121,6 +124,7 @@ impl SharedRedb {
             }
         }
         self.materialize_published_suffix_for_barrier(true)?;
+        self.mutation_gate.clear_source_publication_request()?;
         Ok(Readiness::Ready)
     }
 }
@@ -171,6 +175,104 @@ fn published_suffix_counts(runtime: &JournalRuntime) -> Option<[usize; 4]> {
             runtime.suffix_bytes,
         ])
     .then_some(counts)
+}
+
+/// A scheduling hint only. Admission still refuses every unpublished frame.
+/// Prove the exact published boundary and complete native pending tail, without
+/// decoding, consuming a completion ticket or treating it as acknowledged.
+fn unpublished_suffix_is_accounted(runtime: &JournalRuntime) -> bool {
+    if runtime.unpublished_transitions == 0
+        || runtime.unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
+        || runtime.unpublished_bytes == 0
+        || runtime.unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+        || runtime.suffix_transitions > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+        || runtime.suffix_bytes > crate::journal::MAX_JOURNAL_SUFFIX_BYTES
+        || runtime.suffix_frames.len() > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
+    {
+        return false;
+    }
+    let Some(first) = runtime.suffix_frames.first() else {
+        return false;
+    };
+    let published = (
+        runtime.published_sequence,
+        runtime.published_administration_sequence,
+        runtime.published_hash,
+    );
+    let mut tip = (
+        first.predecessor_sequence,
+        first.predecessor_administration_sequence,
+        first.previous_hash,
+    );
+    let mut past_publication = tip == published;
+    let mut total = [0usize; 4];
+    let mut pending = [0usize; 4];
+    for frame in &runtime.suffix_frames {
+        let length = frame.encoded.as_bytes().len();
+        if frame.transition_count == 0
+            || length == 0
+            || length > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            || frame.database_id != runtime.database_id
+            || frame.frame_hash != frame.encoded.frame_hash()
+            || (
+                frame.predecessor_sequence,
+                frame.predecessor_administration_sequence,
+                frame.previous_hash,
+            ) != tip
+            || crate::journal::extent_frame_bytes(length) != Some(frame.placement.padded_len)
+        {
+            return false;
+        }
+        for (index, added) in [
+            usize::from(frame.transition_count),
+            usize::from(frame.command_count),
+            usize::from(frame.audit_count),
+            length,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let Some(next) = total[index].checked_add(added) else {
+                return false;
+            };
+            total[index] = next;
+            if past_publication {
+                let Some(next) = pending[index].checked_add(added) else {
+                    return false;
+                };
+                pending[index] = next;
+            }
+        }
+        tip = (
+            frame.covered_sequence,
+            frame.covered_administration_sequence,
+            frame.frame_hash,
+        );
+        if !past_publication && tip == published {
+            past_publication = true;
+        }
+    }
+    past_publication
+        && tip
+            == (
+                runtime.last_sequence,
+                runtime.last_administration_sequence,
+                runtime.last_hash,
+            )
+        && total
+            == [
+                runtime.suffix_transitions,
+                runtime.suffix_commands,
+                runtime.suffix_audits,
+                runtime.suffix_bytes,
+            ]
+        && pending
+            == [
+                runtime.unpublished_transitions,
+                runtime.unpublished_commands,
+                runtime.unpublished_audits,
+                runtime.unpublished_bytes,
+            ]
 }
 
 #[cfg(test)]

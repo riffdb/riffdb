@@ -178,6 +178,11 @@ impl SharedRedb {
     }
 
     pub(super) fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
+        if self.mutation_gate.source_publication_requested()? {
+            // The ordinary writer owns this lease. Complete only its existing
+            // submitted FIFO prefix, retaining results for original owners.
+            self.publish_pending_journal_prefix()?;
+        }
         let start_physical_bytes = journal_checkpoint_start_physical_bytes()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
 

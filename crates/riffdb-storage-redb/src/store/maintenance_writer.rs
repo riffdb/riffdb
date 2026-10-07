@@ -404,12 +404,20 @@ impl RedbWriteAccess {
             publication_ticket,
             completed: false,
         };
+        self.shared.finish_source_requested_publication()?;
         drop(ownership);
         Ok(fence)
     }
 }
 
 impl SharedRedb {
+    pub(super) fn finish_source_requested_publication(&self) -> Result<(), StorageError> {
+        if self.mutation_gate.source_publication_requested()? {
+            self.publish_pending_journal_prefix()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn uses_journaled_retention(&self) -> bool {
         self.application_commit_profile == RedbCommitProfile::Standard
     }

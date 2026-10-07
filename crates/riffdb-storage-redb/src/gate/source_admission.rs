@@ -28,6 +28,7 @@ pub(super) struct State {
     // One nondurable hint for an ordinary writer's existing checkpoint. The
     // same gate mutex couples it to irreversible source-owner retirement.
     checkpoint_requested: bool,
+    publication_requested: bool,
     // queued, granted, expired, cancelled, capacity/refused, wait us,
     // full lease residence us, bounded-drain yields. Diagnostic only.
     census: [u64; 8],
@@ -120,6 +121,7 @@ impl ExclusiveGate {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.source.retired = true;
         state.source.checkpoint_requested = false;
+        state.source.publication_requested = false;
         if let Some(ticket) = state.source.slot.as_ref().map(|slot| slot.ticket) {
             state.cancel_source_ticket(ticket, 3);
         }
@@ -134,11 +136,32 @@ impl ExclusiveGate {
             .map_err(|_| poisoned_gate())
     }
 
-    pub(crate) fn note_source_checkpoint_request(&self) -> Result<(), StorageError> {
+    /// Preserve the ordinary FIFO fence through its existing writer lease until
+    /// a later source turn observes a genuinely published, bounded suffix.
+    pub(crate) fn note_source_publication_request(&self) -> Result<(), StorageError> {
         let mut state = self.inner.state.lock().map_err(|_| poisoned_gate())?;
         if !state.source.retired {
             state.source.checkpoint_requested = true;
+            state.source.publication_requested = true;
         }
+        Ok(())
+    }
+
+    pub(crate) fn source_publication_requested(&self) -> Result<bool, StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map(|state| state.source.publication_requested)
+            .map_err(|_| poisoned_gate())
+    }
+
+    pub(crate) fn clear_source_publication_request(&self) -> Result<(), StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map_err(|_| poisoned_gate())?
+            .source
+            .publication_requested = false;
         Ok(())
     }
 

@@ -7038,6 +7038,7 @@ impl RedbDurabilityEpoch {
         // first would let a later service-audit frame enter the publication
         // queue ahead of this already-submitted command frame.
         let pipeline_drain_required = self.shared.async_checkpoint_installation_pending()?;
+        self.shared.finish_source_requested_publication()?;
         self.completed = true;
         drop(self.lease.take());
         #[cfg(feature = "test-fixtures")]
