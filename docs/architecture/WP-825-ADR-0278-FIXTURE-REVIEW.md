@@ -2,7 +2,8 @@
 
 ADR-0278's exact text was accepted in session on October 7, 2026. This note
 identifies the concrete fixture diff for the separate human fixture review
-required by AGENTS.md. WP-825 remains open; these checks do not qualify a run.
+required by AGENTS.md. The maintainer approved this fixture diff in session
+on October 7, 2026. WP-825 remains open; these checks do not qualify a run.
 
 ## New compatibility evidence
 
@@ -46,12 +47,15 @@ topology updates only the alpha writer and logical journal-frame domains.
 
 Frozen-vector, complete canonical-codec, maximum canonical preimage, source-cut
 process-crash, exact native predecessor upgrade, generated-manifest, version
-topology and handbook checks pass. The decoded new artifacts pass privacy and
+topology checks pass. The decoded new artifacts pass privacy and
 byte-identity checks. The first scoped acceptance attempt found four test
 expectations/guard updates, one crash-campaign timeout during concurrent durable
 I/O, and an absent TypeScript compiler dependency. Focused corrected tests pass;
 the crash campaign passes in 24 seconds under its existing 120-second deadline.
-A final scoped acceptance pass and frozen-source full CI remain required.
+The first frozen full CI attempt found a remaining server test that expected
+writer 3 and a missing handbook index entry for this review note. Both are
+corrected without changing runtime behavior or compatibility fixtures. A final
+scoped acceptance pass and frozen-source full CI remain required.
 
 The source-cut windows and legacy suffix admission have bounded-memory tests.
 Native admission now includes nested terminal-receipt reconstruction, both
@@ -66,5 +70,6 @@ No 24-hour run has started.
 PR note: Package WP-825 (open); Tier guarantee; Behavior: accepted V5 source-cut
 compatibility and exact writer-3-to-4 upgrade evidence; Checks: those named above;
 Compatibility: old vectors and predecessor identities retained; Updated handbook:
-Sustainable TicketDesk and Compatibility; Hazards and follow-ups: human fixture
-review, final-source checks, production memory observations and real qualification.
+Sustainable TicketDesk, Compatibility and this indexed review note; Hazards
+and follow-ups: final-source checks, production memory observations and real
+qualification.

@@ -28660,6 +28660,10 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Record the maintainer's ADR-0278 fixture approval and index its review
+      note in the handbook. Correct the server startup refusal test to the
+      accepted writer-4 identity while preserving untouched-source assertions.
+      Retain the failed frozen full CI and require a fresh complete pass.
     - Retire uniquely owned publication-lineage predecessors iteratively with
       Arc::into_inner, preserving shared snapshot ancestry under concurrent owner
       release, supported overlay limits and the 384 KiB maintenance stack.
