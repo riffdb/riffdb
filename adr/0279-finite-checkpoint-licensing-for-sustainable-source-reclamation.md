@@ -13,12 +13,15 @@ requirements: [STO-030, STO-031, STO-032, REC-001, END-007, END-008]
 packages: [WP-825]
 obligations:
   - id: OBL-0279-1
+    package: WP-825
     proof: checkpoint_license_reclaims_its_complete_finite_prefix_without_new_progress
     says: One independently durable checkpoint licenses multiple bounded cuts through its already covered prefix, then refuses without new independent progress.
   - id: OBL-0279-2
+    package: WP-825
     proof: checkpoint_license_refuses_changed_lineage_holds_and_unclassified_publication
     says: Current validation, holds and exact checkpoint coverage are rechecked at every admission; changed or missing evidence never authorizes deletion.
   - id: OBL-0279-3
+    package: WP-825
     proof: source_byte_continuation_matches_exact_pinned_full_walk
     says: Exact read-only byte accounting continues only through checked appends and removed preimages, matches an independent pinned oracle and refuses incomplete evidence.
 review_triggers:
