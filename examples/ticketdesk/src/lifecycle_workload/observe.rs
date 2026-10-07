@@ -336,10 +336,21 @@ fn validate_handover(
     Ok(expected)
 }
 
+fn validate_ack(result: riffdb_client_rust::ApplicationEventMutationResult) -> Result<()> {
+    use riffdb_client_rust::ApplicationEventMutationResult as Mutation;
+    match result {
+        Mutation::Applied => Ok(()),
+        Mutation::StateChanged => Err("observer_ack_state_changed"),
+        Mutation::NotFound => Err("observer_ack_not_found"),
+        Mutation::OutstandingLease => Err("observer_ack_outstanding_lease"),
+        Mutation::StaleLease => Err("observer_ack_stale_lease"),
+        Mutation::LeaseExpired => Err("observer_ack_lease_expired"),
+    }
+}
+
 pub(super) async fn run() -> Result<()> {
     use riffdb_client_rust::{
-        ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus,
-        ApplicationEventMutationResult, EventConsumerOptions,
+        ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus, EventConsumerOptions,
     };
     use std::io::{self, Write};
     use std::time::{Duration, Instant};
@@ -497,10 +508,7 @@ pub(super) async fn run() -> Result<()> {
                     } else {
                         duplicates += 1;
                     }
-                    if client.ack_event(delivery).await.map_err(|_| "observer_ack")?
-                        != ApplicationEventMutationResult::Applied {
-                        return Err("observer_ack_transition");
-                    }
+                    validate_ack(client.ack_event(delivery).await.map_err(|_| "observer_ack")?)?;
                 }
                 let Some(ApplicationEventConsumerPublicStatus::Exact(status)) =
                     client.events_status().await.map_err(|_| "observer_status")? else {
@@ -620,6 +628,22 @@ mod tests {
         assert_eq!(validate_handover(1, 10, &restored, true), Ok(2));
         assert!(validate_handover(1, 10, &status, true).is_err());
         assert!(validate_handover(u64::MAX, 10, &restored, true).is_err());
+    }
+
+    // req: END-003, END-007, END-008
+    #[test]
+    fn acknowledgement_refusals_remain_failures_with_closed_distinct_causes() {
+        use riffdb_client_rust::ApplicationEventMutationResult as Mutation;
+        assert_eq!(validate_ack(Mutation::Applied), Ok(()));
+        for (result, cause) in [
+            (Mutation::StateChanged, "observer_ack_state_changed"),
+            (Mutation::NotFound, "observer_ack_not_found"),
+            (Mutation::OutstandingLease, "observer_ack_outstanding_lease"),
+            (Mutation::StaleLease, "observer_ack_stale_lease"),
+            (Mutation::LeaseExpired, "observer_ack_lease_expired"),
+        ] {
+            assert_eq!(validate_ack(result), Err(cause));
+        }
     }
 
     fn created() -> TicketEventsEvent {

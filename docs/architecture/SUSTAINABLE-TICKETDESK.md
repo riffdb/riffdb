@@ -196,6 +196,20 @@ Hazards/follow-ups: identify the acknowledgement
 result, measure real public RPCs and the five-process census together, then run
 final-source full CI and required-host preparation.
 
+## Closed acknowledgement refusal diagnostics
+
+The event observer preserves the distinct public mutation result in its closed
+failure code: changed state, missing consumer, outstanding lease, stale lease,
+or expired lease. Only an applied acknowledgement permits continued observation.
+It does not retry, lengthen leases or accept a refused acknowledgement as success.
+No event identity, lease token, payload or credential enters these diagnostics.
+
+Package: WP-825, open. Tier: internal. Checks: the generic-cause regression fails
+before the correction; all 28 lifecycle-worker tests pass. Compatibility: public
+RPCs, lease timing, durable formats, credentials and workload gates are unchanged.
+Updated handbook: this page. Follow-up: use the actual result to diagnose the
+failed population seed; it is not an established root cause or native repair.
+
 ## Current handoff
 
 Package: WP-821; tier: guarantee. This preparation adds accepted decisions,
