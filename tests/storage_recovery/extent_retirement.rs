@@ -8,6 +8,17 @@ use std::num::NonZeroU64;
 const MODE: &str = "RIFFDB_EXTENT_RETIREMENT_CHILD_MODE";
 const SOURCE: &str = "RIFFDB_EXTENT_RETIREMENT_CHILD_PATH";
 
+fn drive_retirement_owner(ports: &RedbOperationalPorts) {
+    // The physical observer may pin the first turn while validating the one
+    // sealed fixture extent. Keep the same lane through completion and the
+    // ensuing retirement turn; a new lane per turn would recapture that pin.
+    let lane = ports.online_retention_lane();
+    for _ in 0..3 {
+        lane.step(NonZeroU64::new(2).unwrap(), NonZeroU64::new(256).unwrap())
+            .unwrap();
+    }
+}
+
 #[test]
 fn extent_retirement_crash_child() {
     let Ok(mode) = std::env::var(MODE) else {
@@ -16,10 +27,7 @@ fn extent_retirement_crash_child() {
     let path = PathBuf::from(std::env::var_os(SOURCE).unwrap());
     if mode.starts_with("recycle-") {
         let ports = open_operational(RedbStore::open(&path).unwrap());
-        ports
-            .online_retention_lane()
-            .step(NonZeroU64::new(2).unwrap(), NonZeroU64::new(256).unwrap())
-            .unwrap();
+        drive_retirement_owner(&ports);
         let mut pool = path.as_os_str().to_os_string();
         pool.push(".riffjournal.recycled");
         let mut preparing = path.as_os_str().to_os_string();
@@ -60,10 +68,7 @@ fn extent_retirement_crash_child() {
         RedbTestController::abort_before_commit(operation)
     };
     let ports = open_operational(RedbStore::open_with_test_controller(&path, controller).unwrap());
-    ports
-        .online_retention_lane()
-        .step(NonZeroU64::new(2).unwrap(), NonZeroU64::new(256).unwrap())
-        .unwrap();
+    drive_retirement_owner(&ports);
     panic!("the armed physical retirement did not terminate the child");
 }
 
