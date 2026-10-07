@@ -276,6 +276,29 @@ Updated handbook: this page. All 10 focused native accounting tests pass;
 full scoped checks and final-source host evidence remain required. This
 component authorizes no 24-hour qualification.
 
+## Separate logical-byte collection during observed load
+
+Observed online-retention load with native observations also collects
+`riffdb-retention-logical-bytes-v1` into private logical-byte samples and an
+observation summary. It reuses the bounded daemon-log reader, checks the closed
+numeric record and native 256-command whole-row bound, and binds samples to the
+independently observed incarnation. Protected rows may lower the eligible end;
+the original durable head and watermark cannot rewind. Unknown, partial,
+expired, malformed or refused observations fail the preparation instead of
+becoming zero. Each five-minute window needs complete observations, with the
+same frozen 95-second maximum gap as source accounting.
+
+Logical observations preserve canonical value bytes and removed-key bytes
+separately. They do not substitute for source bytes or physical allocated extent
+bytes, fill `eligible_history_bytes`, or qualify the aggregate resource model.
+The native logical producer must accompany this collector before host use.
+
+Package: WP-825, open. Tier: internal implementation and acceptance under
+ADR-0265. Compatibility: no public interface, durable encoding, authorization,
+dependency or reviewed compatibility-fixture change. Updated handbook: this
+page. Six focused collector tests pass; native and required-host evidence remain
+required. This component authorizes no 24-hour qualification.
+
 ## Actual source-receipt byte observations
 
 The online source owner can report `riffdb-retention-source-bytes-v1` after

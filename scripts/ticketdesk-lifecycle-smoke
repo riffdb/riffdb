@@ -25,6 +25,7 @@ from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
 from lib.ticketdesk_lifecycle_provider_budget import ProviderBudgetError, ProviderLog
 from lib.ticketdesk_lifecycle_source_bytes import SourceBytesLog
+from lib.ticketdesk_lifecycle_logical_bytes import LogicalBytesLog
 from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess, NativeObservationError
 from lib.ticketdesk_lifecycle_resources import (
     MAX_PREPARATION_SAMPLE_SECONDS, ResourceError, PreparationMemorySamples,
@@ -515,6 +516,7 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
     memory = None
     providers = None
     source_bytes = None
+    logical_bytes = None
     deadline = time.monotonic() + duration + 120
     with (root / "load.stdout").open("xb") as output, (root / "load.stderr").open("xb") as errors:
         process = subprocess.Popen([worker, "probe"], env=environment,
@@ -554,6 +556,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                                     return None if sample is None else sample["history_incarnation"]
                                 source_bytes = SourceBytesLog(root, duration, incarnation)
                                 source_bytes.__enter__()
+                                logical_bytes = LogicalBytesLog(root, duration, incarnation)
+                                logical_bytes.__enter__()
                         if projection is not None:
                             projection.start(started)
                 except queue.Empty:
@@ -565,6 +569,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     providers.poll(int((now - started) * 1000000000))
                 if source_bytes is not None:
                     source_bytes.poll(int((now - started) * 1000000000))
+                if logical_bytes is not None:
+                    logical_bytes.poll(int((now - started) * 1000000000))
                 if projection is not None:
                     projection.poll()
                 if sink is not None and started is not None:
@@ -600,6 +606,9 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             if source_bytes is not None:
                 summary = source_bytes.finish(int((time.monotonic() - started) * 1000000000))
                 write(root, "source-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
+            if logical_bytes is not None:
+                summary = logical_bytes.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "logical-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
             if memory is not None:
                 memory.finish()
             if projection is not None:
@@ -620,6 +629,8 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     "paused_events": oracle.first["events_checked"], "drained_events": 2048,
                     "observed_samples": oracle.samples, "live_progress_during_pause": True}))
         finally:
+            if logical_bytes is not None:
+                logical_bytes.__exit__(None, None, None)
             if source_bytes is not None:
                 source_bytes.__exit__(None, None, None)
             if providers is not None:
