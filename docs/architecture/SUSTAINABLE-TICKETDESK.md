@@ -87,20 +87,29 @@ that ceiling and sends a bounded proof before execution. A missing proof,
 invalid ceiling or launch refusal fails the invocation. Restarts retain separate
 proofs and exit records; exact process kills still retain kernel RSS high water.
 
-The exit record distinguishes `exit_allocator_peak_upper_bound_bytes` from the
-unknown measured `exit_allocator_peak_bytes`. The former is a conservative
-kernel-enforced address-space bound, including mappings, stacks and reservations;
-it is never presented as allocated live bytes. The owned unprivileged workload
-must retain the inherited hard limit. The final campaign must freeze the actual
-limits and account independently for every incarnation and descendant. A limit
-refusal remains a workload failure, rather than a reason to retry at a larger
-limit. Existing invocations without a frozen ceiling retain unknown exit bounds.
+The exit record distinguishes three quantities: the unknown measured
+`exit_allocator_peak_bytes`, the enforced worker bound
+`worker_exit_allocator_peak_upper_bound_bytes`, and the full child-lifetime
+`exit_allocator_peak_upper_bound_bytes`. The last remains unknown when the
+parent was unconstrained at fork. A finite inherited hard limit can bound birth;
+the proof also includes the parent's existing mapped image, since Linux permits
+lowering a limit below existing mappings. The worker's smaller limit takes effect
+in the launcher. These are conservative address-space bounds including mappings,
+stacks and reservations, never allocated live bytes.
 
-The first missing-capability test fails on the predecessor. Seventeen child
-usage tests and all 168 lifecycle tests pass, including allocation refusal,
-refusal to raise the hard limit, exact kill, missing-proof cleanup and independent
-restart records. These checks establish no host memory ceiling or campaign
-qualification. Records retain `qualifies_complete_resource_model: false`.
+The final campaign must freeze actual limits and account independently for every
+incarnation and descendant. A limit refusal remains a workload failure, rather
+than a reason to retry at a larger limit. Existing invocations without a frozen
+ceiling retain unknown exit bounds.
+
+The first missing-capability test fails on the predecessor. Nineteen child
+usage tests, all 177 lifecycle tests and all 11 scoped acceptance checks pass,
+including allocation refusal, refusal to raise the hard limit, exact kill, missing-proof cleanup and independent
+restart records. A semantic regression also proves that an unconstrained
+parent cannot confer a full-lifetime bound. The corrected proof covers the
+finite inherited-limit case. A lowered-parent diagnostic refuses under memory
+pressure and is not passing accounting evidence. These checks establish no host
+memory ceiling or campaign qualification. Records retain `qualifies_complete_resource_model: false`.
 
 PR note: Package WP-825 (open); Tier internal; Behavior: optional private
 kernel-enforced lifetime upper bounds for owned process evidence; Checks: child

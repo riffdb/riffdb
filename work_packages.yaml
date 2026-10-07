@@ -28660,6 +28660,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Correct the private process bound's scope. Separate the worker's enforced
+      ceiling from the full child-lifetime bound; the latter remains unknown
+      with an unconstrained parent. A finite inherited limit and the parent's
+      existing mapped image bound birth. Preserve the unknown actual allocator
+      measurement, invocation refusals and incomplete qualification status.
     - Restrict the generated workload's interruption recovery to actual
       transport unavailability or uncertain outcomes. Generic Retry metadata
       must not hide native storage, capacity, projection, freshness or deadline

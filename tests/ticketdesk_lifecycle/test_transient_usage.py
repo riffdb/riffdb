@@ -43,9 +43,24 @@ class TransientUsage(unittest.TestCase):
                     observation=root/'usage.json', address_space_limit_bytes=256*1024*1024)
             value = json.loads((root/'usage.json').read_bytes())
             self.assertEqual(result, 0)
-            self.assertEqual(value['exit_allocator_peak_upper_bound_bytes'], 256*1024*1024)
+            self.assertEqual(value['worker_exit_allocator_peak_upper_bound_bytes'], 256*1024*1024)
             self.assertEqual(value['allocator_basis'], 'linux_hard_rlimit_as_upper_bound')
             self.assertIsNone(value['exit_allocator_peak_bytes'])
+            self.assertFalse(value['qualifies_complete_resource_model'])
+
+    def test_unconstrained_parent_does_not_invent_a_full_lifetime_allocator_bound(self):
+        import resource
+        inherited = resource.getrlimit(resource.RLIMIT_AS)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (root/'stdout').open('xb') as output, (root/'stderr').open('xb') as errors:
+                result = resources.run_transient_observed([sys.executable,'-c','a=bytearray(16*1024*1024)'],
+                    output=output,errors=errors,environment=None,timeout=10,
+                    observation=root/'usage.json',address_space_limit_bytes=128*1024*1024)
+            self.assertEqual(result,0)
+            value = json.loads((root/'usage.json').read_bytes())
+            expected = None if inherited == resource.RLIM_INFINITY else inherited
+            self.assertEqual(value['exit_allocator_peak_upper_bound_bytes'],expected)
             self.assertFalse(value['qualifies_complete_resource_model'])
 
     def test_timeout_preserves_the_joined_child_exit_and_remains_a_failure(self):

@@ -14,7 +14,7 @@ import sys
 import time
 
 if __name__ != "__main__":
-    from .ticketdesk_lifecycle_resources import ResourceError, require
+    from .ticketdesk_lifecycle_resources import MAX_U64, ProcessMemory, ResourceError, require
 
 MIN_LIMIT = 64 * 1024**2
 MAX_LIMIT = 32 * 1024**3
@@ -31,6 +31,16 @@ class AddressSpaceLaunch:
                 and sum(len(value.encode()) for value in arguments) <= 65536,
                 'process_address_space_arguments')
         self.limit = limit
+        hard = resource.getrlimit(resource.RLIMIT_AS)[1]
+        self.parent_hard = None if hard == resource.RLIM_INFINITY else hard
+        if self.parent_hard is not None:
+            require(type(hard) is int and 0 <= hard <= MAX_U64, 'process_address_space_proof')
+            # Linux permits lowering a hard limit below existing mappings.
+            # Such mappings survive fork, so include the actual parent image
+            # as well as every further mapping its finite hard limit permits.
+            self.birth_bound = max(hard, ProcessMemory(os.getpid()).sample()['allocator_bytes'])
+        else:
+            self.birth_bound = None
         self.read, self.write = os.pipe2(os.O_CLOEXEC)
         self.arguments = [sys.executable, '-I', str(Path(__file__).resolve()),
                           str(limit), str(self.write), *arguments]
@@ -67,11 +77,17 @@ class AddressSpaceLaunch:
         except (ValueError, UnicodeError) as error:
             raise ResourceError('process_address_space_proof') from error
         require(type(value) is dict and value.keys() == {'enforced', 'limit_bytes',
-                    'launch_virtual_peak_bytes'} and value['enforced'] is True
+                    'launch_virtual_peak_bytes', 'inherited_hard_limit_bytes'} and value['enforced'] is True
                 and type(value['limit_bytes']) is int and value['limit_bytes'] == self.limit
                 and type(value['launch_virtual_peak_bytes']) is int
                 and 0 < value['launch_virtual_peak_bytes'] <= self.limit,
                 'process_address_space_proof')
+        inherited = value['inherited_hard_limit_bytes']
+        require(inherited is None or type(inherited) is int and self.limit <= inherited <= MAX_U64,
+                'process_address_space_proof')
+        if self.parent_hard is not None:
+            require(inherited is not None and inherited <= self.parent_hard, 'process_address_space_proof')
+        value['lifetime_upper_bound_bytes'] = self.birth_bound
         return value
 
 
@@ -100,6 +116,8 @@ def launch():
         peak = int(selected[b'VmPeak'][0]) * 1024
         if not 0 < peak <= limit or int(selected[b'CapEff'][0], 16) & (1 << 24):
             raise ValueError()
+        inherited = resource.getrlimit(resource.RLIMIT_AS)[1]
+        inherited = None if inherited == resource.RLIM_INFINITY else inherited
         resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
         if resource.getrlimit(resource.RLIMIT_AS) != (limit, limit): raise ValueError()
         # Lowering RLIMIT_AS below an existing mapping is allowed by Linux.
@@ -114,7 +132,8 @@ def launch():
         peak = int(peaks[0][0]) * 1024
         if not 0 < peak <= limit: raise ValueError()
         proof = json.dumps(dict(enforced=True, limit_bytes=limit,
-                                launch_virtual_peak_bytes=peak), sort_keys=True).encode()
+                                launch_virtual_peak_bytes=peak,
+                                inherited_hard_limit_bytes=inherited), sort_keys=True).encode()
         if os.write(descriptor, proof) != len(proof): raise ValueError()
         os.close(descriptor); descriptor = None
         os.execvpe(sys.argv[3], sys.argv[3:], os.environ)

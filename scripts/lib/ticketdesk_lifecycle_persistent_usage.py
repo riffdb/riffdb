@@ -33,7 +33,7 @@ class ObservedProcess:
             launch_observed=False, exit_observed=False, exit_code=None, elapsed_ns=None,
             launch_memory=None, launch_memory_refusal=None, exit_rss_peak_bytes=None,
             exit_allocator_peak_bytes=None, exit_allocator_peak_upper_bound_bytes=None,
-            address_space_proof=None, exit_rss_basis='linux_wait4_per_child_ru_maxrss',
+            worker_exit_allocator_peak_upper_bound_bytes=None, address_space_proof=None, exit_rss_basis='linux_wait4_per_child_ru_maxrss',
             allocator_basis='unknown_at_exit', qualifies_complete_resource_model=False)
         try:
             launch = (AddressSpaceLaunch(arguments, address_space_limit_bytes)
@@ -115,7 +115,8 @@ class ObservedProcess:
                     'process_usage_exit')
             self._value['exit_rss_peak_bytes'] = usage.ru_maxrss * 1024
             if self._value['address_space_proof'] is not None:
-                self._value['exit_allocator_peak_upper_bound_bytes'] = self._value['address_space_proof']['limit_bytes']
+                self._value['worker_exit_allocator_peak_upper_bound_bytes'] = self._value['address_space_proof']['limit_bytes']
+                self._value['exit_allocator_peak_upper_bound_bytes'] = self._value['address_space_proof']['lifetime_upper_bound_bytes']
         finally:
             self._finish()
         return self._child.returncode

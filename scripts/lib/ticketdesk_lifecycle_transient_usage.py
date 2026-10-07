@@ -30,7 +30,8 @@ def run_transient_observed(arguments, *, output, errors, environment, timeout, o
             launch_observed=False,exit_observed=False,timed_out=False,exit_code=None,
             elapsed_ns=None,launch_memory=None,launch_memory_refusal=None,
             exit_rss_peak_bytes=None,exit_allocator_peak_bytes=None,
-            exit_allocator_peak_upper_bound_bytes=None,address_space_proof=None,
+            exit_allocator_peak_upper_bound_bytes=None,
+            worker_exit_allocator_peak_upper_bound_bytes=None,address_space_proof=None,
             exit_rss_basis='linux_wait4_per_child_ru_maxrss',
             allocator_basis='unknown_at_exit',qualifies_complete_resource_model=False)
         child=None
@@ -53,7 +54,8 @@ def run_transient_observed(arguments, *, output, errors, environment, timeout, o
                         and 0 < usage.ru_maxrss <= MAX_U64//1024,'process_usage_exit')
                 value['exit_rss_peak_bytes']=usage.ru_maxrss*1024
                 if value['address_space_proof'] is not None:
-                    value['exit_allocator_peak_upper_bound_bytes'] = address_space_limit_bytes
+                    value['worker_exit_allocator_peak_upper_bound_bytes'] = address_space_limit_bytes
+                    value['exit_allocator_peak_upper_bound_bytes'] = value['address_space_proof']['lifetime_upper_bound_bytes']
                 return True
 
         try:
