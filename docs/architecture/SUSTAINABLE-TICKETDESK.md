@@ -23,6 +23,45 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Missing native byte evidence stops preparation promptly
+
+The unchanged 1,500-second required-host diagnostic on native `f153ae48`
+completes 150,000 commands and 600,000 reads with zero retries and no
+post-duration work, then fails `source_bytes_sample_coverage`. Only one complete
+source-byte sample appears during load; logical and physical collectors each
+retain 24 samples. The source producer emits no further complete record.
+The failed population and private original observations remain intact. This
+is failed preparation evidence; state/archive reconciliation and the populated
+restore gate were not reached.
+
+The collectors previously checked the 95-second gap only when another native
+record arrived or at final reconciliation. A permanently silent producer could
+therefore consume the entire diagnostic duration before refusal. Source,
+logical and physical log polling now checks that same gap against actual last
+observation, including the missing-initial-sample case. It does not substitute
+zero, infer bytes, relax freshness or permit qualification. Native producer and
+reclamation repairs remain necessary.
+
+The corrected regression fails six silence assertions on the predecessor.
+Three parameterized tests now pass for all three collectors: missing initial
+record, silence after one actual record, and continued actual fresh records.
+All 180 lifecycle tests pass. The first baseline also had an incorrect physical
+fixture incarnation; the corrected baseline has six semantic failures and no
+fixture errors. Those attempts remain private and distinct.
+
+The latest local frozen full-CI attempt has no exit or completion receipt and
+no surviving runner. It is preserved as interrupted/incomplete. The earlier
+full attempt failed the operational adapter because its owned socket path was
+too long; the adapter passes independently with a short root. Neither result
+establishes a final-source full-CI pass. The 24-hour run remains unstarted.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: refuse silent native
+byte producers during polling at the existing observation gap; Checks: corrected
+predecessor regression fails, three parameterized tests and all 180 lifecycle
+tests pass; Compatibility: native formats, observations and limits unchanged;
+Updated handbook: this page; Hazards and follow-ups: native reclamation/accounting,
+final-source CI and all measured rehearsal gates remain open.
+
 ## Interruption recovery preserves native failure visibility
 
 The generated load worker now recovers only actual transport interruption or

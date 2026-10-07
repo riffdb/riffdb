@@ -129,3 +129,13 @@ class LogicalBytesLog(ProviderLog):
         self.path = Path(root) / "server.stderr"
         self.samples = LogicalBytesSamples(root, duration, expected_incarnation)
         self.source = self.identity = None
+
+    def poll(self, elapsed_ns):
+        require(type(elapsed_ns) is int and 0 <= elapsed_ns <= MAX_U64,
+                "logical_bytes_clock")
+        super().poll(elapsed_ns)
+        # EOF does not mean that the native producer is still reporting.
+        # Enforce the existing gap even when no subsequent line arrives.
+        through = min(elapsed_ns, self.samples.duration_ns)
+        require(0 <= through - (self.samples.last_ns or 0) <= MAX_GAP_NS,
+                "logical_bytes_sample_gap")

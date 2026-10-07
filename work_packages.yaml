@@ -28662,6 +28662,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Enforce the existing 95-second native byte-observation gap on every
+      source, logical and physical log poll, including silence before the first
+      sample. Preserve unknown values and failed host evidence; this detects
+      the native failure promptly and does not repair or qualify reclamation.
+      Preserve the interrupted local CI attempt as incomplete with no exit
+      receipt; final-source CI and the actual campaign remain required.
     - Extend only the proposal path for ADR-0279 under the maintainer's
       existing authorization to cover any necessary native fixes. The failed
       required-host preparation and deterministic checkpoint-license regression
