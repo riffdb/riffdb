@@ -45,26 +45,44 @@ impl Barrier {
         Ok(Self::try_validation_capture(shared)?.map(|(root, _)| root))
     }
 
+    #[cfg(test)]
     pub(super) fn try_validation_capture(
         shared: &Arc<SharedRedb>,
     ) -> Result<Option<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError> {
+        Ok(match Self::try_validation_capture_observed(shared)? {
+            AdmissionAttempt::Admitted(captured) => Some(captured),
+            AdmissionAttempt::Yielded(_) => None,
+        })
+    }
+
+    pub(super) fn try_validation_capture_observed(
+        shared: &Arc<SharedRedb>,
+    ) -> Result<AdmissionAttempt<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError>
+    {
         let Some(_lease) = shared.mutation_gate.acquire_source()? else {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(AdmissionYield::BusyWriter));
         };
         if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         if shared.source_continuation_epoch.load(Ordering::Acquire) == u64::MAX {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        if prepare_online_source_root(shared)?.is_some() {
-            return Ok(None);
+        if let Some(reason) = prepare_online_source_root(shared)? {
+            return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
         if epoch == u64::MAX {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        Ok(Some((shared.capture_checkpoint_root()?, epoch)))
+        Ok(AdmissionAttempt::Admitted((
+            shared.capture_checkpoint_root()?,
+            epoch,
+        )))
     }
     pub(super) fn acquire(shared: Arc<SharedRedb>) -> Result<Self, StorageError> {
         let lease = shared.mutation_gate.acquire()?;
@@ -500,6 +518,11 @@ mod tests {
         *ports.shared.journal_sealer.lock().unwrap() = Some(worker);
         entry.recv().unwrap();
         let epoch = ports.shared.durable_commit_epoch();
+        let mut initial = ports.replication_source_control();
+        assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(initial.admission_yields(), [0, 0, 1, 0, 0]);
+        assert!(!initial.receipt_validation_pending());
+        assert!(ports.shared.source_checkpoint_publication_pending().unwrap());
         assert_eq!(
             validation_drain_yield(&ports.shared).unwrap(),
             Some(AdmissionYield::CheckpointPublication)
@@ -518,6 +541,10 @@ mod tests {
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         release.send(()).unwrap();
         ports.shared.join_journal_sealer();
+        assert!(!ports.shared.source_checkpoint_publication_pending().unwrap());
+        assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(initial.admission_yields(), [0; 5]);
+        assert!(initial.receipt_validation_pending());
         assert_eq!(validation_drain_yield(&ports.shared).unwrap(), None);
         assert!(
             Barrier::try_validation_root(&ports.shared)

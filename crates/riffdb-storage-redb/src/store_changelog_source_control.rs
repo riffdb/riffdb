@@ -372,10 +372,15 @@ impl ReplicationSourceControl {
             self.online_validation_phases[2] = 1;
         }
         if self.online_validation.is_none() {
-            let captured = Barrier::try_validation_capture(&self.shared)?;
-            let Some((root, qualification)) = captured else {
-                return Ok(0);
-            };
+            let (root, qualification) =
+                match Barrier::try_validation_capture_observed(&self.shared)? {
+                    transaction::AdmissionAttempt::Admitted(captured) => captured,
+                    transaction::AdmissionAttempt::Yielded(reason) => {
+                        self.online_validation_phases[3] = 1;
+                        self.online_admission_yields[reason.index()] = 1;
+                        return Ok(0);
+                    }
+                };
             self.online_validation = RetainedHistoryValidation::new(root)?;
             if let Some(walk) = self.online_validation.as_mut() {
                 walk.bind_qualification(qualification);

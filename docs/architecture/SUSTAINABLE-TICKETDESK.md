@@ -61,6 +61,38 @@ milestone handoff; Hazards and follow-ups: full checks, real required-host
 pressure and the qualifying short campaign remain unproved. No 24-hour run is
 started, and the previous failed preparation is not reclassified.
 
+The next populated preparation completed its first five-minute load window but
+again failed source-byte coverage. Native source preparation yielded for a
+checkpoint while logical retention remained at its target or fenced. The worker
+selected its idle pause rather than observing the checkpoint's completion.
+Checkpoint installation also precedes asynchronous journal-sealer completion;
+the sealer does not announce a second checkpoint. Both failed preparations are
+preserved and remain failures.
+
+The actual native regression also found that initial source capture discarded
+its admission-yield reason. It now reports the same closed refusal phases as
+continuation admission, so the worker can schedule the first capture correctly.
+This changes observation and scheduling only; capture still acquires the same
+source lease and checks the same publication, epoch and writer conditions.
+
+The worker now uses the actual source-yield phases to wait for the existing
+checkpoint and its sealer after completing the entire writer-residence rest.
+A journal yield requires an observed native checkpoint; a publication yield
+can finish when its existing sealer finishes. Rechecks retain the current
+bounded deadline, cancellation and typed refusal. Captured read-only validation
+can continue during the wait. A changed checkpoint updates the wait baseline,
+so a pending sealer cannot turn the checkpoint condition variable into a spin.
+Source-only wakes never grant the logical lane's after-checkpoint drain
+exception. Ordinary idle and noncheckpoint refusals keep their prior backoff.
+
+Package: WP-825, open. Tier: guarantee implementation within ADR-0265,
+ADR-0271, ADR-0272 and D-003. Compatibility: no new durable identity, command
+ordering, authority, source-cut, drain ceiling, dependency or application
+interface. Updated handbook: this page. Checks: deterministic source wait,
+rest, cancellation and refusal regressions plus actual native suffix and
+publication validation; final-source CI and required-host progress remain
+required. No 24-hour run is started.
+
 ## Persistent child launch and exit observations
 
 The preparation now retains a private, exclusive usage record for each server,

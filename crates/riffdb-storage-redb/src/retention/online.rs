@@ -205,6 +205,14 @@ impl RedbOnlineRetentionLane {
             .continue_captured(&self.shared))
     }
 
+    /// Whether source-root preparation is still waiting for native checkpoint
+    /// installation or sealing. This only schedules a fresh preparation attempt;
+    /// it grants no source mutation, drain, writer or checkpoint authority.
+    #[doc(hidden)]
+    pub fn source_checkpoint_publication_pending(&self) -> Result<bool, StorageError> {
+        self.shared.source_checkpoint_publication_pending()
+    }
+
     /// First-party worker retirement cancels pending source requests under the
     /// gate lock, leaving ordinary writers and granted atomic turns intact.
     #[doc(hidden)]

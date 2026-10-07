@@ -2,6 +2,7 @@
 // req: STO-030, STO-031, STO-032, REC-001
 use super::*;
 use crate::journal::{JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable};
+use std::num::NonZeroU64;
 
 #[test]
 fn source_validation_pages_finish_without_requesting_a_writer_turn() {
@@ -194,9 +195,7 @@ fn source_capture_does_not_initialize_an_absent_native_journal_lane() {
     assert!(!ports.shared.mutation_gate.is_held());
 }
 
-// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
-#[test]
-fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoint() {
+fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
     use riffdb_storage_api::{
         AuditPrincipalV1, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
         ServiceAuditGroupAppend,
@@ -205,8 +204,7 @@ fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoin
         ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
         ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
     };
-    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
-    for ordinal in 1..=257_u64 {
+    for ordinal in 1..=count {
         let intent = ServiceAuditAppendIntentV1::new(
             RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
             Timestamp::new(1700000000, 0).unwrap(),
@@ -231,6 +229,13 @@ fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoin
         };
         assert_eq!(fence.wait().unwrap().len(), 1);
     }
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoint() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
     assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
     let audit_before = ports
         .begin_composite_read()
@@ -293,6 +298,42 @@ fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoin
         Readiness::Ready
     ));
     drop(lease);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn source_suffix_yield_is_visible_when_logical_retention_is_at_target() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
+    let lane = ports.online_retention_lane();
+    let (step, phases) = lane
+        .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+        .unwrap();
+    assert_eq!(
+        step,
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::TargetReached)
+    );
+    assert_eq!(phases.source_admission_pending_journal, 1);
+    assert_eq!(phases.source_admission_checkpoint, 0);
+    assert!(
+        !lane.source_checkpoint_publication_pending().unwrap(),
+        "a suggestion is not a started or completed checkpoint"
+    );
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    assert!(lane.source_checkpoint_publication_pending().unwrap());
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    ports.shared.join_journal_sealer();
+    assert!(!lane.source_checkpoint_publication_pending().unwrap());
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
+    let (_, phases) = lane
+        .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+        .unwrap();
+    assert_eq!(phases.source_admission_pending_journal, 0);
+    assert_eq!(phases.source_admission_checkpoint, 0);
 }
 
 fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {

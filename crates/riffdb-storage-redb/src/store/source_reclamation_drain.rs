@@ -8,6 +8,16 @@ pub(crate) enum Readiness {
 }
 
 impl SharedRedb {
+    pub(crate) fn source_checkpoint_publication_pending(&self) -> Result<bool, StorageError> {
+        Ok(self.async_checkpoint_in_flight()?
+            || !self
+                .journal_sealer
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .as_ref()
+                .is_none_or(std::thread::JoinHandle::is_finished))
+    }
+
     pub(crate) fn retire_online_source_admission(&self) {
         self.mutation_gate.retire_source_admission();
     }
@@ -19,14 +29,7 @@ impl SharedRedb {
         // Check before capturing a root: that operation can otherwise wait for
         // native publication. No receiver or sealer is joined under this lease.
         // Foreground checkpoint installation keeps its existing protocol.
-        if self.async_checkpoint_in_flight()?
-            || !self
-                .journal_sealer
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .as_ref()
-                .is_none_or(std::thread::JoinHandle::is_finished)
-        {
+        if self.source_checkpoint_publication_pending()? {
             return Ok(Readiness::CheckpointPublication);
         }
         {

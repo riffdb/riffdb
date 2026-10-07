@@ -19,7 +19,10 @@ fn checkpoint_wait_continues_pages_until_exact_end_without_inventing_a_checkpoin
         &control,
         7,
         true,
-        |slice| {
+        (SourceCheckpointWait::None, || {
+            panic!("legacy wait must not inspect source publication")
+        }),
+        |_seen, slice| {
             assert_eq!(slice, Duration::from_millis(100));
             waits += 1;
             if waits == 4 { 8 } else { 7 }
@@ -44,7 +47,10 @@ fn checkpoint_wait_preserves_deadline_and_cancellation_before_page_work() {
             &control,
             7,
             true,
-            |slice| {
+            (SourceCheckpointWait::None, || {
+                panic!("legacy wait must not inspect source publication")
+            }),
+            |_seen, slice| {
                 assert_eq!(slice, RETENTION_LANE_CHECKPOINT_SLICE);
                 if cancel {
                     control.stop();
@@ -70,7 +76,10 @@ fn checkpoint_wait_preserves_deadline_and_cancellation_before_page_work() {
             &control,
             7,
             true,
-            |_| panic!("stopped wait must not block"),
+            (SourceCheckpointWait::None, || panic!(
+                "legacy wait must not inspect source publication"
+            )),
+            |_seen, _| panic!("stopped wait must not block"),
             || panic!("stopped wait must not inspect time"),
             || panic!("stopped wait must not advance"),
         )
@@ -88,7 +97,10 @@ fn checkpoint_wait_does_not_capture_missing_validation_and_propagates_failure() 
             &control,
             7,
             false,
-            |_| {
+            (SourceCheckpointWait::None, || panic!(
+                "legacy wait must not inspect source publication"
+            )),
+            |_seen, _| {
                 slices += 1;
                 if slices == 2 { 8 } else { 7 }
             },
@@ -102,7 +114,10 @@ fn checkpoint_wait_does_not_capture_missing_validation_and_propagates_failure() 
         &control,
         7,
         true,
-        |_| 7,
+        (SourceCheckpointWait::None, || {
+            panic!("legacy wait must not inspect source publication")
+        }),
+        |_seen, _| 7,
         || Duration::ZERO,
         || {
             Err(riffdb_storage_api::StorageError::new(
@@ -700,5 +715,240 @@ fn physical_census_rest_charges_page_time_and_does_not_work_past_the_rest_deadli
             || panic!("zero rest must not advance a page"),
         )
         .unwrap()
+    );
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_checkpoint_rechecks_wait_for_completion_after_the_entire_writer_rest() {
+    for checkpoint_publication in [false, true] {
+        let phases = OnlineRetentionPhases {
+            source_admission_pending_journal: u64::from(!checkpoint_publication),
+            source_admission_checkpoint: u64::from(checkpoint_publication),
+            receipt_gate_us: 500,
+            source_admission_census: [1, 1, 0, 0, 0, 100_000, 500, 0],
+            ..OnlineRetentionPhases::default()
+        };
+        // Native source work can need a checkpoint while logical retention
+        // remains fenced or at target. Ordinary idle backoff misses the small
+        // post-checkpoint suffix under continuing foreground publication.
+        let (rest, checkpoint) = maintenance_wait_policy(
+            RETENTION_LANE_RECHECK,
+            false,
+            Duration::from_micros(phases.gate_held_us()),
+            &phases,
+        );
+        assert!(
+            checkpoint,
+            "source readiness must select checkpoint completion"
+        );
+        assert_eq!(rest, Duration::from_micros(9_500));
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        assert!(
+            !pause_with_physical_observation(
+                rest,
+                false,
+                || clock.get(),
+                |slice| {
+                    clock.set(clock.get() + slice);
+                    (false, false)
+                },
+                || panic!("no physical candidate must not create one"),
+            )
+            .unwrap()
+        );
+        assert!(
+            wait_with_source_validation(
+                &LaneControl::default(),
+                7,
+                false,
+                (SourceCheckpointWait::from_phases(&phases), || Ok(false)),
+                |_seen, _| {
+                    assert_eq!(clock.get(), Duration::from_micros(9_500));
+                    // Completion during mandatory rest remains visible through
+                    // the counter captured before the native source attempt.
+                    8
+                },
+                || Duration::ZERO,
+                || panic!("a completed checkpoint must precede page work"),
+            )
+            .unwrap()
+        );
+    }
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_checkpoint_wait_policy_preserves_idle_and_noncheckpoint_refusal_backoff() {
+    for phases in [
+        OnlineRetentionPhases::default(),
+        OnlineRetentionPhases {
+            source_admission_busy_writer: 1,
+            ..OnlineRetentionPhases::default()
+        },
+        OnlineRetentionPhases {
+            source_admission_qualification: 1,
+            ..OnlineRetentionPhases::default()
+        },
+        OnlineRetentionPhases {
+            source_admission_page_bound: 1,
+            ..OnlineRetentionPhases::default()
+        },
+    ] {
+        assert_eq!(
+            maintenance_wait_policy(RETENTION_LANE_RECHECK, false, Duration::ZERO, &phases),
+            (RETENTION_LANE_RECHECK, false)
+        );
+    }
+    let pending = OnlineRetentionPhases {
+        source_admission_pending_journal: 1,
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(
+        maintenance_wait_policy(RETENTION_LANE_RECHECK, false, Duration::ZERO, &pending),
+        (Duration::ZERO, true)
+    );
+    assert_eq!(
+        maintenance_wait_policy(
+            Duration::ZERO,
+            true,
+            Duration::from_secs(1),
+            &OnlineRetentionPhases::default()
+        ),
+        (Duration::from_secs(19), false)
+    );
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_journal_wait_requires_a_real_checkpoint_then_completed_publication() {
+    let waits = std::cell::Cell::new(0);
+    let mut publications = 0;
+    let mut pages = 0;
+    let observed = wait_with_source_validation(
+        &LaneControl::default(),
+        7,
+        true,
+        (SourceCheckpointWait::Journal, || {
+            assert!(
+                waits.get() >= 2,
+                "ordinary writer must start and finish its checkpoint first"
+            );
+            publications += 1;
+            Ok(publications == 1)
+        }),
+        |_seen, _| {
+            waits.set(waits.get() + 1);
+            assert!(waits.get() <= 3);
+            if waits.get() == 1 { 7 } else { 8 }
+        },
+        || Duration::ZERO,
+        || {
+            pages += 1;
+            Ok(true)
+        },
+    )
+    .unwrap();
+    assert!(observed);
+    assert_eq!((waits.get(), publications, pages), (3, 2, 2));
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_publication_wait_rechecks_a_finished_sealer_without_inventing_a_checkpoint() {
+    let mut waits = 0;
+    let mut publications = 0;
+    let observed = wait_with_source_validation(
+        &LaneControl::default(),
+        7,
+        false,
+        (SourceCheckpointWait::Publication, || {
+            publications += 1;
+            Ok(publications == 1)
+        }),
+        |_seen, _| {
+            waits += 1;
+            assert!(waits <= 2);
+            7
+        },
+        || Duration::ZERO,
+        || panic!("publication waiting must not capture source validation"),
+    )
+    .unwrap();
+    assert!(
+        !observed,
+        "sealing completion is not a new checkpoint count"
+    );
+    assert_eq!((waits, publications), (2, 2));
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_journal_wait_preserves_its_deadline_without_a_checkpoint_or_metadata_query() {
+    let waits = std::cell::Cell::new(0);
+    assert!(
+        !wait_with_source_validation(
+            &LaneControl::default(),
+            7,
+            false,
+            (SourceCheckpointWait::Journal, || panic!(
+                "no completed checkpoint must not permit retry"
+            )),
+            |waiting_seen, _| {
+                assert_eq!(waiting_seen, if waits.get() < 2 { 7 } else { 8 });
+                waits.set(waits.get() + 1);
+                7
+            },
+            || if waits.get() >= 2 {
+                RETENTION_LANE_RECHECK
+            } else {
+                Duration::ZERO
+            },
+            || panic!("no validation candidate must not be started"),
+        )
+        .unwrap()
+    );
+    assert_eq!(waits.get(), 2);
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn source_publication_wait_preserves_cancellation_and_typed_metadata_failure() {
+    let control = LaneControl::default();
+    assert!(
+        !wait_with_source_validation(
+            &control,
+            7,
+            true,
+            (SourceCheckpointWait::Publication, || panic!(
+                "cancel must precede metadata query"
+            )),
+            |_seen, _| {
+                control.stop();
+                7
+            },
+            || Duration::ZERO,
+            || panic!("cancel must precede page work"),
+        )
+        .unwrap()
+    );
+    let error = wait_with_source_validation(
+        &LaneControl::default(),
+        7,
+        false,
+        (SourceCheckpointWait::Publication, || {
+            Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+                None,
+            ))
+        }),
+        |_seen, _| 7,
+        || Duration::ZERO,
+        || panic!("metadata failure must not advance validation"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
     );
 }
