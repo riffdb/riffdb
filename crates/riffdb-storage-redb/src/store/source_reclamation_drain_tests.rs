@@ -127,10 +127,13 @@ fn unfinished_extent_publication_yields_before_spending_or_waiting_for_a_root_pi
     }
     let (entered, entry) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
-    *ports.shared.journal_sealer.lock().unwrap() = Some(std::thread::spawn(move || {
-        entered.send(()).unwrap();
-        released.recv().unwrap();
-    }));
+    *ports.shared.journal_sealer.lock().unwrap() = Some(JournalSealer {
+        publication_complete: Arc::new(AtomicBool::new(false)),
+        handle: std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+        }),
+    });
     entry.recv().unwrap();
     let lease = ports
         .shared
@@ -231,6 +234,128 @@ fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
         };
         assert_eq!(fence.wait().unwrap().len(), 1);
     }
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn source_validation_uses_durable_seal_publication_before_spare_preparation() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 1);
+    ports.shared.join_journal_sealer();
+    let audit_before = ports
+        .begin_composite_read()
+        .unwrap()
+        .read_range_to(JournalTable::Audit, &[], None, 2)
+        .unwrap();
+    schedule.arm(Point::BeforeSparePreparation);
+    schedule.request_checkpoint();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    schedule.wait(Point::BeforeSparePreparation);
+    // Release and join before assertions: a failed assertion must not strand
+    // the store's destructor behind this intentionally paused native worker.
+    let epoch = ports.shared.durable_commit_epoch();
+    let pending = ports.shared.source_checkpoint_publication_pending();
+    let mut control = ports.replication_source_control();
+    let capture = control.reclaim_history_online();
+    let validation_pending = control.receipt_validation_pending();
+    let epoch_after = ports.shared.durable_commit_epoch();
+    let audit_after = ports
+        .begin_composite_read()
+        .and_then(|read| read.read_range_to(JournalTable::Audit, &[], None, 2));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(
+        !pending.unwrap(),
+        "future spare preparation is not extent publication"
+    );
+    assert_eq!(capture.unwrap().0, 0);
+    assert!(
+        validation_pending,
+        "durably published roots must start their real validation"
+    );
+    assert_eq!(
+        epoch_after, epoch,
+        "capturing validation cannot advance authority"
+    );
+    assert_eq!(audit_after.unwrap(), audit_before);
+    assert!(!ports.shared.mutation_gate.is_held());
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn source_seal_publication_is_bound_to_each_serialized_job() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSealPublication);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSealPublication);
+    let first_unpublished = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSealPublication);
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_published = ports.shared.source_checkpoint_publication_pending();
+    schedule.arm(Point::BeforeSealPublication);
+    ports.shared.start_journal_sealer(header).unwrap();
+    let waiting_for_previous = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSparePreparation);
+    schedule.wait(Point::BeforeSealPublication);
+    let second_unpublished = ports.shared.source_checkpoint_publication_pending();
+    schedule.arm(Point::BeforeSparePreparation);
+    schedule.release(Point::BeforeSealPublication);
+    schedule.wait(Point::BeforeSparePreparation);
+    let second_published = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(first_unpublished.unwrap());
+    assert!(!first_published.unwrap());
+    assert!(waiting_for_previous.unwrap());
+    assert!(
+        second_unpublished.unwrap(),
+        "an old job cannot publish its successor"
+    );
+    assert!(!second_published.unwrap());
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn failed_native_sealing_does_not_report_successful_publication() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    let sealing = crate::journal::sealing_journal_path(&ports.shared.path);
+    std::fs::write(&sealing, b"invalid-sealing-header").unwrap();
+    schedule.arm(Point::BeforeSparePreparation);
+    ports
+        .shared
+        .start_journal_sealer(JournalFileHeader::new(
+            states[0].lineage().database_id(),
+            None,
+            [0; 32],
+        ))
+        .unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let pending = ports.shared.source_checkpoint_publication_pending();
+    let mut control = ports.replication_source_control();
+    let capture = control.reclaim_history_online();
+    let validation_pending = control.receipt_validation_pending();
+    let unchanged = std::fs::read(&sealing);
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(pending.unwrap());
+    assert_eq!(capture.unwrap().0, 0);
+    assert!(!validation_pending);
+    assert_eq!(unchanged.unwrap(), b"invalid-sealing-header");
 }
 
 // req: STO-030, STO-031, STO-032, REC-001, END-007, END-008

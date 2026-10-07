@@ -406,6 +406,14 @@ pub(crate) fn command_publication_stage_census() -> [u64; 9] {
 #[path = "extent_reclamation.rs"]
 pub(crate) mod extent_reclamation;
 
+/// Publication is complete only after this job's retirement and sealing syncs.
+/// Its thread may still be preparing the next spare; that work has no authority
+/// over the already published checkpoint root.
+pub(crate) struct JournalSealer {
+    pub(super) handle: std::thread::JoinHandle<()>,
+    pub(super) publication_complete: Arc<AtomicBool>,
+}
+
 pub(crate) struct SharedRedb {
     extent_roots: Mutex<Vec<std::sync::Weak<CheckpointRoot>>>,
     extent_scrubs: std::sync::atomic::AtomicUsize,
@@ -495,7 +503,7 @@ pub(crate) struct SharedRedb {
     /// The background job sealing the last installed extent and preparing the
     /// next spare (ADR-0263). At most one runs; it is joined before the next
     /// install and when the store drops.
-    journal_sealer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    journal_sealer: Mutex<Option<JournalSealer>>,
     /// Registers this store's retained extents for history-stub resolution
     /// (ADR-0263 Amendment 3) once its database identity is known.
     history_resolver: std::sync::OnceLock<Arc<crate::history_stub::HistoryResolver>>,
@@ -7796,7 +7804,7 @@ impl SharedRedb {
             Err(poisoned) => poisoned.into_inner().take(),
         };
         if let Some(handle) = handle {
-            let _ = handle.join();
+            let _ = handle.handle.join();
         }
     }
 
@@ -7814,28 +7822,46 @@ impl SharedRedb {
         let path = self.path.clone();
         let spare_lock = Arc::clone(&self.journal_spare);
         let database_id = spare_header.database_id();
+        #[cfg(feature = "test-fixtures")]
+        let controller = self.test_controller.clone();
         let mut sealer = self
             .journal_sealer
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let previous = sealer.take();
+        let publication_complete = Arc::new(AtomicBool::new(false));
+        let published = Arc::clone(&publication_complete);
         let handle = std::thread::Builder::new()
             .name("riffdb-journal-seal".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 if let Some(previous) = previous {
-                    let _ = previous.join();
+                    let _ = previous.handle.join();
                 }
-                crate::journal::record_seal_outcome(
-                    crate::journal::retire_checkpoint_extent_with_media(
-                        media.as_ref(),
-                        &path,
-                        database_id,
-                    )
-                    .and_then(|()| {
-                        crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
-                    }),
-                );
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = &controller {
+                    controller.checkpoint_test_pause(
+                        crate::hooks::RedbCheckpointTestPoint::BeforeSealPublication,
+                    );
+                }
+                let outcome = crate::journal::retire_checkpoint_extent_with_media(
+                    media.as_ref(),
+                    &path,
+                    database_id,
+                )
+                .and_then(|()| {
+                    crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
+                });
+                if outcome.is_ok() {
+                    published.store(true, Ordering::Release);
+                }
+                crate::journal::record_seal_outcome(outcome);
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = &controller {
+                    controller.checkpoint_test_pause(
+                        crate::hooks::RedbCheckpointTestPoint::BeforeSparePreparation,
+                    );
+                }
                 crate::journal::record_spare_outcome(
                     crate::journal::prepare_spare_extent_with_media(
                         media.as_ref(),
@@ -7846,7 +7872,10 @@ impl SharedRedb {
                 );
             })
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        *sealer = Some(handle);
+        *sealer = Some(JournalSealer {
+            handle,
+            publication_complete,
+        });
         Ok(())
     }
 

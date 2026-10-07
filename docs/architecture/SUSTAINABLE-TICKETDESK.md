@@ -23,6 +23,43 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Separate durable seal publication from spare preparation
+
+The preparation on `ea572072` still fails `source_bytes_sample_gap`, with no
+fresh source-byte record during load. Unpublished refusals stop increasing
+during load, but oversized suffix refusals continue. This is a failed
+preparation; it does not establish the cause or qualify the host.
+
+The native sealer performs two distinct stages: retire and durably seal the
+installed extent, then prepare the next spare. Production spare creation can
+zero-fill 320 MiB. Source admission previously tested whether this whole thread
+had finished, so completed publication remained pending during future spare
+preparation. A deterministic real-checkpoint regression fails that admission
+while the worker is paused between the two stages.
+
+Each serialized native job now owns one private completion flag. Only successful
+retirement and sealing, including their existing file and directory syncs,
+publish it. Source capture and validated admission observe that exact job's
+flag without joining the worker. Future spare preparation continues off-gate;
+ordinary rotations and shutdown retain the complete thread join. A failed seal
+or a successor awaiting its predecessor cannot report completed publication.
+
+The entire published suffix must still fit the 256-transition and 1-MiB drain
+limits. Canonical validation, every hold, independent checkpoint evidence,
+maintenance pacing, acknowledgement, ordering and durable formats are unchanged.
+This is a D-003 implementation choice within ADR-0271 decisions 4–6; it adds
+no application control or durable identity.
+
+PR note: Package WP-825 (open); Tier guarantee implementation; Behavior: observe
+actual durable seal publication independently of spare preparation; Checks:
+failing real-checkpoint baseline and deterministic publication, serialized-job,
+native sealing-failure and validated-admission schedules, with scoped acceptance
+and broader native validation in progress; Compatibility: application and
+durable fixtures unchanged; Updated handbook: this milestone page; Hazards and
+follow-ups: final-source CI and the unchanged required-host preparation must
+pass. The full campaign/resource model and populated restore remain open.
+No 24-hour run has started.
+
 ## Ordinary publication handoff for source admission
 
 The diagnostic preparation on `230af6cd` fails the unchanged source-byte sample

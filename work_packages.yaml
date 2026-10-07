@@ -28722,6 +28722,10 @@ work_packages:
     - Apply ADR-0276 through the existing exclusive offline owner, retaining both
       engine custody locks until marker and Complete receipt publication. Reuse
       exact predecessor backups without rewriting or promoting their identity.
+    - Observe each serialized native sealer job's successful durable extent
+      publication separately from future spare preparation. Preserve full joins
+      for ordinary rotation and shutdown, fail-closed sealing errors, exact
+      source drain bounds, validation and independent checkpoint authority.
     - Apply ADR-0277 with safe principal-available fstatvfs on the source directory
       and a streamed logical-length inventory. Include retained lifecycle working
       and publication staging files, reject nonregular artifacts before receipt

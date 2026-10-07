@@ -308,14 +308,9 @@ fn validation_drain_yield(shared: &SharedRedb) -> Result<Option<AdmissionYield>,
     // Materialization publication precedes off-gate extent sealing. Starting
     // a walk during that rename window can select a locator whose durable
     // filename is still being published. Yield rather than join under gate.
-    let sealer = shared
-        .journal_sealer
-        .lock()
-        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    Ok((!sealer
-        .as_ref()
-        .is_none_or(std::thread::JoinHandle::is_finished))
-    .then_some(AdmissionYield::CheckpointPublication))
+    Ok(shared
+        .journal_seal_publication_pending()?
+        .then_some(AdmissionYield::CheckpointPublication))
 }
 
 pub(crate) struct ControlWrite {
@@ -515,7 +510,10 @@ mod tests {
             entered.send(()).unwrap();
             released.recv().unwrap();
         });
-        *ports.shared.journal_sealer.lock().unwrap() = Some(worker);
+        *ports.shared.journal_sealer.lock().unwrap() = Some(crate::store::JournalSealer {
+            handle: worker,
+            publication_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
         entry.recv().unwrap();
         let epoch = ports.shared.durable_commit_epoch();
         let mut initial = ports.replication_source_control();
@@ -562,6 +560,47 @@ mod tests {
                 .is_some()
         );
         assert!(!ports.shared.mutation_gate.is_held());
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn validated_source_admission_uses_publication_without_waiting_for_spare() {
+        use crate::hooks::RedbCheckpointTestPoint as Point;
+        let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+        let (_scope, ports, states) =
+            crate::changelog_v3_control_tests::fixture_with_controller(controller);
+        let mut walk = crate::changelog_v3_retained_validation::RetainedHistoryValidation::new(
+            Barrier::try_validation_root(&ports.shared)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        while !walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(1).unwrap())
+            .unwrap()
+        {}
+        let proof = walk.complete().unwrap();
+        schedule.arm(Point::BeforeSparePreparation);
+        ports
+            .shared
+            .start_journal_sealer(crate::journal::JournalFileHeader::new(
+                states[0].lineage().database_id(),
+                None,
+                [0; 32],
+            ))
+            .unwrap();
+        schedule.wait(Point::BeforeSparePreparation);
+        let epoch = ports.shared.durable_commit_epoch();
+        let drained = drained_for_validation(&ports.shared);
+        let admitted = Barrier::try_from_validated(Arc::clone(&ports.shared), proof);
+        let epoch_after = ports.shared.durable_commit_epoch();
+        schedule.release(Point::BeforeSparePreparation);
+        ports.shared.join_journal_sealer();
+        assert!(drained.unwrap());
+        assert!(admitted.unwrap().is_some());
+        assert_eq!(epoch_after, epoch);
     }
 
     // req: STO-030, STO-031, STO-032, REC-001

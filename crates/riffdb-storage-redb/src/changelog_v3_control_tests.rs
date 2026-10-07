@@ -52,7 +52,25 @@ pub(crate) fn fixture() -> (
 }
 
 fn initialize(path: &std::path::Path) -> (RedbOperationalPorts, Vec<ChangelogHistoryStateV3>) {
-    let mut store = RedbStore::open(path).unwrap();
+    initialize_store(RedbStore::open(path).unwrap())
+}
+
+#[cfg(feature = "test-fixtures")]
+pub(crate) fn fixture_with_controller(
+    controller: crate::RedbTestController,
+) -> (
+    crate::test_path::ScopedDirectory,
+    RedbOperationalPorts,
+    Vec<ChangelogHistoryStateV3>,
+) {
+    let scope = crate::test_path::ScopedDirectory::new("v3-source-control-scheduled");
+    let (ports, states) = initialize_store(
+        RedbStore::open_with_test_controller(scope.join("db.redb"), controller).unwrap(),
+    );
+    (scope, ports, states)
+}
+
+fn initialize_store(mut store: RedbStore) -> (RedbOperationalPorts, Vec<ChangelogHistoryStateV3>) {
     let database =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
     store.initialize_legacy_fixture(database).unwrap();
