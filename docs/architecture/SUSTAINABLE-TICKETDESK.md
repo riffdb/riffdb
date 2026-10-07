@@ -82,6 +82,26 @@ The archive refusal remains unexplained and is preserved as a native concern,
 not retried by the workload or classified as successful CI. The full configured
 native test suite and final-source full CI still have to pass.
 
+The configured recovery matrix then catches a native starvation regression on
+`b7d42046`: the owner removes no receipts during 24 deterministic interleaved
+writer/checkpoint turns, then removes 628 after writers stop. Requiring the
+validation snapshot to be the newest checkpoint caused this regression. The
+repair shares the accounting candidate's qualified immutable pin with the
+completed source proof before reading actual independently durable checkpoint
+evidence. It also shares the current admission pin before submission and
+releases completed validation pins before successor adoption. This preserves
+both progress with continuing writers and the two-validation-pin bound.
+The unchanged real-command/provenance/outcome/event regression passes after
+repair; a separate oracle proves old-pin release with unchanged capture time,
+ceiling, counters and exact bytes. These passes do not qualify the campaign.
+
+The first detached local CI launch produces no full-CI log or completion
+receipt. Its launch and dependency evidence are preserved as incomplete.
+The frozen `b7d42046` host build has started but is unqualified; no preparation
+or workload has launched on those artifacts. Final CI must use an isolated
+clean checkout of the repaired source, with a retained runner and actual exit
+and hash-bound completion receipt.
+
 PR note: Package WP-825 (open); Tier guarantee under accepted ADR-0279;
 Behavior: finite native online consumption and exact V2 read-only accounting
 continuation; Checks: preserved failing native prefix regression, independent

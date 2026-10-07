@@ -78,16 +78,12 @@ impl ReplicationSourceControl {
         // actual installed checkpoint, then close only the bounded current
         // composite suffix at admission. The candidate never substitutes its
         // own acknowledgement or an obsolete pin for checkpoint progress.
-        // Share the validated source's installed checkpoint. A completed older
-        // candidate continues on the next paced turn instead of opening a third
-        // validation snapshot alongside byte accounting.
-        if !self
-            .shared
-            .checkpoint_publication_matches(source.checkpoint_pin().identity())
-        {
-            return self.journaled_yield(AdmissionYield::CheckpointPublication);
-        }
-        let checkpoint_root = Arc::clone(source.checkpoint_pin());
+        // The completed source proof may precede an installed checkpoint.
+        // Share its qualified immutable pin with any accounting candidate
+        // before reading actual checkpoint evidence, keeping two pins total.
+        self.eligible_bytes
+            .share_qualified_pin(source.clone(), history, epoch)?;
+        let checkpoint_root = self.shared.capture_checkpoint_root()?;
         let checkpoint = Observation {
             publication: checkpoint_root.identity(),
             durable_epoch: self.shared.durable_commit_epoch(),
@@ -132,8 +128,9 @@ impl ReplicationSourceControl {
             self.online_license = None;
         }
         if self.online_license.is_none() {
-            let Some(independent) =
-                independently_checkpointed(&ValidationSource::Checkpoint(checkpoint_root))?
+            let Some(independent) = independently_checkpointed(&ValidationSource::Checkpoint(
+                Arc::clone(&checkpoint_root),
+            ))?
             else {
                 self.reclamation_yields[1] = 1;
                 return Ok(0);
@@ -158,6 +155,7 @@ impl ReplicationSourceControl {
             self.observed = Some(checkpoint);
             self.online_independent_sequence = independent;
         }
+        drop(checkpoint_root);
         let license = self.online_license.ok_or_else(invariant)?;
         let mut derived = self.shared.derived_source_pins.reclamation()?;
         let (floor, _) = retention::floor(
@@ -241,6 +239,9 @@ impl ReplicationSourceControl {
         }
         let proof = walk.proof()?;
         let history = proof.history();
+        drop(proof);
+        self.eligible_bytes
+            .share_qualified_pin(source.clone(), history, epoch)?;
         if !prepared
             .license
             .covers(&source, history, prepared.checkpoint, epoch)?
@@ -293,6 +294,10 @@ impl ReplicationSourceControl {
         let floor = prepared.proof.retained().minimum_resume();
         let write = self.shared.begin_source_journal_write(lease, view)?;
         derived.reserve(history.lineage(), floor);
+        self.online_validation
+            .as_mut()
+            .ok_or_else(invariant)?
+            .release_completed_pin();
         let accounting_proof = prepared.proof.clone();
         let fence = write.submit_source_reclamation(prepared.proof)?;
         let (successor, qualification) = fence.source_successor().ok_or_else(invariant)?;

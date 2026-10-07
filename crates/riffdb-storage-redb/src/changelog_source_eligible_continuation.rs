@@ -74,6 +74,33 @@ impl ContinuedProbe {
         Ok(result)
     }
 
+    /// The owner has fully validated this newer classified pin. Sharing it
+    /// changes neither the accounting ceiling nor capture freshness or counts.
+    pub(super) fn share_pin(
+        &mut self,
+        root: ValidationSource,
+        history: History,
+        qualification: u64,
+    ) -> Result<bool, StorageError> {
+        if !self.qualifies(qualification)
+            || self.history.lineage() != history.lineage()
+            || self.history.anchor() != history.anchor()
+            || self.history.minimum_resume() != history.minimum_resume()
+            || self.history.tail().sequence() > history.tail().sequence()
+            || self.ceiling > history.tail().sequence().get()
+            || root.history()? != Some(history)
+        {
+            return Ok(false);
+        }
+        if self.pending() {
+            self.root_identity = root.identity();
+            self.publication = root.publication();
+            self.history = history;
+            self.root = Some(root);
+        }
+        Ok(true)
+    }
+
     pub(super) fn qualifies(&self, qualification: u64) -> bool {
         qualification != u64::MAX && self.qualification == qualification
     }

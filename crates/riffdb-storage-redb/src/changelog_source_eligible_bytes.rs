@@ -88,6 +88,25 @@ impl Observer {
         Ok(())
     }
 
+    pub(super) fn share_qualified_pin(
+        &mut self,
+        root: ValidationSource,
+        history: History,
+        qualification: u64,
+    ) -> Result<(), StorageError> {
+        if let Some(probe) = self.continued.as_mut() {
+            match probe.share_pin(root, history, qualification) {
+                Ok(true) => (),
+                Ok(false) => self.continued = None,
+                Err(error) => {
+                    self.continued = None;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn check_qualification(&mut self, qualification: u64) {
         if self
             .continued

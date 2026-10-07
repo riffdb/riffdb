@@ -28661,6 +28661,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Repair the b7d42046 exact-checkpoint starvation exposed by the unchanged
+      interleaved durable-command recovery regression. Share the qualified
+      accounting and source-validation pins before actual checkpoint reads and
+      at admission; release completed validation pins before successor adoption.
+      Preserve bounded pacing, current holds, complete validation and the finite
+      ceiling. The unchanged progress regression and exact shared-pin oracle
+      pass; five scoped native checks pass. Preserve the incomplete CI launch
+      with no completion receipt and unqualified host build. Require isolated
+      clean final-source CI and measured qualification. WP-825 remains open.
     - Preserve the broad native unit run's archive-replay Unavailable refusal
       as unexplained native evidence; an isolated unchanged pass does not close
       it or qualify full CI. Correct the above-limit byte fixture to measure

@@ -342,3 +342,51 @@ fn actual_v2_source_producer_matches_its_pinned_canonical_bytes_and_qualified_re
     assert_eq!(new[10], sample[4]);
     assert_eq!((new[11], new[9]), (1, 1));
 }
+
+#[test]
+fn qualified_accounting_candidate_shares_new_validated_pin_without_restarting_its_capture() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for row in 0..300 {
+        append(&ports, if row % 2 == 0 { 17 } else { 4096 });
+    }
+    let (source, history, epoch) = validated(&ports);
+    let weak = Arc::downgrade(source.checkpoint_pin());
+    let now = Instant::now();
+    let ceiling = history.tail().sequence().get();
+    let mut probe = ContinuedProbe::capture(None, source, history, ceiling, epoch, now).unwrap();
+    assert!(probe.advance(now).unwrap().is_none());
+    let counters = (
+        probe.next,
+        probe.checked_rows,
+        probe.pages,
+        probe.bytes,
+        probe.captured,
+    );
+    append(&ports, 512);
+    let (source, current, epoch) = validated(&ports);
+    let expected = oracle(&source, current, ceiling);
+    assert!(probe.share_pin(source.clone(), current, epoch).unwrap());
+    assert!(
+        weak.upgrade().is_none(),
+        "the obsolete accounting pin is released before checkpoint capture"
+    );
+    assert_eq!(
+        probe.root.as_ref().unwrap().publication(),
+        source.publication()
+    );
+    assert_eq!(
+        (
+            probe.next,
+            probe.checked_rows,
+            probe.pages,
+            probe.bytes,
+            probe.captured
+        ),
+        counters
+    );
+    let sample = finish(&mut probe, now);
+    assert_eq!(sample[5], expected);
+    assert_eq!(sample[10], 0);
+    assert_eq!(sample[11], sample[4]);
+    assert_eq!(sample[9], 2);
+}

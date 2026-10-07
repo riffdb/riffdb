@@ -16,6 +16,8 @@ impl ReplicationSourceControl {
             .shared
             .source_continuation_epoch
             .load(Ordering::Acquire);
+        self.eligible_bytes
+            .share_qualified_pin(source.clone(), current.history, epoch)?;
         let Some(previous) = self.observed else {
             self.observed = Some(current);
             self.reclamation_yields[0] = 1;
