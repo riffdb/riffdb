@@ -313,6 +313,44 @@ change. Updated handbook: this page. Six focused semantic collector tests and
 all 120 lifecycle checker tests pass. Required follow-ups are native record
 integration, complete independent resource reconciliation, actual collection
 pressure and final-source validation; no qualification is claimed.
+## Original sealed-prefix physical byte observations
+
+A native diagnostic captures the materialized reference roots, current
+publication and active-generation cutoff when the writer is idle. It walks the
+original sealed prefix through the existing media cursor, inspecting at most 64
+directory entries and fully validating at most one bounded extent per advance.
+Every eligible file uses the native watermark, source resume, incarnation and
+exact absent-reference checks. Kernel allocated blocks are counted separately
+from logical file length; simulated logical lengths never become allocated-byte
+evidence. Invalid, incomplete, oversized or expired observations remain unknown.
+
+The census is bounded to 8,192 directory entries and 4,096 extents, with a
+30-second capture lifetime and at least 60 seconds between successful captures.
+A diagnostic scrub pin preserves original immutable files during the walk.
+Other original reader/scrub holds and native references are accounted separately.
+The observer explicitly excludes its own temporary pin from the otherwise
+eligible byte count; this is a diagnostic of the original prefix, not current
+retirement authority. New generations at or above the captured active cutoff,
+the active file, spare, archive, backups and derived files belong to separate
+resource components. This record cannot stand in for a complete file inventory.
+
+Completion, expiry, refusal and joined worker retirement release the diagnostic
+pin, engine snapshot and directory capability. `riffdb-retention-physical-bytes-v1`
+reports the original root, incarnation, watermark, resume, cutoff, complete
+extent count, eligible and protected allocated bytes, protection categories,
+reader hold, capture age and pages. Refusal invalidates measurement while native
+pruning and retirement retain their independent checks. There is no new writer
+admission, deletion authority or public observation surface.
+
+Package: WP-825, open. Tier: guarantee, implementation diagnostics under ADR-0265
+and D-003. Compatibility: no public interface, durable encoding, authorization,
+ordering, dependency or reviewed fixture change. Updated handbook: this page.
+The real native barrier-release regression first exposes missing measurement,
+then covers reader/scrub/writer/source holds, exact allocated bytes, complete
+empty prefix and release before probe-object drop after completion, expiry or
+census-bound refusal. Collector integration, independent aggregate modeling,
+full final-source checks and actual required-host pressure remain required.
+This component does not fill `eligible_history_bytes` or authorize qualification.
 
 ## Actual logical-history byte observations
 

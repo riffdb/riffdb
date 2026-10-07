@@ -173,6 +173,8 @@ pub struct RedbOnlineRetentionLane {
     last_journal_sequence: Arc<std::sync::atomic::AtomicU64>,
     source_control: Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>,
     logical_bytes: Arc<std::sync::Mutex<super::eligible_bytes::Observer>>,
+    physical_bytes:
+        Arc<std::sync::Mutex<crate::store::extent_reclamation::physical_bytes::Observer>>,
 }
 
 impl RedbOnlineRetentionLane {
@@ -191,6 +193,10 @@ impl RedbOnlineRetentionLane {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retire_online_validation();
+        self.physical_bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire();
         self.logical_bytes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -204,6 +210,10 @@ impl RedbOnlineRetentionLane {
     pub fn advance_source_validation_off_gate(
         &self,
     ) -> Result<OnlineRetentionPhases, StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .tick(&self.shared);
         let mut logical = self
             .logical_bytes
             .lock()
@@ -351,6 +361,9 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
             last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             source_control: Arc::new(std::sync::Mutex::new(self.replication_source_control())),
+            physical_bytes: Arc::new(std::sync::Mutex::new(
+                crate::store::extent_reclamation::physical_bytes::Observer::default(),
+            )),
             logical_bytes: Arc::new(std::sync::Mutex::new(
                 super::eligible_bytes::Observer::default(),
             )),

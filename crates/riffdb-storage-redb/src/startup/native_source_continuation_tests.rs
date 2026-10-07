@@ -341,6 +341,18 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
         });
         let held = ports.shared.reclaim_one_extent().unwrap();
         assert!(held.retired_generation.is_none());
+        let physical = ports.shared.measure_physical_bytes_for_test().unwrap();
+        if blocker == "writer" {
+            assert!(
+                physical.is_none(),
+                "a busy writer makes the capture unknown"
+            );
+        } else {
+            let physical = physical.unwrap();
+            assert_eq!(physical.eligible_allocated_bytes, 0);
+            assert_eq!(physical.sealed_extents, 1);
+            assert!(physical.protected_allocated_bytes > 0);
+        }
         assert_eq!(
             (
                 held.deleted,
@@ -376,6 +388,27 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             .unwrap();
             epoch = ports.shared.durable_commit_epoch();
         }
+        let mut refused_probes = Vec::new();
+        for mode in ["expiry", "directory"] {
+            let (kind, refused) =
+                crate::store::extent_reclamation::physical_bytes::forced_refusal_for_test(
+                    &ports.shared,
+                    mode,
+                )
+                .unwrap();
+            assert_eq!(kind, StorageErrorKind::LimitExceeded);
+            refused_probes.push(refused);
+        }
+        use std::os::unix::fs::MetadataExt;
+        let expected_allocated = std::fs::metadata(&sealed).unwrap().blocks() * 512;
+        let (physical, completed_probe) = ports
+            .shared
+            .finished_physical_probe_for_test()
+            .unwrap()
+            .unwrap();
+        assert_eq!(physical.eligible_allocated_bytes, expected_allocated);
+        assert_eq!(physical.protected_allocated_bytes, 0);
+        assert_eq!(physical.sealed_extents, 1);
         let reclaimed = ports.shared.reclaim_one_extent().unwrap();
         assert_eq!(reclaimed.retired_generation, Some(footer.generation));
         assert_eq!(
@@ -385,6 +418,17 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
         );
         assert_eq!(reclaimed.held_readers + reclaimed.held_references, 0);
         assert!(!sealed.exists());
+        drop(completed_probe); // Completion must release protection before owner drop.
+        drop(refused_probes); // Refusals also release protection while owners remain alive.
+        assert_eq!(
+            ports
+                .shared
+                .measure_physical_bytes_for_test()
+                .unwrap()
+                .unwrap()
+                .sealed_extents,
+            0
+        );
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         assert_eq!(
             crate::changelog_v3_roots::validate_retained_history(
