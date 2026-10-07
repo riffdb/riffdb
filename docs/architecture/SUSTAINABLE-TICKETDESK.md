@@ -8,6 +8,13 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
+The campaign controller timeline freezes the existing seven fault kinds and
+their order, admits one active action, requires an observed injection release
+and reconciliation, and charges actual elapsed recovery. A late pulse, overlap,
+clock rewind, missed action, overrun or action in the final six hours refuses.
+Deterministic timeline tests are preparatory; actual public fault handlers,
+resource reconciliation and the measured short campaign still need integration.
+
 The actual native two-command prune fixture drives the production logical-byte
 emitter before removing eligible history. The preparation gate runs
 `scripts/check-ticketdesk-lifecycle-native-bytes`, independently parsing actual
