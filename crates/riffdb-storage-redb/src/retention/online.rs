@@ -172,6 +172,7 @@ pub struct RedbOnlineRetentionLane {
     /// lane materializes the journal suffix only once the database is idle.
     last_journal_sequence: Arc<std::sync::atomic::AtomicU64>,
     source_control: Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>,
+    logical_bytes: Arc<std::sync::Mutex<super::eligible_bytes::Observer>>,
 }
 
 impl RedbOnlineRetentionLane {
@@ -182,7 +183,7 @@ impl RedbOnlineRetentionLane {
         self.shared.retire_online_source_admission();
     }
 
-    /// Releases the retired owner's nondurable source-validation pins after
+    /// Releases the retired owner's nondurable validation and byte-observation pins after
     /// its worker has joined. No durable hold or history is changed.
     #[doc(hidden)]
     pub fn release_source_validation(&self) {
@@ -190,15 +191,32 @@ impl RedbOnlineRetentionLane {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retire_online_validation();
+        self.logical_bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire();
     }
 
-    /// Continues one captured receipt/audit page while the worker waits for a
+    /// Continues captured receipt/audit and logical-byte pages while the worker waits for a
     /// checkpoint. Never requests a writer turn or captures another reader.
     /// Existing page bounds, qualification and exact-end checks still apply.
     #[doc(hidden)]
     pub fn advance_source_validation_off_gate(
         &self,
     ) -> Result<OnlineRetentionPhases, StorageError> {
+        let mut logical = self
+            .logical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = logical.advance(
+            &RedbOperationalPorts {
+                shared: Arc::clone(&self.shared),
+            },
+            std::time::Instant::now(),
+        ) {
+            logical.report_refusal(&error);
+        }
+        drop(logical);
         let mut source = self
             .source_control
             .lock()
@@ -249,6 +267,19 @@ impl RedbOnlineRetentionLane {
         max_sequences: NonZeroU64,
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        let mut logical = self
+            .logical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = logical.tick(
+            &RedbOperationalPorts {
+                shared: Arc::clone(&self.shared),
+            },
+            retain_sequences,
+        ) {
+            logical.report_refusal(&error);
+        }
+        drop(logical);
         let mut phases = OnlineRetentionPhases::default();
         let reclaiming = std::time::Instant::now();
         let reclamation = self.shared.reclaim_one_extent()?;
@@ -320,6 +351,9 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
             last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             source_control: Arc::new(std::sync::Mutex::new(self.replication_source_control())),
+            logical_bytes: Arc::new(std::sync::Mutex::new(
+                super::eligible_bytes::Observer::default(),
+            )),
         }
     }
 

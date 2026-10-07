@@ -57,6 +57,9 @@ pub(crate) mod prepared;
 mod retained_views;
 use retained_views::{DirectRetainedViews, RetainedViewAccess};
 
+#[path = "retention/eligible_bytes.rs"]
+mod eligible_bytes;
+
 #[path = "retention/online.rs"]
 mod online;
 pub use online::{

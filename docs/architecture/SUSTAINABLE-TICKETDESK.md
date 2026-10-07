@@ -236,6 +236,46 @@ final-source full CI and required-host validation.
 
 
 
+## Actual logical-history byte observations
+
+The native online lane can emit `riffdb-retention-logical-bytes-v1` after
+finishing the complete eligible prefix of one original composite snapshot.
+It uses the native retained-sequence target and fencing inputs, checks actual
+delivery in that snapshot, and stops before protected or unsealed whole rows.
+A 256-row scan page is incomplete evidence until the original eligible end is
+known; it is never reported as the total backlog.
+
+The value count covers resolved canonical command rows, their prunable event,
+outbox and status rows, and obsolete command locators. The key count covers
+removed keys only. Retained outcomes, provenance, audit, request indexes and
+event routes stay in their separate resource model, including compatible
+rewrites of retained full records. The accounting adapter executes the existing
+native retained-view validation against private bounded staging; it changes no
+database row and confers no deletion authority.
+
+Capture occurs off the writer gate at most once per 60 seconds. Each page
+visits at most 256 command rows, with the existing journal-frame byte and
+collection bounds on per-row related work and staging. A captured pin expires
+at 30 seconds, and completion, refusal and joined worker retirement release it.
+Incomplete, expired or failed measurements remain unknown. A closed
+`riffdb-retention-logical-bytes-refusal-v1` diagnostic invalidates accounting
+without replacing or changing the native pruning plan.
+
+This is a separate diagnostic component. It does not fill
+`eligible_history_bytes`, qualify the aggregate resource model, or establish
+physical retirement. Unit fixtures cover canonical byte sizes, retained views,
+the original prefix beyond one deletion batch, operator holds, actual delivery,
+target boundaries, corruption, workspace limits, overflow and pin lifetime.
+Required follow-ups are collector integration, comparison with real native
+prune and extent retirement, and measurement pressure on the required host.
+
+Package: WP-825, open. Tier: guarantee, implementation under ADR-0265 and D-003.
+Compatibility: no durable encoding, application interface, authorization,
+command ordering, dependency or reviewed compatibility-fixture change.
+Updated handbook: this page. All 10 focused native accounting tests pass;
+full scoped checks and final-source host evidence remain required. This
+component authorizes no 24-hour qualification.
+
 ## Actual source-receipt byte observations
 
 The online source owner can report `riffdb-retention-source-bytes-v1` after
