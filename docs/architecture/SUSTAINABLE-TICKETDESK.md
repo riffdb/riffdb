@@ -471,6 +471,37 @@ checks the real diagnostic boundary, including allocated bytes, original
 eligibility and pin release. It remains local fixture evidence rather than a
 populated required-host qualification.
 
+## Independent final-period history component checks
+
+The independent reconciler revalidates the three native collectors' exact
+schemas, bases, accounting, freshness, continuity and offered-clock coverage.
+It preserves separate canonical logical history, canonical source receipts and
+original sealed-prefix allocation. Each final five-minute window reports its
+observed maximum for each component. All 72 final quiet-period windows must
+be present, and each component independently passes both the endpoint and
+least-squares trend checks. Declining logical bytes cannot hide increasing
+source or physical backlog; a final cleanup cannot hide growth across the
+period. Missing data never becomes zero.
+
+Physical allocation overlaps canonical representations, so these quantities
+are never added into an aggregate eligible-history scalar. This reconciler
+retains `qualifies_complete_resource_model: false`. It cannot supply live data,
+retained outcomes/provenance, protected history, memory, archive, backup or
+derived-state accounting, original artifact custody or actual fault evidence.
+The campaign must supply those independently before qualification. The
+`scripts/check-ticketdesk-lifecycle-history-components` checker reads only the
+three closed private sample files. Its bounded reader refuses symlinks,
+hardlinks, duplicate JSON fields, truncation, nonprivate permissions and a
+changed input cohort. Its separate output binds each input's SHA-256, byte
+length and record count and cannot overwrite an earlier report. Local
+synthetic tests establish arithmetic and refusal semantics only.
+
+Package: WP-825, open. Tier: internal under ADR-0265 decisions 15 and 16.
+Compatibility: no public interface, durable encoding, authorization, ordering,
+dependency, reviewed fixture or existing qualification-threshold change.
+Updated handbook: this page. Actual final-source campaign integration and
+complete independent resource qualification remain required.
+
 ## Actual logical-history byte observations
 
 The native online lane can emit `riffdb-retention-logical-bytes-v1` after

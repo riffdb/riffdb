@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+# req: END-007, END-008, END-010
+"""Check three original observation files; this cannot qualify a campaign."""
+import argparse
+import json
+import os
+import re
+
+from lib.ticketdesk_lifecycle_history_components import (
+    HistoryComponentsError, read_observations, reconcile,
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--duration-s", required=True, type=int)
+    parser.add_argument("--incarnation", required=True, type=int)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    os.umask(0o077)
+    try:
+        records, inputs = read_observations(args.root)
+        result = reconcile(records, duration_s=args.duration_s, incarnation=args.incarnation)
+        result["inputs"] = inputs
+        encoded = json.dumps(result, sort_keys=True).encode() + b"\n"
+        if len(encoded) > 65536:
+            raise HistoryComponentsError("history_components_bound")
+        descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+    except (HistoryComponentsError, OSError) as error:
+        code = str(error) if isinstance(error, HistoryComponentsError) else "history_components_io"
+        if re.fullmatch(r"[a-z_]{1,64}", code) is None:
+            code = "history_components_evidence"
+        print("History component checks failed (" + code + "); no resource qualification.")
+        return 1
+    print("Final history component checks passed; complete resources and campaign qualification remain unmet.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

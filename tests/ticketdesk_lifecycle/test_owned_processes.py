@@ -191,6 +191,16 @@ class OwnedProcessObservations(unittest.TestCase):
                 release.set()
                 thread.join(5)
                 self.assertFalse(thread.is_alive())
+                # Python join observes its thread lock before the kernel has
+                # necessarily removed the task. Synchronize on actual task
+                # retirement before injecting the failed directory open.
+                task = Path("/proc") / str(os.getpid()) / "task" / str(identity[0])
+                for _ in range(100_000):
+                    if not task.exists():
+                        break
+                    os.sched_yield()
+                else:
+                    self.fail("the joined native task never retired")
             return original(path, flags, *args, **kwargs)
 
         try:
