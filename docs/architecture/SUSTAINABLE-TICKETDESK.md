@@ -398,6 +398,11 @@ retirement authority. New generations at or above the captured active cutoff,
 the active file, spare, archive, backups and derived files belong to separate
 resource components. This record cannot stand in for a complete file inventory.
 
+The native lane ticks this observer during ordinary retention steps as well as
+checkpoint waits, before writer admission. An idle or progressing lane therefore
+does not depend on a checkpoint stall to begin or continue its census. Both
+paths share the same observer, capture cadence, page limit and retirement owner.
+
 Completion, expiry, refusal and joined worker retirement release the diagnostic
 pin, engine snapshot and directory capability. `riffdb-retention-physical-bytes-v1`
 reports the original root, incarnation, watermark, resume, cutoff, complete

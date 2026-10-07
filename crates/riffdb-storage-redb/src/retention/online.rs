@@ -178,6 +178,11 @@ pub struct RedbOnlineRetentionLane {
 }
 
 impl RedbOnlineRetentionLane {
+    #[cfg(test)]
+    pub(crate) fn physical_observations_for_test(&self) -> u64 {
+        self.physical_bytes.lock().unwrap().completed_for_test
+    }
+
     /// First-party worker retirement cancels pending source requests under the
     /// gate lock, leaving ordinary writers and granted atomic turns intact.
     #[doc(hidden)]
@@ -203,9 +208,9 @@ impl RedbOnlineRetentionLane {
             .retire();
     }
 
-    /// Continues captured receipt/audit and logical-byte pages while the worker waits for a
-    /// checkpoint. Never requests a writer turn or captures another reader.
-    /// Existing page bounds, qualification and exact-end checks still apply.
+    /// Continues receipt/audit and logical-byte pages while waiting for a checkpoint,
+    /// and ticks the bounded physical-byte observer outside the writer gate.
+    /// Existing capture, page, qualification and exact-end checks still apply.
     #[doc(hidden)]
     pub fn advance_source_validation_off_gate(
         &self,
@@ -277,6 +282,10 @@ impl RedbOnlineRetentionLane {
         max_sequences: NonZeroU64,
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .tick(&self.shared);
         let mut logical = self
             .logical_bytes
             .lock()

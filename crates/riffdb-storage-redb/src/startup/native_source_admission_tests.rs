@@ -265,6 +265,34 @@ fn complete_first_event(ports: &mut crate::RedbOperationalPorts) {
     );
 }
 
+// req: END-007, END-008, STO-030, STO-032
+#[test]
+fn ordinary_retention_steps_observe_physical_bytes_without_a_checkpoint_wait() {
+    let (_scope, mut ports) = fixture();
+    complete_first_event(&mut ports);
+    assert!(matches!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced { through: 1, .. }
+    ));
+    ports.shared.join_journal_sealer();
+    let lane = ports.online_retention_lane();
+    assert_eq!(lane.physical_observations_for_test(), 0);
+    for _ in 0..4 {
+        lane.step(
+            NonZeroU64::new(16_384).unwrap(),
+            NonZeroU64::new(1).unwrap(),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        lane.physical_observations_for_test(),
+        1,
+        "ordinary retention must complete a physical census without checkpoint-wait callbacks"
+    );
+}
+
 // req: REC-005, REC-006, REC-007, STO-030, STO-032, END-008
 #[test]
 fn pruned_v2_startup_uses_registry_completion_without_population_walk() {

@@ -121,6 +121,13 @@ def main():
         require(records[0]["rows"] == 3
                 and records[0]["canonical_receipt_bytes"] > 0
                 and records[0]["key_bytes"] == 24, "native_source_byte_meaning")
+        records = verify(root, 3,
+            "ordinary_retention_steps_observe_physical_bytes_without_a_checkpoint_wait",
+            physical, 1)
+        require(records[0]["sealed_extents"] == 0
+                and records[0]["eligible_allocated_bytes"] == 0
+                and records[0]["protected_allocated_bytes"] == 0,
+                "native_ordinary_physical_byte_meaning")
     except ValueError as error:
         code = str(error)
         if re.fullmatch(r"[a-z_]{1,64}", code) is None:

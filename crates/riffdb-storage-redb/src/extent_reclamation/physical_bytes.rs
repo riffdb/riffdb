@@ -260,6 +260,8 @@ fn allocated(file: &mut crate::media::MediaFile) -> Result<(u64, u64), StorageEr
 pub(crate) struct Observer {
     probe: Option<Probe>,
     next_capture: Option<Instant>,
+    #[cfg(test)]
+    pub(crate) completed_for_test: u64,
 }
 
 impl Observer {
@@ -292,6 +294,10 @@ impl Observer {
             // Release diagnostic protection before emitting completion. This
             // census never authorizes the independent native retirement plan.
             self.probe = None;
+            #[cfg(test)]
+            {
+                self.completed_for_test += 1;
+            }
             let Measurement {
                 root,
                 incarnation,
