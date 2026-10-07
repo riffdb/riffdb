@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 
+from lib.ticketdesk_lifecycle_transient_usage import run_transient_observed
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
@@ -95,9 +96,10 @@ def drain_archive(root, stage, base, server, observer=None, maximum=900):
 def invoke(root, name, arguments, *, environment=None, timeout=60):
     with (root / (name + ".stdout")).open("xb") as output, \
             (root / (name + ".stderr")).open("xb") as errors:
-        result = subprocess.run(arguments, stdout=output, stderr=errors,
-                                env=environment, timeout=timeout, check=False)
-    require(result.returncode == 0, name)
+        status = run_transient_observed(arguments, output=output, errors=errors,
+            environment=environment, timeout=timeout,
+            observation=root / (name + ".process-usage.json"))
+    require(status == 0, name)
 
 
 def pump_ready(server, root, ready):

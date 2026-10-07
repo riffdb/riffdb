@@ -324,6 +324,31 @@ ADR-0265. Compatibility: no public interface, durable encoding, authorization,
 dependency or reviewed compatibility-fixture change. Updated handbook: this
 page. Six focused collector tests pass; native and required-host evidence remain
 required. This component authorizes no 24-hour qualification.
+## Transient invocation exit observations
+
+Preparation invocations now preserve a private bounded launch/exit observation
+alongside each invocation's output. The controller reaps that exact owned child
+with Linux `wait4`, retaining its per-child kernel RSS high water and exit status
+even when its whole lifetime falls between persistent-process samples. Timeout
+still fails after killing through the exact process descriptor and joining the
+child. A colliding observation refuses before launch; a failed launch remains
+unknown. Command arguments, process IDs, names and paths are not serialized.
+
+A bracketing live launch reading preserves the virtual-address and RSS counters
+when available. An already exited child can have no live launch reading. Final
+allocator high water remains unknown, rather than inferred from RSS or replaced
+by zero. These invocation records do not prove complete descendant ownership,
+persistent-process exit peaks, final allocator accounting or the aggregate
+campaign resource model. The separately owned server, load, observer, driver and
+native sampler still require their own launch/exit integration.
+
+Package: WP-825, open. Tier: internal. Compatibility: no native semantics,
+public interface, durable format, dependencies, reviewed fixtures, workload or
+qualification threshold change. Updated handbook: this page. Real child tests
+cover a between-sample 32-MiB peak, timeout and joined exit, invalid usage after
+reaping, failed launch and collision. Required-host preparation and complete
+process accounting remain required; no qualification is claimed.
+
 ## Linux RSS counter observations
 
 A preparation failed closed at resource collection. A bounded allocation-only
