@@ -28662,6 +28662,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Propose ADR-0279 after the actual native checkpoint regression removes
+      only 256 of 1030 independently covered receipts and the unchanged host
+      preparation fails source-byte coverage. Preserve the failed evidence;
+      licensing and V2 accounting continuation remain unimplemented pending
+      exact human acceptance. No runtime or durable fixture change is made by
+      the proposal, and final-source measured gates remain required.
     - Enforce the existing 95-second native byte-observation gap on every
       source, logical and physical log poll, including silence before the first
       sample. Preserve unknown values and failed host evidence; this detects

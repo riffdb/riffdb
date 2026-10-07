@@ -23,6 +23,45 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Proposed finite checkpoint licensing
+
+ADR-0279 (`adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md`)
+is proposed and requires exact human acceptance before implementation. The
+existing native owner consumes independently checkpointed progress once per
+256-receipt quantum. A deterministic actual-storage regression establishes an
+earlier observed prefix of 1,030 receipts, installs a later independent
+checkpoint, and attempts 128 bounded maintenance turns. It removes 256, leaving
+774 already covered receipts; the finite-prefix completion assertion fails
+with exit 101. The diagnostic restores the source afterward and changes no
+runtime implementation. Its actual test completes in 5.41 seconds.
+
+The failed required-host attempt separately reports 35,249 receipts removed
+and a final source plan from resume 34,994 to eligible ceiling 336,768. Its last
+physical sample has seven sealed extents and 1,918,873,600 reference-protected
+allocated bytes. These observations identify a growing unreclaimed source
+range; they do not establish a leak or a complete resource model. The source
+byte implementation reconstructs each captured prefix with a 30-second expiry,
+without checked-prefix reuse. A missing completed record alone does not reveal
+the precise reason for each omitted capture or expiry.
+
+The proposal licenses a finite prefix already subsumed by independent durable
+checkpoint evidence, then consumes it in separately paced existing quanta.
+It cannot grow through its own receipts, materialization or replay; current
+holds and validation still govern every cut. It also proposes exact native
+byte-accounting continuation with a V2 numeric record distinguishing reused
+validated receipts from newly scanned receipts. V1 observation meaning and its
+reader remain intact. The 30-second freshness, 95-second gap, writer/page/pin
+limits, durable formats, public interfaces and campaign workload remain fixed.
+
+PR note: Package WP-825 (open); Tier guarantee (proposal only); Behavior:
+document the native licensing limitation and proposed finite consumption with
+exact accounting continuation; Checks: actual native regression fails 256
+versus 1,030, failed host evidence preserved, proposal static/handbook checks;
+Compatibility: no proposed licensing or V2 producer is implemented, no durable
+fixture or runtime change; Updated handbook: this page; Hazards and follow-ups:
+exact acceptance, native implementation and final-source measured gates remain
+required. No 24-hour run has started.
+
 ## Missing native byte evidence stops preparation promptly
 
 The unchanged 1,500-second required-host diagnostic on native `f153ae48`
