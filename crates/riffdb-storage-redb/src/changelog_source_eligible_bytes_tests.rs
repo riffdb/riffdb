@@ -260,41 +260,33 @@ fn corrupt_or_overflowing_source_observations_never_publish_partial_bytes() {
 
 // req: STO-030, STO-031, STO-032, END-007, END-008
 #[test]
-fn online_source_bytes_use_the_actual_barrier_ceiling_without_additional_writer_turns() {
+fn legacy_source_bytes_use_the_actual_barrier_ceiling_without_additional_writer_turns() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
-    let mut control = ports.replication_source_control();
-    for _ in 0..16 {
-        control.reclaim_history_online().unwrap();
-        if control.reclamation_yields()[0] == 1 {
-            break;
-        }
-    }
-    assert_eq!(control.reclamation_yields()[0], 1);
-    append(
-        &ports,
-        b"independent source progress for original eligibility",
-    );
-    for _ in 0..16 {
-        if control.reclaim_history_online().unwrap().0 > 0 {
-            break;
-        }
-    }
-    let plan = control.reclamation_observation().unwrap();
-    let probe = control.eligible_bytes.probe.as_ref().unwrap();
-    assert_eq!((probe.next, probe.ceiling), (plan[0], plan[5]));
-    let root = probe.root.as_ref().unwrap().clone();
-    let table = root.open_table(HISTORY).unwrap();
+    let root = ports.shared.capture_checkpoint_root().unwrap();
+    let history = crate::changelog_v3_roots::validate_retained_history(&root)
+        .unwrap()
+        .unwrap();
+    let (_, plan) = super::super::retention::floor(&root, history, history.tail(), None).unwrap();
     let expected = (plan[0]..plan[5])
         .map(|seq| {
-            let row = table.get(seq.to_be_bytes().as_slice()).unwrap().unwrap();
-            u64::try_from(
-                crate::history_stub::resolve_history_value(row.value())
-                    .unwrap()
-                    .len(),
-            )
-            .unwrap()
+            let row = root
+                .open_table(HISTORY)
+                .unwrap()
+                .get(seq.to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap();
+            crate::history_stub::resolve_history_value(row.value())
+                .unwrap()
+                .len() as u64
         })
         .sum::<u64>();
+    let mut control = ports.replication_source_control();
+    control
+        .eligible_bytes
+        .capture(root, history, plan[5], Instant::now())
+        .unwrap();
+    let probe = control.eligible_bytes.probe.as_ref().unwrap();
+    assert_eq!((probe.next, probe.ceiling), (plan[0], plan[5]));
     let before = crate::changelog_v3_roots::validate_retained_history(
         &ports.shared.database.begin_read().unwrap(),
     )

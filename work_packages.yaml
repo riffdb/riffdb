@@ -28661,6 +28661,23 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Preserve the broad native unit run's archive-replay Unavailable refusal
+      as unexplained native evidence; an isolated unchanged pass does not close
+      it or qualify full CI. Correct the above-limit byte fixture to measure
+      actual canonical receipts, whose replacement before-images retain hashes.
+      Both profiles pass finite completion and the 32-MiB quantum bound; actual
+      V1/V2 emitter-reader checks, 184 lifecycle tests, all-target Clippy and all
+      14 scoped non-test gates pass. Full configured native CI remains pending.
+    - Implement ADR-0279 finite licensing for both online native write profiles,
+      with unchanged offline validation, atomic writers and durable formats.
+      Issue a fixed independently covered ceiling once; consume only checked
+      acknowledged cuts and revoke lost evidence. Continue exact V2 read-only
+      source bytes through qualified reuse and removed canonical preimages,
+      disclose actual new scan pages and exact numeric publication identity,
+      preserve V1 readers and freeze the observation basis. Preserve the failed
+      baseline and measured host attempt; final-source CI and rehearsal remain
+      required. Annotate the existing ADR proofs with their declared WP-825 owner
+      without changing accepted decisions. WP-825 remains open.
     - Record the maintainer's exact acceptance of ADR-0279 ("i accept")
       in its standalone acceptance commit. Its finite checkpoint licensing and
       exact V2 accounting continuation are authorized; implementation and

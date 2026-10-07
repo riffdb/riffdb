@@ -9,17 +9,24 @@ const MAX_ROWS: usize = 256;
 const MAX_AGE: Duration = Duration::from_secs(30);
 const CAPTURE_INTERVAL: Duration = Duration::from_secs(60);
 
+#[path = "changelog_source_eligible_continuation.rs"]
+mod continuation;
+use continuation::ContinuedProbe;
+
 #[derive(Default)]
 pub(super) struct Observer {
     probe: Option<Probe>,
+    continued: Option<ContinuedProbe>,
     next_capture: Option<Instant>,
 }
 
 impl Observer {
     pub(super) fn pending(&self) -> bool {
-        self.probe
-            .as_ref()
-            .is_some_and(|probe| probe.root.is_some() && probe.completed.is_none())
+        self.continued.as_ref().is_some_and(ContinuedProbe::pending)
+            || self
+                .probe
+                .as_ref()
+                .is_some_and(|probe| probe.root.is_some() && probe.completed.is_none())
     }
 
     // Called only with the root and ceiling of the parent's validated barrier.
@@ -44,6 +51,7 @@ impl Observer {
         if self.next_capture.is_some_and(|next| now < next) {
             return Ok(());
         }
+        self.continued = None;
         self.probe = Some(Probe::new_source(root, history, ceiling, now)?);
         self.next_capture = Some(
             now.checked_add(CAPTURE_INTERVAL)
@@ -52,7 +60,103 @@ impl Observer {
         Ok(())
     }
 
+    pub(super) fn capture_qualified(
+        &mut self,
+        root: ValidationSource,
+        history: History,
+        ceiling: u64,
+        qualification: u64,
+        now: Instant,
+    ) -> Result<(), StorageError> {
+        self.check_qualification(qualification);
+        if self.next_capture.is_some_and(|next| now < next) {
+            return Ok(());
+        }
+        self.probe = None;
+        self.continued = Some(ContinuedProbe::capture(
+            self.continued.take(),
+            root,
+            history,
+            ceiling,
+            qualification,
+            now,
+        )?);
+        self.next_capture = Some(
+            now.checked_add(CAPTURE_INTERVAL)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?,
+        );
+        Ok(())
+    }
+
+    pub(super) fn check_qualification(&mut self, qualification: u64) {
+        if self
+            .continued
+            .as_ref()
+            .is_some_and(|probe| !probe.qualifies(qualification))
+        {
+            self.continued = None;
+        }
+    }
+
+    pub(super) fn rebase_own_cut(
+        &mut self,
+        root: ValidationSource,
+        proof: &crate::journal::SourceReclamationProof,
+        predecessor_qualification: u64,
+        qualification: u64,
+    ) -> Result<(), StorageError> {
+        if let Some(probe) = self.continued.as_mut() {
+            match probe.rebase(root, proof, predecessor_qualification, qualification) {
+                Ok(true) => (),
+                Ok(false) => self.continued = None,
+                Err(error) => {
+                    self.continued = None;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn advance(&mut self, now: Instant) -> Result<(), StorageError> {
+        if let Some(probe) = self.continued.as_mut() {
+            let sample = match probe.advance(now) {
+                Ok(sample) => sample,
+                Err(error) => {
+                    self.continued = None;
+                    return Err(error);
+                }
+            };
+            if let Some(
+                [
+                    root,
+                    incarnation,
+                    first,
+                    ceiling,
+                    rows,
+                    bytes,
+                    key_bytes,
+                    age_us,
+                    collection_us,
+                    pages,
+                    reused_rows,
+                    checked_rows,
+                    subtracted_rows,
+                    publication_kind,
+                    publication_hash_a,
+                    publication_hash_b,
+                    publication_hash_c,
+                    publication_hash_d,
+                ],
+            ) = sample
+            {
+                eprintln!(
+                    "riffdb-retention-source-bytes-v2\troot={root}\tincarnation={incarnation}\tresume={first}\tceiling={ceiling}\trows={rows}\tcanonical_receipt_bytes={bytes}\tkey_bytes={key_bytes}\tcapture_age_us={age_us}\tcollection_us={collection_us}\tpages={pages}\treused_rows={reused_rows}\tchecked_rows={checked_rows}\tsubtracted_rows={subtracted_rows}\tpublication_kind={publication_kind}\tpublication_hash_a={publication_hash_a}\tpublication_hash_b={publication_hash_b}\tpublication_hash_c={publication_hash_c}\tpublication_hash_d={publication_hash_d}"
+                );
+            }
+            return Ok(());
+        }
+
         let Some(probe) = self.probe.as_mut() else {
             return Ok(());
         };
@@ -91,6 +195,7 @@ impl Observer {
 
     pub(super) fn retire(&mut self) {
         self.probe = None;
+        self.continued = None;
     }
 }
 

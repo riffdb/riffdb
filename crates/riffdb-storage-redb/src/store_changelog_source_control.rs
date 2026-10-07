@@ -34,6 +34,10 @@ pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "changelog_source_checkpoint_license.rs"]
+mod checkpoint_license;
+#[path = "changelog_source_control_checkpointed_online.rs"]
+mod checkpointed_online;
 #[path = "changelog_source_eligible_bytes.rs"]
 mod eligible_bytes;
 #[path = "changelog_source_control_journaled.rs"]
@@ -62,6 +66,7 @@ pub(crate) struct ReplicationSourceControl {
     observed: Option<Observation>,
     online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
     online_independent_sequence: u64,
+    online_license: Option<checkpoint_license::CheckpointLicense>,
     online_validation_phases: [u64; 4],
     online_admission_yields: [u64; 5],
     reclamation_observation: Option<[u64; 8]>,
@@ -176,6 +181,7 @@ impl RedbOperationalPorts {
             observed: None,
             online_validation: None,
             online_independent_sequence: 0,
+            online_license: None,
             online_validation_phases: [0; 4],
             online_admission_yields: [0; 5],
             reclamation_observation: None,
@@ -315,7 +321,15 @@ impl ReplicationSourceControl {
     /// bounded FIFO, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
-        self.eligible_bytes.advance(std::time::Instant::now())?;
+        self.eligible_bytes.check_qualification(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        );
+        if let Err(error) = self.eligible_bytes.advance(std::time::Instant::now()) {
+            self.retire_online_validation();
+            return Err(error);
+        }
         self.reclamation_observation = None;
         self.reclamation_yields = [0; 3];
         self.online_validation_phases = [0; 4];
@@ -328,6 +342,7 @@ impl ReplicationSourceControl {
             Ok(sample) => sample,
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
@@ -336,6 +351,7 @@ impl ReplicationSourceControl {
             Ok(sample) => sample,
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
@@ -352,7 +368,7 @@ impl ReplicationSourceControl {
             self.online_validation_phases[1] = continued;
         }
         if result.is_err() {
-            self.online_validation = None;
+            self.retire_online_validation();
         } else if let Some(walk) = self.online_validation.as_mut() {
             walk.release_completed_pin();
         }
@@ -376,6 +392,7 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.qualifies(epoch))
         {
             self.online_validation = None;
+            self.online_license = None;
             self.online_validation_phases[2] = 1;
         }
         // A completed ancestor may lag an already installed checkpoint even
@@ -388,6 +405,7 @@ impl ReplicationSourceControl {
                 && publication.is_multiple_of(2)
                 && publication != walk.root_identity()
             {
+                walk.release_completed_pin();
                 let root = self.shared.capture_checkpoint_root()?;
                 let epoch = self
                     .shared
@@ -395,6 +413,7 @@ impl ReplicationSourceControl {
                     .load(Ordering::Acquire);
                 if !walk.continue_on(root, epoch)? {
                     self.online_validation = None;
+                    self.online_license = None;
                     self.online_validation_phases[2] = 1;
                     return Ok(0);
                 }
@@ -440,44 +459,11 @@ impl ReplicationSourceControl {
             }
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
-        let independent = self
-            .online_validation
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .independent_sequence();
-        if independent <= self.online_independent_sequence {
-            self.reclamation_yields[1] = 1;
-            return Ok(0);
-        }
-        let before = barrier
-            .observation()
-            .history
-            .minimum_resume()
-            .sequence()
-            .get();
-        let advanced = self
-            .reclaim_at_barrier(barrier, true)
-            .map_err(|error| match error {
-                Refusal::Storage(error) => error,
-                _ => storage_error(StorageErrorKind::CorruptData),
-            })?;
-        self.online_independent_sequence = independent;
-        let removed = if advanced {
-            self.observed
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-                .history
-                .minimum_resume()
-                .sequence()
-                .get()
-                .checked_sub(before)
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-        } else {
-            0
-        };
-        Ok(removed)
+        self.reclaim_checkpointed_online(barrier)
     }
 
     pub(crate) fn source_admission_census(&self) -> [u64; 8] {
@@ -488,7 +474,15 @@ impl ReplicationSourceControl {
     /// root, request a writer turn, drain a journal or delete a receipt. Exact
     /// end leaves a certificate for the next ordinarily paced admission.
     pub(crate) fn advance_validation_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
-        self.eligible_bytes.advance(std::time::Instant::now())?;
+        self.eligible_bytes.check_qualification(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        );
+        if let Err(error) = self.eligible_bytes.advance(std::time::Instant::now()) {
+            self.retire_online_validation();
+            return Err(error);
+        }
         let epoch = self
             .shared
             .source_continuation_epoch
@@ -499,6 +493,7 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.qualifies(epoch))
         {
             self.online_validation = None;
+            self.online_license = None;
             return Ok([0, 0, 1]);
         }
         let Some(walk) = self.online_validation.as_mut() else {
@@ -512,6 +507,7 @@ impl ReplicationSourceControl {
             )
         {
             self.online_validation = None;
+            self.online_license = None;
             return Err(error);
         }
         let [initial, continued] = walk.step_rows();
@@ -522,6 +518,7 @@ impl ReplicationSourceControl {
     pub(crate) fn retire_online_validation(&mut self) {
         self.eligible_bytes.retire();
         self.online_validation = None;
+        self.online_license = None;
     }
 
     pub(crate) fn validation_phases(&self) -> [u64; 4] {
@@ -619,6 +616,7 @@ impl ReplicationSourceControl {
             && let Err(error) = walk.rebase_own_deletion(root, qualification)
         {
             self.online_validation = None;
+            self.online_license = None;
             return Err(Refusal::Storage(error));
         }
         crash_edge("continuation-certificate");

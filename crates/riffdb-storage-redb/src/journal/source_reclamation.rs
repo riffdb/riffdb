@@ -28,6 +28,10 @@ impl SourceReceiptPreimage {
         })
     }
 
+    pub(crate) fn canonical_bytes(&self) -> u32 {
+        self.canonical_bytes
+    }
+
     pub(crate) fn matches(&self, canonical: &[u8]) -> bool {
         usize::try_from(self.canonical_bytes).ok() == Some(canonical.len())
             && self.canonical_hash == digest(canonical)

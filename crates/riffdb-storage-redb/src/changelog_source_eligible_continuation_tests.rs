@@ -1,0 +1,344 @@
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+use super::*;
+use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
+use crate::journal::SourceReceiptPreimage;
+
+fn append(ports: &RedbOperationalPorts, size: usize) {
+    let write = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+        &ports.shared.database,
+        crate::RedbCommitProfile::Hardened,
+        riffdb_storage_api::ChangelogAttributionV3::OutboxTransition,
+    )
+    .unwrap();
+    write
+        .open_table(crate::layout::OUTBOX_STATUS)
+        .unwrap()
+        .insert(b"source-bytes-fixture".as_slice(), vec![1; size].as_slice())
+        .unwrap();
+    write.finish().unwrap().commit(&ports.shared).unwrap();
+}
+
+fn validated(ports: &RedbOperationalPorts) -> (ValidationSource, History, u64) {
+    let source = ports.shared.capture_source_validation_pin().unwrap();
+    let mut walk = RetainedHistoryValidation::new_source(source.clone())
+        .unwrap()
+        .unwrap();
+    for _ in 0..32 {
+        if walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    let history = walk.complete().unwrap().history();
+    (
+        source,
+        history,
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+    )
+}
+
+fn oracle(source: &ValidationSource, history: History, ceiling: u64) -> u64 {
+    // Independent exact walk on the actual immutable pin. No continued counters.
+    (history.minimum_resume().sequence().get()..ceiling)
+        .map(|seq| {
+            let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(seq).unwrap();
+            source
+                .receipt(sequence, None)
+                .unwrap()
+                .unwrap()
+                .encode()
+                .unwrap()
+                .len() as u64
+        })
+        .sum()
+}
+
+fn finish(probe: &mut ContinuedProbe, now: Instant) -> [u64; 18] {
+    for _ in 0..32 {
+        if let Some(sample) = probe.advance(now).unwrap() {
+            return sample;
+        }
+    }
+    panic!("bounded fixture must finish its exact source interval");
+}
+
+#[test]
+fn source_byte_continuation_matches_exact_pinned_full_walk() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for row in 0..300 {
+        append(&ports, if row % 2 == 0 { 17 } else { 4096 });
+    }
+    let mut control = ports.replication_source_control();
+    for _ in 0..16 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        for _ in 0..8 {
+            control.advance_validation_off_gate().unwrap();
+        }
+        if control.reclamation_yields()[0] == 1 {
+            break;
+        }
+    }
+    assert_eq!(control.reclamation_yields()[0], 1);
+    let (source, original, epoch) = validated(&ports);
+    let now = Instant::now();
+    let ceiling = original.tail().sequence().get();
+    let expected = oracle(&source, original, ceiling);
+    let mut probe =
+        ContinuedProbe::capture(None, source.clone(), original, ceiling, epoch, now).unwrap();
+    let first = finish(&mut probe, now);
+    assert_eq!(first[5], expected);
+    assert_eq!(first[10], 0);
+    assert_eq!(first[11], first[4]);
+    assert_eq!(first[9], 2);
+    assert!(probe.root.is_none());
+    drop(source);
+
+    append(&ports, 512);
+    let (source, before_cut, epoch) = validated(&ports);
+    assert_eq!(before_cut.tail().sequence().get(), ceiling + 1);
+    let mut probe = ContinuedProbe::capture(
+        Some(probe),
+        source.clone(),
+        before_cut,
+        before_cut.tail().sequence().get(),
+        epoch,
+        now + CAPTURE_INTERVAL,
+    )
+    .unwrap();
+    let append_sample = finish(&mut probe, now + CAPTURE_INTERVAL);
+    assert_eq!(
+        append_sample[5],
+        oracle(&source, before_cut, before_cut.tail().sequence().get())
+    );
+    assert_eq!(append_sample[10], first[4]);
+    assert_eq!((append_sample[11], append_sample[9]), (1, 1));
+    let successor_floor_seq = riffdb_storage_api::ChangelogTransactionSequence::new(
+        before_cut.minimum_resume().sequence().get() + 256,
+    )
+    .unwrap();
+    let floor = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+        &source.receipt(successor_floor_seq, None).unwrap().unwrap(),
+    )
+    .unwrap();
+    let rows = (before_cut.minimum_resume().sequence().get()..floor.sequence().get())
+        .map(|seq| {
+            let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(seq).unwrap();
+            SourceReceiptPreimage::capture(
+                &source
+                    .receipt(sequence, None)
+                    .unwrap()
+                    .unwrap()
+                    .encode()
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let proof = SourceReclamationProof::new(
+        before_cut,
+        History::new(
+            before_cut.lineage(),
+            before_cut.anchor(),
+            before_cut.tail(),
+            floor,
+        )
+        .unwrap(),
+        rows,
+    )
+    .unwrap();
+    let mut partial =
+        ContinuedProbe::capture(None, source, before_cut, ceiling, epoch, now).unwrap();
+    assert!(partial.advance(now).unwrap().is_none());
+    assert_eq!(partial.next, floor.sequence().get());
+    let mut removed = 0;
+    for _ in 0..16 {
+        removed += control.reclaim_history_online().unwrap().0;
+        if removed > 0 {
+            break;
+        }
+        for _ in 0..8 {
+            control.advance_validation_off_gate().unwrap();
+        }
+    }
+    assert_eq!(removed, 256);
+    control.retire_online_validation();
+    let (source, after_cut, qualification) = validated(&ports);
+    assert_eq!(after_cut.minimum_resume(), floor);
+    assert!(
+        probe
+            .rebase(source.clone(), &proof, epoch, qualification)
+            .unwrap()
+    );
+    assert!(
+        partial
+            .rebase(source.clone(), &proof, epoch, qualification)
+            .unwrap()
+    );
+    let partial_sample = finish(&mut partial, now);
+    assert_eq!(partial_sample[5], oracle(&source, after_cut, ceiling));
+    assert_eq!(
+        partial_sample[12], 256,
+        "subtract only rows that were actually scanned"
+    );
+    let mut probe = ContinuedProbe::capture(
+        Some(probe),
+        source.clone(),
+        after_cut,
+        before_cut.tail().sequence().get(),
+        qualification,
+        now + CAPTURE_INTERVAL * 2,
+    )
+    .unwrap();
+    let cut_sample = finish(&mut probe, now + CAPTURE_INTERVAL * 2);
+    assert_eq!(
+        cut_sample[5],
+        oracle(&source, after_cut, before_cut.tail().sequence().get())
+    );
+    assert_eq!(cut_sample[10], cut_sample[4]);
+    assert_eq!((cut_sample[11], cut_sample[9]), (0, 0));
+    assert!(probe.root.is_none());
+}
+
+#[test]
+fn source_byte_continuation_reconstructs_changed_ceiling_and_revoked_qualification() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let (source, history, epoch) = validated(&ports);
+    let now = Instant::now();
+    let mut probe = ContinuedProbe::capture(
+        None,
+        source.clone(),
+        history,
+        history.tail().sequence().get(),
+        epoch,
+        now,
+    )
+    .unwrap();
+    finish(&mut probe, now);
+    let ceiling = history.tail().sequence().get() - 2;
+    let mut changed = ContinuedProbe::capture(
+        Some(probe),
+        source.clone(),
+        history,
+        ceiling,
+        epoch,
+        now + CAPTURE_INTERVAL,
+    )
+    .unwrap();
+    let sample = finish(&mut changed, now + CAPTURE_INTERVAL);
+    assert_eq!(sample[10], 0);
+    assert_eq!(sample[5], oracle(&source, history, ceiling));
+    ports.shared.invalidate_source_continuation();
+    let (source, history, epoch) = validated(&ports);
+    let mut changed = ContinuedProbe::capture(
+        Some(changed),
+        source.clone(),
+        history,
+        ceiling,
+        epoch,
+        now + CAPTURE_INTERVAL * 2,
+    )
+    .unwrap();
+    let sample = finish(&mut changed, now + CAPTURE_INTERVAL * 2);
+    assert_eq!(sample[10], 0);
+    assert_eq!(sample[5], oracle(&source, history, ceiling));
+    assert!(
+        ContinuedProbe::capture(Some(changed), source, history, ceiling, u64::MAX, now).is_err()
+    );
+}
+
+#[test]
+fn source_byte_continuation_expiry_overflow_and_retirement_keep_unknown_and_drop_pins() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let (source, history, epoch) = validated(&ports);
+    let weak = Arc::downgrade(source.checkpoint_pin());
+    let now = Instant::now();
+    let mut observer = Observer::default();
+    observer
+        .capture_qualified(source, history, history.tail().sequence().get(), epoch, now)
+        .unwrap();
+    assert!(observer.pending());
+    observer.advance(now + MAX_AGE).unwrap();
+    assert!(!observer.pending());
+    assert!(weak.upgrade().is_none());
+    let (source, history, epoch) = validated(&ports);
+    observer
+        .capture_qualified(
+            source,
+            history,
+            history.tail().sequence().get(),
+            epoch,
+            now + CAPTURE_INTERVAL,
+        )
+        .unwrap();
+    observer.continued.as_mut().unwrap().bytes = u64::MAX;
+    assert_eq!(
+        observer.advance(now + CAPTURE_INTERVAL).unwrap_err().kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert!(observer.continued.is_none());
+    let (source, history, epoch) = validated(&ports);
+    observer
+        .capture_qualified(
+            source,
+            history,
+            history.tail().sequence().get(),
+            epoch,
+            now + CAPTURE_INTERVAL * 2,
+        )
+        .unwrap();
+    observer.check_qualification(epoch + 1);
+    assert!(observer.continued.is_none());
+    observer.retire();
+    assert!(observer.probe.is_none());
+    assert!(!observer.pending());
+}
+
+#[test]
+fn actual_v2_source_producer_matches_its_pinned_canonical_bytes_and_qualified_reuse() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for row in 0..300 {
+        append(&ports, if row % 2 == 0 { 17 } else { 4096 });
+    }
+    let (source, history, epoch) = validated(&ports);
+    let now = Instant::now();
+    let expected = oracle(&source, history, history.tail().sequence().get());
+    let mut observer = Observer::default();
+    observer
+        .capture_qualified(source, history, history.tail().sequence().get(), epoch, now)
+        .unwrap();
+    observer.advance(now).unwrap();
+    assert!(observer.pending());
+    observer.advance(now).unwrap();
+    assert!(!observer.pending());
+    let sample = observer.continued.as_ref().unwrap().sample(now).unwrap();
+    assert_eq!(sample[5], expected);
+    assert_eq!(sample[10], 0);
+    assert_eq!(sample[9], 2);
+    append(&ports, 512);
+    let (source, after, epoch) = validated(&ports);
+    let expected = oracle(&source, after, after.tail().sequence().get());
+    observer
+        .capture_qualified(
+            source,
+            after,
+            after.tail().sequence().get(),
+            epoch,
+            now + CAPTURE_INTERVAL,
+        )
+        .unwrap();
+    observer.advance(now + CAPTURE_INTERVAL).unwrap();
+    let new = observer
+        .continued
+        .as_ref()
+        .unwrap()
+        .sample(now + CAPTURE_INTERVAL)
+        .unwrap();
+    assert_eq!(new[5], expected);
+    assert_eq!(new[10], sample[4]);
+    assert_eq!((new[11], new[9]), (1, 1));
+}

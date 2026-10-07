@@ -1089,3 +1089,6 @@ fn unknown_pending_tail_never_requests_publication_or_checkpoint() {
         );
     }
 }
+
+#[path = "source_reclamation_license_tests.rs"]
+mod license_tests;

@@ -90,7 +90,7 @@ def verify(root, index, selector, collector, expected):
             require(len(line) <= 65536, "native_byte_log_line_bound")
             if line.startswith(collector.FAMILY):
                 require(len(samples) < expected, "native_byte_record_count")
-                samples.append(collector.parse_sample(line))
+                samples.append(source.parse_native_sample(line) if collector is source else collector.parse_sample(line))
         else:
             raise ValueError("native_byte_log_line_bound")
     require(len(samples) == expected and all(samples), "native_byte_record_count")
@@ -118,9 +118,25 @@ def main():
         records = verify(root, 2,
             "online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimulate_itself",
             source, 1)
-        require(records[0]["rows"] == 3
-                and records[0]["canonical_receipt_bytes"] > 0
-                and records[0]["key_bytes"] == 24, "native_source_byte_meaning")
+        require(records[0]["rows"] == 0
+                and records[0]["canonical_receipt_bytes"] == 0
+                and records[0]["key_bytes"] == 0, "native_source_byte_meaning")
+        require(records[0]["reused_rows"] == 0
+                and records[0]["checked_rows"] - records[0]["subtracted_rows"] == records[0]["rows"],
+                "native_source_continuation_meaning")
+        continued = verify(root, 6,
+            "actual_v2_source_producer_matches_its_pinned_canonical_bytes_and_qualified_reuse",
+            source, 2)
+        require(continued[0]["canonical_receipt_bytes"] > 0
+                and continued[0]["reused_rows"] == 0 and continued[0]["pages"] == 2
+                and continued[1]["reused_rows"] == continued[0]["rows"]
+                and continued[1]["checked_rows"] == 1 and continued[1]["pages"] == 1,
+                "native_continued_source_meaning")
+        legacy = verify(root, 5,
+            "captured_source_byte_pages_remain_pending_until_exact_end_or_retirement",
+            source, 1)
+        require(legacy[0]["rows"] > 256 and "reused_rows" not in legacy[0],
+                "native_legacy_source_meaning")
         records = verify(root, 3,
             "ordinary_retention_steps_observe_physical_bytes_without_a_checkpoint_wait",
             physical, 1)

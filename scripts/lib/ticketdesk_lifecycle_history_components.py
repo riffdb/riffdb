@@ -51,18 +51,22 @@ def integer(value):
 
 def native_record(kind, record):
     module, basis, _, _ = CONTRACTS[kind]
-    require(type(record) is dict and record.keys() == module.FIELDS | METADATA,
+    version, fields, prefix, parser = 1, module.FIELDS, module.PREFIX, module.parse_sample
+    if kind == "source" and type(record) is dict and record.get("schema") == "riffdb.ticketdesk-lifecycle-source-byte-sample/v2":
+        version, fields, prefix, parser = 2, source.FIELDS_V2, source.PREFIX_V2, source.parse_sample_v2
+        basis = "qualified_canonical_source_receipts_and_keys"
+    require(type(record) is dict and record.keys() == fields | METADATA,
             "history_components_shape")
-    require(record["schema"] == "riffdb.ticketdesk-lifecycle-" + kind + "-byte-sample/v1"
+    require(record["schema"] == "riffdb.ticketdesk-lifecycle-" + kind + "-byte-sample/v" + str(version)
             and record["basis"] == basis
             and record["qualifies_complete_resource_model"] is False,
             "history_components_basis")
     integer(record["elapsed_ns"])
-    encoded = module.PREFIX + b"\t".join(
+    encoded = prefix + b"\t".join(
         name.encode("ascii") + b"=" + str(integer(record[name])).encode("ascii")
-        for name in sorted(module.FIELDS)) + b"\n"
+        for name in sorted(fields)) + b"\n"
     try:
-        return module.parse_sample(encoded)
+        return parser(encoded)
     except ProviderBudgetError as error:
         raise HistoryComponentsError("history_components_native_accounting") from error
 
@@ -172,6 +176,7 @@ def reconcile(records, *, duration_s, incarnation):
     first_window = final_start // 300
     maxima = {kind: [None] * 72 for kind in KINDS}
     counts = {}
+    bases = {}
     for kind in sorted(KINDS):
         rows = records[kind]
         require(type(rows) is list and 0 < len(rows) <= 2048, "history_components_bound")
@@ -182,6 +187,8 @@ def reconcile(records, *, duration_s, incarnation):
         first_final_ns = None
         for record in rows:
             value = native_record(kind, record)
+            require(kind not in bases or bases[kind] == record["basis"], "history_components_basis")
+            bases[kind] = record["basis"]
             elapsed = record["elapsed_ns"]
             require(elapsed < duration_s * SECOND
                     and (last_ns is None or elapsed > last_ns), "history_components_clock")
@@ -214,7 +221,7 @@ def reconcile(records, *, duration_s, incarnation):
     return {
         "schema": "riffdb.ticketdesk-lifecycle-final-history-components/v1",
         "final_start_s": final_start,
-        "basis": {kind: CONTRACTS[kind][1] for kind in sorted(KINDS)},
+        "basis": {kind: bases[kind] for kind in sorted(KINDS)},
         "final_samples": counts,
         "windows": [dict(start_s=final_start + 300 * index,
                          end_s=final_start + 300 * (index + 1),

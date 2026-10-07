@@ -53,6 +53,21 @@ class HistoryComponents(unittest.TestCase):
         self.assertNotIn("eligible_history_bytes", result)
         self.assertFalse(result["qualifies_complete_resource_model"])
 
+    def test_final_source_v2_basis_is_frozen_without_claiming_reused_rows_as_scans(self):
+        value = records()
+        for row in value["source"]:
+            row.update(schema="riffdb.ticketdesk-lifecycle-source-byte-sample/v2",
+                       basis="qualified_canonical_source_receipts_and_keys",
+                       reused_rows=1, checked_rows=0, subtracted_rows=0, pages=0,
+                       publication_kind=1, publication_hash_a=7, publication_hash_b=0,
+                       publication_hash_c=0, publication_hash_d=0)
+        result = reconcile(value, duration_s=DURATION, incarnation=7)
+        self.assertEqual(result["basis"]["source"], "qualified_canonical_source_receipts_and_keys")
+        self.assertEqual(result["windows"][0]["components"]["source"], 108)
+        value["source"][1] = records()["source"][1]
+        with self.assertRaisesRegex(HistoryComponentsError, "^history_components_basis$"):
+            reconcile(value, duration_s=DURATION, incarnation=7)
+
     def test_declining_logical_bytes_cannot_hide_increasing_physical_or_source_bytes(self):
         for growing in ("physical", "source"):
             value = records()

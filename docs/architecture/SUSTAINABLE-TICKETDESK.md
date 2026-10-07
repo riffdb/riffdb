@@ -23,43 +23,73 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
-## Proposed finite checkpoint licensing
+## Accepted finite checkpoint licensing
 
 ADR-0279 (`adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md`)
-is proposed and requires exact human acceptance before implementation. The
-existing native owner consumes independently checkpointed progress once per
-256-receipt quantum. A deterministic actual-storage regression establishes an
-earlier observed prefix of 1,030 receipts, installs a later independent
-checkpoint, and attempts 128 bounded maintenance turns. It removes 256, leaving
-774 already covered receipts; the finite-prefix completion assertion fails
-with exit 101. The diagnostic restores the source afterward and changes no
-runtime implementation. Its actual test completes in 5.41 seconds.
+was accepted in session on October 7, 2026. The frozen native regression on the
+previous implementation removes only 256 of 1,030 independently covered
+receipts after 128 bounded maintenance attempts. That failure is preserved.
+The new online owner retains a finite license over the earlier observed prefix
+subsumed by a later actual independently durable checkpoint. Each acknowledged
+cut consumes at most 256 receipts and 32 MiB of checked canonical preimages;
+current source validation, checkpoint coverage, fencing and all holds still
+govern admission. Existing holds pause consumption. Changed or missing evidence
+revokes the license, and its own cuts and checkpoint materialization cannot
+renew it. Both Standard and Hardened online owners use finite licensing;
+offline full validation and authoritative atomic write paths remain intact.
 
-The failed required-host attempt separately reports 35,249 receipts removed
-and a final source plan from resume 34,994 to eligible ceiling 336,768. Its last
-physical sample has seven sealed extents and 1,918,873,600 reference-protected
-allocated bytes. These observations identify a growing unreclaimed source
-range; they do not establish a leak or a complete resource model. The source
-byte implementation reconstructs each captured prefix with a 30-second expiry,
-without checked-prefix reuse. A missing completed record alone does not reveal
-the precise reason for each omitted capture or expiry.
+Exact read-only source accounting now continues through native classified
+appends and this owner's acknowledged, checked removed preimages. A complete
+certificate retains no snapshot between captures. A changed ceiling without
+exact bytes, lost qualification or incomplete work requires bounded validation;
+missing evidence never becomes zero. The owner keeps one certificate/candidate,
+shares validation pins and retains the 64-KiB bookkeeping capacity and two
+validation-pin limit. Accounting grants no deletion authority.
 
-The proposal licenses a finite prefix already subsumed by independent durable
-checkpoint evidence, then consumes it in separately paced existing quanta.
-It cannot grow through its own receipts, materialization or replay; current
-holds and validation still govern every cut. It also proposes exact native
-byte-accounting continuation with a V2 numeric record distinguishing reused
-validated receipts from newly scanned receipts. V1 observation meaning and its
-reader remain intact. The 30-second freshness, 95-second gap, writer/page/pin
-limits, durable formats, public interfaces and campaign workload remain fixed.
+The native `riffdb-retention-source-bytes-v2` record keeps canonical receipt and
+key bytes separate from logical and physical accounting. It identifies the
+actual checkpoint and composite publication with numeric kind and four exact
+frame-hash words. `reused_rows` counts qualified rows carried into this capture;
+`checked_rows` counts newly scanned receipts; `subtracted_rows` counts scanned
+or reused receipts removed through acknowledged preimages during that capture.
+The retained interval obeys `rows = reused_rows + checked_rows - subtracted_rows`.
+`pages` counts actual new scan pages, so complete reuse can have zero pages.
+The V1 reader and its original scan/page meaning remain available. Collectors
+freeze one version and basis per observation stream and refuse mixed evidence.
+The 30-second capture freshness and 95-second observation-gap limits remain.
 
-PR note: Package WP-825 (open); Tier guarantee (proposal only); Behavior:
-document the native licensing limitation and proposed finite consumption with
-exact accounting continuation; Checks: actual native regression fails 256
-versus 1,030, failed host evidence preserved, proposal static/handbook checks;
-Compatibility: no proposed licensing or V2 producer is implemented, no durable
-fixture or runtime change; Updated handbook: this page; Hazards and follow-ups:
-exact acceptance, native implementation and final-source measured gates remain
+The earlier unchanged required-host attempt still fails source-byte coverage:
+35,249 receipts removed, final source plan resume 34,994 and eligible ceiling
+336,768, and 1,918,873,600 reference-protected allocated bytes in its last
+physical observation. Preserve that failed evidence. These native changes do
+not establish required-host throughput, a complete resource model, physically
+retired generations or readiness for the 24-hour run.
+
+The corrected large-receipt fixture proves that both profiles shrink each
+quantum to the actual canonical 32-MiB bound and finish the finite prefix.
+The earlier fixture counted raw before-image payloads as if they were retained
+in receipts; canonical replacements retain the prior hash. Its below-limit
+failure is preserved, and the corrected fixture uses an independently measured
+above-limit canonical interval. Actual native V1 and V2 emitters pass the
+independent diagnostic readers, and all 184 lifecycle tests pass. Scoped
+non-test acceptance passes all 14 checks and all-target Clippy is clean.
+
+The broad Cargo unit run passes 975 tests but fails the new fixture's original
+size assertion and an existing archive-publication crash test with native
+`Unavailable` during selected replay setup; one existing test is ignored.
+The corrected byte fixture and unchanged isolated archive test pass separately.
+The archive refusal remains unexplained and is preserved as a native concern,
+not retried by the workload or classified as successful CI. The full configured
+native test suite and final-source full CI still have to pass.
+
+PR note: Package WP-825 (open); Tier guarantee under accepted ADR-0279;
+Behavior: finite native online consumption and exact V2 read-only accounting
+continuation; Checks: preserved failing native prefix regression, independent
+pinned byte oracle, exhaustion, hold, lineage, qualification, expiry and overflow
+regressions, legacy-reader and mixed-version collector tests; Compatibility:
+V5, writer 4, earlier durable fixtures and public application interfaces unchanged;
+Updated handbook: this page; Hazards and follow-ups: final-source scoped and full
+CI, unchanged required-host preparation and every measured rehearsal gate remain
 required. No 24-hour run has started.
 
 ## Missing native byte evidence stops preparation promptly
@@ -135,7 +165,7 @@ fixture fails, 32 native workload tests and three actual public fixture
 invocations pass; Compatibility: public lifecycle refusal, authorization,
 command identity, native errors and durable formats unchanged; Updated handbook:
 this page; Hazards and follow-ups: full checks and continuous-load integration,
-ADR-0279 acceptance and native implementation, all measured rehearsal gates.
+ADR-0279 native validation, final-source CI and all measured rehearsal gates.
 
 ## Interruption recovery preserves native failure visibility
 
@@ -1102,7 +1132,7 @@ remaining failure rather than assuming the original refusal had this cause.
 
 ## Actual source-receipt byte observations
 
-The online source owner can report `riffdb-retention-source-bytes-v1` after
+The legacy read-only source observer can report `riffdb-retention-source-bytes-v1` after
 completely scanning the actual uncapped eligible prefix from its validated
 barrier. It counts resolved canonical receipt bytes and actual key bytes
 separately. A sequence gap, padded journal frame length or the next 256-row

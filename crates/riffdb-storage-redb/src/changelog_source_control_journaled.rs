@@ -10,10 +10,9 @@ use crate::{
 use transaction::{AdmissionAttempt, AdmissionYield};
 
 struct PreparedCut {
-    source: ValidationSource,
     checkpoint: Observation,
     proof: SourceReclamationProof,
-    independent: u64,
+    license: checkpoint_license::CheckpointLicense,
 }
 
 impl ReplicationSourceControl {
@@ -28,6 +27,7 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.qualifies(epoch))
         {
             self.online_validation = None;
+            self.online_license = None;
             self.online_validation_phases[2] = 1;
         }
         if self.online_validation.is_none() {
@@ -53,9 +53,11 @@ impl ReplicationSourceControl {
         // outside the writer. Incomplete candidates retain their original pin.
         let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
         if walk.is_complete() {
+            walk.release_completed_pin();
             let source = self.shared.capture_source_validation_pin()?;
             if !walk.continue_source(source, epoch)? {
                 self.online_validation = None;
+                self.online_license = None;
                 self.online_validation_phases[2] = 1;
                 return Ok(0);
             }
@@ -69,12 +71,23 @@ impl ReplicationSourceControl {
         crash_edge("continuation-qualified");
         let proof = walk.proof()?;
         let source = proof.source().clone();
+        let history = proof.history();
+        drop(proof);
         // A candidate may finish on an older, qualified pin while ordinary
         // writers install later checkpoints. License preparation with the
         // actual installed checkpoint, then close only the bounded current
         // composite suffix at admission. The candidate never substitutes its
         // own acknowledgement or an obsolete pin for checkpoint progress.
-        let checkpoint_root = self.shared.capture_checkpoint_root()?;
+        // Share the validated source's installed checkpoint. A completed older
+        // candidate continues on the next paced turn instead of opening a third
+        // validation snapshot alongside byte accounting.
+        if !self
+            .shared
+            .checkpoint_publication_matches(source.checkpoint_pin().identity())
+        {
+            return self.journaled_yield(AdmissionYield::CheckpointPublication);
+        }
+        let checkpoint_root = Arc::clone(source.checkpoint_pin());
         let checkpoint = Observation {
             publication: checkpoint_root.identity(),
             durable_epoch: self.shared.durable_commit_epoch(),
@@ -86,29 +99,71 @@ impl ReplicationSourceControl {
             self.reclamation_yields[0] = 1;
             return Ok(0);
         };
-        if previous.publication == checkpoint.publication
-            || previous.durable_epoch >= checkpoint.durable_epoch
-            || previous.history.lineage() != checkpoint.history.lineage()
+        if previous.history.lineage() != checkpoint.history.lineage()
+            || previous.history.anchor() != checkpoint.history.anchor()
         {
-            self.reclamation_yields[1] = 1;
+            self.observed = Some(checkpoint);
+            self.online_license = None;
+            self.online_independent_sequence = 0;
+            self.reclamation_yields[0] = 1;
             return Ok(0);
         }
-        let Some(independent) =
-            independently_checkpointed(&ValidationSource::Checkpoint(checkpoint_root))?
-        else {
-            self.reclamation_yields[1] = 1;
-            return Ok(0);
-        };
-        if independent <= self.online_independent_sequence {
-            self.reclamation_yields[1] = 1;
-            return Ok(0);
+        let accounting_ceiling = self
+            .online_license
+            .map_or(previous.history.tail(), |license| license.ceiling());
+        let mut derived = self.shared.derived_source_pins.reclamation()?;
+        let (_, observation) = retention::floor(
+            &source,
+            history,
+            accounting_ceiling,
+            derived.oldest(history.lineage()),
+        )?;
+        drop(derived);
+        self.eligible_bytes.capture_qualified(
+            source.clone(),
+            history,
+            observation[5],
+            epoch,
+            std::time::Instant::now(),
+        )?;
+        if let Some(license) = self.online_license
+            && !license.covers(&source, history, checkpoint, epoch)?
+        {
+            self.online_license = None;
         }
-        let history = proof.history();
+        if self.online_license.is_none() {
+            let Some(independent) =
+                independently_checkpointed(&ValidationSource::Checkpoint(checkpoint_root))?
+            else {
+                self.reclamation_yields[1] = 1;
+                return Ok(0);
+            };
+            if independent <= self.online_independent_sequence {
+                self.reclamation_yields[1] = 1;
+                return Ok(0);
+            }
+            let Some(license) =
+                checkpoint_license::CheckpointLicense::new(previous, checkpoint, history, epoch)
+            else {
+                self.reclamation_yields[1] = 1;
+                return Ok(0);
+            };
+            if !license.covers(&source, history, checkpoint, epoch)? {
+                self.reclamation_yields[1] = 1;
+                return Ok(0);
+            }
+            // Issue once. Our own cuts and their materialization cannot renew
+            // this independently evidenced, immutable ceiling.
+            self.online_license = Some(license);
+            self.observed = Some(checkpoint);
+            self.online_independent_sequence = independent;
+        }
+        let license = self.online_license.ok_or_else(invariant)?;
         let mut derived = self.shared.derived_source_pins.reclamation()?;
         let (floor, _) = retention::floor(
             &source,
             history,
-            previous.history.tail(),
+            license.ceiling(),
             derived.oldest(history.lineage()),
         )?;
         drop(derived);
@@ -145,20 +200,20 @@ impl ReplicationSourceControl {
         )
         .map_err(value_error)?;
         let prepared = PreparedCut {
-            source,
             checkpoint,
-            independent,
+            license,
             proof: SourceReclamationProof::new(history, retained, rows)
                 .map_err(journal_storage_error)?,
         };
-        self.submit_journaled_cut(prepared, previous)
+        drop(source);
+        self.online_validation
+            .as_mut()
+            .ok_or_else(invariant)?
+            .release_completed_pin();
+        self.submit_journaled_cut(prepared)
     }
 
-    fn submit_journaled_cut(
-        &mut self,
-        mut prepared: PreparedCut,
-        previous: Observation,
-    ) -> Result<u64, StorageError> {
+    fn submit_journaled_cut(&mut self, mut prepared: PreparedCut) -> Result<u64, StorageError> {
         let Some(lease) = self.shared.mutation_gate.acquire_source()? else {
             return self.journaled_yield(AdmissionYield::BusyWriter);
         };
@@ -186,6 +241,13 @@ impl ReplicationSourceControl {
         }
         let proof = walk.proof()?;
         let history = proof.history();
+        if !prepared
+            .license
+            .covers(&source, history, prepared.checkpoint, epoch)?
+        {
+            self.online_license = None;
+            return self.journaled_yield(AdmissionYield::ChangedQualification);
+        }
         prepared.proof = prepared
             .proof
             .rebind_checked_prefix(history)
@@ -194,14 +256,15 @@ impl ReplicationSourceControl {
         let (floor, observation) = retention::floor(
             &source,
             history,
-            previous.history.tail(),
+            prepared.license.ceiling(),
             derived.oldest(history.lineage()),
         )?;
         self.reclamation_observation = Some(observation);
-        self.eligible_bytes.capture_source(
+        self.eligible_bytes.capture_qualified(
             source.clone(),
             history,
             observation[5],
+            epoch,
             std::time::Instant::now(),
         )?;
         if floor.is_none_or(|floor| {
@@ -230,10 +293,10 @@ impl ReplicationSourceControl {
         let floor = prepared.proof.retained().minimum_resume();
         let write = self.shared.begin_source_journal_write(lease, view)?;
         derived.reserve(history.lineage(), floor);
+        let accounting_proof = prepared.proof.clone();
         let fence = write.submit_source_reclamation(prepared.proof)?;
         let (successor, qualification) = fence.source_successor().ok_or_else(invariant)?;
         drop(derived);
-        drop(prepared.source);
         riffdb_storage_api::DeferredServiceAuditFence::wait(Box::new(fence))?;
         if qualification
             == self
@@ -242,13 +305,24 @@ impl ReplicationSourceControl {
                 .load(Ordering::Acquire)
         {
             let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
-            walk.rebase_own_source_deletion(ValidationSource::Composite(successor), qualification)?;
+            let successor = ValidationSource::Composite(successor);
+            walk.rebase_own_source_deletion(successor.clone(), qualification)?;
+            self.eligible_bytes.rebase_own_cut(
+                successor,
+                &accounting_proof,
+                epoch,
+                qualification,
+            )?;
         } else {
             self.online_validation = None;
+            self.online_license = None;
             self.online_validation_phases[2] = 1;
         }
-        self.observed = Some(prepared.checkpoint);
-        self.online_independent_sequence = prepared.independent;
+        if let Some(license) = self.online_license.as_mut()
+            && !license.consume(floor, qualification)
+        {
+            self.online_license = None;
+        }
         crash_edge("continuation-certificate");
         crash_edge("reclamation-committed");
         Ok(removed)

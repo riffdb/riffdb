@@ -172,6 +172,7 @@ impl Barrier {
             return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
+        walk.release_completed_pin();
         let root = shared.capture_checkpoint_root()?;
         if walk.is_complete() && !walk.continue_on(Arc::clone(&root), epoch)? {
             return Ok(AdmissionAttempt::Yielded(
