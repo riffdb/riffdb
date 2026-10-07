@@ -8,6 +8,14 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
+The actual native two-command prune fixture drives the production logical-byte
+emitter before removing eligible history. The preparation gate runs
+`scripts/check-ticketdesk-lifecycle-native-bytes`, independently parsing actual
+logical, source and physical production records from their native fixtures.
+The existing before/after table comparison still proves logical byte meaning
+and retained evidence. This is local fixture evidence, with no campaign or
+required-host qualification.
+
 ## Source progress below the ordinary capacity trigger
 
 A populated required-host preparation passed its first five-minute service

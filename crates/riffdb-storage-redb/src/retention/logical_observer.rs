@@ -10,6 +10,18 @@ const MAX_ROWS: usize = 256;
 
 #[cfg(test)]
 impl crate::store::RedbOperationalPorts {
+    pub(crate) fn emit_logical_bytes_for_test(
+        &self,
+        retain: NonZeroU64,
+    ) -> Result<(), StorageError> {
+        let mut observer = Observer::default();
+        observer.tick(self, retain)?;
+        for _ in 0..32 {
+            observer.advance(self, Instant::now())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn measure_logical_bytes_for_test(
         &self,
         retain: NonZeroU64,

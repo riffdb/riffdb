@@ -115,6 +115,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     )
     .unwrap()
     .unwrap();
+    ports.emit_logical_bytes_for_test(NonZeroU64::MIN).unwrap();
     let measured_before = ports
         .measure_logical_bytes_for_test(NonZeroU64::MIN)
         .unwrap();

@@ -11,6 +11,7 @@ task_target_dir="$(cargo metadata --no-deps --format-version 1 | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 cargo test --locked -p riffdb-testkit-server --test full_recovery_matrix \
     -- --maintenance-drain-only
+./scripts/check-ticketdesk-lifecycle-native-bytes
 python3 tests/ticketdesk_lifecycle/test_preparation.py
 preparation_root="$(mktemp -d "${TMPDIR:-/tmp}/rlp.XXXXXX")"
 # Failed attempts retain their private logs. Only an entirely successful owned

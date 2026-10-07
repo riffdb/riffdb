@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# req: END-007, END-008, END-010, STO-030, STO-031, STO-032
+"""Pair actual native diagnostic emitters with the independent collectors.
+
+These are local fixture checks, never required-host or campaign qualification.
+Cargo output stays in an owned private temporary directory; failures retain it.
+"""
+import os
+from pathlib import Path
+import re
+import select
+import selectors
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+
+from lib import ticketdesk_lifecycle_logical_bytes as logical
+from lib import ticketdesk_lifecycle_physical_bytes as physical
+from lib import ticketdesk_lifecycle_source_bytes as source
+
+MAX_LOG_BYTES = 32 * 1024 * 1024
+
+
+def require(condition, code):
+    if not condition:
+        raise ValueError(code)
+
+
+def run_fixture(command, environment, output):
+    # Refuse before writing beyond the diagnostic ceiling. Retain custody of
+    # the unreaped group leader until completion or cancellation so cleanup
+    # cannot signal a subsequently reused process identity.
+    process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    pidfd = None
+    size = 0
+    with process.stdout, selectors.DefaultSelector() as readable:
+        readable.register(process.stdout, selectors.EVENT_READ)
+        try:
+            pidfd = os.pidfd_open(process.pid, 0)
+            deadline = time.monotonic() + 600
+            while True:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "native_byte_fixture_timeout")
+                if not readable.select(timeout=min(1, remaining)):
+                    continue
+                chunk = os.read(process.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                require(size <= MAX_LOG_BYTES, "native_byte_log_bound")
+                output.write(chunk)
+            remaining = deadline - time.monotonic()
+            require(remaining > 0 and select.select([pidfd], [], [], remaining)[0],
+                    "native_byte_fixture_timeout")
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+        finally:
+            if pidfd is not None:
+                os.close(pidfd)
+        # No group signal can run after this wait reaps the original leader.
+        return process.wait()
+
+
+def verify(root, index, selector, collector, expected):
+    log = root / (str(index) + ".log")
+    temporary = root / str(index)
+    temporary.mkdir(mode=0o700)
+    environment = dict(os.environ, RIFFDB_TMP_ROOT=str(temporary), TMPDIR=str(temporary))
+    with log.open("xb") as output:
+        code = run_fixture([
+            "cargo", "test", "--locked", "-p", "riffdb-storage-redb",
+            "--all-features", "--lib", selector, "--", "--nocapture",
+        ], environment, output)
+    require(code == 0, "native_byte_fixture_failed")
+    require(0 < log.stat().st_size <= MAX_LOG_BYTES, "native_byte_log_bound")
+    samples = []
+    with log.open("rb") as output:
+        for _ in range(262144):
+            line = output.readline(65537)
+            if not line:
+                break
+            require(len(line) <= 65536, "native_byte_log_line_bound")
+            if line.startswith(collector.FAMILY):
+                require(len(samples) < expected, "native_byte_record_count")
+                samples.append(collector.parse_sample(line))
+        else:
+            raise ValueError("native_byte_log_line_bound")
+    require(len(samples) == expected and all(samples), "native_byte_record_count")
+    return samples
+
+
+def main():
+    os.umask(0o077)
+    root = Path(tempfile.mkdtemp(prefix="rlnb.", dir=os.environ.get("TMPDIR")))
+    try:
+        records = verify(root, 0,
+            "native_prune_then_outbox_drain_preserves_source_validation_qualification",
+            logical, 1)
+        require(records[0]["rows"] == 1
+                and records[0]["through"] == records[0]["watermark"] + 1
+                and records[0]["canonical_history_value_bytes"] > 0
+                and records[0]["removed_key_bytes"] > 8, "native_logical_byte_meaning")
+        records = verify(root, 1,
+            "eligible_native_extent_retries_after_global_barrier_release_without_scanning_generation_holes",
+            physical, 4)
+        require(all(record["sealed_extents"] == 1
+                    and record["eligible_allocated_bytes"] > 0
+                    and record["protected_allocated_bytes"] == 0
+                    for record in records), "native_physical_byte_meaning")
+        records = verify(root, 2,
+            "online_receipt_reclamation_yields_to_writers_preserves_holds_and_cannot_stimulate_itself",
+            source, 1)
+        require(records[0]["rows"] == 3
+                and records[0]["canonical_receipt_bytes"] > 0
+                and records[0]["key_bytes"] == 24, "native_source_byte_meaning")
+    except ValueError as error:
+        code = str(error)
+        if re.fullmatch(r"[a-z_]{1,64}", code) is None:
+            code = "native_byte_evidence"
+        print("Native byte diagnostic boundary check failed (" + code
+              + "); private diagnostics retained.")
+        return 1
+    except (OSError, subprocess.SubprocessError):
+        print("Native byte diagnostic boundary check failed; private diagnostics retained.")
+        return 1
+    shutil.rmtree(root)
+    print("Native logical, physical and source byte diagnostic boundaries verified.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
