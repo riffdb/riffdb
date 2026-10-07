@@ -4,6 +4,23 @@ use std::time::{Duration, Instant};
 
 const ADMISSION_WAIT: Duration = Duration::from_millis(100);
 
+/// A diagnostic classification only; never source admission authority.
+pub(crate) enum SourceDrainRefusal {
+    Unpublished,
+    Unaccounted,
+    Oversized,
+}
+
+impl SourceDrainRefusal {
+    const fn index(self) -> usize {
+        match self {
+            Self::Unpublished => 0,
+            Self::Unaccounted => 1,
+            Self::Oversized => 2,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     slot: Option<Slot>,
@@ -14,6 +31,9 @@ pub(super) struct State {
     // queued, granted, expired, cancelled, capacity/refused, wait us,
     // full lease residence us, bounded-drain yields. Diagnostic only.
     census: [u64; 8],
+    // Three cumulative refusal classes and eight fields from the latest
+    // refused native suffix. Fixed, nondurable and payload-free.
+    drain_observation: [u64; 11],
 }
 
 struct Slot {
@@ -140,13 +160,24 @@ impl ExclusiveGate {
         Ok(())
     }
 
-    pub(crate) fn note_source_drain_yield(&self) -> Result<(), StorageError> {
+    pub(crate) fn source_drain_observation(&self) -> Result<[u64; 11], StorageError> {
         self.inner
             .state
             .lock()
-            .map_err(|_| poisoned_gate())?
-            .source
-            .add(7, 1);
+            .map(|state| state.source.drain_observation)
+            .map_err(|_| poisoned_gate())
+    }
+
+    pub(crate) fn note_source_drain_yield(
+        &self,
+        reason: SourceDrainRefusal,
+        latest: [u64; 8],
+    ) -> Result<(), StorageError> {
+        let mut state = self.inner.state.lock().map_err(|_| poisoned_gate())?;
+        state.source.add(7, 1);
+        let count = &mut state.source.drain_observation[reason.index()];
+        *count = count.saturating_add(1);
+        state.source.drain_observation[3..].copy_from_slice(&latest);
         Ok(())
     }
 }

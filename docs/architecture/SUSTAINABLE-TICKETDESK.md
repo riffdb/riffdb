@@ -93,6 +93,31 @@ rest, cancellation and refusal regressions plus actual native suffix and
 publication validation; final-source CI and required-host progress remain
 required. No 24-hour run is started.
 
+The corrected required-host preparation on `3979a181` still fails source-byte
+coverage after completing its first 30,000 commands and 120,000 reads. Shutdown
+records 397 pending-journal, 24 checkpoint-publication and 40 page-bound yields,
+with one actual recycled generation. The first window overlaps the prescribed
+sink outage; its latency overflow does not establish normal-window latency.
+The run remains a preserved failure, and its populated restore is not launched.
+
+To diagnose the remaining admission failure, the native worker emits the fixed
+`riffdb-retention-source-drain-v1` diagnostic at its existing 60-second cadence.
+It separates cumulative unpublished, unaccounted and oversized refusals and
+reports eight numeric fields from the latest refused suffix. Unpublished means
+that at least one native unpublished counter was nonzero; it does not certify
+consistent accounting. Optional observation failure reports `available=0`,
+never a zero backlog. Equality bits disclose publication agreement without
+exposing hashes or payloads. Counters saturate, and unrepresentable diagnostic
+sizes use the unsigned maximum sentinel. The fixed gate-owned state adds no
+waiter, thread, checkpoint hint, source cut, mutation permission or drain work.
+
+Package: WP-825, open. Tier: guarantee diagnostic implementation under ADR-0271
+and D-003. Compatibility: the exact admission predicates, hint rules, writer
+rest, public interfaces and durable formats remain unchanged. Updated handbook:
+this page. The native regression checks all three refusal classes without
+changing durable state or granting checkpoint work to unknown/unpublished
+accounting. Actual required-host diagnosis and repair remain necessary.
+
 ## Persistent child launch and exit observations
 
 The preparation now retains a private, exclusive usage record for each server,

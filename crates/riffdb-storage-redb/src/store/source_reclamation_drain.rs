@@ -8,6 +8,10 @@ pub(crate) enum Readiness {
 }
 
 impl SharedRedb {
+    pub(crate) fn source_drain_observation(&self) -> Result<[u64; 11], StorageError> {
+        self.mutation_gate.source_drain_observation()
+    }
+
     pub(crate) fn source_checkpoint_publication_pending(&self) -> Result<bool, StorageError> {
         Ok(self.async_checkpoint_in_flight()?
             || !self
@@ -76,7 +80,33 @@ impl SharedRedb {
                     // or alter the authority of any acknowledged frame.
                     self.mutation_gate.note_source_checkpoint_request()?;
                 }
-                self.mutation_gate.note_source_drain_yield()?;
+                let unpublished = runtime.unpublished_transitions != 0
+                    || runtime.unpublished_bytes != 0
+                    || runtime.unpublished_commands != 0
+                    || runtime.unpublished_audits != 0;
+                let reason = if unpublished {
+                    crate::gate::SourceDrainRefusal::Unpublished
+                } else if counts.is_none() {
+                    crate::gate::SourceDrainRefusal::Unaccounted
+                } else {
+                    crate::gate::SourceDrainRefusal::Oversized
+                };
+                self.mutation_gate.note_source_drain_yield(
+                    reason,
+                    [
+                        u64::try_from(runtime.suffix_transitions).unwrap_or(u64::MAX),
+                        u64::try_from(runtime.suffix_bytes).unwrap_or(u64::MAX),
+                        u64::try_from(runtime.unpublished_transitions).unwrap_or(u64::MAX),
+                        u64::try_from(runtime.unpublished_bytes).unwrap_or(u64::MAX),
+                        u64::from(runtime.last_sequence == runtime.published_sequence),
+                        u64::from(
+                            runtime.last_administration_sequence
+                                == runtime.published_administration_sequence,
+                        ),
+                        u64::from(runtime.last_hash == runtime.published_hash),
+                        u64::try_from(runtime.suffix_frames.len()).unwrap_or(u64::MAX),
+                    ],
+                )?;
                 return Ok(Readiness::PendingJournal);
             }
             if runtime.suffix_transitions == 0 {

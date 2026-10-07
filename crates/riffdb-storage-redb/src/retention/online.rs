@@ -213,6 +213,13 @@ impl RedbOnlineRetentionLane {
         self.shared.source_checkpoint_publication_pending()
     }
 
+    /// Fixed cumulative drain-refusal classes and the latest suffix metadata.
+    /// Only nondurable diagnostics; never source or checkpoint authority.
+    #[doc(hidden)]
+    pub fn source_drain_observation(&self) -> Result<[u64; 11], StorageError> {
+        self.shared.source_drain_observation()
+    }
+
     /// First-party worker retirement cancels pending source requests under the
     /// gate lock, leaving ordinary writers and granted atomic turns intact.
     #[doc(hidden)]

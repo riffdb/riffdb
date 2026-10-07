@@ -808,6 +808,26 @@ fn run_lane(
                     status.observation().phases.source_admission_census,
                 )
             );
+            match lane.source_drain_observation() {
+                Ok(
+                    [
+                        unpublished,
+                        unaccounted,
+                        oversized,
+                        transitions,
+                        bytes,
+                        unpublished_transitions,
+                        unpublished_bytes,
+                        sequence_matches,
+                        administration_matches,
+                        hash_matches,
+                        frames,
+                    ],
+                ) => eprintln!(
+                    "riffdb-retention-source-drain-v1\tavailable=1\tunpublished={unpublished}\tunaccounted={unaccounted}\toversized={oversized}\tsuffix_transitions={transitions}\tsuffix_bytes={bytes}\tunpublished_transitions={unpublished_transitions}\tunpublished_bytes={unpublished_bytes}\tsequence_matches={sequence_matches}\tadministration_matches={administration_matches}\thash_matches={hash_matches}\tsuffix_frames={frames}"
+                ),
+                Err(_) => eprintln!("riffdb-retention-source-drain-v1\tavailable=0"),
+            }
         }
         // Preserve complete writer-residence rest. Source checkpoint waits
         // replace idle backoff with bounded completion/publication rechecks;

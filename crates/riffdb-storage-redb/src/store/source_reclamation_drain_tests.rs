@@ -336,6 +336,74 @@ fn source_suffix_yield_is_visible_when_logical_retention_is_at_target() {
     assert_eq!(phases.source_admission_checkpoint, 0);
 }
 
+// req: STO-030, STO-031, STO-032, END-007, END-008
+#[test]
+fn source_drain_observations_distinguish_unpublished_unknown_and_oversized_work() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
+    let lane = ports.online_retention_lane();
+    let epoch = ports.shared.durable_commit_epoch();
+    let bytes = ports
+        .shared
+        .journal_runtime
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .suffix_bytes;
+    for reason in 0..3 {
+        {
+            let mut guard = ports.shared.journal_runtime.lock().unwrap();
+            let runtime = guard.as_mut().unwrap();
+            runtime.unpublished_transitions = usize::from(reason == 0);
+            runtime.unpublished_bytes = usize::from(reason == 0);
+            runtime.suffix_bytes = bytes + usize::from(reason == 1);
+        }
+        ports
+            .shared
+            .mutation_gate
+            .clear_source_checkpoint_request()
+            .unwrap();
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::PendingJournal
+        ));
+        drop(lease);
+        let observed = lane.source_drain_observation().unwrap();
+        assert_eq!(
+            &observed[..3],
+            &std::array::from_fn::<_, 3, _>(|index| u64::from(index <= reason))
+        );
+        assert_eq!(observed[3], 257);
+        assert_eq!(
+            observed[4],
+            u64::try_from(bytes + usize::from(reason == 1)).unwrap()
+        );
+        assert_eq!(observed[5], u64::from(reason == 0));
+        assert_eq!(observed[6], u64::from(reason == 0));
+        assert_eq!(
+            ports
+                .shared
+                .mutation_gate
+                .source_checkpoint_requested()
+                .unwrap(),
+            reason == 2
+        );
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    }
+    let mut guard = ports.shared.journal_runtime.lock().unwrap();
+    let runtime = guard.as_mut().unwrap();
+    runtime.unpublished_transitions = 0;
+    runtime.unpublished_bytes = 0;
+    runtime.suffix_bytes = bytes;
+}
+
 fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x82; 10]).unwrap();
