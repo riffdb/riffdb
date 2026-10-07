@@ -34,6 +34,8 @@ pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "changelog_source_eligible_bytes.rs"]
+mod eligible_bytes;
 #[path = "primary_fence_control.rs"]
 mod primary_fence;
 #[path = "changelog_registered_ack.rs"]
@@ -63,6 +65,7 @@ pub(crate) struct ReplicationSourceControl {
     reclamation_observation: Option<[u64; 8]>,
     reclamation_yields: [u64; 3],
     source_admission_census: [u64; 8],
+    eligible_bytes: eligible_bytes::Observer,
 }
 
 impl RedbOperationalPorts {
@@ -176,6 +179,7 @@ impl RedbOperationalPorts {
             reclamation_observation: None,
             reclamation_yields: [0; 3],
             source_admission_census: [0; 8],
+            eligible_bytes: eligible_bytes::Observer::default(),
         }
     }
 }
@@ -300,15 +304,16 @@ impl ReplicationSourceControl {
         self.reclamation_yields = [0; 3];
         // The offline owner deliberately reconstructs the complete current
         // proof. A retained online candidate cannot authorize its publication.
-        self.online_validation = None;
+        self.retire_online_validation();
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
-        self.reclaim_at_barrier(barrier)
+        self.reclaim_at_barrier(barrier, false)
     }
 
     /// One bounded validation page, followed only at exact end by a
     /// bounded FIFO, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        self.eligible_bytes.advance(std::time::Instant::now())?;
         self.reclamation_observation = None;
         self.reclamation_yields = [0; 3];
         self.online_validation_phases = [0; 4];
@@ -420,7 +425,7 @@ impl ReplicationSourceControl {
             .sequence()
             .get();
         let advanced = self
-            .reclaim_at_barrier(barrier)
+            .reclaim_at_barrier(barrier, true)
             .map_err(|error| match error {
                 Refusal::Storage(error) => error,
                 _ => storage_error(StorageErrorKind::CorruptData),
@@ -449,6 +454,7 @@ impl ReplicationSourceControl {
     /// root, request a writer turn, drain a journal or delete a receipt. Exact
     /// end leaves a certificate for the next ordinarily paced admission.
     pub(crate) fn advance_validation_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
+        self.eligible_bytes.advance(std::time::Instant::now())?;
         let epoch = self
             .shared
             .source_continuation_epoch
@@ -480,6 +486,7 @@ impl ReplicationSourceControl {
     }
 
     pub(crate) fn retire_online_validation(&mut self) {
+        self.eligible_bytes.retire();
         self.online_validation = None;
     }
 
@@ -505,7 +512,7 @@ impl ReplicationSourceControl {
         self.reclamation_yields
     }
 
-    fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {
+    fn reclaim_at_barrier(&mut self, barrier: Barrier, online: bool) -> Result<bool, Refusal> {
         let current = barrier.observation();
         let Some(previous) = self.observed else {
             self.reclamation_yields[0] = 1;
@@ -535,6 +542,14 @@ impl ReplicationSourceControl {
             derived_floor,
         )?;
         self.reclamation_observation = Some(observation);
+        if online {
+            self.eligible_bytes.capture(
+                Arc::clone(&barrier.root),
+                current.history,
+                observation[5],
+                std::time::Instant::now(),
+            )?;
+        }
         let Some(floor) = floor else {
             self.reclamation_yields[2] = 1;
             self.observed = Some(current);

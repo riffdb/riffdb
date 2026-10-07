@@ -234,6 +234,59 @@ credential or fixture change. Updated handbook: this page and Driver Host.
 Follow-ups: repeat actual nested four-language preparation, then complete
 final-source full CI and required-host validation.
 
+## Actual source-receipt byte observations
+
+The online source owner can report `riffdb-retention-source-bytes-v1` after
+completely scanning the actual uncapped eligible prefix from its validated
+barrier. It counts resolved canonical receipt bytes and actual key bytes
+separately. A sequence gap, padded journal frame length or the next 256-row
+reclamation transaction is never substituted for the complete byte count.
+
+Capture retains the original registered checkpoint root and native ceiling,
+including the independently durable checkpoint and existing derived/durable
+holds. Every advance scans at most 256 rows within the existing changelog frame
+byte ceiling, outside the writer gate. Collection performs no mutation, journal
+drain, new reader capture or extra writer admission. It leaves source and logical
+reclamation decisions intact and never confers deletion authority.
+
+Capture is limited to once per 60 seconds. Collection checks a 30-second
+freshness deadline before each bounded page and again before publication;
+expired or incomplete work emits no successful byte measurement. Completion,
+expiry, failed decoding, owner retirement and switching to offline source control
+release the registered reader pin. Offline source control does not advance an
+online observation, so it must retire that observation before acquiring its barrier.
+An in-progress collection can delay physical reclamation, so the final campaign
+must account for this pressure. Storage I/O uses the existing bounded page
+operations; the deadline does not cancel an I/O operation already in progress.
+
+Output includes original root, incarnation, resume and ceiling, exact row count,
+canonical receipt and key bytes, capture age, collection time and page count.
+This is one component of history accounting. It does not qualify total eligible
+history: logical command/event/outbox rows and physically eligible extents still
+need independent native measurements, with protected resources counted separately.
+
+Package: WP-825, open. Tier: internal; implementation diagnostics under accepted
+ADR-0265 decisions 8–11 and D-003, without a durable identity, application surface
+or guarantee change. Checks: unknown-prefix regression fails before implementation;
+the initial six source-byte tests and all 45 selected source-control/extent
+regressions pass. That revision passes all seven scoped acceptance checks,
+including 1,245 tests across eight binaries with two existing skips. A subsequent
+offline-switch regression reproduces a retained metric pin; the repaired switch
+passes all 15 source-control tests, including all seven byte-observation tests,
+and all six final scoped non-test checks, including all-target Clippy and the
+handbook check.
+Updated handbook: this page.
+Follow-ups: complete aggregate native byte accounting, observe actual collection
+pressure and run final-source full CI.
+
+A separate local release-mode population diagnostic seeded 65,536 tickets,
+completed 500 updates and 2,000 reads without retry or late work, reconciled all
+tickets, and sampled real public RPCs with a verified five-process memory census.
+It failed the existing latency gate: p95 was 105.306 ms, above 100 ms; p99 was
+157.170 ms. Archive reconciliation was not reached after that refusal. Its
+source-receipt byte collector was absent. This failed five-second diagnostic on
+the local host is not required-host or campaign performance qualification.
+
 ## Current handoff
 
 Package: WP-821; tier: guarantee. This preparation adds accepted decisions,
