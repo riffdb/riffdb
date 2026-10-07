@@ -235,6 +235,7 @@ Follow-ups: repeat actual nested four-language preparation, then complete
 final-source full CI and required-host validation.
 
 
+
 ## Actual source-receipt byte observations
 
 The online source owner can report `riffdb-retention-source-bytes-v1` after
@@ -317,6 +318,39 @@ five scoped acceptance checks pass. A real native record from the source-control
 regression also parses with its original receipt and key counts. Updated handbook:
 this page. Follow-ups: integrated final-source CI, real observed preparation and
 complete campaign accounting. Synthetic checker tests are not host qualification.
+
+
+## Concurrent outbox health refreshes
+
+A deterministic native regression reproduces overlapping dispatcher/commit
+refreshes: an older empty snapshot finishes after a newer nonempty snapshot
+and incorrectly clears degraded status. Health is a cached diagnostic; a
+separate health/statistics sample crossing new commits does not itself prove
+this race or failed sink catch-up.
+
+The native cache now gives each refresh an ephemeral generation and marks its
+in-progress result degraded. Completion uses an exact-generation compare and
+exchange, so an older result cannot overwrite a newer snapshot. Generation
+exhaustion remains permanently degraded and cannot wrap or be cleared by the
+last delayed observation. Destination readiness stays independently checked.
+No new lock spans repository work; unknown reads still become degraded.
+
+Package: WP-825, open. Tier: internal. Behavior: preserve conservative native
+health under overlapping refreshes. Decisions: implementation repair under
+ADR-0265 and D-003; no delivery, command ordering, authoritative mutation,
+durable format, authorization or RPC schema change. Checks: explicit-channel
+schedule fails on the original implementation; all six native cache tests,
+all 647 server tests across 17 binaries with eight existing skips, and all seven
+scoped acceptance checks pass. Updated handbook: this page. Follow-ups: validate
+the integrated source in full CI and required-host preparation.
+
+The socket-preflight candidate separately passed the complete actual lifecycle
+preparation on its clean revision: nested retained TypeScript, Go and Python,
+Rust workload, additive deployment, graceful restart, process kill, archive
+reconciliation and capability rotation. That repair removes the confirmed
+110-byte-path blocker; it does not turn the earlier full CI failures into passes.
+The source-byte producer, collector and health-cache repair are now integrated
+for final-source validation. Full CI and required-host qualification remain pending.
 
 
 ## Current handoff
