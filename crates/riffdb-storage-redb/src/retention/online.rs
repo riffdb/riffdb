@@ -178,6 +178,39 @@ pub struct RedbOnlineRetentionLane {
 }
 
 impl RedbOnlineRetentionLane {
+    /// Incomplete captured pages owned by the native maintenance worker.
+    /// This observation schedules read-only progress and confers no authority.
+    #[doc(hidden)]
+    pub fn captured_observations_pending(&self) -> Result<bool, StorageError> {
+        if self.physical_observation_pending()?
+            || self
+                .logical_bytes
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .pending()
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .captured_observations_pending())
+    }
+
+    /// Advance only already captured pages during existing worker rest/wait.
+    /// Never capture another root, acquire the writer or authorize deletion.
+    #[doc(hidden)]
+    pub fn advance_captured_observations_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .continue_captured(&self.shared);
+        self.advance_source_and_logical_observations_off_gate()
+    }
+
     #[cfg(test)]
     pub(crate) fn physical_observations_for_test(&self) -> u64 {
         self.physical_bytes.lock().unwrap().completed_for_test
@@ -256,6 +289,12 @@ impl RedbOnlineRetentionLane {
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .tick(&self.shared);
+        self.advance_source_and_logical_observations_off_gate()
+    }
+
+    fn advance_source_and_logical_observations_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
         let mut logical = self
             .logical_bytes
             .lock()

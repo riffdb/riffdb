@@ -75,6 +75,32 @@ fn bytes(probe: &Probe, now: Instant) -> Option<Bytes> {
         .then_some(probe.bytes)
 }
 
+#[test]
+fn captured_logical_bytes_remain_pending_without_receipt_validation() {
+    let (_scope, ports) = fixture();
+    populate(&ports, 302);
+    let lane = ports.online_retention_lane();
+    lane.step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+        .unwrap();
+    assert!(!lane.physical_observation_pending().unwrap());
+    assert!(lane.captured_observations_pending().unwrap());
+    let epoch = ports.shared.durable_commit_epoch();
+    let before = lane.source_drain_observation().unwrap();
+    let writer = ports.begin_deferred_service_audit_write().unwrap();
+    for _ in 0..4 {
+        if !lane.captured_observations_pending().unwrap() {
+            break;
+        }
+        let phases = lane.advance_captured_observations_off_gate().unwrap();
+        assert!(!phases.receipt_validation_pending);
+    }
+    let still_pending = lane.captured_observations_pending().unwrap();
+    writer.abort().unwrap();
+    assert!(!still_pending);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert_eq!(lane.source_drain_observation().unwrap(), before);
+}
+
 fn segment_fixture(
     deliver: bool,
 ) -> (

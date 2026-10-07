@@ -44,6 +44,12 @@ pub(in crate::retention) struct Observer {
 }
 
 impl Observer {
+    pub(in crate::retention) fn pending(&self) -> bool {
+        self.probe
+            .as_ref()
+            .is_some_and(|probe| probe.read.is_some() && !probe.completed)
+    }
+
     // Diagnostic failure invalidates this measurement, never changes the
     // authoritative lane's own pruning plan or admission result.
     pub(in crate::retention) fn report_refusal(&mut self, error: &StorageError) {

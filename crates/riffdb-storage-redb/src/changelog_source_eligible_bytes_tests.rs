@@ -63,6 +63,30 @@ fn original(
 
 // req: STO-030, STO-031, END-007, END-008
 #[test]
+fn captured_source_byte_pages_remain_pending_until_exact_end_or_retirement() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for row in 0..300 {
+        append(&ports, if row % 2 == 0 { b"first" } else { b"second" });
+    }
+    let (root, history) = original(&ports);
+    let now = Instant::now();
+    let mut observer = Observer::default();
+    observer
+        .capture(root, history, history.tail().sequence().get(), now)
+        .unwrap();
+    assert!(observer.pending());
+    observer.advance(now).unwrap();
+    assert!(observer.pending());
+    let epoch = ports.shared.durable_commit_epoch();
+    observer.advance(now).unwrap();
+    assert!(!observer.pending());
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    observer.retire();
+    assert!(!observer.pending());
+}
+
+// req: STO-030, STO-031, END-007, END-008
+#[test]
 fn source_bytes_cover_the_uncapped_native_ceiling_and_actual_different_sized_records() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     for row in 0..300 {

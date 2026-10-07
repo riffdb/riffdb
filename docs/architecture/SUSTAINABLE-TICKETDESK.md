@@ -23,6 +23,42 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Captured byte progress during native maintenance waits
+
+The debugging preparation on `8119dfcc` fails `logical_bytes_sample_gap` and
+also produces no fresh source-byte sample during load. Its 1,269 native storage
+tests and all thirteen scoped checks pass; this does not qualify the host.
+The unchanged failure and private artifacts are retained.
+
+Two deterministic regressions establish omitted progress: an incomplete
+logical-byte probe remains after receipt validation and the physical census
+have no work, and a completed-publication wake returns before advancing its
+captured observation page. The native worker previously used only receipt
+validation and physical-census flags to schedule those off-gate pages.
+
+The graph-owned lane now reports pending captured receipt validation,
+logical-byte, source-byte and physical-census work independently of mutation
+authority. During existing writer rest and checkpoint waits it advances one
+existing bounded page per component, releases completed or expired pins, and
+checks again. It captures no new root or census there. A publication wake
+checks metadata and cancellation before page work and still permits one
+already captured page before returning.
+
+Full writer residence rest, checkpoint deadlines, 256-row pages, byte ceilings,
+30-second freshness, capture cadence and every qualification gate are unchanged.
+`receipt_validation_pending` retains its exact validation meaning; byte probes
+confer no validation, checkpoint or deletion authority. This is an implementation
+choice within ADR-0268, ADR-0271, ADR-0272 and D-003.
+
+PR note: Package WP-825 (open); Tier guarantee implementation; Behavior: schedule
+captured byte pages through native off-gate waits; Checks: failing logical-pending
+and publication-wake baselines, held-writer read-only progress and source exact-end
+coverage, with scoped and broader native validation in progress; Compatibility:
+public application interfaces and durable fixtures unchanged; Updated handbook:
+this milestone page; Hazards and follow-ups: repeat final-source CI and the
+unchanged required-host preparation. Complete campaign resources, all faults
+and populated restore remain open. No 24-hour run has started.
+
 ## Separate durable seal publication from spare preparation
 
 The preparation on `ea572072` still fails `source_bytes_sample_gap`, with no

@@ -509,6 +509,10 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.is_complete())
     }
 
+    pub(crate) fn captured_observations_pending(&self) -> bool {
+        self.receipt_validation_pending() || self.eligible_bytes.pending()
+    }
+
     pub(crate) fn reclamation_observation(&self) -> Option<[u64; 8]> {
         self.reclamation_observation
     }

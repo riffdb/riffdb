@@ -28726,6 +28726,11 @@ work_packages:
       publication separately from future spare preparation. Preserve full joins
       for ordinary rotation and shutdown, fail-closed sealing errors, exact
       source drain bounds, validation and independent checkpoint authority.
+    - Include incomplete captured logical and source byte probes in the native
+      maintenance worker's off-gate progress checks, preserving validation-only
+      flags, complete writer rest, deadlines, page bounds and freshness. A
+      completed-publication wake advances one existing page before returning;
+      this creates no root, census, checkpoint or reclamation authority.
     - Apply ADR-0277 with safe principal-available fstatvfs on the source directory
       and a streamed logical-length inventory. Include retained lifecycle working
       and publication staging files, reject nonregular artifacts before receipt

@@ -642,21 +642,21 @@ fn wait_with_source_validation(
         // A journal yield first needs an actual ordinary checkpoint. A
         // publication yield can finish when its existing sealer finishes,
         // without inventing another checkpoint or joining under a source lease.
-        if source_wait != SourceCheckpointWait::None
+        let publication_finished = source_wait != SourceCheckpointWait::None
             && (source_wait == SourceCheckpointWait::Publication || checkpoint_observed)
-            && !publication_pending()?
-        {
-            return Ok(checkpoint_observed);
-        }
+            && !publication_pending()?;
         if pending {
             pending = advance()?;
+        }
+        if publication_finished {
+            return Ok(checkpoint_observed);
         }
     }
 }
 
-/// Continue only a captured physical census during the mandatory writer rest.
+/// Continue only captured read-only pages during the mandatory writer rest.
 /// Read-only pages never authorize a new writer turn or shorten its rest.
-fn pause_with_physical_observation(
+fn pause_with_captured_observations(
     duration: Duration,
     mut pending: bool,
     mut elapsed: impl FnMut() -> Duration,
@@ -834,7 +834,7 @@ fn run_lane(
         // ordinary idle and noncheckpoint refusals keep their prior backoff.
         let (rest, wait_for_checkpoint) =
             maintenance_wait_policy(pause, await_checkpoint, gate_held, &step_phases);
-        let physical_pending = match lane.physical_observation_pending() {
+        let observation_pending = match lane.captured_observations_pending() {
             Ok(pending) => pending,
             Err(_) if control.stop_requested() => {
                 status.set(RetentionLaneState::Cancelled);
@@ -846,12 +846,16 @@ fn run_lane(
             }
         };
         let waiting = std::time::Instant::now();
-        let paused = pause_with_physical_observation(
+        let paused = pause_with_captured_observations(
             rest,
-            physical_pending,
+            observation_pending,
             || waiting.elapsed(),
             |slice| control.pause_observation_slice(slice),
-            || lane.advance_physical_observation_off_gate(),
+            || {
+                let phases = lane.advance_captured_observations_off_gate()?;
+                status.note_phases(&phases);
+                lane.captured_observations_pending()
+            },
         );
         match paused {
             Ok(true) => {
@@ -873,22 +877,21 @@ fn run_lane(
             // is nearly empty; look for shutdown between short waits.
             let waiting = std::time::Instant::now();
             let checkpoint = lane
-                .physical_observation_pending()
-                .and_then(|physical_pending| {
+                .captured_observations_pending()
+                .and_then(|observation_pending| {
                     wait_with_source_validation(
                         control,
                         checkpoints_seen,
-                        receipt_validation_pending || physical_pending,
+                        observation_pending,
                         (SourceCheckpointWait::from_phases(&step_phases), || {
                             lane.source_checkpoint_publication_pending()
                         }),
                         |waiting_seen, slice| lane.wait_for_journal_checkpoint(waiting_seen, slice),
                         || waiting.elapsed(),
                         || {
-                            let phases = lane.advance_source_validation_off_gate()?;
+                            let phases = lane.advance_captured_observations_off_gate()?;
                             status.note_phases(&phases);
-                            Ok(phases.receipt_validation_pending
-                                || lane.physical_observation_pending()?)
+                            lane.captured_observations_pending()
                         },
                     )
                 });

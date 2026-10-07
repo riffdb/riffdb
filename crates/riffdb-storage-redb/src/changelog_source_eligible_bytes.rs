@@ -14,6 +14,12 @@ pub(super) struct Observer {
 }
 
 impl Observer {
+    pub(super) fn pending(&self) -> bool {
+        self.probe
+            .as_ref()
+            .is_some_and(|probe| probe.root.is_some() && probe.completed.is_none())
+    }
+
     // Called only with the root and ceiling of the parent's validated barrier.
     // No I/O, scan or new reader capture occurs under that writer lease.
     pub(super) fn capture(

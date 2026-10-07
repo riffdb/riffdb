@@ -11,6 +11,33 @@ use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
 // req: STO-030, STO-031, END-008
 #[test]
+fn completed_publication_wait_still_advances_one_captured_observation_page() {
+    let mut pages = 0;
+    let checkpoint = wait_with_source_validation(
+        &LaneControl::default(),
+        7,
+        true,
+        (SourceCheckpointWait::Journal, || Ok(false)),
+        |_seen, slice| {
+            assert_eq!(slice, RETENTION_LANE_CHECKPOINT_SLICE);
+            8
+        },
+        || Duration::ZERO,
+        || {
+            pages += 1;
+            Ok(false)
+        },
+    )
+    .unwrap();
+    assert!(checkpoint);
+    assert_eq!(
+        pages, 1,
+        "completed publication must not starve captured byte work"
+    );
+}
+
+// req: STO-030, STO-031, END-008
+#[test]
 fn checkpoint_wait_continues_pages_until_exact_end_without_inventing_a_checkpoint() {
     let control = LaneControl::default();
     let mut waits = 0;
@@ -589,7 +616,7 @@ fn writer_rest_continues_captured_physical_pages_without_starting_another_writer
     let waits = Cell::new(0);
     let rest = Duration::from_secs(19);
     assert!(
-        !pause_with_physical_observation(
+        !pause_with_captured_observations(
             rest,
             true,
             || clock.get(),
@@ -630,7 +657,7 @@ fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
     for pending in [false, true] {
         for (stopped, woke) in [(true, false), (false, true)] {
             assert_eq!(
-                pause_with_physical_observation(
+                pause_with_captured_observations(
                     Duration::from_secs(19),
                     pending,
                     || Duration::ZERO,
@@ -645,7 +672,7 @@ fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
     let clock = std::cell::Cell::new(Duration::ZERO);
     let mut waits = 0;
     assert!(
-        !pause_with_physical_observation(
+        !pause_with_captured_observations(
             RETENTION_LANE_RECHECK,
             false,
             || clock.get(),
@@ -660,7 +687,7 @@ fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
         .unwrap()
     );
     assert_eq!(waits, 1);
-    let error = pause_with_physical_observation(
+    let error = pause_with_captured_observations(
         RETENTION_LANE_RECHECK,
         true,
         || Duration::ZERO,
@@ -685,7 +712,7 @@ fn physical_census_rest_charges_page_time_and_does_not_work_past_the_rest_deadli
     let clock = std::cell::Cell::new(Duration::ZERO);
     let mut pages = 0;
     assert!(
-        !pause_with_physical_observation(
+        !pause_with_captured_observations(
             Duration::from_millis(150),
             true,
             || clock.get(),
@@ -704,7 +731,7 @@ fn physical_census_rest_charges_page_time_and_does_not_work_past_the_rest_deadli
     assert_eq!(pages, 1);
     assert_eq!(clock.get(), Duration::from_millis(300));
     assert!(
-        pause_with_physical_observation(
+        pause_with_captured_observations(
             Duration::ZERO,
             true,
             || panic!("zero rest must not inspect the clock"),
@@ -745,7 +772,7 @@ fn source_checkpoint_rechecks_wait_for_completion_after_the_entire_writer_rest()
         assert_eq!(rest, Duration::from_micros(9_500));
         let clock = std::cell::Cell::new(Duration::ZERO);
         assert!(
-            !pause_with_physical_observation(
+            !pause_with_captured_observations(
                 rest,
                 false,
                 || clock.get(),
@@ -850,7 +877,7 @@ fn source_journal_wait_requires_a_real_checkpoint_then_completed_publication() {
     )
     .unwrap();
     assert!(observed);
-    assert_eq!((waits.get(), publications, pages), (3, 2, 2));
+    assert_eq!((waits.get(), publications, pages), (3, 2, 3));
 }
 
 // req: STO-030, STO-031, END-007, END-008
