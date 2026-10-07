@@ -28664,6 +28664,12 @@ work_packages:
       note in the handbook. Correct the server startup refusal test to the
       accepted writer-4 identity while preserving untouched-source assertions.
       Retain the failed frozen full CI and require a fresh complete pass.
+    - Permit private observed-process calls to freeze a Linux hard RLIMIT_AS
+      before same-PID worker execution, verifying launcher virtual high water
+      after enforcement. Record a conservative exit allocator upper bound
+      separately from the unknown allocator measurement; preserve failures,
+      exact child ownership and incomplete qualification status. Final limits,
+      all incarnations and descendants still require campaign reconciliation.
     - Retire uniquely owned publication-lineage predecessors iteratively with
       Arc::into_inner, preserving shared snapshot ancestry under concurrent owner
       release, supported overlay limits and the 384 KiB maintenance stack.

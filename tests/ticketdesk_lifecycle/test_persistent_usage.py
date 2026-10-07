@@ -41,6 +41,68 @@ class PersistentUsage(unittest.TestCase):
                 if child.returncode is None:
                     child.kill(); child.wait(timeout=5)
 
+    def test_limit_is_inherited_and_cannot_be_raised_before_exact_kill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'usage.json'
+            limit = 128*1024*1024
+            code = """import os,resource,sys
+assert resource.getrlimit(resource.RLIMIT_AS) == (134217728,134217728)
+try:
+    resource.setrlimit(resource.RLIMIT_AS,(268435456,268435456))
+    raise AssertionError('hard limit raised')
+except ValueError:
+    pass
+try:
+    bytearray(256*1024*1024)
+    raise AssertionError('allocation admitted')
+except MemoryError:
+    pass
+print('refused',os.getpid(),flush=True)
+sys.stdin.buffer.read()
+"""
+            child = resources.ObservedProcess([sys.executable,'-c',code], observation=path,
+                address_space_limit_bytes=limit, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(select.select([child.stdout],[],[],10)[0])
+                self.assertEqual(child.stdout.readline(),f'refused {child.pid}\n'.encode())
+                before = json.loads(path.read_bytes())
+                self.assertTrue(before['address_space_proof']['enforced'])
+                self.assertIsNone(before['exit_allocator_peak_upper_bound_bytes'])
+                child.kill();self.assertEqual(child.wait(timeout=5),-9)
+                value = json.loads(path.read_bytes())
+                self.assertEqual(value['exit_allocator_peak_upper_bound_bytes'],limit)
+                self.assertIsNone(value['exit_allocator_peak_bytes'])
+                self.assertFalse(value['qualifies_complete_resource_model'])
+            finally:
+                if child.returncode is None: child.kill();child.wait(timeout=5)
+                child.stdin.close();child.stdout.close();child.stderr.close()
+
+    def test_restarts_retain_distinct_kernel_bounds_and_exit_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            limits = (128*1024*1024,256*1024*1024)
+            for index,limit in enumerate(limits):
+                child = resources.ObservedProcess([sys.executable,'-c','a=bytearray(16*1024*1024)'],
+                    observation=root/f'{index}.json',address_space_limit_bytes=limit)
+                self.assertEqual(child.wait(timeout=10),0)
+            values = [json.loads((root/f'{index}.json').read_bytes()) for index in range(2)]
+            self.assertEqual(tuple(value['exit_allocator_peak_upper_bound_bytes'] for value in values),limits)
+            self.assertTrue(all(value['exit_rss_peak_bytes'] >= 16*1024*1024 for value in values))
+
+    def test_missing_launch_proof_fails_and_joins_the_owned_child(self):
+        from lib.ticketdesk_lifecycle_address_space import AddressSpaceLaunch
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'usage.json'
+            with patch.object(AddressSpaceLaunch,'confirm',side_effect=resources.ResourceError('process_address_space_proof')):
+                with self.assertRaisesRegex(resources.ResourceError,'^process_address_space_proof$'):
+                    resources.ObservedProcess([sys.executable,'-c','import sys;sys.stdin.buffer.read()'],
+                        observation=path,address_space_limit_bytes=128*1024*1024,stdin=subprocess.PIPE)
+            value = json.loads(path.read_bytes())
+            self.assertTrue(value['exit_observed'])
+            self.assertIsNone(value['exit_allocator_peak_upper_bound_bytes'])
+            self.assertIsNone(value['address_space_proof'])
+
     def test_timeout_keeps_child_owned_then_exact_kill_records_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'usage.json'

@@ -15,10 +15,14 @@ import time
 
 from .ticketdesk_lifecycle_resources import ProcessMemory, ResourceError, require, MAX_U64
 
+from contextlib import nullcontext
+from .ticketdesk_lifecycle_address_space import AddressSpaceLaunch, BASIS
+
 MAX_OBSERVATION_BYTES = 2048
 
 
-def run_transient_observed(arguments, *, output, errors, environment, timeout, observation):
+def run_transient_observed(arguments, *, output, errors, environment, timeout, observation,
+                           address_space_limit_bytes=None):
     require(type(timeout) in (int,float) and 0 < timeout <= 1200, 'process_usage_timeout')
     descriptor=os.open(Path(observation),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(descriptor,'wb') as evidence:
@@ -26,6 +30,7 @@ def run_transient_observed(arguments, *, output, errors, environment, timeout, o
             launch_observed=False,exit_observed=False,timed_out=False,exit_code=None,
             elapsed_ns=None,launch_memory=None,launch_memory_refusal=None,
             exit_rss_peak_bytes=None,exit_allocator_peak_bytes=None,
+            exit_allocator_peak_upper_bound_bytes=None,address_space_proof=None,
             exit_rss_basis='linux_wait4_per_child_ru_maxrss',
             allocator_basis='unknown_at_exit',qualifies_complete_resource_model=False)
         child=None
@@ -47,12 +52,22 @@ def run_transient_observed(arguments, *, output, errors, environment, timeout, o
                 require(type(usage.ru_maxrss) is int
                         and 0 < usage.ru_maxrss <= MAX_U64//1024,'process_usage_exit')
                 value['exit_rss_peak_bytes']=usage.ru_maxrss*1024
+                if value['address_space_proof'] is not None:
+                    value['exit_allocator_peak_upper_bound_bytes'] = address_space_limit_bytes
                 return True
 
         try:
-            child=subprocess.Popen(arguments,stdout=output,stderr=errors,env=environment)
-            value['launch_observed']=True
-            pidfd=os.pidfd_open(child.pid,0)
+            launch = (AddressSpaceLaunch(arguments, address_space_limit_bytes)
+                      if address_space_limit_bytes is not None else None)
+            with launch if launch is not None else nullcontext():
+                options = dict(stdout=output, stderr=errors, env=environment)
+                child = subprocess.Popen(launch.arguments if launch else arguments,
+                                         **(launch.options(options) if launch else options))
+                value['launch_observed'] = True
+                pidfd = os.pidfd_open(child.pid, 0)
+                if launch:
+                    value['address_space_proof'] = launch.confirm()
+                    value['allocator_basis'] = BASIS
             try:
                 raw=ProcessMemory(child.pid).tree_sample()[0]
                 fields=('rss_bytes','allocator_bytes','reported_rss_peak_bytes',

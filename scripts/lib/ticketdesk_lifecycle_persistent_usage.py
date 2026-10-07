@@ -4,6 +4,7 @@
 This is an observation wrapper, not complete descendant or allocator evidence.
 Every restart needs a distinct owner and exclusive evidence file.
 """
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -16,8 +17,11 @@ import time
 from .ticketdesk_lifecycle_resources import MAX_U64, ProcessMemory, ResourceError, require
 
 
+from .ticketdesk_lifecycle_address_space import AddressSpaceLaunch, BASIS
+
+
 class ObservedProcess:
-    def __init__(self, arguments, *, observation, **options):
+    def __init__(self, arguments, *, observation, address_space_limit_bytes=None, **options):
         descriptor = os.open(Path(observation), os.O_WRONLY | os.O_CREAT | os.O_EXCL
                              | os.O_NOFOLLOW, 0o600)
         self._evidence = os.fdopen(descriptor, 'w+b')
@@ -28,12 +32,20 @@ class ObservedProcess:
         self._value = dict(schema='riffdb.ticketdesk-lifecycle-persistent-usage/v1',
             launch_observed=False, exit_observed=False, exit_code=None, elapsed_ns=None,
             launch_memory=None, launch_memory_refusal=None, exit_rss_peak_bytes=None,
-            exit_allocator_peak_bytes=None, exit_rss_basis='linux_wait4_per_child_ru_maxrss',
+            exit_allocator_peak_bytes=None, exit_allocator_peak_upper_bound_bytes=None,
+            address_space_proof=None, exit_rss_basis='linux_wait4_per_child_ru_maxrss',
             allocator_basis='unknown_at_exit', qualifies_complete_resource_model=False)
         try:
-            self._child = subprocess.Popen(arguments, **options)
-            self._value['launch_observed'] = True
-            self.pidfd = os.pidfd_open(self._child.pid, 0)
+            launch = (AddressSpaceLaunch(arguments, address_space_limit_bytes)
+                      if address_space_limit_bytes is not None else None)
+            with launch if launch is not None else nullcontext():
+                self._child = subprocess.Popen(launch.arguments if launch else arguments,
+                    **(launch.options(options) if launch else options))
+                self._value['launch_observed'] = True
+                self.pidfd = os.pidfd_open(self._child.pid, 0)
+                if launch:
+                    self._value['address_space_proof'] = launch.confirm()
+                    self._value['allocator_basis'] = BASIS
             try:
                 memory = ProcessMemory(self._child.pid).tree_sample()[0]
                 self._value['launch_memory'] = {field: memory[field] for field in
@@ -102,6 +114,8 @@ class ObservedProcess:
             require(type(usage.ru_maxrss) is int and 0 < usage.ru_maxrss <= MAX_U64 // 1024,
                     'process_usage_exit')
             self._value['exit_rss_peak_bytes'] = usage.ru_maxrss * 1024
+            if self._value['address_space_proof'] is not None:
+                self._value['exit_allocator_peak_upper_bound_bytes'] = self._value['address_space_proof']['limit_bytes']
         finally:
             self._finish()
         return self._child.returncode

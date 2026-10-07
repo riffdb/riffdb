@@ -23,6 +23,38 @@ The existing before/after table comparison still proves logical byte meaning
 and retained evidence. This is local fixture evidence, with no campaign or
 required-host qualification.
 
+## Lifetime bounds for owned campaign processes
+
+Private transient and persistent launchers can freeze a Linux hard `RLIMIT_AS`
+ceiling before replacing the launcher with the actual worker in the same
+process. The launcher verifies its complete virtual high water after enforcing
+that ceiling and sends a bounded proof before execution. A missing proof,
+invalid ceiling or launch refusal fails the invocation. Restarts retain separate
+proofs and exit records; exact process kills still retain kernel RSS high water.
+
+The exit record distinguishes `exit_allocator_peak_upper_bound_bytes` from the
+unknown measured `exit_allocator_peak_bytes`. The former is a conservative
+kernel-enforced address-space bound, including mappings, stacks and reservations;
+it is never presented as allocated live bytes. The owned unprivileged workload
+must retain the inherited hard limit. The final campaign must freeze the actual
+limits and account independently for every incarnation and descendant. A limit
+refusal remains a workload failure, rather than a reason to retry at a larger
+limit. Existing invocations without a frozen ceiling retain unknown exit bounds.
+
+The first missing-capability test fails on the predecessor. Seventeen child
+usage tests and all 168 lifecycle tests pass, including allocation refusal,
+refusal to raise the hard limit, exact kill, missing-proof cleanup and independent
+restart records. These checks establish no host memory ceiling or campaign
+qualification. Records retain `qualifies_complete_resource_model: false`.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: optional private
+kernel-enforced lifetime upper bounds for owned process evidence; Checks: child
+usage and lifecycle tests above; Compatibility: public database interfaces,
+fixtures, service levels and unlimited diagnostic calls unchanged; Updated
+handbook: this milestone handoff; Hazards and follow-ups: integrate frozen
+limits, all owner incarnations and independent accounting into the actual
+campaign, then repeat final-source checks and measured qualification.
+
 ## Journaled bounded source reclamation
 
 The preparation on `e6a4005b` failed `source_bytes_sample_gap`: no fresh

@@ -33,6 +33,21 @@ class TransientUsage(unittest.TestCase):
             self.assertNotIn('pid',json.dumps(value));self.assertNotIn(str(root),json.dumps(value))
             self.assertEqual((root/'usage.json').stat().st_mode & 0o777,0o600)
 
+    def test_enforced_ceiling_survives_an_unsampled_child_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (root/'stdout').open('xb') as output, (root/'stderr').open('xb') as errors:
+                result = resources.run_transient_observed([sys.executable, '-c',
+                    "a=bytearray(32*1024*1024); print('completed',flush=True)"],
+                    output=output, errors=errors, environment=None, timeout=10,
+                    observation=root/'usage.json', address_space_limit_bytes=256*1024*1024)
+            value = json.loads((root/'usage.json').read_bytes())
+            self.assertEqual(result, 0)
+            self.assertEqual(value['exit_allocator_peak_upper_bound_bytes'], 256*1024*1024)
+            self.assertEqual(value['allocator_basis'], 'linux_hard_rlimit_as_upper_bound')
+            self.assertIsNone(value['exit_allocator_peak_bytes'])
+            self.assertFalse(value['qualifies_complete_resource_model'])
+
     def test_timeout_preserves_the_joined_child_exit_and_remains_a_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
