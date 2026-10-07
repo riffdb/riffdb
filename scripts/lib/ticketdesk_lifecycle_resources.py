@@ -358,6 +358,9 @@ class PreparationMemorySamples:
     def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
         require(type(duration) is int and 1 <= duration <= MAX_PREPARATION_SAMPLE_SECONDS,
                 "resource_sample_bound")
+        self._initialize(root, pids, duration, proc_root)
+
+    def _initialize(self, root, pids, duration, proc_root):
         self.inventory = (OwnedProcessMemory(pids, proc_root=proc_root) if "native_sampler" in pids
                           else PersistentProcessMemory(pids, proc_root=proc_root))
         self.duration_ns = duration * 1000000000
@@ -367,6 +370,8 @@ class PreparationMemorySamples:
         self.count = 0
         self.path = Path(root) / "memory-samples.jsonl"
         self.output = None
+        self.cadence_ns = 5000000000
+        self.maximum_gap_ns = None
 
     def __enter__(self):
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -379,9 +384,13 @@ class PreparationMemorySamples:
                 and (self.last_elapsed_ns is None or elapsed_ns >= self.last_elapsed_ns),
                 "resource_sample_clock")
         self.last_elapsed_ns = elapsed_ns
+        if self.maximum_gap_ns is not None:
+            require(elapsed_ns <= self.duration_ns + self.maximum_gap_ns
+                    and elapsed_ns - (self.last_sample_ns or 0) <= self.maximum_gap_ns,
+                    "resource_sample_gap")
         if elapsed_ns >= self.duration_ns:
             return
-        if self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < 5000000000:
+        if self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < self.cadence_ns:
             return
         require(self.output is not None and self.count < 2048, "resource_sample_bound")
         value = self.inventory.sample(elapsed_ns)
@@ -403,3 +412,30 @@ class PreparationMemorySamples:
             self.output.close()
             self.output = None
         return False
+
+
+class CampaignMemorySamples(PreparationMemorySamples):
+    """Continuous, fixed-inventory campaign observations, still incomplete.
+
+    One sample per minute fits 1,440 records for a day. An observation gap above
+    75 seconds refuses, including initial and terminal coverage. Process exits,
+    replacement ownership, transient children and complete model reconciliation
+    still require their separate evidence; this class cannot qualify them.
+    """
+
+    def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
+        require(type(duration) is int and duration % 300 == 0
+                and 73 <= duration // 300 <= 288, "resource_sample_bound")
+        require(type(pids) is dict and "native_sampler" in pids,
+                "resource_process_inventory")
+        self._initialize(root, pids, duration, proc_root)
+        self.cadence_ns = 60000000000
+        self.maximum_gap_ns = 75000000000
+
+    def finish(self):
+        require(self.last_elapsed_ns is not None and self.last_sample_ns is not None
+                and self.duration_ns <= self.last_elapsed_ns
+                <= self.duration_ns + self.maximum_gap_ns
+                and self.duration_ns - self.last_sample_ns <= self.maximum_gap_ns,
+                "resource_sample_terminal")
+        super().finish()
