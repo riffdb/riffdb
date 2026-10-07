@@ -397,10 +397,12 @@ class ChildOwnership(unittest.TestCase):
                     with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
                             patch.object(preparation, "ProviderLog", autospec=True) as provider_log, \
                             patch.object(preparation, "SourceBytesLog", autospec=True) as source_log, \
-                            patch.object(preparation, "LogicalBytesLog", autospec=True) as logical_log:
+                            patch.object(preparation, "LogicalBytesLog", autospec=True) as logical_log, \
+                            patch.object(preparation, "PhysicalBytesLog", autospec=True) as physical_log:
                         provider_log.return_value.finish.return_value = {}
                         source_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
                         logical_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
+                        physical_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
                         sampler = Mock(spec=preparation.NativeProjectionSampler) if native else None
                         if sampler is not None:
                             sampler.native = Mock(process=children[2], samples=Mock(last={"history_incarnation": 7}))
@@ -415,6 +417,10 @@ class ChildOwnership(unittest.TestCase):
                             source_log.return_value.__exit__.assert_called_once()
                             summary = json.loads((root / "source-byte-observation.json").read_text())
                             self.assertFalse(summary["qualifies_complete_resource_model"])
+                            self.assertEqual(physical_log.call_args.args[2](), 7)
+                            self.assertTrue(physical_log.return_value.poll.called)
+                            physical_log.return_value.__exit__.assert_called_once()
+                            self.assertFalse(json.loads((root / "physical-byte-observation.json").read_text())["qualifies_complete_resource_model"])
                             self.assertEqual(logical_log.call_args.args[2](), 7)
                             self.assertTrue(logical_log.return_value.poll.called)
                             logical_log.return_value.__exit__.assert_called_once()

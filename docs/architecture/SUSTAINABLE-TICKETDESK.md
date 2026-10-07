@@ -261,6 +261,32 @@ ordering, dependency, fixture or threshold change. Updated handbook: this page.
 The native barrier-release regression first exposes the missing witness;
 collector hostile tests cover exact counts and generation correlation.
 Final-source acceptance and actual required-host evidence remain required.
+## Separate physical-byte collection during observed load
+
+Observed online-retention load with native observations collects the complete
+`riffdb-retention-physical-bytes-v1` component alongside source and logical byte
+components. The bounded daemon-log reader preserves allocated-block values,
+reference and reader protection categories, original generation cutoff and the
+explicit exclusion of the diagnostic pin. The collector checks byte conservation,
+sector units, extent/page bounds, native root/incarnation continuity and the
+30-second capture lifetime. Each five-minute window needs complete observations
+with the same frozen 95-second maximum gap as the other byte components.
+Unknown, partial, malformed, expired, refused or replaced observations fail.
+
+These original-prefix allocated bytes remain separate from resolved canonical
+logical/source bytes, active/spare files, retained evidence, archive, backups and
+derived files. Adding overlapping representations or allowing one component's
+fall to conceal another's growth would not establish the aggregate model.
+Neither these samples nor their summary fills `eligible_history_bytes` or
+qualifies complete resources. The matching native producer must accompany the
+collector before required-host use.
+
+Package: WP-825, open. Tier: internal. Compatibility: no public interface,
+durable encoding, authorization, dependency, reviewed fixtures or threshold
+change. Updated handbook: this page. Six focused semantic collector tests and
+all 120 lifecycle checker tests pass. Required follow-ups are native record
+integration, complete independent resource reconciliation, actual collection
+pressure and final-source validation; no qualification is claimed.
 
 ## Actual logical-history byte observations
 
