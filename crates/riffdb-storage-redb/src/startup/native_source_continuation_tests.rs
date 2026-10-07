@@ -2,7 +2,7 @@
 use super::engine_compatibility::restore_fixture_bytes;
 use super::*;
 
-// req: STO-030, STO-032, END-008, REC-001
+// req: STO-030, STO-032, END-007, END-008, REC-001
 #[test]
 fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     use riffdb_storage_api::{
@@ -115,6 +115,25 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     )
     .unwrap()
     .unwrap();
+    let measured_before = ports
+        .measure_logical_bytes_for_test(NonZeroU64::MIN)
+        .unwrap();
+    let tables = [
+        crate::journal::JournalTable::Commits,
+        crate::journal::JournalTable::Events,
+        crate::journal::JournalTable::Outbox,
+        crate::journal::JournalTable::OutboxStatus,
+        crate::journal::JournalTable::Idempotency,
+        crate::journal::JournalTable::Provenance,
+        crate::journal::JournalTable::Audit,
+        crate::journal::JournalTable::IdempotencyLocators,
+        crate::journal::JournalTable::ProvenanceLocators,
+        crate::journal::JournalTable::AuditByRequestLocators,
+    ];
+    let prior_rows = {
+        let read = ports.begin_composite_read().unwrap();
+        tables.map(|table| read.read_range_to(table, &[], None, 32).unwrap())
+    };
     let pruned = ports
         .online_retention_step(NonZeroU64::new(1).unwrap(), NonZeroU64::new(1).unwrap())
         .unwrap();
@@ -125,6 +144,49 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
             sequences: 1
         }
     ));
+    let after_read = ports.begin_composite_read().unwrap();
+    let mut removed_values = 0_u64;
+    let mut removed_keys = 0_u64;
+    for (table, rows) in tables.into_iter().zip(prior_rows) {
+        for (key, original) in rows {
+            let after = after_read.read_value(table, &key).unwrap();
+            if after.as_deref() == Some(original.as_ref()) {
+                continue;
+            }
+            if after.is_none() {
+                let length = if table == crate::journal::JournalTable::Commits {
+                    crate::history_stub::resolve_commits_value(&original)
+                        .unwrap()
+                        .len()
+                } else {
+                    original.len()
+                };
+                removed_values += u64::try_from(length).unwrap();
+                removed_keys += u64::try_from(key.len()).unwrap();
+            } else if match table {
+                crate::journal::JournalTable::Idempotency
+                | crate::journal::JournalTable::Provenance => {
+                    riffdb_storage_api::decode_command_locator_v1(&original).is_ok()
+                }
+                crate::journal::JournalTable::Audit => {
+                    riffdb_storage_api::decode_command_audit_locator_v1(&original).is_ok()
+                }
+                _ => false,
+            } {
+                removed_values += u64::try_from(original.len()).unwrap();
+            }
+        }
+    }
+    drop(after_read);
+    assert!(removed_values > 0 && removed_keys > 0);
+    assert_eq!(measured_before, (removed_values, removed_keys));
+    assert_eq!(
+        ports
+            .measure_logical_bytes_for_test(NonZeroU64::MIN)
+            .unwrap(),
+        (0, 0),
+        "native pruning empties the delivered eligible prefix, while retained evidence remains"
+    );
     assert_eq!(
         ports
             .shared

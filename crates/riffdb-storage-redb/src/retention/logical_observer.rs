@@ -8,6 +8,23 @@ const CAPTURE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_AGE: Duration = Duration::from_secs(30);
 const MAX_ROWS: usize = 256;
 
+#[cfg(test)]
+impl crate::store::RedbOperationalPorts {
+    pub(crate) fn measure_logical_bytes_for_test(
+        &self,
+        retain: NonZeroU64,
+    ) -> Result<(u64, u64), StorageError> {
+        let mut probe = Probe::capture(self, retain, Instant::now())?;
+        for _ in 0..32 {
+            probe.advance(self, Instant::now())?;
+            if probe.completed {
+                return Ok((probe.bytes.values, probe.bytes.keys));
+            }
+        }
+        Err(storage_error(StorageErrorKind::LimitExceeded))
+    }
+}
+
 #[derive(Default)]
 pub(in crate::retention) struct Observer {
     probe: Option<Probe>,

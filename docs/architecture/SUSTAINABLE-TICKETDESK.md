@@ -392,6 +392,16 @@ Updated handbook: this page. All 10 focused native accounting tests pass;
 full scoped checks and final-source host evidence remain required. This
 component authorizes no 24-hour qualification.
 
+The actual native two-command recovery fixture now compares the logical byte
+observation with independently enumerated row changes from a real online prune.
+It resolves removed command rows canonically, counts removed keys and obsolete
+locator values separately, and checks that the delivered eligible prefix is
+empty afterward. The same fixture preserves the exact original outcomes and
+provenance through the prune and subsequent outbox transition. This is native
+fixture evidence; full-population collection pressure and the aggregate resource
+model still require host measurements. The measurement entry is test-only and
+changes no application or runtime interface.
+
 ## Separate logical-byte collection during observed load
 
 Observed online-retention load with native observations also collects
