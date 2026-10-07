@@ -313,7 +313,7 @@ record with no front matter.
 | [0276](0276-registry-completion-writer-compatibility-edge.md) | Registry Completion Writer Compatibility Edge | Accepted | guarantee |
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
 | [0278](0278-journaled-bounded-source-reclamation.md) | Journaled Bounded Source Reclamation | Accepted | guarantee |
-| [0279](0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md) | Finite Checkpoint Licensing For Sustainable Source Reclamation | Proposed | guarantee |
+| [0279](0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md) | Finite Checkpoint Licensing For Sustainable Source Reclamation | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

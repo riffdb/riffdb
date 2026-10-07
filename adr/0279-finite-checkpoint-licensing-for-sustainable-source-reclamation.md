@@ -1,11 +1,11 @@
 ---
 adr: "0279"
 title: Finite Checkpoint Licensing For Sustainable Source Reclamation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-07
-accepted: null
-acceptance: null
+accepted: '2026-10-07'
+acceptance: 'maintainer, in session, 2026-10-07: i accept, in response to the exact-text acceptance request for ADR-0279'
 requires: [ADR-0265, ADR-0268, ADR-0271, ADR-0278]
 amends: [ADR-0265, ADR-0268, ADR-0271, ADR-0278]
 supersedes: []
