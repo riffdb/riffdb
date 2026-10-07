@@ -45,6 +45,13 @@ Another live owner, a symlink, or a regular file at the path stops startup. A
 private same-owner stale socket can be reclaimed. Linux peer credentials are
 checked before a request is read.
 
+The complete socket pathname must fit the operating system's Unix socket
+address, measured in filesystem bytes. Linux permits at most 107 bytes; other
+Unix platforms may impose a smaller limit. Use a short protected runtime
+directory. Native preflight rejects an unrepresentable address before reading
+application artifacts, opening remote connections or changing the socket path.
+The same platform check applies to the operator driver.
+
 The endpoint is always HTTPS. There is no cleartext fallback, native-root mode,
 trust-all mode, client-certificate setting, cipher-suite setting, or TLS
 provider setting on this surface.

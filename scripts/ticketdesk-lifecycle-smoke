@@ -7,6 +7,7 @@ Artifacts, credentials and diagnostic logs remain in the private supplied root.
 """
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -676,6 +677,24 @@ def stop_driver(root, driver):
     require(not timed_out and driver.returncode == 0, "driver_shutdown")
 
 
+@contextmanager
+def owned_driver(root, driver):
+    """Always join the child; preserve a primary failure and record cleanup failure."""
+    failed = False
+    try:
+        yield driver
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            stop_driver(root, driver)
+        except SmokeError as error:
+            if not failed:
+                raise
+            print("ticketdesk-lifecycle-smoke: cleanup_" + str(error), file=sys.stderr)
+
+
 def typescript_smoke(root, repository, driver_binary, port, python_native=None):
     runtime = repository / "clients/typescript/runtime"
     compiler = runtime / "node_modules/.bin/tsc"
@@ -724,7 +743,7 @@ streams_per_connection = 4
 ''')
     with (root / "driver.stdout").open("xb") as output, (root / "driver.stderr").open("xb") as errors:
         driver = subprocess.Popen([str(driver_binary), str(config)], stdout=output, stderr=errors)
-        try:
+        with owned_driver(root, driver):
             deadline = time.monotonic() + 30
             while not (root / "application.sock").is_socket() and driver.poll() is None:
                 require(time.monotonic() < deadline, "driver_startup")
@@ -739,8 +758,6 @@ streams_per_connection = 4
                 "state_unchanged": True, "live_query_snapshot": True}, "typescript_observation")
             if python_native:
                 other_language_smokes(root, repository, python_native, port)
-        finally:
-            stop_driver(root, driver)
 
 
 def validate_projection(projection, projection_id, frontier, updates, plan_hash):

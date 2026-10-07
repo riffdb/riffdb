@@ -22,9 +22,7 @@ impl OperatorDriverSocket {
     /// Binds one new or safely stale same-owner socket.
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, OperatorSocketError> {
         let path = path.as_ref();
-        if !path.is_absolute() || path.as_os_str().as_encoded_bytes().len() > 4_096 {
-            return Err(OperatorSocketError);
-        }
+        crate::socket::checked_socket_path(path).map_err(|_| OperatorSocketError)?;
         let parent = path.parent().ok_or(OperatorSocketError)?;
         let parent_metadata = fs::symlink_metadata(parent).map_err(|_| OperatorSocketError)?;
         if !parent_metadata.is_dir()

@@ -36,6 +36,8 @@ impl OperatorDriverRuntime {
                 .map_err(|_| OperatorRuntimeError)?,
         )
         .map_err(|_| OperatorRuntimeError)?;
+        let socket_path = checked_absolute(&document.driver.socket)?;
+        crate::socket::checked_socket_path(&socket_path).map_err(|_| OperatorRuntimeError)?;
         let database = DatabaseAlias::new(document.campaign.database.clone())
             .map_err(|_| OperatorRuntimeError)?;
         let campaign_id = ApplicationInstallationCampaignId::from_bytes(
@@ -82,8 +84,7 @@ impl OperatorDriverRuntime {
         let client = RiffDbClient::connect_verified_tls(&tls)
             .await
             .map_err(|_| OperatorRuntimeError)?;
-        let socket = OperatorDriverSocket::bind(checked_absolute(&document.driver.socket)?)
-            .map_err(|_| OperatorRuntimeError)?;
+        let socket = OperatorDriverSocket::bind(socket_path).map_err(|_| OperatorRuntimeError)?;
         Ok(Self {
             host: OperatorDriverHost::new(document.campaign.database, start, client, metadata),
             socket,

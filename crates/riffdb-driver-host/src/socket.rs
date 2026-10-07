@@ -18,6 +18,17 @@ const RESPONSE_QUEUE: usize = 64;
 const MAX_INFLIGHT_PER_CONNECTION: usize = 64;
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Validate the actual platform address before filesystem or remote work.
+pub(crate) fn checked_socket_path(path: &Path) -> Result<(), SocketError> {
+    if !path.is_absolute()
+        || path.as_os_str().as_encoded_bytes().len() > 4_096
+        || std::os::unix::net::SocketAddr::from_pathname(path).is_err()
+    {
+        return Err(SocketError::InvalidPath);
+    }
+    Ok(())
+}
+
 /// Owned protected Unix listener for one driver host.
 pub struct DriverSocket {
     listener: UnixListener,
@@ -30,9 +41,7 @@ impl DriverSocket {
     /// private directory. Live duplicate ownership fails closed.
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, SocketError> {
         let path = path.as_ref();
-        if !path.is_absolute() || path.as_os_str().as_encoded_bytes().len() > 4_096 {
-            return Err(SocketError::InvalidPath);
-        }
+        checked_socket_path(path)?;
         let parent = path.parent().ok_or(SocketError::InvalidPath)?;
         let parent_metadata =
             fs::symlink_metadata(parent).map_err(|_| SocketError::UnsafeDirectory)?;

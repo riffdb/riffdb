@@ -210,6 +210,30 @@ RPCs, lease timing, durable formats, credentials and workload gates are unchange
 Updated handbook: this page. Follow-up: use the actual result to diagnose the
 failed population seed; it is not an established root cause or native repair.
 
+## Driver startup boundary in full CI
+
+The frozen candidate passed all 20 scoped checks, including 2,862 native tests,
+but full CI failed in the nested retained TypeScript smoke. Its owned temporary
+root produced a 110-byte socket pathname; Linux accepts at most 107 bytes.
+The driver refused startup, and the cleanup exception replaced that primary
+failure with `driver_shutdown`. Both required-host launch guards refused; no
+host workload or 24-hour run started.
+
+Application and operator drivers now preflight addresses through the standard
+library's platform Unix socket address constructor, before artifact reads,
+remote connections or filesystem mutation. Typed refusals and private-directory
+ownership checks remain. Preparation uses a shorter owned temporary directory
+name and retains the primary failure while separately recording failed cleanup.
+A successful smoke still fails if cleanup refuses or exceeds its deadline.
+
+Package: WP-825, open. Tier: surface; implementation repair under ADR-0106,
+existing safe configuration boundaries and D-003. Checks: native path-limit
+regressions fail before the repair; all 44 native driver tests, cleanup refusal
+tests, all 100 lifecycle checker tests and nine scoped acceptance checks pass. Compatibility: no dependency, protocol, durable format,
+credential or fixture change. Updated handbook: this page and Driver Host.
+Follow-ups: repeat actual nested four-language preparation, then complete
+final-source full CI and required-host validation.
+
 ## Current handoff
 
 Package: WP-821; tier: guarantee. This preparation adds accepted decisions,

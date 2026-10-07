@@ -74,3 +74,39 @@ async fn stale_private_socket_is_reclaimed_but_regular_file_is_not() {
     ));
     assert_eq!(fs::read(&regular).expect("preserved"), b"do not delete");
 }
+
+// req: DRV-011
+#[tokio::test]
+async fn unrepresentable_socket_paths_are_invalid_before_filesystem_access() {
+    let temporary = TestRoot::new();
+    let path = temporary.path().join("x".repeat(200));
+    assert!(std::os::unix::net::SocketAddr::from_pathname(&path).is_err());
+    assert!(matches!(
+        DriverSocket::bind(&path),
+        Err(SocketError::InvalidPath)
+    ));
+    assert!(!path.exists());
+}
+
+// req: DRV-011
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_maximum_socket_path_binds_and_one_byte_beyond_refuses() {
+    let temporary = TestRoot::new();
+    let parent_bytes = temporary.path().as_os_str().as_encoded_bytes().len();
+    assert!(parent_bytes + 1 < 107);
+    let path = temporary.path().join("x".repeat(107 - parent_bytes - 1));
+    assert_eq!(path.as_os_str().as_encoded_bytes().len(), 107);
+    let owner = DriverSocket::bind(&path).expect("largest platform pathname");
+    assert!(path.exists());
+    let too_long = temporary.path().join("x".repeat(108 - parent_bytes - 1));
+    assert!(matches!(
+        DriverSocket::bind(&too_long),
+        Err(SocketError::InvalidPath)
+    ));
+    assert!(
+        path.exists(),
+        "invalid sibling must not alter the owned listener"
+    );
+    drop(owner);
+}

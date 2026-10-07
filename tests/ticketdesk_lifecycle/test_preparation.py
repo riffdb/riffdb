@@ -60,6 +60,33 @@ class DriverShutdownDiagnostics(unittest.TestCase):
                 self.assertEqual(value["elapsed_ns"], 400)
 
 
+class DriverFailurePreservation(unittest.TestCase):
+    def test_startup_refusal_is_not_replaced_by_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = Mock()
+            driver.poll.return_value = 1
+            driver.returncode = 1
+            driver.wait.return_value = 1
+            with self.assertRaisesRegex(preparation.SmokeError, "^driver_startup$"):
+                with preparation.owned_driver(root, driver):
+                    raise preparation.SmokeError("driver_startup")
+            value = json.loads((root / "driver-shutdown.json").read_text())
+            self.assertEqual(value["exit_code"], 1)
+            self.assertFalse(value["timed_out"])
+
+    def test_successful_body_still_fails_if_driver_cleanup_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = Mock()
+            driver.poll.return_value = 1
+            driver.returncode = 1
+            driver.wait.return_value = 1
+            with self.assertRaisesRegex(preparation.SmokeError, "^driver_shutdown$"):
+                with preparation.owned_driver(root, driver):
+                    pass
+
+
 class PreparationDurationBoundaries(unittest.TestCase):
     def invoke_invalid_owned_root(self, duration, faults):
         arguments = ["ticketdesk-lifecycle-smoke", "--root", "/", "--server", sys.executable,
