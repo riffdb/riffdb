@@ -28661,6 +28661,14 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Preserve the failed c59c42a0 required-host full CI and isolated follower
+      frontier failure. Timing-only native diagnostics measure 60.356 seconds
+      in 24 source acknowledgements; the general control barrier repeatedly
+      validates full retained history while holding the writer. Propose ADR-0280
+      under the maintainer's standing necessary-native-fix scope. Its proposal
+      path is declared; exact acceptance and commit-layer path recording precede
+      implementation. Host prerequisites are repaired, tests stay on the required
+      host, and no 24-hour run starts. WP-825 remains open.
     - Repair the b7d42046 exact-checkpoint starvation exposed by the unchanged
       interleaved durable-command recovery regression. Share the qualified
       accounting and source-validation pins before actual checkpoint reads and

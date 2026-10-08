@@ -1555,3 +1555,24 @@ protocol bytes, durable formats and command uncertainty are unchanged. Updated
 handbook: `sdks/DRIVER-HOST.md`. Hazards/follow-ups: retain the intermittent
 shutdown failure as unresolved and repeat the exact-source real preparation;
 this repair does not establish rehearsal readiness.
+
+
+### Required-host follower acknowledgement validation blocker
+
+Frozen `c59c42a0` required-host full validation fails two replication campaigns
+and two missing-tool checks. Graphviz and Python YAML are now installed; the
+failed receipt remains failed. The exact follower-frontier test also fails in
+isolation with its unchanged 60-second progress watchdog. A separate native
+phase diagnostic measures 24 source acknowledgements consuming 60.356 seconds,
+with individual calls increasing from 224 ms to as much as 3,483 ms. It stops
+at frontier 380 of 408 after 102.38 seconds. These are failed debug diagnostics,
+not release throughput measurements or rehearsal qualification.
+
+Source acknowledgements repeatedly validate the whole retained history inside
+the general drained writer barrier. This is native population-dependent writer
+work. It requires a bounded proof/preparation protocol, not a relaxed deadline
+or a smaller workload. ADR-0280 is proposed for that authority extension and
+requires exact human acceptance before implementation. The
+[follower acknowledgement review](WP-825-ADR-0280-IMPLEMENTATION-REVIEW.md)
+records the concrete boundary and remaining proofs. Other earlier intermittent
+failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
