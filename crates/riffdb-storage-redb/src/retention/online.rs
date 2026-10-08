@@ -333,6 +333,10 @@ impl RedbOnlineRetentionLane {
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        // Like logical/physical observations, already captured source-byte
+        // pages continue during mandatory writer/proof rest. They cannot
+        // prepare a mutation, renew a source turn or overwrite its candidate.
+        source.advance_source_byte_observation_off_gate()?;
         if !source.source_background_work_ready() {
             return Ok(OnlineRetentionPhases {
                 receipt_validation_pending: source.receipt_validation_pending(),
@@ -340,7 +344,7 @@ impl RedbOnlineRetentionLane {
             });
         }
         let started = std::time::Instant::now();
-        let result = source.advance_validation_off_gate();
+        let result = source.advance_source_proof_off_gate();
         source.charge_source_work(started);
         let [initial, continued, invalidated] = result?;
         Ok(OnlineRetentionPhases {

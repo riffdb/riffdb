@@ -8,6 +8,15 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
+Captured native source-byte pages now continue during source-proof cooldown,
+using the same read-only wait/rest continuation as logical and physical
+observations. They retain their original qualification, exact byte/row/page,
+capture cadence, freshness and observation-gap checks. Source-proof preparation
+and writer turns retain the charged source scheduler and full writer-residence
+rest. Observation work grants no mutation, checkpoint or reclamation authority.
+Required-host workload validation of this scheduling repair is still pending;
+passing its deterministic regression does not establish endurance readiness.
+
 The campaign controller timeline freezes the existing seven fault kinds and
 their order, admits one active action, requires an observed injection release
 and reconciliation, and charges actual elapsed recovery. A late pulse, overlap,

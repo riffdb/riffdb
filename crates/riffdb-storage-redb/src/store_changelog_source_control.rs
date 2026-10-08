@@ -558,7 +558,16 @@ impl ReplicationSourceControl {
     /// Advances only the already captured candidate. This cannot capture a
     /// root, request a writer turn, drain a journal or delete a receipt. Exact
     /// end leaves a certificate for the next ordinarily paced admission.
+    #[cfg(test)]
     pub(crate) fn advance_validation_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
+        self.advance_source_byte_observation_off_gate()?;
+        self.advance_source_proof_off_gate()
+    }
+
+    /// Already captured exact byte accounting is read-only observation work.
+    /// It cannot advance source proof, capture a pin, request a writer turn or
+    /// change the source owner's preparation/rest deadline.
+    pub(crate) fn advance_source_byte_observation_off_gate(&mut self) -> Result<(), StorageError> {
         self.eligible_bytes.check_qualification(
             self.shared
                 .source_continuation_epoch
@@ -568,6 +577,12 @@ impl ReplicationSourceControl {
             self.retire_online_validation();
             return Err(error);
         }
+        Ok(())
+    }
+
+    /// Mutation-proof preparation stays on the graph's shared source pacing.
+    /// Observations have their own captured pages and grant no such authority.
+    pub(crate) fn advance_source_proof_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
         let epoch = self
             .shared
             .source_continuation_epoch

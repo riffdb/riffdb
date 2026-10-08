@@ -168,3 +168,27 @@ are checked before its 30-second capture lifetime ends. Completed-certificate
 reuse and checked-cut rebasing operate earlier in the run. This isolates a
 native accounting progress failure mechanism; the dominant costs and safe
 repair remain unproven. Diagnostic binaries qualify no release performance.
+
+## Captured read-only observations during charged proof rest
+
+Source-byte accounting is an observation under ADR-0279 decision 6, not source
+mutation-proof preparation. Restore its already captured page continuation
+beside logical/physical observations during the existing lane's wait/rest.
+Proof preparation and writer work retain shared source pacing under ADR-0280
+and ADR-0281. The deterministic negative/positive regression preserves the exact
+charged deadline, source-proof progress, writer census and authoritative history.
+This is a D-003 implementation choice: accepted decision text, public surfaces,
+durable identities, source qualification, canonical validation, limits and
+writer ordering remain unchanged. No codec shortcut from the cost diagnostic
+is included. Required-host measured validation and final-source CI remain open.
+
+PR note: Package WP-825; Tier guarantee; Behavior: continue already captured
+read-only source-byte observations during source-proof cooldown without advancing
+mutation authority; Checks: preserved failing-before regression, targeted native
+observation/pacing/architecture tests, 1,322 active storage tests, 19
+retention-worker tests and all-target storage Clippy on the required host;
+Compatibility: existing public interfaces, durable formats,
+fixtures and observed limits; Updated handbook: sustainable TicketDesk milestone;
+Hazards/follow-ups: corrected decision-note YAML metadata acceptance,
+unchanged workload preparation and final-source full CI before campaign
+qualification.

@@ -1744,3 +1744,35 @@ work without weakening canonical checks, source qualification, maintenance rest,
 exact eligibility or the freshness/gap limits. Preserve both failed populations;
 the diagnostic changes are absent from the release source. No runtime change,
 fixture change, campaign integration or 24-hour launch follows this observation.
+
+### Cost isolation and captured-observation scheduling repair
+
+A release-mode diagnostic on an owned copy of the failed population compares
+1,024 identical native receipts totaling 50,537,099 canonical bytes. The current
+path spends 304,163 microseconds reading/reconstructing, 31,799 encoding and
+32,389 validating history; the equivalent borrowed-canonical path spends
+263,278 reading/reconstructing and 31,250 validating. Both produce identical
+byte totals and terminal history points. This diagnostic qualifies no release
+performance and shows that the smaller codec cleanup alone is insufficient.
+
+The production lane gates captured source-byte pages on the shared source-proof
+preparation cooldown, unlike logical and physical observations. A deterministic
+regression charges one second of proof work through the production scheduler,
+then requests two existing off-gate observation pages. On unchanged runtime it
+fails: the byte candidate remains pending throughout charged proof rest.
+
+Separate advancement of already captured source-byte observations from source
+mutation-proof preparation in the existing lane. Observation pages retain all
+qualification, canonicality, row/byte, capture and expiry checks. They capture
+no root and request no writer turn; mutation-proof preparation retains its
+shared pacing, candidate custody and unchanged validation. The regression now
+checks exact accounting completion, unchanged charged deadline, zero proof
+progress, unchanged writer census and unchanged authoritative history. Targeted
+source-byte, pacing, logical-observation and architecture checks pass on the
+required host, as does all-target storage Clippy. The broader storage suite
+then passes 1,322 active tests with zero failures and two existing ignored tests;
+all 19 retention-worker tests pass. The qualification-loss regression also
+proves retirement during proof rest without a new capture. Initial metadata
+acceptance fails on an unquoted colon in the new decision note; correct that
+note and preserve the failed receipt. The unchanged measured workload and
+final-source full CI remain pending; no endurance result is claimed.

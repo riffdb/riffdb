@@ -390,3 +390,143 @@ fn qualified_accounting_candidate_shares_new_validated_pin_without_restarting_it
     assert_eq!(sample[11], sample[4]);
     assert_eq!(sample[9], 2);
 }
+
+#[test]
+fn captured_source_byte_pages_progress_during_source_proof_rest_without_advancing_authority() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for row in 0..300 {
+        append(&ports, if row % 2 == 0 { 17 } else { 4096 });
+    }
+    let (source, history, epoch) = validated(&ports);
+    let ceiling = history.tail().sequence().get();
+    let expected = oracle(&source, history, ceiling);
+    let lane = ports.online_retention_lane();
+    let owner = ports.shared_source_control().unwrap();
+    let gate_before = ports.shared.mutation_gate.source_census().unwrap();
+    let rest_clock = Instant::now();
+    let rest_before;
+    {
+        let mut control = owner.lock().unwrap();
+        control.bind_source_scheduler();
+        control.online_validation = RetainedHistoryValidation::new_source(source.clone()).unwrap();
+        control
+            .online_validation
+            .as_mut()
+            .unwrap()
+            .bind_qualification(epoch);
+        control
+            .eligible_bytes
+            .capture_qualified(source, history, ceiling, epoch, Instant::now())
+            .unwrap();
+        // Charge actual proof work through the production policy. No sleep or
+        // writer priority is used to arrange the pending-observation schedule.
+        control.charge_source_work(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        assert!(!control.source_background_work_ready());
+        rest_before = control.source_pacing.as_ref().unwrap().wait(rest_clock);
+        assert!(control.eligible_bytes.pending());
+    }
+    for _ in 0..2 {
+        let phases = lane.advance_captured_observations_off_gate().unwrap();
+        assert_eq!(phases.source_initial_rows, 0);
+        assert_eq!(phases.source_continuation_rows, 0);
+        assert_eq!(phases.reclaimed_receipts, 0);
+        assert_eq!(phases.gate_held_us(), 0);
+    }
+    let control = owner.lock().unwrap();
+    assert!(
+        !control.source_background_work_ready(),
+        "observation work cannot spend or reset proof rest"
+    );
+    assert_eq!(
+        control.source_pacing.as_ref().unwrap().wait(rest_clock),
+        rest_before
+    );
+    assert!(!control.online_validation.as_ref().unwrap().is_complete());
+    assert_eq!(
+        control.online_validation.as_ref().unwrap().step_rows(),
+        [0; 2]
+    );
+    assert!(
+        !control.eligible_bytes.pending(),
+        "the two bounded observation pages must reach their exact ceiling during proof rest"
+    );
+    let sample = control
+        .eligible_bytes
+        .continued
+        .as_ref()
+        .unwrap()
+        .sample(Instant::now())
+        .unwrap();
+    assert_eq!(sample[5], expected);
+    assert_eq!(
+        sample[11],
+        ceiling - history.minimum_resume().sequence().get()
+    );
+    assert_eq!(sample[9], 2);
+    assert_eq!(
+        ports.shared.mutation_gate.source_census().unwrap(),
+        gate_before
+    );
+    assert_eq!(
+        ports
+            .shared
+            .capture_source_validation_pin()
+            .unwrap()
+            .history()
+            .unwrap(),
+        Some(history)
+    );
+}
+
+#[test]
+fn captured_source_bytes_revoke_lost_qualification_during_proof_rest_without_new_capture() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    let (source, history, epoch) = validated(&ports);
+    let lane = ports.online_retention_lane();
+    let owner = ports.shared_source_control().unwrap();
+    let rest_clock = Instant::now();
+    let rest_before;
+    let gate_before = ports.shared.mutation_gate.source_census().unwrap();
+    {
+        let mut control = owner.lock().unwrap();
+        control.bind_source_scheduler();
+        control
+            .eligible_bytes
+            .capture_qualified(
+                source,
+                history,
+                history.tail().sequence().get(),
+                epoch,
+                Instant::now(),
+            )
+            .unwrap();
+        control.charge_source_work(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        rest_before = control.source_pacing.as_ref().unwrap().wait(rest_clock);
+        assert!(control.eligible_bytes.pending());
+    }
+    ports.shared.invalidate_source_continuation();
+    let phases = lane.advance_captured_observations_off_gate().unwrap();
+    assert_eq!(phases.source_initial_rows, 0);
+    assert_eq!(phases.gate_held_us(), 0);
+    let control = owner.lock().unwrap();
+    assert!(control.eligible_bytes.continued.is_none());
+    assert!(control.online_validation.is_none());
+    assert!(!control.source_background_work_ready());
+    assert_eq!(
+        control.source_pacing.as_ref().unwrap().wait(rest_clock),
+        rest_before
+    );
+    assert_eq!(
+        ports.shared.mutation_gate.source_census().unwrap(),
+        gate_before
+    );
+    assert_eq!(
+        ports
+            .shared
+            .capture_source_validation_pin()
+            .unwrap()
+            .history()
+            .unwrap(),
+        Some(history)
+    );
+}

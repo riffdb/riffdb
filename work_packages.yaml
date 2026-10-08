@@ -28664,6 +28664,17 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - >-
+      D-003 implementation choice under ADR-0279 decision 6: captured byte
+      observations continue beside logical/physical observations during shared
+      source-proof rest. They grant no mutation authority. Preserve source-proof
+      preparation and writer pacing, all validation and the original observation
+      limits. A deterministic production-lane regression fails before repair and
+      checks exact completion with unchanged proof/rest/writer/history afterward.
+      Targeted checks, 1,322 active storage tests, 19 retention-worker tests and
+      storage Clippy pass. Correct a decision-note YAML syntax error before
+      metadata acceptance. Measured preparation and final-source CI remain
+      required. No 24-hour run starts.
     - A separate unchanged-load numeric diagnostic repeats the source-byte gap.
       Its new eligible interval has 10,631 receipts after a checked cut; only
       2,560 are scanned before the 30-second accounting candidate expires.
