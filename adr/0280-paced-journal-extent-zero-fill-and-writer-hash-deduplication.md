@@ -1,11 +1,11 @@
 ---
 adr: "0280"
 title: Paced Journal Extent Zero Fill And Writer Hash Deduplication
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-07
-accepted: null
-acceptance: null
+accepted: '2026-10-07'
+acceptance: 'maintainer, in session, 2026-10-07: "i accept", in response to the exact-text acceptance request for ADR-0280 as committed at a231e2fba'
 requires: [ADR-0263, ADR-0239]
 amends: []
 supersedes: []
