@@ -83,6 +83,13 @@ write-only gain is the writer idling less.
 - **Authentication principal cache:** an unsafe skip-everything ceiling cut
   authentication from about 5 us to 1 us per request and changed no throughput.
   The capability reader already serves lookups from an in-memory view.
+- **Bounded writeback for the redb checkpoint commit** (a data sync through a
+  second file handle every 2 MiB written to the primary database): write-only
+  fell from 2,052–2,179 to 1,782–1,816 ops/s and p99 rose from 22–27 ms to
+  50 ms. The checkpoint's writes are small and random, so each 2 MiB sync is
+  slow; journal syncs over 15 ms went from 12 to 380 per run, the worst falling
+  from about 150 ms to 47 ms while the journal queue wait rose from about 2 s to
+  8–11 s. One large burst per checkpoint is cheaper here than many small ones.
 
 ## Review note
 

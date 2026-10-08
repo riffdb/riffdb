@@ -85,6 +85,9 @@ that must not move, are recorded here rather than left to a package.
    stay small between checkpoints on the measured workload.
 6. **Principal cache in authentication:** measured and rejected; even an unsafe
    skip-everything ceiling saved ~4 us per request and no throughput.
+7. **Bounded writeback for the redb checkpoint commit:** measured and rejected;
+   syncing the primary file every 2 MiB turned one checkpoint burst into
+   hundreds of slow random-write syncs and cut write-only throughput by 17%.
 
 ## Consequences
 
