@@ -28664,6 +28664,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - A separate unchanged-load numeric diagnostic repeats the source-byte gap.
+      Its new eligible interval has 10,631 receipts after a checked cut; only
+      2,560 are scanned before the 30-second accounting candidate expires.
+      Establish bounded native progress before further campaign integration;
+      diagnostic source qualifies no release performance and no repair is proven.
     - Frozen native source 0d26ff43 passes all 12 full-acceptance gates and the
       complete CI battery on the required host, with source clean. The locked
       release build passes. Unchanged preparation seeds 64 organizations and

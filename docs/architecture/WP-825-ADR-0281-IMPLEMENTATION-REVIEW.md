@@ -161,3 +161,10 @@ it establishes neither normal-window throughput/latency nor populated recovery.
 The remaining work is to diagnose the production accounting/progress blocker.
 Complete campaign integration remains deferred, WP-825 remains open and no
 24-hour run has begun. The earlier abort is still not exclusively diagnosed.
+
+A separate diagnostic repeats that gap failure and records a larger accounting
+candidate expiring after ten pages: 2,560 of 10,631 remaining eligible receipts
+are checked before its 30-second capture lifetime ends. Completed-certificate
+reuse and checked-cut rebasing operate earlier in the run. This isolates a
+native accounting progress failure mechanism; the dominant costs and safe
+repair remain unproven. Diagnostic binaries qualify no release performance.

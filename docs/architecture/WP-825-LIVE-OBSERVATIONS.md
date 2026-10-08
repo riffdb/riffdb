@@ -1721,3 +1721,26 @@ unproven. Preserve the population, artifacts and failed observations; neither
 relaxing the gap nor reporting missing bytes as zero would repair this native
 blocker. Campaign integration remains deferred while this bounded checkpoint
 is assessed. WP-825 stays open and the 24-hour run remains unstarted.
+
+### Diagnostic accounting expiry after a ceiling advance
+
+A separate bounded numeric diagnostic on the same runtime source reproduces
+`source_bytes_sample_gap` under the original population, load and deadlines.
+It confirms an accounting-progress failure mechanism without qualifying release
+performance. Seed accounting completes 2,985 new rows in 23.958 seconds, then
+reuses that exact interval. During load, the old certificate is retired when an
+actual cut advances resume beyond its ceiling. The next capture covers resume
+4,780 through ceiling 15,667; a checked own cut advances resume to 5,036. Ten
+bounded pages check 2,560 receipts, reaching 7,596, before capture age reaches
+30.475 seconds and the candidate expires. It never completes the remaining
+interval, and the unchanged 95-second gap gate fails. No complete five-minute
+load window or populated recovery result is established.
+
+This trace identifies native accounting expiry on a larger newly eligible
+interval. It does not yet isolate the costs of receipt reconstruction, shared
+source validation or pacing, nor prove a repair. Next work must establish a
+bounded native progress regression and remove the repeated population-dependent
+work without weakening canonical checks, source qualification, maintenance rest,
+exact eligibility or the freshness/gap limits. Preserve both failed populations;
+the diagnostic changes are absent from the release source. No runtime change,
+fixture change, campaign integration or 24-hour launch follows this observation.
