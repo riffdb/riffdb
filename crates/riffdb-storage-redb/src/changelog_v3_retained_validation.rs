@@ -134,6 +134,13 @@ impl RetainedHistoryValidation {
     }
 
     #[cfg(test)]
+    pub(crate) fn validation_pin(&self) -> Option<std::sync::Weak<CheckpointRoot>> {
+        self.root
+            .as_ref()
+            .map(|root| Arc::downgrade(root.checkpoint_pin()))
+    }
+
+    #[cfg(test)]
     pub(crate) fn rows_read(&self) -> [u64; 2] {
         self.rows_read
     }
@@ -309,6 +316,49 @@ impl RetainedHistoryValidation {
         if !self.close_suffix_page()? {
             return Err(corrupt());
         }
+        Ok(())
+    }
+
+    /// Only the sealed native acknowledgement publication may rebind changed
+    /// hold evidence. Its same-generation policy delta was checked against the
+    /// complete predecessor proof; validate the actual new receipt and audit
+    /// end again before retaining the successor certificate.
+    pub(crate) fn rebase_own_acknowledgement(
+        &mut self,
+        publication: &crate::store::AcknowledgementPublication,
+    ) -> Result<(), StorageError> {
+        let Some((predecessor, successor, root, epoch)) = publication.successor() else {
+            return Ok(());
+        };
+        if !self.is_complete()
+            || self.history != predecessor
+            || self.qualification.and_then(|prior| prior.checked_add(1)) != Some(epoch)
+            || epoch == u64::MAX
+            || successor.lineage() != predecessor.lineage()
+            || successor.anchor() != predecessor.anchor()
+            || successor.minimum_resume() != predecessor.minimum_resume()
+            || predecessor.tail().sequence().checked_next() != Some(successor.tail().sequence())
+        {
+            return Err(corrupt());
+        }
+        let root = ValidationSource::Checkpoint(Arc::clone(root));
+        if root.history()? != Some(successor) {
+            return Err(corrupt());
+        }
+        let independent_sequence = self.independent_sequence;
+        self.rebind_native_evidence(&root, successor)?;
+        self.root_identity = root.identity();
+        self.source_identity = root.publication();
+        self.root = Some(root);
+        self.history = successor;
+        self.phase = Phase::Receipts;
+        self.bind_qualification(epoch);
+        if !self.close_suffix_page()? {
+            return Err(corrupt());
+        }
+        // This owner's acknowledgement changes the floor, never its original
+        // independently checkpointed license or independent-progress census.
+        self.independent_sequence = independent_sequence;
         Ok(())
     }
 

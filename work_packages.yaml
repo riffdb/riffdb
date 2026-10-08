@@ -28664,13 +28664,55 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - A deterministic real receipt-source ownership schedule fails before repair
+      with 33 nested cleanup calls. Replace failed Arc::try_unwrap disposal with
+      atomic Arc::into_inner handoff; the regression and source-cursor module pass.
+      Preserve the original 384-KiB production stack reservation. The preceding
+      stack-increase trial is excluded. Source-cursor, columnar and four-crate Clippy
+      checks and the unchanged whole 26-case process suite pass on the required
+      host. No exclusive process-abort diagnosis or final-source qualification is
+      claimed. The existing cursor architecture guard fails on its obsolete unwrap
+      assertion, which is updated after recording the exact consequence-test path
+      under the standing native-fix scope. All 59 architecture tests and the scope,
+      acceptance-commit, coverage, obligation, file-size and performance checks
+      pass against the recorded scope commit. WP-825 remains open.
+    - ADR-0281 exact text and its decision path accepted in session on
+      2026-10-07. Read-only bootstrap custody now has an authored closed native
+      preparation using the existing shared proof owner and unchanged deadlines.
+      Three named oracle/refusal/cancellation proofs and an additional actual
+      page-I/O interleaving pass on the required host. All eleven metadata gates
+      pass after separating acceptance from documentation. Custody, acknowledgement,
+      coordinator, server bootstrap and four-crate Clippy checks pass. The original
+      process suite passes 25 of 26; a private diagnostic captures an actual
+      riffdb-columnar stack overflow during concurrent fencing and two existing
+      replication deadline failures. Preserve failed evidence; native investigation
+      and final-source validation remain required. WP-825 remains open.
+    - Correct graph-owned scheduler binding after three native explicit-step
+      retention regressions. Preserve their unchanged assertions and operation
+      counts. All three pass with mandatory monotonic production/acknowledgement
+      scheduler binding; 14 acknowledgement tests, 21 admission tests, production
+      graph/bridge, pacing, coordinator tests and four-crate Clippy also pass.
+      The original process suite remains 25 passing with bootstrap held attachment
+      failing. The interrupted prior test stage stays failed; corrected-source
+      scoped acceptance subsequently passes all 14 checks and 2,855 tests under
+      the stock CI profile. ADR-0281 is accepted separately; its later source is
+      not qualified by that earlier receipt. WP-825 remains open.
+    - ADR-0280 native development passes all 13 acknowledgement tests, existing
+      source-admission schedules, shared pacing, the production bridge, three
+      coordinator tests and four-crate all-target Clippy on the required host.
+      The unchanged process suite passes 25 and fails the initial bootstrap
+      held-attachment deadline. Permanent source admission retirement is now
+      a typed refusal, preserving durable holds and allowing shutdown to drain.
+      Preserve failed snapshots; separate bootstrap diagnostics and clean
+      final-source CI remain required. No rehearsal qualification is claimed.
     - Preserve the failed c59c42a0 required-host full CI and isolated follower
       frontier failure. Timing-only native diagnostics measure 60.356 seconds
       in 24 source acknowledgements; the general control barrier repeatedly
-      validates full retained history while holding the writer. Propose ADR-0280
-      under the maintainer's standing necessary-native-fix scope. Its proposal
-      path is declared; exact acceptance and commit-layer path recording precede
-      implementation. Host prerequisites are repaired, tests stay on the required
+      validates full retained history while holding the writer. ADR-0280 exact
+      text was accepted in session on 2026-10-07; acceptance and approved
+      commit-layer scope are recorded in separate preceding commits. Native
+      implementation and its independent proof tests are in progress, without
+      final-source qualification. Host prerequisites are repaired, tests stay on the required
       host, and no 24-hour run starts. WP-825 remains open.
     - Repair the b7d42046 exact-checkpoint starvation exposed by the unchanged
       interleaved durable-command recovery regression. Share the qualified

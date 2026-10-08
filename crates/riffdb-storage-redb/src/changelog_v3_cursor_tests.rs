@@ -11,6 +11,39 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
 
+thread_local! {
+    static DROP_DEPTH: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    static AFTER_OWNERSHIP_DECISION: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) struct SourceNodeDropDepth;
+
+pub(super) fn enter_source_node_drop() -> SourceNodeDropDepth {
+    DROP_DEPTH.with(|depth| {
+        let (current, maximum) = depth.get();
+        depth.set((current + 1, maximum.max(current + 1)));
+    });
+    SourceNodeDropDepth
+}
+
+impl Drop for SourceNodeDropDepth {
+    fn drop(&mut self) {
+        DROP_DEPTH.with(|depth| {
+            let (current, maximum) = depth.get();
+            depth.set((current - 1, maximum));
+        });
+    }
+}
+
+pub(super) fn after_predecessor_ownership_decision() {
+    AFTER_OWNERSHIP_DECISION.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
 fn fixture() -> (
     crate::test_path::ScopedDirectory,
     RedbStore,
@@ -378,6 +411,81 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
         .join()
         .unwrap();
     assert!(weak.upgrade().is_none());
+    drop(store);
+}
+
+#[test]
+fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (_scope, store, anchor) = fixture();
+    let (frame, receipt, mutations) = source(anchor, None, Some(b"value"));
+    let source = Arc::new(Source {
+        binding: receipt.binding(),
+        attribution: receipt.attribution(),
+        history: anchor.advance(&receipt).unwrap(),
+        mutations,
+        reclaimed_resume: None,
+        encoded_bytes: frame.encode().unwrap().as_bytes().len(),
+    });
+    let source_weak = Arc::downgrade(&source);
+    let mut head = None;
+    let mut competing_owners = Vec::new();
+    let mut weak_nodes = Vec::new();
+    // As in the maximum-depth proof, these are ownership graphs, not admitted
+    // repeated receipts. Every raced predecessor initially has two real owners.
+    for _ in 0..32 {
+        let node = Arc::new(SourceNode {
+            predecessor: head,
+            source: Arc::clone(&source),
+            ancestors: Box::new([]),
+        });
+        weak_nodes.push(Arc::downgrade(&node));
+        competing_owners.push(Arc::clone(&node));
+        head = Some(node);
+    }
+    let head = Arc::new(SourceNode {
+        predecessor: head,
+        source,
+        ancestors: Box::new([]),
+    });
+    weak_nodes.push(Arc::downgrade(&head));
+    let (release, requests) = mpsc::sync_channel(0);
+    let (released, acknowledgements) = mpsc::sync_channel(0);
+    let competitor = std::thread::spawn(move || {
+        while requests.recv().is_ok() {
+            drop(competing_owners.pop().expect("next raced predecessor"));
+            released.send(()).unwrap();
+        }
+        drop(competing_owners);
+    });
+    let owner = std::thread::Builder::new()
+        .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
+        .spawn(move || {
+            DROP_DEPTH.with(|depth| depth.set((0, 0)));
+            AFTER_OWNERSHIP_DECISION.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    release.send(()).unwrap();
+                    acknowledgements
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }));
+            });
+            drop(head);
+            AFTER_OWNERSHIP_DECISION.with(|hook| *hook.borrow_mut() = None);
+            DROP_DEPTH.with(|depth| depth.get())
+        })
+        .unwrap();
+    let (remaining_depth, maximum_depth) = owner.join().unwrap();
+    competitor.join().unwrap();
+    assert_eq!(remaining_depth, 0);
+    assert!(weak_nodes.iter().all(|node| node.upgrade().is_none()));
+    assert!(source_weak.upgrade().is_none());
+    assert_eq!(
+        maximum_depth, 1,
+        "raced ancestry release must stay iterative"
+    );
     drop(store);
 }
 

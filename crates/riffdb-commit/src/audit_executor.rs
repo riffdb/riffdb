@@ -919,6 +919,23 @@ impl ControlPlaneExecutionCapacityPermit {
         Ok(ReactiveModulePublicationReceipt { receiver })
     }
 
+    /// Submits only the closed native follower acknowledgement after bounded
+    /// preparation. The actor rechecks its proof and may yield without writing.
+    #[doc(hidden)]
+    pub fn submit_follower_acknowledgement(
+        self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<FollowerAcknowledgementReceipt, ControlPlaneExecutionAdmissionError> {
+        let (permit, submission) = self.into_submission()?;
+        let (completion, receiver) = oneshot::channel();
+        let _sender = permit.send(CoordinatorMessage::FollowerAcknowledgement {
+            request,
+            completion,
+        });
+        drop(submission);
+        Ok(FollowerAcknowledgementReceipt { receiver })
+    }
+
     /// Submits one bounded continuation of persisted registration policy.
     pub fn submit_replication_maintenance(
         self,
@@ -1072,6 +1089,24 @@ macro_rules! control_plane_receipt {
             }
         }
     };
+}
+
+/// Completion of the closed native source operation. Dropping a waiter does
+/// not cancel accepted work; native custody must survive through this receipt.
+#[doc(hidden)]
+pub struct FollowerAcknowledgementReceipt {
+    receiver: oneshot::Receiver<Result<bool, riffdb_storage_api::ChangelogCursorErrorV3>>,
+}
+impl FollowerAcknowledgementReceipt {
+    pub async fn completion(self) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.receiver.await.unwrap_or_else(|_| {
+            Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::CommitStatusUnknown,
+                None,
+            )
+            .into())
+        })
+    }
 }
 
 control_plane_receipt!(PrimaryFenceReceipt, PrimaryFenceExecutionResult);
@@ -2272,6 +2307,10 @@ enum CoordinatorMessage {
             Result<ReplicationAdministrationExecutionResult, ControlPlaneExecutionError>,
         >,
     },
+    FollowerAcknowledgement {
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+        completion: oneshot::Sender<Result<bool, riffdb_storage_api::ChangelogCursorErrorV3>>,
+    },
     ReplicationMaintenance {
         completion: oneshot::Sender<
             Result<ReplicationRegistrationMaintenanceResultV1, ControlPlaneExecutionError>,
@@ -2335,6 +2374,17 @@ enum PendingCommandPublication {
 }
 
 trait CoordinatorActorOperations: Send {
+    fn acknowledge_follower(
+        &mut self,
+        _request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        Err(riffdb_storage_api::StorageError::new(
+            riffdb_storage_api::StorageErrorKind::Unavailable,
+            None,
+        )
+        .into())
+    }
+
     fn fence_primary(
         &mut self,
         preparation: AuthorizedPrimaryFencePreparation,
@@ -2476,6 +2526,14 @@ where
         + CapabilityBootstrapAdministrationRepository
         + Send,
 {
+    fn acknowledge_follower(
+        &mut self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.repository
+            .advance_prepared_follower_acknowledgement_v3(request)
+    }
+
     fn append_audit(
         &mut self,
         input: &dyn AdministrationAuditInputView,
@@ -3870,6 +3928,13 @@ impl CommandWriter {
                 let result = self.operations.administer_replication(*preparation);
                 let _receiver_may_be_dropped = completion.send(result);
             }
+            CoordinatorMessage::FollowerAcknowledgement {
+                request,
+                completion,
+            } => {
+                let result = self.operations.acknowledge_follower(request);
+                let _receiver_may_be_dropped = completion.send(result);
+            }
             CoordinatorMessage::ReplicationMaintenance { completion } => {
                 let result = self.operations.maintain_replication();
                 let _receiver_may_be_dropped = completion.send(result);
@@ -4562,6 +4627,13 @@ fn reject_message_fenced(message: CoordinatorMessage) {
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
+        CoordinatorMessage::FollowerAcknowledgement { completion, .. } => {
+            let _ = completion.send(Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+                None,
+            )
+            .into()));
+        }
         CoordinatorMessage::ReplicationMaintenance { completion } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_fenced()));
         }
@@ -4610,6 +4682,13 @@ fn reject_message_stopped(message: CoordinatorMessage) {
         CoordinatorMessage::ReplicationAdministration { completion, .. } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
+        CoordinatorMessage::FollowerAcknowledgement { completion, .. } => {
+            let _ = completion.send(Err(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::Unavailable,
+                None,
+            )
+            .into()));
+        }
         CoordinatorMessage::ReplicationMaintenance { completion } => {
             let _ = completion.send(Err(ControlPlaneExecutionError::coordinator_stopped()));
         }
@@ -4647,6 +4726,7 @@ fn command_grouping_class(message: &CoordinatorMessage) -> CommandGroupingClass 
         | CoordinatorMessage::CapabilityCreate { .. }
         | CoordinatorMessage::PrimaryFence { .. }
         | CoordinatorMessage::ReplicationAdministration { .. }
+        | CoordinatorMessage::FollowerAcknowledgement { .. }
         | CoordinatorMessage::ReplicationMaintenance { .. }
         | CoordinatorMessage::CapabilityRevoke { .. }
         | CoordinatorMessage::CapabilityBootstrap { .. }

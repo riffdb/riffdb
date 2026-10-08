@@ -249,3 +249,44 @@ fn registered_ack_crashes_preserve_whole_policy_and_original_registration() {
         }
     }
 }
+
+// req: REP-003, REP-006, REC-001, END-008, LOG-001
+#[test]
+fn bounded_follower_acknowledgement_preserves_registered_generation_and_complete_audit_oracle() {
+    let (_scope, ports, registration) = stored_registration();
+    let original = attached_fixture(&ports, registration.after());
+    let before = history(&ports);
+    let next = Hold::new(
+        original.hold().id(),
+        Kind::FollowerAcknowledgement,
+        before.lineage(),
+        before.tail(),
+    );
+    let mut control = ports.replication_source_control();
+    let mut ready = false;
+    for _ in 0..16 {
+        if control.prepare_follower_acknowledgement(next).unwrap() {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready);
+    assert!(
+        control
+            .advance_prepared_follower_acknowledgement(next)
+            .unwrap()
+    );
+    let after = history(&ports); // Independent complete retained/audit/fence validator.
+    let observed = current(&ports, next);
+    assert_eq!(observed.hold(), next);
+    assert_eq!(observed.generation(), original.generation());
+    assert_eq!(observed.registered_at(), original.registered_at());
+    assert_eq!(observed.budget(), original.budget());
+    assert_eq!(observed.expires_at(), original.expires_at());
+    assert_eq!(observed.phase(), Phase::Attached);
+    assert_eq!(after.tail().frontier(), before.tail().frontier());
+    assert_eq!(
+        after.tail().sequence(),
+        before.tail().sequence().checked_next().unwrap()
+    );
+}

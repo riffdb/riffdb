@@ -249,6 +249,157 @@ impl Barrier {
         }))
     }
 
+    /// Closed acknowledgement owner. This consumes the admitted barrier and
+    /// exposes no raw transaction or caller-selected mutation inventory.
+    pub(super) fn acknowledge_follower(
+        self,
+        hold: Hold,
+        expected_before: &[u8],
+    ) -> Result<Option<AcknowledgementPublication>, Refusal> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable).into());
+        }
+        if self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire)
+            >= u64::MAX - 1
+        {
+            return Err(storage_error(StorageErrorKind::SequenceExhausted).into());
+        }
+        if !self.paged_validation || hold.kind() != Kind::FollowerAcknowledgement {
+            return Err(Refusal::InvalidPosition);
+        }
+        drop(crate::changelog_v3_cursor::open(
+            &RedbReadAccess::Durable(Arc::clone(&self.root)),
+            hold.lineage(),
+            hold.fence(),
+        )?);
+
+        let before = self.root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let row = before
+            .get(hold.storage_key().as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or(Refusal::InvalidPosition)?;
+        if row.value() != expected_before {
+            return Ok(None);
+        }
+        let state = *decode_replication_source_hold(row.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let prior = match state {
+            State::Legacy(prior) => prior,
+            State::Registered(policy) if policy.phase() == Phase::Attached => policy.hold(),
+            State::Registered(_) => return Err(Refusal::InvalidPosition),
+        };
+        if prior.id() != hold.id() || prior.lineage() != hold.lineage() {
+            return Err(Refusal::InvalidPosition);
+        }
+        if prior == hold {
+            return Ok(Some(AcknowledgementPublication { successor: None }));
+        }
+        if prior.fence().sequence() >= hold.fence().sequence() {
+            return Err(Refusal::InvalidPosition);
+        }
+        let encoded = match state {
+            State::Legacy(_) => encode_replication_source_hold_v1(hold),
+            State::Registered(policy) => encode_replication_source_hold_v2(
+                registered_ack::advance(policy, hold, self.observation.history)
+                    .map_err(value_error)?,
+            ),
+        }
+        .map_err(crate::error::codec_error)?;
+
+        let validated = Arc::clone(&self.root);
+        let predecessor = self.observation.history;
+        drop(row);
+        drop(before);
+        let write = self.begin()?;
+
+        // `begin` has checked the transaction's exact predecessor roots. Only
+        // this owner writes: one hold, one canonical receipt and its roots.
+        let (receipt, successor) = prepare_control_receipt(
+            write.transaction()?,
+            predecessor,
+            Source::ReplicationSourceHold,
+        )?;
+
+        {
+            let mut table = write
+                .transaction()?
+                .open_table(SOURCE_HOLDS)
+                .map_err(table_error)?;
+            let row = table
+                .get(hold.storage_key().as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or(Refusal::InvalidPosition)?;
+            if row.value() != expected_before {
+                return Ok(None);
+            }
+            drop(row);
+            table
+                .insert(hold.storage_key().as_slice(), encoded.as_bytes())
+                .map_err(precommit_storage_error)?;
+        }
+        crash_edge("hold-staged");
+        receipt.stage(write.transaction()?)?;
+
+        // Compare the entire bounded hold set with its admitted pin. No
+        // registration, removal, generation or unrelated hold can ride along.
+        let before = validated.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let after = write
+            .transaction()?
+            .open_table(SOURCE_HOLDS)
+            .map_err(table_error)?;
+        if before.len().map_err(precommit_storage_error)?
+            != after.len().map_err(precommit_storage_error)?
+            || after.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData).into());
+        }
+        for entry in before.iter().map_err(precommit_storage_error)? {
+            let (key, old) = entry.map_err(precommit_storage_error)?;
+            let actual = after
+                .get(key.value())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let expected = if key.value() == hold.storage_key() {
+                encoded.as_bytes()
+            } else {
+                old.value()
+            };
+            if actual.value() != expected {
+                return Err(storage_error(StorageErrorKind::CorruptData).into());
+            }
+        }
+        let receipts = write
+            .transaction()?
+            .open_table(HISTORY)
+            .map_err(table_error)?;
+        crate::changelog_v3_roots::validate_source_holds(&after, successor, &receipts)?;
+        drop(receipts);
+        drop(after);
+        let actual =
+            crate::changelog_v3_roots::read_checkpoint_roots_for_write(write.transaction()?)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if actual != successor {
+            return Err(storage_error(StorageErrorKind::CorruptData).into());
+        }
+        drop(before);
+        drop(validated);
+        crash_edge("hold-receipted");
+        let (_, root, qualification) = write.commit_published(None)?;
+        crash_edge("hold-committed");
+        Ok(Some(AcknowledgementPublication {
+            successor: Some(AcknowledgementSuccessor {
+                predecessor,
+                successor,
+                root,
+                qualification,
+            }),
+        }))
+    }
+
     pub(super) fn observation(&self) -> Observation {
         self.observation
     }
@@ -312,6 +463,37 @@ fn validation_drain_yield(shared: &SharedRedb) -> Result<Option<AdmissionYield>,
     Ok(shared
         .journal_seal_publication_pending()?
         .then_some(AdmissionYield::CheckpointPublication))
+}
+
+/// Constructed only after the closed acknowledgement owner durably commits
+/// its complete checked mutation set. Other control writes cannot mint this.
+struct AcknowledgementSuccessor {
+    predecessor: History,
+    successor: History,
+    root: Arc<crate::checkpoint_root::CheckpointRoot>,
+    qualification: u64,
+}
+pub(crate) struct AcknowledgementPublication {
+    successor: Option<AcknowledgementSuccessor>,
+}
+impl AcknowledgementPublication {
+    pub(crate) fn successor(
+        &self,
+    ) -> Option<(
+        History,
+        History,
+        &Arc<crate::checkpoint_root::CheckpointRoot>,
+        u64,
+    )> {
+        self.successor.as_ref().map(|checked| {
+            (
+                checked.predecessor,
+                checked.successor,
+                &checked.root,
+                checked.qualification,
+            )
+        })
+    }
 }
 
 pub(crate) struct ControlWrite {

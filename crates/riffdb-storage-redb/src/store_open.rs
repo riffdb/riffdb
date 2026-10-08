@@ -138,6 +138,7 @@ impl RedbStore {
                 clean_certificate_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 source_continuation_epoch: AtomicU64::new(0),
+                source_control_owner: Mutex::new(std::sync::Weak::new()),
                 durable_root_publication: AtomicU64::new(0),
                 durable_root_publication_wait: Mutex::new(()),
                 durable_root_publication_changed: Condvar::new(),

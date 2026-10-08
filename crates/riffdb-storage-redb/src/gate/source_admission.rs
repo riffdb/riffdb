@@ -128,6 +128,15 @@ impl ExclusiveGate {
         self.inner.released.notify_all();
     }
 
+    /// Observe irreversible retirement without requesting a ticket or lease.
+    pub(crate) fn source_admission_retired(&self) -> Result<bool, StorageError> {
+        self.inner
+            .state
+            .lock()
+            .map(|state| state.source.retired)
+            .map_err(|_| poisoned_gate())
+    }
+
     pub(crate) fn source_census(&self) -> Result<[u64; 8], StorageError> {
         self.inner
             .state

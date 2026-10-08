@@ -27,6 +27,7 @@ pub struct RedbBootstrapRepository {
 }
 pub(super) struct RepositoryInner {
     ports: RedbOperationalPorts,
+    _source_control: Arc<Mutex<crate::store::ReplicationSourceControl>>,
     path: PathBuf,
     directory: PinnedDirectory,
     lock: File,
@@ -59,7 +60,9 @@ impl RedbOperationalPorts {
         lock.try_lock().map_err(|_| unavailable())?;
         lock.sync_all().map_err(|_| unavailable())?;
         directory.sync()?;
+        let source_control = self.shared_source_control()?;
         let inner = Arc::new(RepositoryInner {
+            _source_control: source_control,
             ports: RedbOperationalPorts {
                 shared: Arc::clone(&self.shared),
             },
@@ -142,6 +145,20 @@ impl RepositoryInner {
     }
 }
 impl RedbBootstrapRepository {
+    #[doc(hidden)]
+    pub fn begin_follower_acknowledgement(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<RedbFollowerAcknowledgementPreparation, Refusal> {
+        self.inner.verify()?;
+        let mut preparation = self
+            .inner
+            .ports
+            .begin_replication_follower_acknowledgement_v3(request)?;
+        preparation.repository = Some(Arc::clone(&self.inner));
+        Ok(preparation)
+    }
+
     /// Advances an attached follower's durable fence without recreating scratch
     /// or registering an absent hold. Caller owns current policy and remote ack.
     pub fn acknowledge_follower(

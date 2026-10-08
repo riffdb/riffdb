@@ -12,7 +12,9 @@ mod bootstrap_materialize;
 mod bootstrap_receiver_repository;
 mod bootstrap_repository;
 pub use bootstrap_receiver_repository::RedbBootstrapReceiverRepository;
+mod bootstrap_custody;
 mod bootstrap_source;
+pub use bootstrap_custody::RedbBootstrapCustodyRead;
 pub use bootstrap_materialize::{
     RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapMaterializer,
     RedbPublishedBootstrapCandidate, RedbValidatedBootstrapCandidate,
@@ -21,7 +23,9 @@ pub use bootstrap_repository::RedbBootstrapRepository;
 #[cfg(test)]
 mod bootstrap_materialize_tests;
 mod bootstrap_stage;
-pub use bootstrap_source::{RedbBootstrapSourceBuild, RedbHeldBootstrapSource};
+pub use bootstrap_source::{
+    RedbBootstrapSourceBuild, RedbFollowerAcknowledgementPreparation, RedbHeldBootstrapSource,
+};
 mod codec;
 #[cfg(test)]
 mod promotion_receipt_tests;

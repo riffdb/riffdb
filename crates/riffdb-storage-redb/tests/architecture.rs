@@ -2191,7 +2191,8 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     assert!(source.contains("mutations: Arc<[CompositeMutationV1]>"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
-    assert!(source.contains("Arc::try_unwrap"));
+    assert!(source.contains("Arc::into_inner(node)"));
+    assert!(!source.contains("Arc::try_unwrap(node)"));
     let store = format!(
         "{}\n{}",
         production_source(crate_root().join("src/store.rs")),

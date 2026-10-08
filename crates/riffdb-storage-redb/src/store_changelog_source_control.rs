@@ -26,7 +26,7 @@ use riffdb_storage_api::{
 #[path = "changelog_source_control_transaction.rs"]
 mod transaction;
 use transaction::Barrier;
-pub(crate) use transaction::ControlWrite;
+pub(crate) use transaction::{AcknowledgementPublication, ControlWrite};
 #[path = "changelog_source_prefix_refresh.rs"]
 mod prefix_refresh;
 pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
@@ -34,14 +34,20 @@ pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "changelog_bootstrap_custody.rs"]
+mod bootstrap_custody;
 #[path = "changelog_source_checkpoint_license.rs"]
 mod checkpoint_license;
 #[path = "changelog_source_control_checkpointed_online.rs"]
 mod checkpointed_online;
 #[path = "changelog_source_eligible_bytes.rs"]
 mod eligible_bytes;
+#[path = "changelog_follower_acknowledgement.rs"]
+mod follower_acknowledgement;
 #[path = "changelog_source_control_journaled.rs"]
 mod journaled;
+#[path = "changelog_source_pacing.rs"]
+mod pacing;
 #[path = "primary_fence_control.rs"]
 mod primary_fence;
 #[path = "changelog_registered_ack.rs"]
@@ -64,6 +70,12 @@ struct Observation {
 pub(crate) struct ReplicationSourceControl {
     shared: Arc<SharedRedb>,
     observed: Option<Observation>,
+    prepared_acknowledgement: Option<(Hold, Vec<u8>)>,
+    pub(crate) acknowledgement_active: Option<Hold>,
+    bootstrap_reader: Option<std::sync::Weak<()>>,
+    // A storage primitive has no background scheduler. The graph and closed
+    // acknowledgement custodian bind this shared scheduling policy once.
+    source_pacing: Option<pacing::SourcePacing>,
     online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
     online_independent_sequence: u64,
     online_license: Option<checkpoint_license::CheckpointLicense>,
@@ -79,38 +91,20 @@ impl RedbOperationalPorts {
     /// A retained artifact handle is not permission to continue after retirement
     /// or custody loss. Outbound bytes use one current, completely validated pin.
     pub(crate) fn validate_bootstrap_custody(&self, bootstrap: Hold) -> Result<(), StorageError> {
-        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+        if self.shared.mutation_gate.source_admission_retired()?
+            || self.shared.write_fenced.load(Ordering::Acquire)
+            || self.shared.is_follower_mode()
+        {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let root = self.shared.capture_checkpoint_root()?;
         let history = crate::changelog_v3_roots::validate_retained_history(&root)?
             .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-        if bootstrap.kind() != Kind::Bootstrap || bootstrap.lineage() != history.lineage() {
-            return Err(storage_error(StorageErrorKind::Unavailable));
-        }
-        let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
-        let row = table
-            .get(bootstrap.storage_key().as_slice())
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-        let held = *decode_replication_source_hold_v1(row.value())
-            .map_err(crate::error::codec_error)?
-            .value();
-        if held != bootstrap {
-            return Err(storage_error(StorageErrorKind::Unavailable));
-        }
-        let key = Hold::storage_key_for(bootstrap.id(), Kind::FollowerAcknowledgement);
-        if let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? {
-            let state = *decode_replication_source_hold(row.value())
-                .map_err(crate::error::codec_error)?
-                .value();
-            if let State::Registered(policy) = state
-                && !registered_ack::permits_bootstrap(policy, bootstrap)
-            {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        }
-        Ok(())
+        bootstrap_custody::validate_hold(
+            &crate::source_validation_pin::ValidationSource::Checkpoint(root),
+            history,
+            bootstrap,
+        )
     }
 
     /// Bounded source-only custody probe. Cleanup already owns the artifact's
@@ -174,11 +168,31 @@ impl RedbOperationalPorts {
         Ok(false)
     }
 
+    pub(crate) fn shared_source_control(
+        &self,
+    ) -> Result<Arc<Mutex<ReplicationSourceControl>>, StorageError> {
+        let mut owner = self
+            .shared
+            .source_control_owner
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(existing) = owner.upgrade() {
+            return Ok(existing);
+        }
+        let control = Arc::new(Mutex::new(self.replication_source_control()));
+        *owner = Arc::downgrade(&control);
+        Ok(control)
+    }
+
     /// A new handle loses only conservative observations, never durable holds.
     pub(crate) fn replication_source_control(&self) -> ReplicationSourceControl {
         ReplicationSourceControl {
             shared: Arc::clone(&self.shared),
             observed: None,
+            prepared_acknowledgement: None,
+            acknowledgement_active: None,
+            bootstrap_reader: None,
+            source_pacing: None,
             online_validation: None,
             online_independent_sequence: 0,
             online_license: None,
@@ -193,6 +207,77 @@ impl RedbOperationalPorts {
 }
 
 impl ReplicationSourceControl {
+    pub(crate) fn bind_source_scheduler(&mut self) {
+        // Rebinding cannot reset charged rest or recover clock overflow.
+        self.source_pacing.get_or_insert_with(Default::default);
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn source_scheduler_bound(&self) -> bool {
+        self.source_pacing.is_some()
+    }
+
+    pub(crate) fn source_work_wait(&self) -> std::time::Duration {
+        self.source_pacing
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |pacing| {
+                pacing.wait(std::time::Instant::now())
+            })
+    }
+
+    /// A ready candidate owns the single proof slot until admission, yield or
+    /// cancellation. Background work cannot overwrite it or renew its rest
+    /// between preparation and the existing ordered writer turn.
+    pub(crate) fn source_background_work_ready(&self) -> bool {
+        self.prepared_acknowledgement.is_none()
+            && !self.bootstrap_read_active()
+            && self.source_work_wait().is_zero()
+    }
+
+    pub(crate) fn charge_source_work(&mut self, started: std::time::Instant) {
+        if let Some(pacing) = self.source_pacing.as_mut() {
+            let now = std::time::Instant::now();
+            pacing.charge(now, now.saturating_duration_since(started));
+        }
+    }
+
+    pub(crate) fn acknowledgement_gate_census(&self) -> Result<[u64; 2], StorageError> {
+        let sample = self.shared.mutation_gate.source_census()?;
+        Ok([sample[5], sample[6]])
+    }
+
+    pub(crate) fn charge_acknowledgement_work(
+        &mut self,
+        started: std::time::Instant,
+        phase: u8,
+        writer_wait_us: u64,
+        gate_held_us: u64,
+        result: &Result<bool, Refusal>,
+    ) {
+        let elapsed = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.charge_source_work(started);
+        let [initial_rows, continued_rows] = self
+            .online_validation
+            .as_ref()
+            .map_or([0; 2], |walk| walk.step_rows());
+        let result_class = match result {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(_) => 2,
+        };
+        let off_gate_us =
+            if elapsed == u64::MAX || writer_wait_us == u64::MAX || gate_held_us == u64::MAX {
+                u64::MAX
+            } else {
+                elapsed
+                    .saturating_sub(writer_wait_us)
+                    .saturating_sub(gate_held_us)
+            };
+        eprintln!(
+            "riffdb-follower-ack-work-v1\tphase={phase}\tresult={result_class}\toff_gate_us={off_gate_us}\twriter_wait_us={writer_wait_us}\tgate_held_us={gate_held_us}\tinitial_rows={initial_rows}\tcontinued_rows={continued_rows}"
+        );
+    }
+
     /// Exact registration retries allocate no receipt; replacement is refused.
     pub(crate) fn register(&mut self, hold: Hold) -> Result<bool, Refusal> {
         self.change_hold(hold, false)

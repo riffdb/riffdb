@@ -59,7 +59,108 @@ pub struct RedbHeldBootstrapSource {
     repository: Option<Arc<RepositoryInner>>,
 }
 
+/// Native custody of one acknowledgement preparation. There is one active
+/// request per shared source owner; dropping before submission revokes only
+/// non-durable preparation. A submitted custodian survives through completion.
+#[doc(hidden)]
+pub struct RedbFollowerAcknowledgementPreparation {
+    control: Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>,
+    request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    pub(super) repository: Option<Arc<RepositoryInner>>,
+}
+
+impl RedbFollowerAcknowledgementPreparation {
+    pub fn advance(&mut self) -> Result<bool, Refusal> {
+        if let Some(repository) = &self.repository {
+            repository.verify()?;
+        }
+        let mut control = self.control.lock().map_err(|_| unavailable())?;
+        control.verify_follower_acknowledgement_admission()?;
+        if control.acknowledgement_active != Some(self.request.hold()) {
+            return Err(unavailable().into());
+        }
+        if control.bootstrap_read_active() || !control.source_work_wait().is_zero() {
+            return Ok(false);
+        }
+        let started = std::time::Instant::now();
+        let result = control.prepare_follower_acknowledgement(self.request.hold());
+        control.charge_acknowledgement_work(started, 1, 0, 0, &result);
+        if result.is_err() {
+            control.retire_online_validation();
+        }
+        result
+    }
+
+    pub fn wait_duration(&self) -> Result<std::time::Duration, Refusal> {
+        match self.control.try_lock() {
+            Ok(control) => {
+                control.verify_follower_acknowledgement_admission()?;
+                Ok(if control.bootstrap_read_active() {
+                    std::time::Duration::from_millis(1)
+                } else {
+                    control.source_work_wait()
+                })
+            }
+            Err(std::sync::TryLockError::WouldBlock) => Ok(std::time::Duration::from_millis(1)),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(unavailable().into()),
+        }
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> riffdb_storage_api::ReplicationFollowerAcknowledgementV3 {
+        self.request
+    }
+
+    /// Direct native fixture composition uses the same sealed bounded owner.
+    /// Production composition submits request() to the sole coordinator.
+    pub fn try_finish(&mut self) -> Result<bool, Refusal> {
+        if let Some(repository) = &self.repository {
+            repository.verify()?;
+        }
+        let mut control = self.control.lock().map_err(|_| unavailable())?;
+        if control.acknowledgement_active != Some(self.request.hold()) {
+            return Err(unavailable().into());
+        }
+        control.advance_prepared_follower_acknowledgement(self.request.hold())
+    }
+}
+
+impl Drop for RedbFollowerAcknowledgementPreparation {
+    fn drop(&mut self) {
+        let mut control = match self.control.lock() {
+            Ok(control) => control,
+            // Preserve poisoning for every later caller; recover ownership
+            // solely to release this request's non-durable pins and capacity.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        control.acknowledgement_active = None;
+        control.cancel_follower_acknowledgement_preparation();
+    }
+}
+
 impl RedbOperationalPorts {
+    #[doc(hidden)]
+    pub fn begin_replication_follower_acknowledgement_v3(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<RedbFollowerAcknowledgementPreparation, Refusal> {
+        let control = self.shared_source_control()?;
+        {
+            let mut owner = control.lock().map_err(|_| unavailable())?;
+            owner.verify_follower_acknowledgement_admission()?;
+            if owner.acknowledgement_active.is_some() {
+                return Err(unavailable().into());
+            }
+            owner.bind_source_scheduler();
+            owner.acknowledgement_active = Some(request.hold());
+        }
+        Ok(RedbFollowerAcknowledgementPreparation {
+            control,
+            request,
+            repository: None,
+        })
+    }
+
     /// Advances only an existing follower acknowledgement under the exact
     /// current source lineage. Caller owns current administrative authorization
     /// and the receiver's already-durable local acknowledgement.
@@ -184,7 +285,31 @@ impl RedbOperationalPorts {
 }
 
 impl RedbHeldBootstrapSource {
-    fn verify_paths(&self) -> Result<(), StorageError> {
+    /// Closed native read preparation; incomplete validation releases no bytes.
+    #[doc(hidden)]
+    pub fn into_custody_read(self) -> Result<super::RedbBootstrapCustodyRead, StorageError> {
+        super::bootstrap_custody::RedbBootstrapCustodyRead::new(self)
+    }
+    pub(super) fn custody_hold(&self) -> Hold {
+        let fence = self.transfer.manifest().fence();
+        Hold::new(
+            fence.hold_id(),
+            Kind::Bootstrap,
+            fence.history().lineage(),
+            fence.history().tail(),
+        )
+    }
+    pub(super) fn custody_control(
+        &self,
+    ) -> Result<Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>, StorageError> {
+        let shared = self.source.upgrade().ok_or_else(unavailable)?;
+        RedbOperationalPorts { shared }.shared_source_control()
+    }
+    pub(super) fn read_artifact_page(&self, ordinal: u32) -> Result<Page, StorageError> {
+        self.transfer.read_page(ordinal)
+    }
+
+    pub(super) fn verify_paths(&self) -> Result<(), StorageError> {
         self.repository
             .as_ref()
             .map_or(Ok(()), |repository| repository.verify())?;
@@ -224,4 +349,8 @@ impl RedbHeldBootstrapSource {
         self.verify_current_custody()?;
         Ok(page)
     }
+}
+
+fn unavailable() -> StorageError {
+    StorageError::new(StorageErrorKind::Unavailable, None)
 }

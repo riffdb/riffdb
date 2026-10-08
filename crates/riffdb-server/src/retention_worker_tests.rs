@@ -472,13 +472,16 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
     // A hold runs no thread and removes nothing.
     let source = scratch("hold");
     let ports = open_ports(&source.path);
+    let native = ports.online_retention_lane();
+    assert!(!native.source_scheduler_bound_fixture().unwrap());
     let mut lane = RunningRetentionLane::start(
         RetentionConfig::default(),
-        ports.online_retention_lane(),
+        native.clone(),
         sinks(&diagnostics),
         inputs(),
     )
     .expect("start held lane");
+    assert!(native.source_scheduler_bound_fixture().unwrap());
     assert!(lane.thread.is_none(), "a hold starts no lane thread");
     assert_eq!(lane.status().state(), RetentionLaneState::Holding);
     assert_eq!(lane.shutdown(), RetentionLaneState::Holding);

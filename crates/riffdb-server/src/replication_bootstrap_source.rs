@@ -24,6 +24,7 @@ const LIFETIME: Duration = Duration::from_secs(15 * 60);
 pub struct BootstrapSourceJobs {
     backend: SourceBackend,
     capacity: Arc<Semaphore>,
+    coordinator: Option<riffdb_commit::ControlPlaneExecutor>,
 }
 
 #[derive(Clone)]
@@ -39,6 +40,7 @@ impl BootstrapSourceJobs {
         Self {
             backend: SourceBackend::Direct(ports),
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
+            coordinator: None,
         }
     }
 
@@ -48,7 +50,16 @@ impl BootstrapSourceJobs {
         Self {
             backend: SourceBackend::Repository(repository),
             capacity: Arc::new(Semaphore::new(MAX_JOBS)),
+            coordinator: None,
         }
+    }
+
+    pub(crate) fn with_coordinator(
+        mut self,
+        coordinator: riffdb_commit::ControlPlaneExecutor,
+    ) -> Self {
+        self.coordinator = Some(coordinator);
+        self
     }
 
     /// Opens an ID in the configured private area; no peer path is accepted.
@@ -109,6 +120,18 @@ impl BootstrapSourceJobs {
         lineage: riffdb_storage_api::ChangelogLineageV3,
         acknowledged: ChangelogHistoryPointV3,
     ) -> Result<(), Refusal> {
+        if let Some(coordinator) = &self.coordinator {
+            return self
+                .acknowledge_follower_ordered(
+                    riffdb_storage_api::ReplicationFollowerAcknowledgementV3::new(
+                        id,
+                        lineage,
+                        acknowledged,
+                    ),
+                    coordinator.clone(),
+                )
+                .await;
+        }
         let owner = OwnedJob {
             value: self.backend.clone(),
             permit: Arc::clone(&self.capacity)
@@ -129,6 +152,89 @@ impl BootstrapSourceJobs {
         )
         .await?;
         Ok(())
+    }
+
+    async fn acknowledge_follower_ordered(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+        coordinator: riffdb_commit::ControlPlaneExecutor,
+    ) -> Result<(), Refusal> {
+        let deadline = Instant::now() + LIFETIME;
+        let owner = OwnedJob {
+            value: self.backend.clone(),
+            permit: Arc::clone(&self.capacity)
+                .try_acquire_owned()
+                .map_err(|_| unavailable())?,
+        };
+        let mut owner = run_step(owner, deadline, move |backend| match backend {
+            SourceBackend::Direct(ports) => {
+                ports.begin_replication_follower_acknowledgement_v3(request)
+            }
+            SourceBackend::Repository(repository) => {
+                repository.begin_follower_acknowledgement(request)
+            }
+        })
+        .await?;
+        loop {
+            let wait = owner.value.wait_duration()?;
+            if !wait.is_zero() {
+                tokio::time::timeout_at(deadline, tokio::time::sleep(wait))
+                    .await
+                    .map_err(|_| unavailable())?;
+            }
+
+            let returned = run_step(owner, deadline, |mut preparation| {
+                let complete = preparation.advance()?;
+                Ok((preparation, complete))
+            })
+            .await?;
+            let (preparation, complete) = returned.value;
+            owner = OwnedJob {
+                value: preparation,
+                permit: returned.permit,
+            };
+            if !complete {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let wait = owner.value.wait_duration()?;
+            if !wait.is_zero() {
+                tokio::time::timeout_at(deadline, tokio::time::sleep(wait))
+                    .await
+                    .map_err(|_| unavailable())?;
+            }
+            let executor = coordinator.clone();
+            // The blocking custodian owns the proof request and job capacity
+            // until the actual actor reply. Cancelling or timing out the async
+            // waiter cannot retract an accepted write or admit its replacement.
+            let returned = run_step(owner, deadline, move |preparation| {
+                let complete = tokio::runtime::Handle::current().block_on(async {
+                    let capacity = tokio::time::timeout_at(deadline, executor.reserve_capacity())
+                        .await
+                        .map_err(|_| unavailable())?
+                        .map_err(|_| unavailable())?;
+                    // A deadline before submission remains a certain refusal.
+                    if Instant::now() >= deadline {
+                        return Err(unavailable());
+                    }
+                    let receipt = capacity
+                        .submit_follower_acknowledgement(preparation.request())
+                        .map_err(|_| unavailable())?;
+                    receipt.completion().await
+                })?;
+                Ok((preparation, complete))
+            })
+            .await?;
+            let (preparation, complete) = returned.value;
+            owner = OwnedJob {
+                value: preparation,
+                permit: returned.permit,
+            };
+            if complete {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
     }
 
     async fn open(
@@ -237,38 +343,77 @@ pub struct HeldBootstrapSourceJob {
     deadline: Instant,
 }
 
+enum BootstrapRead {
+    Manifest(Box<Manifest>),
+    Page(Page),
+}
+
 impl HeldBootstrapSourceJob {
-    /// Reads the fixed manifest while this job's deadline remains valid.
+    /// Reads the fixed manifest under fresh native custody and the original deadline.
     pub async fn manifest(&mut self) -> Result<Manifest, Refusal> {
-        let owner = self.owner.take().ok_or_else(unavailable)?;
-        let returned = run_step(owner, self.deadline, |source| {
-            source.verify_private_identity()?;
-            let manifest = source.manifest();
-            Ok((source, manifest))
-        })
-        .await?;
-        let (source, manifest) = returned.value;
-        self.owner = Some(OwnedJob {
-            value: source,
-            permit: returned.permit,
-        });
-        Ok(manifest)
+        match self.read(None).await? {
+            BootstrapRead::Manifest(manifest) => Ok(*manifest),
+            BootstrapRead::Page(_) => Err(unavailable()),
+        }
     }
 
     /// Reads one bounded page; a failed or cancelled read fuses this handle.
     pub async fn read_page(&mut self, ordinal: u32) -> Result<Page, Refusal> {
+        match self.read(Some(ordinal)).await? {
+            BootstrapRead::Page(page) => Ok(page),
+            BootstrapRead::Manifest(_) => Err(unavailable()),
+        }
+    }
+
+    async fn read(&mut self, ordinal: Option<u32>) -> Result<BootstrapRead, Refusal> {
         let owner = self.owner.take().ok_or_else(unavailable)?;
-        let returned = run_step(owner, self.deadline, move |source| {
-            let page = source.read_page(ordinal)?;
-            Ok((source, page))
+        let mut owner = run_step(owner, self.deadline, |source| {
+            Ok(source.into_custody_read()?)
         })
         .await?;
-        let (source, page) = returned.value;
-        self.owner = Some(OwnedJob {
-            value: source,
-            permit: returned.permit,
-        });
-        Ok(page)
+        loop {
+            let returned = run_step(owner, self.deadline, |mut custody| {
+                let ready = custody.advance()?;
+                Ok((custody, ready))
+            })
+            .await?;
+            let (custody, ready) = returned.value;
+            owner = OwnedJob {
+                value: custody,
+                permit: returned.permit,
+            };
+            if !ready {
+                tokio::time::timeout_at(
+                    self.deadline,
+                    tokio::time::sleep(Duration::from_millis(1)),
+                )
+                .await
+                .map_err(|_| unavailable())?;
+                continue;
+            }
+            let returned = run_step(owner, self.deadline, move |mut custody| {
+                let result = match ordinal {
+                    None => custody
+                        .manifest()?
+                        .map(|manifest| BootstrapRead::Manifest(Box::new(manifest))),
+                    Some(ordinal) => custody.read_page(ordinal)?.map(BootstrapRead::Page),
+                };
+                Ok((custody, result))
+            })
+            .await?;
+            let (custody, result) = returned.value;
+            owner = OwnedJob {
+                value: custody,
+                permit: returned.permit,
+            };
+            if let Some(result) = result {
+                self.owner = Some(
+                    run_step(owner, self.deadline, |custody| Ok(custody.into_source()?)).await?,
+                );
+                return Ok(result);
+            }
+            tokio::task::yield_now().await;
+        }
     }
 }
 

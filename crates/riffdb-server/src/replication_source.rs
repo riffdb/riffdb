@@ -75,6 +75,14 @@ pub(crate) struct PublishedReplicationSource {
 }
 
 impl PublishedReplicationSource {
+    pub(crate) fn with_coordinator(
+        mut self,
+        coordinator: riffdb_commit::ControlPlaneExecutor,
+    ) -> Self {
+        self.bootstrap = self.bootstrap.with_coordinator(coordinator);
+        self
+    }
+
     pub(crate) fn new(
         publications: ReplicationPublishedSnapshots,
         bootstrap: BootstrapSourceJobs,

@@ -260,6 +260,27 @@ impl RedbOnlineRetentionLane {
         self.shared.retire_online_source_admission();
     }
 
+    /// Binds the graph's shared source scheduling policy before starting work.
+    /// This is monotonic: repeated composition cannot reset already charged rest.
+    #[doc(hidden)]
+    pub fn bind_source_scheduler(&self) -> Result<(), StorageError> {
+        self.source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .bind_source_scheduler();
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "test-fixtures")]
+    pub fn source_scheduler_bound_fixture(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_scheduler_bound())
+    }
+
     /// Releases the retired owner's nondurable validation and byte-observation pins after
     /// its worker has joined. No durable hold or history is changed.
     #[doc(hidden)]
@@ -312,7 +333,16 @@ impl RedbOnlineRetentionLane {
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let [initial, continued, invalidated] = source.advance_validation_off_gate()?;
+        if !source.source_background_work_ready() {
+            return Ok(OnlineRetentionPhases {
+                receipt_validation_pending: source.receipt_validation_pending(),
+                ..OnlineRetentionPhases::default()
+            });
+        }
+        let started = std::time::Instant::now();
+        let result = source.advance_validation_off_gate();
+        source.charge_source_work(started);
+        let [initial, continued, invalidated] = result?;
         Ok(OnlineRetentionPhases {
             source_initial_rows: initial,
             source_continuation_rows: continued,
@@ -387,25 +417,34 @@ impl RedbOnlineRetentionLane {
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let (removed, held_us) = source_control.reclaim_history_online()?;
-        phases.receipt_validation_pending = source_control.receipt_validation_pending();
-        [
-            phases.source_initial_rows,
-            phases.source_continuation_rows,
-            phases.source_validation_invalidations,
-            phases.source_admission_refusals,
-        ] = source_control.validation_phases();
-        [
-            phases.source_admission_busy_writer,
-            phases.source_admission_pending_journal,
-            phases.source_admission_checkpoint,
-            phases.source_admission_qualification,
-            phases.source_admission_page_bound,
-        ] = source_control.admission_yields();
-        phases.source_reclamation_attempts = 1;
-        phases.source_reclamation_sample = source_control.reclamation_observation();
-        phases.source_reclamation_yields = source_control.reclamation_yields();
-        phases.source_admission_census = source_control.source_admission_census();
+        let (removed, held_us) = if source_control.source_background_work_ready() {
+            let started = std::time::Instant::now();
+            let result = source_control.reclaim_history_online();
+            source_control.charge_source_work(started);
+            let (removed, held_us) = result?;
+            phases.receipt_validation_pending = source_control.receipt_validation_pending();
+            [
+                phases.source_initial_rows,
+                phases.source_continuation_rows,
+                phases.source_validation_invalidations,
+                phases.source_admission_refusals,
+            ] = source_control.validation_phases();
+            [
+                phases.source_admission_busy_writer,
+                phases.source_admission_pending_journal,
+                phases.source_admission_checkpoint,
+                phases.source_admission_qualification,
+                phases.source_admission_page_bound,
+            ] = source_control.admission_yields();
+            phases.source_reclamation_attempts = 1;
+            phases.source_reclamation_sample = source_control.reclamation_observation();
+            phases.source_reclamation_yields = source_control.reclamation_yields();
+            phases.source_admission_census = source_control.source_admission_census();
+            (removed, held_us)
+        } else {
+            phases.receipt_validation_pending = source_control.receipt_validation_pending();
+            (0, 0)
+        };
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;
@@ -445,7 +484,10 @@ impl RedbOperationalPorts {
         RedbOnlineRetentionLane {
             shared: Arc::clone(&self.shared),
             last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
-            source_control: Arc::new(std::sync::Mutex::new(self.replication_source_control())),
+            source_control: self.shared_source_control().unwrap_or_else(|_| {
+                self.shared.fence_writes();
+                Arc::new(std::sync::Mutex::new(self.replication_source_control()))
+            }),
             physical_bytes: Arc::new(std::sync::Mutex::new(
                 crate::store::extent_reclamation::physical_bytes::Observer::default(),
             )),

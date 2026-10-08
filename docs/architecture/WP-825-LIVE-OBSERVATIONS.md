@@ -1571,8 +1571,124 @@ not release throughput measurements or rehearsal qualification.
 Source acknowledgements repeatedly validate the whole retained history inside
 the general drained writer barrier. This is native population-dependent writer
 work. It requires a bounded proof/preparation protocol, not a relaxed deadline
-or a smaller workload. ADR-0280 is proposed for that authority extension and
-requires exact human acceptance before implementation. The
+or a smaller workload. ADR-0280 was accepted exactly in session on 2026-10-07 for that authority
+extension. Its acceptance and commit-layer scope are recorded separately
+before native implementation. Development validation is in progress; no
+final-source runtime qualification is established. The
 [follower acknowledgement review](WP-825-ADR-0280-IMPLEMENTATION-REVIEW.md)
 records the concrete boundary and remaining proofs. Other earlier intermittent
 failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
+
+
+ADR-0280 development snapshot validation on the required host now passes 11
+native acknowledgement tests, including independent complete-validation oracles,
+shared-owner cancellation, qualification overflow and process-level atomicity;
+one explicit-clock source-pacing test; one coordinator FIFO test; and all-target,
+all-feature Clippy for the four affected crates. An overlapping write-table
+ownership error found by the new tests is corrected. Its failed development logs
+remain preserved. The original 26-case replication process suite fails with
+21 passes and five failures. Bootstrap attachment, exact reads, frontier
+progress, repeated-kill resume and source revocation are unresolved. The
+frontier stops at 13 of 408, so the development repair cannot yet qualify.
+A separate diagnostic checkout captures private child stderr while preserving
+the original workload, deadlines and native implementation.
+The internal numeric acknowledgement-work stream distinguishes off-gate and
+gate-held elapsed time without exposing hold IDs or source payloads. These
+checks do not replace frozen final-source CI, complete rehearsal, fault/resource
+reconciliation or 24-hour qualification. The 24-hour run remains unstarted.
+
+
+The subsequent production-bridge repair passes its real-storage regression.
+The storage trait now requires explicit forwarding in every adapter. On the
+required host, the original replication suite passes 23 of 26 cases: the
+byte-faithful 408-frontier campaign, exact-provider replication, repeated-kill
+resume and source revocation now pass. Bootstrap held attachment times out;
+two exact/causal cases fail during shutdown. Twelve native acknowledgement
+tests, five actual process edges, three coordinator ownership/order/refusal
+tests and four-crate all-target Clippy pass. A preceding complete redb library
+run passes 988 tests with only the existing synthetic shutdown timing evidence
+test ignored. Failed snapshots remain failed.
+
+A failing-before-repair native regression identifies permanent source-admission
+retirement being misclassified as retryable during shutdown. The repair returns
+a typed terminal refusal and preserves the durable hold while releasing private
+preparation. The original process suite is being rerun unchanged. This does not
+explain the initial bootstrap attachment timeout or establish final-source CI
+or rehearsal readiness. WP-825 remains open and the 24-hour run is unstarted.
+
+
+After terminal retirement refusal, all 13 native acknowledgement tests, source
+admission schedule tests, production bridge, coordinator ownership tests and
+four-crate Clippy pass on the required host. The unchanged replication suite
+passes 25 and fails one: initial bootstrap held attachment exceeds its original
+60-second deadline. Both earlier shutdown failures now pass. A separate private
+diagnostic build measures bootstrap phases with the same original process
+workload and deadlines. The failed suite is preserved as failed evidence;
+final-source validation and rehearsal are still outstanding.
+
+
+Broader acceptance passes 13 non-test gates, including handbook validation, but
+its test stage reveals three explicit-step native retention regressions. The
+recorded failures concern source receipt retirement, interleaved writer progress
+and command-audit materialization. The failed test stage is stopped after those
+failures are preserved; it is not a complete test pass. The scheduling policy
+had been applied before a graph scheduler existed. Native graph and
+acknowledgement composition now bind the shared scheduler monotonically, while
+storage primitives retain their explicit-step semantics and all validation and
+mutation bounds. The original recovery tests remain unchanged; C3D validation
+of the repair is in progress. Bootstrap proof reuse separately requires exact
+acceptance of proposed ADR-0281 before implementation. No final-source full CI
+or rehearsal qualification is established.
+
+
+The scheduling ownership repair passes all 14 acknowledgement tests, 21 native
+source-admission tests, all three unchanged retained-extent progress regressions,
+the actual production graph binding check, shared pacing, production bridge,
+three coordinator tests and four-crate all-target Clippy on the required host.
+The original process suite remains 25 passing with initial bootstrap held
+attachment failing. Complete scoped acceptance is being rerun on the corrected
+source. The interrupted earlier acceptance stays failed. Proposed ADR-0281 has
+passed proposal governance checks and still awaits exact acceptance.
+
+
+## Accepted bounded bootstrap custody repair
+
+The maintainer accepted the exact ADR-0281 text and its decision-path scope in
+session on 2026-10-07. Acceptance and scope are recorded before implementation.
+The native closed read custodian and its three named proof tests are authored;
+new required-host validation remains pending. Previous failed bootstrap receipts
+remain failures. The original process suite, final-source full CI, unchanged
+preparation and complete rehearsal are still required; no 24-hour run has begun.
+
+The prior acknowledgement-only corrected snapshot completes scoped acceptance:
+all fourteen checks and 2,855 tests pass under the stock CI profile. The accepted
+bootstrap custody implementation subsequently passes its three named native
+proofs, the additional actual page-I/O race proof, acknowledgement/coordinator
+regressions, seventy-one server bootstrap tests and four-crate Clippy. Its
+unchanged original process suite passes twenty-five of twenty-six cases,
+including held bootstrap attachment, but concurrent promotion fencing fails.
+A separate diagnostic run captures an actual `riffdb-columnar` stack overflow
+and daemon abort during fencing and two existing replication deadline failures.
+Those failed receipts remain failed; the native abort and deadline failures
+require investigation before final-source qualification. No harness watchdog,
+workload or assertion is weakened. All execution remains on the required host.
+
+A deterministic native receipt-source cleanup schedule then reproduces
+thirty-three nested destructor calls where iterative ownership release was
+required. A failed `Arc::try_unwrap` retained a reference that could become the
+last owner before the failed result was dropped. `Arc::into_inner` now releases
+or transfers that reference atomically. The race regression and source-cursor
+module pass on the required host; production stacks remain 384 KiB. A preceding
+2-MiB stack trial is excluded from the implementation. This is a proven native
+cleanup bug; the exact cause of the earlier process abort is not claimed as
+exclusive. All eleven source-cursor cases, sixty-four columnar tests, four-crate
+Clippy and the unchanged whole twenty-six-case process suite subsequently pass
+with the original reservation. All thirteen non-test acceptance gates pass.
+The old cursor architecture guard fails on its obsolete unwrap requirement;
+that consequence assertion is updated after recording its exact test-path scope.
+All fifty-nine storage architecture tests pass, followed by scope,
+acceptance-commit separation, coverage, obligations, file-size and performance
+checks against the separately recorded scope commit. A preceding scope check
+used the earlier baseline and included the scope extension in its own range;
+that failed receipt is preserved, and the corrected comparison passes.
+Final-source full CI and complete rehearsal remain required.

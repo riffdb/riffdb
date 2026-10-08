@@ -661,6 +661,8 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
+        let replication_source = replication_source
+            .map(|source| source.with_coordinator(coordinator.control_plane_executor()));
         let empty_projection_registry = ProjectionSchemaRegistry::new(Vec::new())
             .expect("the empty checked projection registry is valid");
         let projection_notifier = ProjectionNotifier::from_registry(&empty_projection_registry);

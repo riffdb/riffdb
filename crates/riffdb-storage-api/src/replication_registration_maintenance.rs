@@ -17,6 +17,15 @@ pub enum ReplicationRegistrationMaintenanceResultV1 {
 /// policy, sequence, authenticated invocation or override. Each step changes at
 /// most one of the existing bounded registrations under the source barrier.
 pub trait ReplicationRegistrationMaintenancePort {
+    /// Closed native acknowledgement admission after externally paced bounded
+    /// preparation. False yields without mutation. Every adapter must explicitly
+    /// preserve this operation; it cannot register, retire or attach a follower.
+    #[doc(hidden)]
+    fn advance_prepared_follower_acknowledgement_v3(
+        &self,
+        request: crate::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, crate::ChangelogCursorErrorV3>;
+
     /// Persists degradation or expires a previously degraded registration. Budget
     /// exhaustion alone never releases custody. A later step revalidates exact
     /// stored policy and original receipt before allocating expiry's audit.

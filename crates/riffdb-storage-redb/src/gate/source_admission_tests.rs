@@ -121,6 +121,7 @@ fn deadline_keeps_one_cancelled_slot_until_consumed_without_stranding_a_writer()
 fn cancellation_and_grant_linearize_both_ways_and_retirement_never_reopens() {
     for retire_first in [true, false] {
         let gate = ExclusiveGate::default();
+        assert!(!gate.source_admission_retired().unwrap());
         let now = Instant::now();
         let mut request = gate.source_request_at(now).unwrap().unwrap();
         if retire_first {
@@ -137,6 +138,7 @@ fn cancellation_and_grant_linearize_both_ways_and_retirement_never_reopens() {
             drop(lease);
             assert_eq!(&gate.source_census().unwrap()[..4], &[1, 1, 0, 0]);
         }
+        assert!(gate.source_admission_retired().unwrap());
         assert!(gate.acquire_source().unwrap().is_none());
         drop(gate.acquire().unwrap());
         assert!(!gate.is_held());

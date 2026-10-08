@@ -45,14 +45,26 @@ struct SourceNode {
 // ancestry iteratively, not recursively on a production thread's small stack.
 impl Drop for SourceNode {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let _depth = tests::enter_source_node_drop();
         let mut predecessor = self.predecessor.take();
         while let Some(node) = predecessor {
-            match Arc::try_unwrap(node) {
-                Ok(mut node) => predecessor = node.predecessor.take(),
-                Err(_) => break,
+            match take_source_predecessor(node) {
+                Some(mut node) => predecessor = node.predecessor.take(),
+                None => break,
             }
         }
     }
+}
+
+fn take_source_predecessor(node: Arc<SourceNode>) -> Option<SourceNode> {
+    // into_inner releases this reference atomically with the ownership decision.
+    // A failed try_unwrap instead retains an Arc that can become the last owner
+    // before it is dropped, recursively destroying the remaining ancestry.
+    let result = Arc::into_inner(node);
+    #[cfg(test)]
+    tests::after_predecessor_ownership_decision();
+    result
 }
 
 /// Constant-time private successor construction; payloads are shared with the

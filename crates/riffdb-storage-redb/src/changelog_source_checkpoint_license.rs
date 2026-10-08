@@ -73,6 +73,36 @@ impl CheckpointLicense {
         Ok(Point::from_receipt(&receipt).map_err(value_error)? == self.ceiling)
     }
 
+    /// A checked acknowledgement can requalify this exact finite ceiling;
+    /// it changes neither independent checkpoint evidence nor remaining span.
+    pub(super) fn rebase_own_acknowledgement(
+        &mut self,
+        publication: &AcknowledgementPublication,
+    ) -> Result<bool, StorageError> {
+        let Some((before, after, root, epoch)) = publication.successor() else {
+            return Ok(true);
+        };
+        if self.qualification.checked_add(1) != Some(epoch)
+            || epoch == u64::MAX
+            || before.lineage() != self.checkpoint.history.lineage()
+            || before.anchor() != self.checkpoint.history.anchor()
+            || before.minimum_resume() != self.resume
+            || after.minimum_resume() != self.resume
+            || self.ceiling.sequence() > before.tail().sequence()
+        {
+            return Ok(false);
+        }
+        let source = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(root));
+        let receipt = source
+            .receipt(self.ceiling.sequence(), None)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if Point::from_receipt(&receipt).map_err(value_error)? != self.ceiling {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.qualification = epoch;
+        Ok(true)
+    }
+
     /// Only this owner's acknowledged, predecessor-checked cut can move resume.
     pub(super) fn consume(&mut self, resume: Point, qualification: u64) -> bool {
         if qualification == u64::MAX

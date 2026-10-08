@@ -1569,6 +1569,13 @@ impl riffdb_storage_api::ReplicationAdministrationTransactionPort for SharedRedb
 }
 
 impl riffdb_storage_api::ReplicationRegistrationMaintenancePort for SharedRedbOperationalPorts {
+    fn advance_prepared_follower_acknowledgement_v3(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        riffdb_storage_api::ReplicationRegistrationMaintenancePort::advance_prepared_follower_acknowledgement_v3(&self.shared, request)
+    }
+
     fn maintain_replication_registration(
         &self,
         timestamp: riffdb_types::Timestamp,
@@ -2537,6 +2544,43 @@ mod tests {
         );
         assert!(source.contains("StorageQueryExecutor::new(self.shared.clone())"));
         assert!(!source.contains("impl QueryExecutionPort for SharedRedbOperationalPorts"));
+    }
+
+    // req: REP-003, REC-001, LOG-001, END-008
+    #[test]
+    fn follower_acknowledgement_production_bridge_preserves_unprepared_yield() {
+        use riffdb_storage_api::ReplicationRegistrationMaintenancePort;
+        let real = RealStorage::open("follower-acknowledgement-bridge");
+        let lineage = riffdb_storage_api::ChangelogLineageV3::new(
+            real.database_id,
+            1,
+            riffdb_types::LeadershipEpochV1::initial(),
+        )
+        .unwrap();
+        let request = riffdb_storage_api::ReplicationFollowerAcknowledgementV3::new(
+            riffdb_storage_api::ReplicationSourceHoldIdV1::new([31; 16]).unwrap(),
+            lineage,
+            riffdb_storage_api::ChangelogHistoryPointV3::new(
+                riffdb_storage_api::ChangelogTransactionSequence::new(1).unwrap(),
+                [1; 32],
+                riffdb_types::DualFrontier::INITIAL,
+            ),
+        );
+        // No complete preparation owns this request. The native owner yields
+        // without inventing an acknowledgement or making storage unavailable.
+        assert!(
+            !real
+                .storage
+                .shared
+                .advance_prepared_follower_acknowledgement_v3(request)
+                .unwrap()
+        );
+        assert!(
+            !real
+                .storage
+                .advance_prepared_follower_acknowledgement_v3(request)
+                .unwrap()
+        );
     }
 
     #[test]

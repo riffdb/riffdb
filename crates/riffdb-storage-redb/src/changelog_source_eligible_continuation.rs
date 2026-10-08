@@ -101,6 +101,36 @@ impl ContinuedProbe {
         Ok(true)
     }
 
+    /// Only the sealed hold advancement changes qualification. All canonical
+    /// receipts below this already checked ceiling remain byte-for-byte intact.
+    pub(super) fn rebase_own_acknowledgement(
+        &mut self,
+        publication: &AcknowledgementPublication,
+    ) -> Result<bool, StorageError> {
+        let Some((before, after, root, epoch)) = publication.successor() else {
+            return Ok(true);
+        };
+        if self.qualification.checked_add(1) != Some(epoch)
+            || epoch == u64::MAX
+            || self.history.lineage() != before.lineage()
+            || self.history.anchor() != before.anchor()
+            || self.history.minimum_resume() != before.minimum_resume()
+            || self.history.tail().sequence() > before.tail().sequence()
+            || self.ceiling > before.tail().sequence().get()
+            || after.minimum_resume() != before.minimum_resume()
+        {
+            return Ok(false);
+        }
+        self.qualification = epoch;
+        if self.pending() {
+            self.root = Some(ValidationSource::Checkpoint(Arc::clone(root)));
+            self.history = after;
+            self.root_identity = root.identity();
+            self.publication = SourceIdentity::Checkpoint(root.identity());
+        }
+        Ok(true)
+    }
+
     pub(super) fn qualifies(&self, qualification: u64) -> bool {
         qualification != u64::MAX && self.qualification == qualification
     }

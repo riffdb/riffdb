@@ -212,6 +212,18 @@ impl Observer {
         Ok(())
     }
 
+    pub(super) fn rebase_own_acknowledgement(
+        &mut self,
+        publication: &AcknowledgementPublication,
+    ) -> Result<(), StorageError> {
+        if let Some(probe) = self.continued.as_mut()
+            && !probe.rebase_own_acknowledgement(publication)?
+        {
+            self.continued = None;
+        }
+        Ok(())
+    }
+
     pub(super) fn retire(&mut self) {
         self.probe = None;
         self.continued = None;

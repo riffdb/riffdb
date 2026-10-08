@@ -86,7 +86,7 @@ pub(crate) mod changelog_lifecycle;
 
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
-pub(crate) use changelog_source_control::ReplicationSourceControl;
+pub(crate) use changelog_source_control::{AcknowledgementPublication, ReplicationSourceControl};
 pub(crate) use changelog_source_control::{
     ControlWrite, PendingPrefixRefresh, PrefixRefreshPublication,
 };
@@ -461,6 +461,9 @@ pub(crate) struct SharedRedb {
     pub(crate) clean_certificate_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
     pub(crate) source_continuation_epoch: AtomicU64,
+    /// Graph handles share one source-proof owner. A weak link avoids retaining
+    /// the database through its own proof owner after graph shutdown.
+    pub(crate) source_control_owner: Mutex<std::sync::Weak<Mutex<ReplicationSourceControl>>>,
     /// Even values name stable redb roots; odd values mean an engine commit is
     /// in flight or visible but has not yet published its exact root identity.
     /// Readers use the adjacent condition variable only while an odd value is

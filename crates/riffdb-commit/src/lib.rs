@@ -54,8 +54,8 @@ pub use audit_executor::{
     CommandIdempotencyInspector, ControlPlaneExecutionAdmissionError,
     ControlPlaneExecutionCapacityPermit, ControlPlaneExecutor, CoordinatorLifecycleState,
     CoordinatorShutdownError, CoordinatorStartError, CoordinatorWorkloadCapacity,
-    PrimaryFenceReceipt, QueryModuleDeploymentReceipt, ReactiveModulePublicationReceipt,
-    ReadOnlyExecutionReceipt, ReplicationAdministrationReceipt,
+    FollowerAcknowledgementReceipt, PrimaryFenceReceipt, QueryModuleDeploymentReceipt,
+    ReactiveModulePublicationReceipt, ReadOnlyExecutionReceipt, ReplicationAdministrationReceipt,
     ReplicationRegistrationMaintenanceReceipt, RunningCommandCoordinator,
 };
 pub use clock::{

@@ -587,6 +587,13 @@ impl riffdb_storage_api::ReplicationAdministrationTransactionPort for RedbShared
 }
 
 impl riffdb_storage_api::ReplicationRegistrationMaintenancePort for RedbSharedPorts {
+    fn advance_prepared_follower_acknowledgement_v3(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, riffdb_storage_api::ChangelogCursorErrorV3> {
+        riffdb_storage_api::ReplicationRegistrationMaintenancePort::advance_prepared_follower_acknowledgement_v3(&self.operational(), request)
+    }
+
     fn maintain_replication_registration(
         &self,
         timestamp: riffdb_types::Timestamp,

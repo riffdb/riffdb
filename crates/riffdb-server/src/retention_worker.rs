@@ -464,6 +464,10 @@ impl RunningRetentionLane {
         failure: RetentionLaneFailureSinks,
         validation_inputs: riffdb_storage_api::StartupValidationInputs,
     ) -> Result<Self, std::io::Error> {
+        // Even a held retention configuration shares acknowledgement pacing.
+        // Bind before a worker or any graph-owned source step can start.
+        lane.bind_source_scheduler()
+            .map_err(std::io::Error::other)?;
         let control = Arc::new(LaneControl {
             source_retirement: Some(lane.clone()),
             ..LaneControl::default()
