@@ -14,8 +14,13 @@ observations. They retain their original qualification, exact byte/row/page,
 capture cadence, freshness and observation-gap checks. Source-proof preparation
 and writer turns retain the charged source scheduler and full writer-residence
 rest. Observation work grants no mutation, checkpoint or reclamation authority.
-Required-host workload validation of this scheduling repair is still pending;
-passing its deterministic regression does not establish endurance readiness.
+The worker distinguishes already captured read-only pages from source proof
+waiting for its preparation budget. Ready read-only pages advance without a
+checkpoint polling delay per page, checking cancellation and completion between
+bounded pages; proof-only waits retain their polling and shared pacing. The
+original wall-clock writer rest still runs to its full deadline. Required-host
+validation of this further scheduling repair is pending; neither its regressions
+nor diagnostic binaries establish endurance readiness.
 
 The campaign controller timeline freezes the existing seven fault kinds and
 their order, admits one active action, requires an observed injection release

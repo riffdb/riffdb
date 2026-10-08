@@ -616,7 +616,10 @@ impl SourceCheckpointWait {
 fn wait_with_source_validation(
     control: &LaneControl,
     seen: u64,
-    mut pending: bool,
+    observations: (
+        bool,
+        impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+    ),
     source: (
         SourceCheckpointWait,
         impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
@@ -625,6 +628,7 @@ fn wait_with_source_validation(
     mut elapsed: impl FnMut() -> Duration,
     mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
 ) -> Result<bool, riffdb_storage_api::StorageError> {
+    let (mut pending, mut read_only_ready) = observations;
     let (source_wait, mut publication_pending) = source;
     let mut checkpoint_observed = false;
     let mut waiting_seen = seen;
@@ -632,7 +636,15 @@ fn wait_with_source_validation(
         if control.stop_requested() {
             return Ok(false);
         }
-        let observed = wait(waiting_seen, RETENTION_LANE_CHECKPOINT_SLICE);
+        // Ready captured pages need no checkpoint polling delay. The zero
+        // wait still observes native completion, and cancellation is checked
+        // between every bounded page. Paced proof work keeps its poll slice.
+        let slice = if pending && read_only_ready()? {
+            Duration::ZERO
+        } else {
+            RETENTION_LANE_CHECKPOINT_SLICE
+        };
+        let observed = wait(waiting_seen, slice);
         if observed != waiting_seen {
             waiting_seen = observed;
             checkpoint_observed = true;
@@ -662,11 +674,15 @@ fn wait_with_source_validation(
 /// Read-only pages never authorize a new writer turn or shorten its rest.
 fn pause_with_captured_observations(
     duration: Duration,
-    mut pending: bool,
+    observations: (
+        bool,
+        impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+    ),
     mut elapsed: impl FnMut() -> Duration,
     mut wait: impl FnMut(Duration) -> (bool, bool),
     mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
 ) -> Result<bool, riffdb_storage_api::StorageError> {
+    let (mut pending, mut read_only_ready) = observations;
     if duration.is_zero() {
         return Ok(wait(duration).0);
     }
@@ -675,7 +691,11 @@ fn pause_with_captured_observations(
         if remaining.is_zero() {
             return Ok(false);
         }
-        let slice = if pending {
+        let slice = if pending && read_only_ready()? {
+            // This is work inside the existing wall-clock rest, not another
+            // source turn. Check stop/wake before each bounded captured page.
+            Duration::ZERO
+        } else if pending {
             remaining.min(RETENTION_LANE_CHECKPOINT_SLICE)
         } else {
             remaining
@@ -852,7 +872,9 @@ fn run_lane(
         let waiting = std::time::Instant::now();
         let paused = pause_with_captured_observations(
             rest,
-            observation_pending,
+            (observation_pending, || {
+                lane.captured_read_only_observation_pending()
+            }),
             || waiting.elapsed(),
             |slice| control.pause_observation_slice(slice),
             || {
@@ -886,7 +908,9 @@ fn run_lane(
                     wait_with_source_validation(
                         control,
                         checkpoints_seen,
-                        observation_pending,
+                        (observation_pending, || {
+                            lane.captured_read_only_observation_pending()
+                        }),
                         (SourceCheckpointWait::from_phases(&step_phases), || {
                             lane.source_checkpoint_publication_pending()
                         }),

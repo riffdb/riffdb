@@ -28665,6 +28665,16 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 implementation choice under ADR-0279 decision 6: distinguish ready
+      captured read-only pages from source proof awaiting budget. Avoid a
+      checkpoint poll per ready read-only page, preserving cancellation, exact
+      page bounds, full writer rest and shared source-proof pacing. A required-host
+      candidate still fails the observation gap; its separate diagnostic checks
+      61,440 rows before a larger capture expires. The 77,103-row interval needs
+      302 pages, so mandatory 100-ms polls alone exceed 30-second freshness.
+      Both explicit-clock worker regressions fail before this further repair.
+      Positive scoped checks, unchanged preparation and final CI remain open.
+    - >-
       D-003 implementation choice under ADR-0279 decision 6: captured byte
       observations continue beside logical/physical observations during shared
       source-proof rest. They grant no mutation authority. Preserve source-proof

@@ -198,6 +198,27 @@ impl RedbOnlineRetentionLane {
             .captured_observations_pending())
     }
 
+    /// Captured read-only pages can progress without a checkpoint poll. A
+    /// source proof waiting for its preparation budget is not read-only work.
+    /// This never captures a pin or supplies mutation or checkpoint authority.
+    #[doc(hidden)]
+    pub fn captured_read_only_observation_pending(&self) -> Result<bool, StorageError> {
+        if self.physical_observation_pending()?
+            || self
+                .logical_bytes
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .pending()
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .captured_read_only_observation_pending())
+    }
+
     /// Advance only already captured pages during existing worker rest/wait.
     /// Never capture another root, acquire the writer or authorize deletion.
     #[doc(hidden)]

@@ -425,6 +425,7 @@ fn captured_source_byte_pages_progress_during_source_proof_rest_without_advancin
         rest_before = control.source_pacing.as_ref().unwrap().wait(rest_clock);
         assert!(control.eligible_bytes.pending());
     }
+    assert!(lane.captured_read_only_observation_pending().unwrap());
     for _ in 0..2 {
         let phases = lane.advance_captured_observations_off_gate().unwrap();
         assert_eq!(phases.source_initial_rows, 0);
@@ -432,6 +433,8 @@ fn captured_source_byte_pages_progress_during_source_proof_rest_without_advancin
         assert_eq!(phases.reclaimed_receipts, 0);
         assert_eq!(phases.gate_held_us(), 0);
     }
+    assert!(!lane.captured_read_only_observation_pending().unwrap());
+    assert!(lane.captured_observations_pending().unwrap());
     let control = owner.lock().unwrap();
     assert!(
         !control.source_background_work_ready(),
@@ -506,6 +509,7 @@ fn captured_source_bytes_revoke_lost_qualification_during_proof_rest_without_new
     }
     ports.shared.invalidate_source_continuation();
     let phases = lane.advance_captured_observations_off_gate().unwrap();
+    assert!(!lane.captured_read_only_observation_pending().unwrap());
     assert_eq!(phases.source_initial_rows, 0);
     assert_eq!(phases.gate_held_us(), 0);
     let control = owner.lock().unwrap();

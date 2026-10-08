@@ -639,6 +639,10 @@ impl ReplicationSourceControl {
         self.receipt_validation_pending() || self.eligible_bytes.pending()
     }
 
+    pub(crate) fn captured_read_only_observation_pending(&self) -> bool {
+        self.eligible_bytes.pending()
+    }
+
     pub(crate) fn reclamation_observation(&self) -> Option<[u64; 8]> {
         self.reclamation_observation
     }

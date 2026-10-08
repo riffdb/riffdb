@@ -1776,3 +1776,37 @@ proves retirement during proof rest without a new capture. Initial metadata
 acceptance fails on an unquoted colon in the new decision note; correct that
 note and preserve the failed receipt. The unchanged measured workload and
 final-source full CI remain pending; no endurance result is claimed.
+
+
+### Required-host candidate and per-page checkpoint polling limit
+
+The captured-page scheduling candidate passes 1,322 active storage tests, all
+19 retention-worker tests, all-target storage Clippy and twelve metadata gates.
+Its shipping release build succeeds in 297.3 seconds. The unchanged preparation
+then fails in 446.9 seconds with `source_bytes_sample_gap`, before its first
+complete in-load source-byte sample. No full five-minute load window, populated
+restore or final-source full-CI result qualifies this candidate.
+
+An instrumented copy of the same workload completes a 10,453-row interval in
+41 pages and 8.108 seconds, unlike the earlier 2,560-row expiry. It records
+three complete in-load samples at 78.096, 145.970 and 200.244 seconds. A later
+capture starts at resume 17,812 and ceiling 94,915: 77,103 eligible rows. An
+initial checked source cut skips 256 rows; accounting then checks 61,440 rows
+in 240 pages and reaches sequence 79,508. It expires at 30.125 seconds with
+15,407 rows still unknown. The diagnostic preparation fails in 637.8 seconds,
+again before a complete five-minute load window. Failed populations and raw
+numeric traces remain private; diagnostic binaries qualify no release behavior.
+
+The worker imposes a 100-millisecond checkpoint polling wait before each
+captured page. The large interval needs 302 pages: polling alone requires
+30.2 seconds, exceeding the unchanged 30-second freshness limit before any
+canonical reads. Two deterministic worker regressions fail on that scheduling
+with explicit clocks, including checkpoint waiting and the full writer rest.
+
+Distinguish ready captured read-only pages from proof work awaiting budget.
+Ready pages check stop/wake and checkpoint completion without a polling sleep;
+every page retains its row/byte limit and its original capture deadline. Proof
+work keeps the shared source scheduler and polling waits. Retain the complete
+wall-clock writer rest and the original capture, observation and workload
+limits. No codec shortcut, mutation authority or new source writer is added.
+Scoped acceptance and another unchanged required-host preparation remain open.

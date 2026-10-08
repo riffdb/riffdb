@@ -192,3 +192,28 @@ fixtures and observed limits; Updated handbook: sustainable TicketDesk milestone
 Hazards/follow-ups: corrected decision-note YAML metadata acceptance,
 unchanged workload preparation and final-source full CI before campaign
 qualification.
+
+
+## Ready read-only pages and checkpoint polling
+
+The required-host candidate still fails byte observation. Its separate numeric
+diagnostic shows a later 77,103-row interval cannot fit 302 mandatory 100-ms
+polls inside the unchanged 30-second capture lifetime, even without read work.
+Two deterministic scheduling regressions fail before repair. Distinguish ready
+captured read-only pages from paced source-proof preparation. Process ready
+pages inside existing rest/wait, checking cancellation and actual checkpoint
+completion between bounded pages. Keep the full writer-rest deadline, source
+preparation pacing, capture cadence, freshness, gap and all workload limits.
+This is a D-003 implementation choice under ADR-0279 decision 6 and the already
+accepted source pacing: it changes no validation, writer budget, source proof,
+durable format, ordering or application interface. The hidden readiness query
+confers no authority and permits no guarantee opt-out. Scoped and measured
+qualification remain pending.
+
+PR note: Package WP-825; Tier guarantee; Behavior: avoid a checkpoint poll before
+each ready captured read-only page while keeping source-proof waits and full
+writer rest; Checks: unchanged required-host failure, bounded diagnostic and
+two failing-before deterministic regressions; Compatibility: no durable,
+fixture or application interface changes; Updated handbook: sustainable
+TicketDesk milestone; Hazards/follow-ups: positive scoped checks, unchanged
+workload preparation and final-source CI before campaign qualification.
