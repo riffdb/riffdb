@@ -1,11 +1,11 @@
 ---
 adr: "0280"
 title: Bounded Native Follower Acknowledgement Validation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-07
-accepted: null
-acceptance: null
+accepted: '2026-10-07'
+acceptance: 'maintainer, in session, 2026-10-07: i accept, in response to the exact-text acceptance request for ADR-0280'
 requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279]
 amends: [ADR-0240, ADR-0268, ADR-0271]
 supersedes: []
