@@ -312,6 +312,7 @@ record with no front matter.
 | [0275](0275-retention-independent-bounded-startup-eligibility.md) | Retention Independent Bounded Startup Eligibility | Accepted | guarantee |
 | [0276](0276-registry-completion-writer-compatibility-edge.md) | Registry Completion Writer Compatibility Edge | Accepted | guarantee |
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
+| [0280](0280-paced-journal-extent-zero-fill-and-writer-hash-deduplication.md) | Paced Journal Extent Zero Fill And Writer Hash Deduplication | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
