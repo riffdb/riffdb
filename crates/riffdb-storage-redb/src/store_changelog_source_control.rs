@@ -461,6 +461,11 @@ impl ReplicationSourceControl {
     }
 
     fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
+        self.refresh_completed_source_byte_prefix(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        )?;
         if self.shared.application_commit_profile == RedbCommitProfile::Standard
             && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
         {

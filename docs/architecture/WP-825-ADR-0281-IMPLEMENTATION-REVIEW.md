@@ -207,13 +207,101 @@ preparation pacing, capture cadence, freshness, gap and all workload limits.
 This is a D-003 implementation choice under ADR-0279 decision 6 and the already
 accepted source pacing: it changes no validation, writer budget, source proof,
 durable format, ordering or application interface. The hidden readiness query
-confers no authority and permits no guarantee opt-out. Scoped and measured
-qualification remain pending.
+confers no authority and permits no guarantee opt-out. The twelve native
+source-byte tests, 23 worker tests, storage/server Clippy, 59 architecture tests
+and twelve metadata gates pass on the required host. The unchanged preparation
+completes two load windows and ten byte samples, including a 78,373-row capture
+in 2.217 seconds, then fails a later byte gap. Its failure is preserved.
+Populated recovery and final-source full CI remain pending.
 
 PR note: Package WP-825; Tier guarantee; Behavior: avoid a checkpoint poll before
 each ready captured read-only page while keeping source-proof waits and full
 writer rest; Checks: unchanged required-host failure, bounded diagnostic and
 two failing-before deterministic regressions; Compatibility: no durable,
 fixture or application interface changes; Updated handbook: sustainable
-TicketDesk milestone; Hazards/follow-ups: positive scoped checks, unchanged
-workload preparation and final-source CI before campaign qualification.
+TicketDesk milestone; Hazards/follow-ups: diagnose the later native accounting stall, repeat the
+unchanged preparation and run final-source CI before campaign qualification.
+
+
+## Fixed-prefix observation and classified checkpoint replacement
+
+The unchanged ready-page runtime reproduces a later observation gap with a
+complete exact byte certificate still qualified and no capture expiry. Its
+mutation-proof continuation can return before the accounting capture step.
+A deterministic native regression fails before repair: a completed fixed prefix
+does not refresh while unrelated added receipts require further proof pages.
+Permit a new observation on the original cadence during an ordinary paced source
+turn only when the completed interval, current qualified immutable pin, existing
+finite checkpoint license and current derived/durable eligibility agree exactly.
+Reuse no unknown bytes and extend no pending capture lifetime. Source proof,
+writer rest, deletion authority and the two validation-pin bound remain intact.
+
+A separate failing-before native regression prepares a finite checked cut, then
+installs a real classified checkpoint replacement. Exact checkpoint identity
+rejects that otherwise qualified cut. Use the existing license validator with
+checkpoint metadata bound to the actual admitted source pin. Recheck the exact
+licensed point, original coverage, qualification, current source proof and holds.
+Read bounded metadata without another capture, drain or checkpoint under the
+writer. Remove the redundant prepared checkpoint copy; the finite license still
+owns its original evidence. No cut ceiling is extended or independent progress
+manufactured.
+
+These are D-003 implementation choices under ADR-0279 decisions 2 and 6 and
+ADR-0268's closed continuation. Accepted text, ordering, durable formats,
+application interfaces, source/audit validation and all original bounds remain
+unchanged. Initial regression fixtures repeated equal writes or mixed physical
+and journaled fixture state; those failed attempts are retained but prove neither
+bug. Corrected native fixtures establish both intended failures. Positive scoped
+checks, unchanged preparation, populated recovery and final-source CI remain
+pending. WP-825 remains open and no 24-hour run starts.
+
+PR note: Package WP-825; Tier guarantee; Behavior: refresh an exactly known fixed
+source-byte prefix independently of unrelated tail proof, and admit classified
+checkpoint replacements through existing finite-coverage validation; Checks:
+unchanged required-host gap reproduction and two corrected failing-before native
+regressions; Compatibility: no public interface, dependency, fixture or durable
+format changes; Updated handbook: sustainable TicketDesk milestone;
+Hazards/follow-ups: positive native/cancellation/hold checks, unchanged measured
+preparation, populated recovery, final-source CI and complete short rehearsal.
+
+
+The first positive broad storage run passes both new regressions but reports
+998 passing unit tests, one existing ignored test and one offline-upgrade custody
+failure after its fixture owner closes. The same custody test passes in isolation.
+An explicit-pipe C3D operating-system check proves that a close-on-exec file lock
+remains held after parent close while a child owns the inherited descriptor, and
+can be reacquired after that final owner exits. This is consistent with parallel
+crash-test process creation retaining fixture custody transiently. Isolate the
+complete custody fixture after exec in one child, retaining every original
+refusal, receipt absence, marker absence, unchanged-byte and successful-upgrade
+assertion. Production upgrade and lock behavior are unchanged. Preserve the
+failed suite; repeat the suite at its original concurrency before qualification.
+
+
+The corrected concurrent storage suite then passes 1,324 active tests with two
+unchanged ignored tests, all 23 retention-worker tests, storage/server Clippy,
+59 architecture tests and twelve metadata gates. A further failing-before native
+regression identifies overly broad retirement: an older qualified mutation proof
+revokes a newer completed exact observation. Preserve that completed observation's
+actual publication, capture time, bytes and cadence; it retains no reader pin.
+Pending candidates keep the original fail-closed sharing rule. Finish the new
+fixed-prefix observation's zero-row continuation before mutation preparation can
+capture a checkpoint, preserving the total two validation-pin bound.
+
+A distinct failing-before regression reproduces the same capture starvation in
+the checkpointed commit profile. Place this read-only refresh before proof
+continuation in the shared entry point for both existing profiles. Neither
+profile changes source/audit validation, mutation admission or writer pacing.
+These remain D-003 choices under the same accepted decisions. Focused positive
+checks and final-source measured/CI qualification remain pending; no endurance
+readiness is claimed.
+
+
+The completed-certificate and two-profile repair passes all 15 source-byte tests,
+12 source-continuation tests, five checkpoint-license tests, 23 retention-worker
+tests, 59 architecture tests and all-target storage/server Clippy on the required
+host. This focused pass follows the preserved 1,324-test concurrent storage and
+process-level pass on the initial candidate. Final-document metadata, unchanged
+shipping preparation, populated recovery and final-source full CI remain open.
+Freeze the source and shipping binaries before measured qualification; no
+24-hour readiness, merged package or completed rehearsal is claimed.

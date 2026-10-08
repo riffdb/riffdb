@@ -74,8 +74,9 @@ impl ContinuedProbe {
         Ok(result)
     }
 
-    /// The owner has fully validated this newer classified pin. Sharing it
-    /// changes neither the accounting ceiling nor capture freshness or counts.
+    /// The owner offers a fully validated classified pin. Sharing a newer pin
+    /// changes neither the accounting ceiling nor capture freshness or counts;
+    /// a completed observation preserves its own actual publication identity.
     pub(super) fn share_pin(
         &mut self,
         root: ValidationSource,
@@ -86,11 +87,17 @@ impl ContinuedProbe {
             || self.history.lineage() != history.lineage()
             || self.history.anchor() != history.anchor()
             || self.history.minimum_resume() != history.minimum_resume()
-            || self.history.tail().sequence() > history.tail().sequence()
             || self.ceiling > history.tail().sequence().get()
             || root.history()? != Some(history)
         {
             return Ok(false);
+        }
+        if self.history.tail().sequence() > history.tail().sequence() {
+            // A completed observation has no reader to share. An older proof
+            // under the same closed qualification still covers this prefix;
+            // it neither replaces the newer observation nor revokes its bytes.
+            // Pending candidates keep the existing fail-closed sharing rule.
+            return Ok(self.completed.is_some() && self.root.is_none());
         }
         if self.pending() {
             self.root_identity = root.identity();
@@ -137,6 +144,24 @@ impl ContinuedProbe {
 
     pub(super) fn pending(&self) -> bool {
         self.root.is_some() && self.completed.is_none()
+    }
+
+    pub(super) fn completed_prefix(&self, qualification: u64) -> bool {
+        self.completed.is_some() && self.qualifies(qualification)
+    }
+
+    pub(super) fn matches_completed_prefix(
+        &self,
+        history: History,
+        ceiling: u64,
+        qualification: u64,
+    ) -> bool {
+        self.completed_prefix(qualification)
+            && self.ceiling == ceiling
+            && self.history.lineage() == history.lineage()
+            && self.history.anchor() == history.anchor()
+            && self.history.minimum_resume() == history.minimum_resume()
+            && self.history.tail().sequence() <= history.tail().sequence()
     }
 
     pub(super) fn advance(&mut self, now: Instant) -> Result<Option<[u64; 18]>, StorageError> {

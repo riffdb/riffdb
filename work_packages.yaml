@@ -28665,6 +28665,33 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 completion of fixed-prefix observation lifecycle: a newer completed
+      observation keeps its actual identity and deadline when an older qualified
+      proof is offered; pending candidates retain fail-closed sharing. Finish
+      exact zero-row reuse before another checkpoint capture to preserve two
+      validation pins. Run the same read-only refresh before proof continuation
+      for both existing commit profiles. Separate native regressions fail before
+      repair. Fifteen source-byte, twelve continuation, five license and 23 worker
+      tests, 59 architecture tests and storage/server Clippy pass on the required
+      host. Final-document metadata and final-source qualification remain open.
+    - >-
+      Tests-only custody-fixture isolation: the broad storage suite reports an
+      offline-upgrade refusal after parent descriptor close, while the fixture
+      passes alone. An explicit-pipe required-host check proves inherited file
+      descriptions can retain custody until the final child exits. Run the
+      original complete custody proof after exec in one child; preserve all
+      assertions, native fail-closed locking and original suite concurrency.
+      Preserve the failed suite and repeat concurrent/process checks.
+    - >-
+      D-003 implementation choices under ADR-0279 decisions 2 and 6: refresh an
+      already exact fixed byte prefix on the original cadence using a current
+      qualified pin, finite coverage and identical current eligibility, without
+      waiting for unrelated tail proof. Admit classified checkpoint replacement
+      through the existing exact coverage validator rather than root equality.
+      Preserve full source/audit proof, holds, writer pacing, two validation pins
+      and all original bounds. Corrected native regressions fail before repair;
+      positive scoped checks, unchanged preparation and final CI remain pending.
+    - >-
       D-003 implementation choice under ADR-0279 decision 6: distinguish ready
       captured read-only pages from source proof awaiting budget. Avoid a
       checkpoint poll per ready read-only page, preserving cancellation, exact
@@ -28673,7 +28700,11 @@ work_packages:
       61,440 rows before a larger capture expires. The 77,103-row interval needs
       302 pages, so mandatory 100-ms polls alone exceed 30-second freshness.
       Both explicit-clock worker regressions fail before this further repair.
-      Positive scoped checks, unchanged preparation and final CI remain open.
+      Twelve source-byte tests, 23 worker tests, storage/server Clippy, 59
+      architecture tests and twelve metadata gates pass. The unchanged preparation
+      completes two load windows and ten source-byte samples before a later gap;
+      its largest capture checks 78,373 rows in 2.217 seconds. Diagnose that later
+      native stall; preparation, populated recovery and final CI remain open.
     - >-
       D-003 implementation choice under ADR-0279 decision 6: captured byte
       observations continue beside logical/physical observations during shared

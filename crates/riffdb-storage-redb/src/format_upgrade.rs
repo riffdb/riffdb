@@ -923,6 +923,28 @@ mod tests {
     // req: AFC-001, AFC-002, REC-001, STO-032
     #[test]
     fn offline_upgrade_requires_source_custody_before_accepted_receipt() {
+        const CHILD: &str = "RIFFDB_OFFLINE_UPGRADE_CUSTODY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Parallel crash tests can fork while this fixture owns an OS lock.
+            // Such children retain inherited file descriptions until exec/exit,
+            // so closing our descriptor does not prove that custody is free.
+            // Own the complete lock-lifetime proof after exec in one child.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "format_upgrade::tests::offline_upgrade_requires_source_custody_before_accepted_receipt",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated native source-custody proof failed"
+            );
+            return;
+        }
         let root = TestRoot::new("custody-before-accepted");
         let (database, backup) = predecessor_fixture(&root, 0x94);
         let before = fs::read(&database).unwrap();

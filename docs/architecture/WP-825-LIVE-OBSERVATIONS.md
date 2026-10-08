@@ -1810,3 +1810,82 @@ work keeps the shared source scheduler and polling waits. Retain the complete
 wall-clock writer rest and the original capture, observation and workload
 limits. No codec shortcut, mutation authority or new source writer is added.
 Scoped acceptance and another unchanged required-host preparation remain open.
+
+
+### Ready-page candidate: progress restored, later accounting gap remains
+
+The ready-page change passes twelve source-byte tests, all 23 retention-worker
+tests, all-target storage/server Clippy, 59 architecture tests and twelve
+metadata gates on the required host. Its shipping release build succeeds in
+294.3 seconds. The unchanged preparation fails in 1,072.7 seconds with
+`source_bytes_sample_gap`; populated restore and final-source full CI do not
+run. Preserve the failed population and its immutable artifacts.
+
+This candidate completes two five-minute load windows, each with 30,000 commands
+and 120,000 reads and no retries. Ten complete in-load source-byte samples are
+recorded, the last at 636.611 seconds. A large interval checks 78,373 receipts in
+307 bounded pages and completes in 2.217 seconds, within the unchanged
+30-second capture limit. The per-page polling failure is cleared. The second
+load window overlaps catch-up and exceeds the latency histogram's range;
+normal-window latency is not yet qualified.
+
+At shutdown, native diagnostics report 26,764 source receipts removed, one
+recycled extent, no deleted extents and 18,812 reference holds. Source
+validation continues while a later exact byte observation is missing. Logical
+and physical observations continue through approximately 698 and 706 seconds.
+The last outbox observation has a backlog of 20 and degraded status, while the
+projection backlog is zero. This does not establish the cause of the missing
+source-byte capture. Trace its native capture, qualification and proof state
+before changing behavior. WP-825 remains open; campaign integration and the
+24-hour run remain unstarted.
+
+
+### Qualified completed certificate stalls before a new capture
+
+A bounded numeric diagnostic on the same ready-page runtime repeats the
+unchanged preparation and fails `source_bytes_sample_gap` in 1,074.0 seconds.
+It completes two load windows at the required rates with no retries and ten
+in-load byte samples; diagnostic binaries qualify no release performance.
+The last sample is at load time 634.900 seconds. Its new capture completes in
+3,235 microseconds by reusing the already checked interval, with zero new rows
+or scan pages. Checked own cuts subsequently advance resume to 33,895 while
+preserving the fixed ceiling of 95,070 and exact byte accounting.
+
+The certificate remains complete, with no pending reader pin, no expiry and no
+qualification retirement. Its native qualification remains unchanged after the
+last checked cut; trace age reaches 91.236 seconds before the unchanged gap gate
+fails. The source owner continues taking turns. Its accounting capture is below
+the exact-tail mutation-proof continuation branch, so receipt/audit catch-up can
+return before that capture even when the fixed-prefix bytes remain known. This
+is a capture-lifecycle blocker, distinct from the cleared large-page expiry.
+Keep mutation proof and read-only evidence separate: a fresh prefix observation
+must still bind an actual qualified immutable pin and current exact eligibility.
+No reuse may expand a ceiling, omit a hold, extend a pending candidate's lifetime
+or confer deletion authority. Preserve this failed attempt and prove the native
+repair with a failing-before regression before repeating preparation.
+
+
+Both corrected native regressions pass on the repaired candidate. The freshness
+regression also refuses reuse when an actual derived pin narrows eligibility and
+retires the observation on qualification loss. The first broader storage run
+reports 998 passing unit tests, one failure and one existing ignored test. Its
+failure is an offline-upgrade fixture expecting immediate success after closing
+its source lock. The test passes alone; an explicit-pipe required-host check
+proves an inherited close-on-exec descriptor retains the lock after parent close
+until the final child owner exits. Isolate that lock-lifetime fixture in one
+process after exec, preserving its original assertions and native fail-closed
+behavior. Repeat the original concurrent suite and process/recovery checks;
+neither the isolated pass nor the OS diagnostic clears the failed suite.
+
+
+The corrected concurrent suite passes 1,324 active storage tests with two
+unchanged ignored tests and no failures. The subsequent certificate-lifecycle
+completion passes 15 source-byte tests, 12 continuation tests and five license
+tests, including both commit profiles, qualification loss, protected eligibility
+and preservation of a newer completed observation when an older qualified proof
+is offered. It finishes exact zero-row reuse before another checkpoint capture
+and retains the two validation-pin bound. All 23 worker tests, 59 architecture
+tests and storage/server Clippy pass on the required host. These are native
+implementation checks; original shipping preparation, populated restore and
+final-source full CI still gate measured qualification. Preserve every earlier
+failure. WP-825 remains open and the 24-hour run remains unstarted.

@@ -10,7 +10,6 @@ use crate::{
 use transaction::{AdmissionAttempt, AdmissionYield};
 
 struct PreparedCut {
-    checkpoint: Observation,
     proof: SourceReclamationProof,
     license: checkpoint_license::CheckpointLicense,
 }
@@ -198,7 +197,6 @@ impl ReplicationSourceControl {
         )
         .map_err(value_error)?;
         let prepared = PreparedCut {
-            checkpoint,
             license,
             proof: SourceReclamationProof::new(history, retained, rows)
                 .map_err(journal_storage_error)?,
@@ -209,6 +207,77 @@ impl ReplicationSourceControl {
             .ok_or_else(invariant)?
             .release_completed_pin();
         self.submit_journaled_cut(prepared)
+    }
+
+    // A known fixed interval does not depend on validating newly appended
+    // receipts above it. Capture only on an ordinary paced source turn, never
+    // from the no-new-pin continuation used during proof/writer rest. Native
+    // qualification preserves the checked prefix; the actual current pin and
+    // eligibility must still match before creating a genuinely new observation.
+    pub(super) fn refresh_completed_source_byte_prefix(
+        &mut self,
+        epoch: u64,
+    ) -> Result<(), StorageError> {
+        let now = std::time::Instant::now();
+        if !self.source_background_work_ready()
+            || !self.eligible_bytes.completed_prefix_capture_due(epoch, now)
+            || !self
+                .online_validation
+                .as_ref()
+                .is_some_and(|walk| walk.qualifies(epoch))
+        {
+            return Ok(());
+        }
+        let Some(license) = self.online_license else {
+            return Ok(());
+        };
+        // Completed accounting retains no pin. This capture and the existing
+        // mutation-proof candidate therefore remain within the two-pin bound.
+        let source = self.shared.capture_source_validation_pin()?;
+        let history = source.history()?.ok_or_else(corrupt)?;
+        if self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire)
+            != epoch
+        {
+            return Ok(());
+        }
+        let checkpoint = Observation {
+            publication: source.checkpoint_pin().identity(),
+            durable_epoch: self.shared.durable_commit_epoch(),
+            history: crate::changelog_v3_roots::read_checkpoint_roots(&source)?
+                .ok_or_else(corrupt)?,
+        };
+        if !license.covers(&source, history, checkpoint, epoch)? {
+            return Ok(());
+        }
+        let mut derived = self.shared.derived_source_pins.reclamation()?;
+        let (_, observation) = retention::floor(
+            &source,
+            history,
+            license.ceiling(),
+            derived.oldest(history.lineage()),
+        )?;
+        drop(derived);
+        if !self
+            .eligible_bytes
+            .matches_completed_prefix(history, observation[5], epoch)
+            || self
+                .shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire)
+                != epoch
+        {
+            return Ok(());
+        }
+        self.eligible_bytes
+            .capture_qualified(source, history, observation[5], epoch, now)?;
+        // The exact fixed interval contains no new rows. Finish its bounded
+        // zero-row observation now, releasing this pin before mutation proof
+        // preparation can capture an independent checkpoint. Freshness and
+        // qualification are checked through the ordinary observer continuation.
+        self.advance_source_byte_observation_off_gate()
     }
 
     fn submit_journaled_cut(&mut self, mut prepared: PreparedCut) -> Result<u64, StorageError> {
@@ -226,9 +295,7 @@ impl ReplicationSourceControl {
             .source_continuation_epoch
             .load(Ordering::Acquire);
         let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
-        if !walk.qualifies(epoch)
-            || source.checkpoint_pin().identity() != prepared.checkpoint.publication
-        {
+        if !walk.qualifies(epoch) {
             return self.journaled_yield(AdmissionYield::ChangedQualification);
         }
         if !walk.continue_source(source.clone(), epoch)? {
@@ -242,9 +309,20 @@ impl ReplicationSourceControl {
         drop(proof);
         self.eligible_bytes
             .share_qualified_pin(source.clone(), history, epoch)?;
+        // Classified replacement does not revoke a fixed covered prefix. Read
+        // the checkpoint actually bound to this admitted immutable source pin;
+        // no new snapshot, checkpoint materialization or independent progress
+        // is introduced under the writer. The license still checks its exact
+        // covered point, original checkpoint evidence and current qualification.
+        let checkpoint = Observation {
+            publication: source.checkpoint_pin().identity(),
+            durable_epoch: self.shared.durable_commit_epoch(),
+            history: crate::changelog_v3_roots::read_checkpoint_roots(&source)?
+                .ok_or_else(corrupt)?,
+        };
         if !prepared
             .license
-            .covers(&source, history, prepared.checkpoint, epoch)?
+            .covers(&source, history, checkpoint, epoch)?
         {
             self.online_license = None;
             return self.journaled_yield(AdmissionYield::ChangedQualification);
@@ -414,4 +492,146 @@ fn corrupt() -> StorageError {
 }
 fn invariant() -> StorageError {
     storage_error(StorageErrorKind::InvariantViolation)
+}
+
+#[cfg(test)]
+mod checkpoint_replacement_tests {
+    use super::*;
+
+    fn append(ports: &RedbOperationalPorts, ordinal: u64) {
+        let write = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+            &ports.shared.database,
+            crate::RedbCommitProfile::Hardened,
+            Source::OutboxTransition,
+        )
+        .unwrap();
+        write
+            .open_table(crate::layout::OUTBOX_STATUS)
+            .unwrap()
+            .insert(
+                b"checkpoint-replacement-fixture".as_slice(),
+                ordinal.to_be_bytes().as_slice(),
+            )
+            .unwrap();
+        write.finish().unwrap().commit(&ports.shared).unwrap();
+    }
+
+    fn observed(ports: &RedbOperationalPorts) -> Observation {
+        let root = ports.shared.capture_checkpoint_root().unwrap();
+        Observation {
+            publication: root.identity(),
+            durable_epoch: ports.shared.durable_commit_epoch(),
+            history: crate::changelog_v3_roots::read_checkpoint_roots(&root)
+                .unwrap()
+                .unwrap(),
+        }
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001, END-008
+    #[test]
+    fn classified_checkpoint_replacement_preserves_admission_of_a_finite_checked_prefix() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        for ordinal in 1..=300 {
+            append(&ports, ordinal);
+        }
+        let previous = observed(&ports);
+        append(&ports, 301);
+        let checkpoint = observed(&ports);
+        let source = ports.shared.capture_source_validation_pin().unwrap();
+        let history = source.history().unwrap().unwrap();
+        let epoch = ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        let license =
+            checkpoint_license::CheckpointLicense::new(previous, checkpoint, history, epoch)
+                .unwrap();
+        assert!(license.covers(&source, history, checkpoint, epoch).unwrap());
+        let mut walk = RetainedHistoryValidation::new_source(source.clone())
+            .unwrap()
+            .unwrap();
+        walk.bind_qualification(epoch);
+        for _ in 0..8 {
+            if walk
+                .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+                .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(walk.is_complete());
+        let first = history.minimum_resume().sequence().get();
+        let floor_sequence =
+            riffdb_storage_api::ChangelogTransactionSequence::new(first + 256).unwrap();
+        let floor = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+            &source.receipt(floor_sequence, None).unwrap().unwrap(),
+        )
+        .unwrap();
+        let rows = (first..first + 256)
+            .map(|sequence| {
+                let sequence =
+                    riffdb_storage_api::ChangelogTransactionSequence::new(sequence).unwrap();
+                SourceReceiptPreimage::capture(
+                    &source
+                        .receipt(sequence, None)
+                        .unwrap()
+                        .unwrap()
+                        .encode()
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let retained =
+            History::new(history.lineage(), history.anchor(), history.tail(), floor).unwrap();
+        let proof = SourceReclamationProof::new(history, retained, rows).unwrap();
+        walk.release_completed_pin();
+        drop(source);
+        let mut control = ports.replication_source_control();
+        control.online_validation = Some(walk);
+        control.online_license = Some(license);
+        control.observed = Some(checkpoint);
+        // A real checked native append installs a different durable checkpoint
+        // between preparation and admission. The fixed licensed prefix is intact.
+        append(&ports, 302);
+        let installed = observed(&ports);
+        assert_ne!(installed.publication, checkpoint.publication);
+        assert_eq!(
+            ports
+                .shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+            epoch
+        );
+        assert_eq!(
+            control
+                .submit_journaled_cut(PreparedCut { proof, license })
+                .unwrap(),
+            256,
+            "classified checkpoint replacement must not discard an otherwise qualified finite-prefix cut"
+        );
+        let current = ports.shared.capture_source_validation_pin().unwrap();
+        let after = current.history().unwrap().unwrap();
+        assert_eq!(after.minimum_resume(), floor);
+        assert_eq!(
+            after.tail().sequence().get(),
+            installed.history.tail().sequence().get() + 1
+        );
+        assert_eq!(control.online_license.unwrap().ceiling(), license.ceiling());
+        let mut verified = RetainedHistoryValidation::new_source(current)
+            .unwrap()
+            .unwrap();
+        for _ in 0..8 {
+            if verified
+                .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+                .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(
+            verified.is_complete(),
+            "the actual acknowledged successor retains exact source/audit evidence"
+        );
+    }
 }

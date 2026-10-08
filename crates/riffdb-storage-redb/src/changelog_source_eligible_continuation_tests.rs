@@ -534,3 +534,228 @@ fn captured_source_bytes_revoke_lost_qualification_during_proof_rest_without_new
         Some(history)
     );
 }
+
+#[test]
+fn completed_source_byte_prefix_refreshes_while_unrelated_tail_proof_is_incomplete() {
+    fixed_prefix_refresh(crate::RedbCommitProfile::Standard);
+}
+
+#[test]
+fn hardened_completed_source_byte_prefix_refreshes_while_unrelated_tail_proof_is_incomplete() {
+    fixed_prefix_refresh(crate::RedbCommitProfile::Hardened);
+}
+
+fn fixed_prefix_refresh(profile: crate::RedbCommitProfile) {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    Arc::get_mut(&mut ports.shared)
+        .unwrap()
+        .application_commit_profile = profile;
+    for ordinal in 0..300 {
+        append(&ports, if ordinal % 2 == 0 { 17 } else { 31 });
+    }
+    let previous = {
+        let root = ports.shared.capture_checkpoint_root().unwrap();
+        Observation {
+            publication: root.identity(),
+            durable_epoch: ports.shared.durable_commit_epoch(),
+            history: crate::changelog_v3_roots::read_checkpoint_roots(&root)
+                .unwrap()
+                .unwrap(),
+        }
+    };
+    append(&ports, 47);
+    let checkpoint = {
+        let root = ports.shared.capture_checkpoint_root().unwrap();
+        Observation {
+            publication: root.identity(),
+            durable_epoch: ports.shared.durable_commit_epoch(),
+            history: crate::changelog_v3_roots::read_checkpoint_roots(&root)
+                .unwrap()
+                .unwrap(),
+        }
+    };
+    let (source, history, epoch) = validated(&ports);
+    let license =
+        checkpoint_license::CheckpointLicense::new(previous, checkpoint, history, epoch).unwrap();
+    assert!(license.covers(&source, history, checkpoint, epoch).unwrap());
+    let ceiling = license.ceiling().sequence().get();
+    let mut walk = RetainedHistoryValidation::new_source(source.clone())
+        .unwrap()
+        .unwrap();
+    walk.bind_qualification(epoch);
+    for _ in 0..8 {
+        if walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(256).unwrap())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    assert!(walk.is_complete());
+    walk.release_completed_pin();
+    let mut control = ports.replication_source_control();
+    control.online_validation = Some(walk);
+    control.online_license = Some(license);
+    control.observed = Some(checkpoint);
+    let expected = oracle(&source, history, ceiling);
+    let captured = Instant::now();
+    // Establish a genuine exact interval, then make the next ordinary cadence
+    // due deterministically. No capture is extended and no pending page expires.
+    control.eligible_bytes.next_capture = None;
+    control
+        .eligible_bytes
+        .capture_qualified(source, history, ceiling, epoch, captured)
+        .unwrap();
+    for _ in 0..4 {
+        control.advance_source_byte_observation_off_gate().unwrap();
+    }
+    let prior = control.eligible_bytes.continued.as_ref().unwrap();
+    assert!(prior.completed.is_some());
+    assert_eq!(prior.bytes, expected);
+    assert!(prior.root.is_none());
+    control.eligible_bytes.next_capture = Some(captured);
+
+    for ordinal in 0..600 {
+        append(&ports, if ordinal % 2 == 0 { 41 } else { 43 });
+    }
+    let gate_before = ports.shared.mutation_gate.source_census().unwrap();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    let walk = control.online_validation.as_ref().unwrap();
+    assert!(
+        !walk.is_complete(),
+        "the unrelated suffix still needs exact validation"
+    );
+    assert_eq!(
+        control.online_license.unwrap().ceiling().sequence().get(),
+        ceiling
+    );
+    assert_eq!(
+        ports.shared.mutation_gate.source_census().unwrap(),
+        gate_before
+    );
+    let refreshed = control.eligible_bytes.continued.as_ref().unwrap();
+    assert!(
+        refreshed.captured > captured,
+        "a completed fixed-prefix observation must refresh without waiting for the entire unrelated source tail"
+    );
+    control.advance_source_byte_observation_off_gate().unwrap();
+    let refreshed = control.eligible_bytes.continued.as_ref().unwrap();
+    let sample = refreshed.sample(Instant::now()).unwrap();
+    assert_eq!(sample[5], expected);
+    assert_eq!(sample[10], sample[4]);
+    assert_eq!((sample[11], sample[9]), (0, 0));
+    assert!(refreshed.root.is_none());
+    assert_eq!(
+        control.eligible_bytes.next_capture,
+        Some(refreshed.captured + CAPTURE_INTERVAL),
+        "a new observation preserves the original cadence"
+    );
+    let refreshed_at = refreshed.captured;
+    assert!(!control.online_validation.as_ref().unwrap().is_complete());
+    assert_eq!(
+        ports
+            .shared
+            .capture_source_validation_pin()
+            .unwrap()
+            .history()
+            .unwrap()
+            .unwrap()
+            .minimum_resume(),
+        history.minimum_resume()
+    );
+
+    // A newly protected subinterval has no independently exact prefix total.
+    // Even with unchanged native qualification it cannot refresh the larger
+    // previously eligible count as though that were the current floor.
+    let current = ports.shared.capture_source_validation_pin().unwrap();
+    let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(
+        history.minimum_resume().sequence().get() + 10,
+    )
+    .unwrap();
+    let point = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+        &current.receipt(sequence, None).unwrap().unwrap(),
+    )
+    .unwrap();
+    drop(current);
+    let pin = crate::derived_source_pin::RedbDerivedSourcePin::capture(
+        ports.begin_composite_read().unwrap(),
+        Arc::clone(&ports.shared.derived_source_pins),
+    )
+    .unwrap()
+    .at(point)
+    .unwrap();
+    control.eligible_bytes.next_capture = Some(captured);
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert_eq!(
+        control.eligible_bytes.continued.as_ref().unwrap().captured,
+        refreshed_at
+    );
+    assert_eq!(
+        ports.shared.mutation_gate.source_census().unwrap(),
+        gate_before
+    );
+    drop(pin);
+
+    ports.shared.invalidate_source_continuation();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(control.eligible_bytes.continued.is_none());
+    assert!(control.online_license.is_none());
+}
+
+#[test]
+fn completed_newer_source_byte_prefix_survives_an_older_qualified_mutation_proof() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+    for ordinal in 0..300 {
+        append(&ports, if ordinal % 2 == 0 { 17 } else { 31 });
+    }
+    let (older_source, older_history, epoch) = validated(&ports);
+    let ceiling = older_history.tail().sequence().get();
+    let now = Instant::now();
+    let mut prior = ContinuedProbe::capture(
+        None,
+        older_source.clone(),
+        older_history,
+        ceiling,
+        epoch,
+        now,
+    )
+    .unwrap();
+    let expected = finish(&mut prior, now)[5];
+    append(&ports, 47);
+    let (newer_source, newer_history, successor_epoch) = validated(&ports);
+    assert_eq!(successor_epoch, epoch);
+    let newer_publication = newer_source.publication();
+    let mut current = ContinuedProbe::capture(
+        Some(prior),
+        newer_source,
+        newer_history,
+        ceiling,
+        epoch,
+        now + CAPTURE_INTERVAL,
+    )
+    .unwrap();
+    let completed = finish(&mut current, now + CAPTURE_INTERVAL);
+    assert_eq!(completed[5], expected);
+    assert_eq!((completed[11], completed[9]), (0, 0));
+    assert!(current.root.is_none());
+    let mut observer = Observer {
+        continued: Some(current),
+        next_capture: Some(now + CAPTURE_INTERVAL * 2),
+        ..Observer::default()
+    };
+    observer
+        .share_qualified_pin(older_source, older_history, epoch)
+        .unwrap();
+    assert!(
+        observer.continued.is_some(),
+        "a qualified older mutation proof cannot revoke a completed exact prefix bound to a newer actual observation"
+    );
+    let kept = observer.continued.as_ref().unwrap();
+    assert_eq!(kept.publication, newer_publication);
+    assert_eq!(kept.captured, now + CAPTURE_INTERVAL);
+    assert_eq!(kept.sample(now + CAPTURE_INTERVAL).unwrap(), completed);
+    assert!(kept.root.is_none());
+    assert_eq!(observer.next_capture, Some(now + CAPTURE_INTERVAL * 2));
+    observer.check_qualification(epoch + 1);
+    assert!(observer.continued.is_none());
+}

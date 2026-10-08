@@ -19,8 +19,30 @@ waiting for its preparation budget. Ready read-only pages advance without a
 checkpoint polling delay per page, checking cancellation and completion between
 bounded pages; proof-only waits retain their polling and shared pacing. The
 original wall-clock writer rest still runs to its full deadline. Required-host
-validation of this further scheduling repair is pending; neither its regressions
-nor diagnostic binaries establish endurance readiness.
+scoped checks pass. The unchanged preparation completes two load windows and
+ten in-load source-byte samples, then fails a later source-byte gap. The largest
+completed capture checks 78,373 receipts in 2.217 seconds. Investigation of the
+later stall, populated recovery and final-source full CI remain open; this
+progress does not establish endurance readiness.
+
+The next native candidate permits a fresh observation of an already exact fixed
+source-byte prefix while unrelated appended receipts remain under mutation-proof
+validation. It requires the original cadence, current qualified immutable pin,
+finite checkpoint coverage and unchanged exact eligibility. A changed interval
+or lost qualification remains unknown. Classified checkpoint replacement uses
+the existing finite-coverage validator rather than exact root equality; every
+cut retains current source/audit proof, holds and bounded ordered admission.
+The initial two corrected native regressions pass with the concurrent native
+suite. Further failing-before regressions cover the checkpointed profile and an
+older qualified proof retiring a newer completed observation. Apply refresh to
+both profiles, retain the completed observation's actual identity and deadline,
+and finish zero-row reuse before another checkpoint capture. Pending candidates
+retain their original fail-closed sharing rule and the two-pin bound remains.
+Focused native checks pass: 15 source-byte, 12 continuation, five license and
+23 worker tests, 59 architecture tests and storage/server Clippy. Final-source
+CI, original measured preparation and populated recovery remain pending; this
+candidate grants no new
+application control, mutation authority or endurance qualification.
 
 The campaign controller timeline freezes the existing seven fault kinds and
 their order, admits one active action, requires an observed injection release
