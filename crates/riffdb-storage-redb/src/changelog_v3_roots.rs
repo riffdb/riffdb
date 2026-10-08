@@ -295,12 +295,21 @@ pub(crate) fn validate_source_holds(
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Full transaction-current root validations on this thread, so tests can
+    /// hold how often a multi-frame owner pays for one.
+    pub(crate) static WRITE_ROOT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Transaction-current form for receipt-producing Immediate writes. Opening a
 /// redb write table creates it when absent, so check the bounded table-name
 /// inventory first. This function never initializes missing roots or tables.
 pub(crate) fn read_checkpoint_roots_for_write(
     transaction: &WriteTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    #[cfg(test)]
+    WRITE_ROOT_READS.with(|reads| reads.set(reads.get() + 1));
     let mut meta_present = false;
     let mut history_present = false;
     let mut holds_present = false;

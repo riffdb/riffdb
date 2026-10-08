@@ -375,6 +375,51 @@ impl PreparedHistoryAdvance {
         Self::from_captured_predecessor(transaction, history, receipt)
     }
 
+    /// [`Self::prepare`] for the next frame of one multi-frame checkpoint
+    /// transaction, whose predecessor state is the successor the previous
+    /// frame staged in this same transaction rather than a fresh root read.
+    ///
+    /// The caller must have fully validated the roots before the batch's first
+    /// frame and must fully validate them again after its last
+    /// ([`read_checkpoint_roots_for_write`]); no intermediate state is durable
+    /// or visible. Per frame this still refuses a stored history or allocator
+    /// row that differs from `history`, a receipt the admission roots refuse,
+    /// a mismatched allocation, an occupied history slot, and a physical
+    /// application/administration frontier that differs from the chain tail.
+    pub(crate) fn prepare_chained(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        {
+            let meta = transaction.open_table(META).map_err(table_error)?;
+            let read = |key: &str| -> Result<Vec<u8>, StorageError> {
+                let value = meta
+                    .get(key)
+                    .map_err(precommit_storage_error)?
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                // The same fixed-root envelope ceiling as the full root read.
+                if value.value().len() > 512 {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                Ok(value.value().to_vec())
+            };
+            let frontier = decode_physical_frontier(
+                &read(META_APPLICATION_SEQUENCE)?,
+                &read(META_ADMINISTRATION_SEQUENCE)?,
+            )?;
+            if history.tail().frontier() != frontier {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+        }
+        Self::from_captured_predecessor(transaction, history, receipt)
+    }
+
+    /// The history state this advance stages.
+    pub(crate) fn successor(&self) -> ChangelogHistoryStateV3 {
+        self.successor
+    }
+
     // Private to this owner. CapturedImmediateWrite validated these roots before
     // its first tracked mutation and cannot change any control row. Application
     // and administration metadata may now contain their tracked post-images;
@@ -439,7 +484,7 @@ impl PreparedHistoryAdvance {
     }
 
     pub(crate) fn stage(self, transaction: &WriteTransaction) -> Result<(), StorageError> {
-        self.stage_as(transaction, None)
+        self.stage_as(transaction, None, true)
     }
 
     /// Stages the advance with a history stub (ADR-0263 Amendment 3) in place
@@ -449,13 +494,27 @@ impl PreparedHistoryAdvance {
         transaction: &WriteTransaction,
         stub: &[u8],
     ) -> Result<(), StorageError> {
-        self.stage_as(transaction, Some(stub))
+        self.stage_as(transaction, Some(stub), true)
+    }
+
+    /// Stages one frame of a multi-frame checkpoint transaction without the
+    /// per-frame physical root re-read. Only for an advance produced by
+    /// [`Self::prepare_chained`] or [`Self::prepare`] inside a batch whose
+    /// owner fully re-reads the roots after its final frame and aborts the
+    /// transaction on any mismatch; `stub` is as for [`Self::stage_stub`].
+    pub(crate) fn stage_within_batch(
+        self,
+        transaction: &WriteTransaction,
+        stub: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        self.stage_as(transaction, stub, false)
     }
 
     fn stage_as(
         self,
         transaction: &WriteTransaction,
         stub: Option<&[u8]>,
+        verify_roots: bool,
     ) -> Result<(), StorageError> {
         transaction
             .open_table(HISTORY)
@@ -488,7 +547,8 @@ impl PreparedHistoryAdvance {
         #[cfg(test)]
         crash_edge("roots");
         // Bind the actual physical post-images, not just the declared frontier.
-        if read_checkpoint_roots_for_write(transaction)? != Some(self.successor) {
+        // A batch owner performs this once after its final frame instead.
+        if verify_roots && read_checkpoint_roots_for_write(transaction)? != Some(self.successor) {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         Ok(())
