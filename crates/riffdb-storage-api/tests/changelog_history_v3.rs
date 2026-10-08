@@ -99,6 +99,50 @@ fn history_advancement_checks_the_original_receipt_and_allocator_without_mutatin
 }
 
 #[test]
+fn advance_and_encode_is_exactly_advance_plus_one_canonical_encoding() {
+    use riffdb_storage_api::{AuthoritativeMutationV3 as M, AuthoritativeNamespaceV1 as N};
+    let initial = History::new(lineage(), point(1), point(1), point(1)).unwrap();
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: lineage().database_id(),
+        history_incarnation: 1,
+        predecessor: Some(point(1).sequence()),
+        sequence: point(2).sequence(),
+        predecessor_frontier: DualFrontier::INITIAL,
+        covered_frontier: DualFrontier::INITIAL,
+        prior_history_hash: point(1).history_hash(),
+    };
+    for (attribution, mutations) in [
+        (ChangelogAttributionV3::CleanClose, vec![]),
+        (
+            // Admission advances no frontier and must carry mutations.
+            ChangelogAttributionV3::CommandAdmission,
+            vec![
+                M::put(N::Entities, b"a", None, b"inserted").unwrap(),
+                M::put(N::Entities, b"b", Some([0x22; 32]), &[0x5a; 4096]).unwrap(),
+            ],
+        ),
+    ] {
+        let receipt = AuthoritativeTransactionV3::new(binding, attribution, mutations).unwrap();
+        let (next, encoded) = initial.advance_and_encode(&receipt).unwrap();
+        assert!(next == initial.advance(&receipt).unwrap());
+        assert_eq!(encoded, receipt.encode().unwrap());
+        assert_eq!(next.tail().history_hash(), receipt.history_hash().unwrap());
+        // A refused successor is refused identically and encodes nothing.
+        assert!(next.advance_and_encode(&receipt).is_err());
+        let foreign = AuthoritativeTransactionV3::new(
+            AuthoritativeTransactionBindingV3 {
+                prior_history_hash: [0xff; 32],
+                ..binding
+            },
+            ChangelogAttributionV3::CleanClose,
+            vec![],
+        )
+        .unwrap();
+        assert!(initial.advance_and_encode(&foreign).is_err());
+    }
+}
+
+#[test]
 fn follower_acknowledgement_cannot_lead_or_substitute_its_applied_position() {
     assert!(Follower::detached().attached_state().is_none());
     assert!(Follower::attached(lineage(), point(2), None).is_ok());

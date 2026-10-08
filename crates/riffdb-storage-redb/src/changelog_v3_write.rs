@@ -414,8 +414,7 @@ impl PreparedHistoryAdvance {
         if assigned != receipt.binding().sequence {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        let successor = history.advance(receipt).map_err(value_error)?;
-        let encoded = receipt.encode().map_err(value_error)?;
+        let (successor, encoded) = history.advance_and_encode(receipt).map_err(value_error)?;
         let encoded_history = encode_changelog_history_state_v3(successor)
             .map_err(codec_error)?
             .into_bytes();

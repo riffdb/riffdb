@@ -159,6 +159,7 @@
 - [WP-818 Ordered Writer CPU](performance/wp-818-writer-cpu.md)
 - [WP-819 Writer Reads and Allocations](performance/wp-819-writer-paths.md)
 - [WP-820 Intake and Preparation](performance/wp-820-intake-preparation.md)
+- [WP-828 Extent Pacing and Writer Hashing](performance/wp-828-extent-pacing-and-writer-hashing.md)
 - [Open Writer-evidence Defects](performance/wp749-writer-census-defects.md)
 - [WP-749 Receipt-wait Repair and Checkpoint Investigation](performance/wp749-receipt-wait-repair-2026-09.md)
 - [WP-749 Correlated Tail Result](performance/wp749-correlated-tail-2026-09.md)

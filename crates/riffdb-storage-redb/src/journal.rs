@@ -106,6 +106,18 @@ fn known_extent_data_bytes(data_bytes: usize) -> bool {
         || data_bytes == LEGACY_EXTENT_DATA_BYTES
         || data_bytes == PRODUCTION_EXTENT_DATA_BYTES
 }
+/// Most zero-fill bytes an extent preparation leaves unsynced.
+///
+/// Preparation runs beside the live journal on the same device. Buffering a
+/// whole 320 MiB extent and syncing it once queues the entire extent ahead of
+/// the next journal `fdatasync`, which then waits behind it: on the
+/// development host a concurrent 136 KiB journal sync stalled for up to 177 ms
+/// in isolation (WP-814 attributes the remaining ~0.7 s writer maximum to this
+/// fill). Syncing every 2 MiB bounds that queue to one chunk (worst concurrent
+/// sync 7.8 ms there) for about 10% longer preparation, which runs off the
+/// writer path. Durability is unchanged: each chunk sync only precedes the
+/// existing final sync.
+const EXTENT_ZERO_FILL_SYNC_BYTES: usize = 2 * 1024 * 1024;
 const EXTENT_FRAME_ALIGNMENT: usize = 4 * 1024;
 const EXTENT_FRAME_HEADER_BYTES: usize = 128;
 const EXTENT_FRAME_FOOTER_BYTES: usize = 64;
@@ -3181,11 +3193,17 @@ fn prepare_recycled_extent_with_media(
     // allocation, on the background preparation thread, never the writer.
     let zeros = [0_u8; 64 * 1024];
     let mut offset = length.min(full);
+    let mut unsynced = 0_usize;
     while offset < full {
         let bytes = zeros.len().min(full - offset);
         file.write_all_at(&zeros[..bytes], offset)
             .map_err(|_| JournalIoError::Io)?;
         offset += bytes;
+        unsynced += bytes;
+        if unsynced >= EXTENT_ZERO_FILL_SYNC_BYTES {
+            file.sync_data().map_err(|_| JournalIoError::Io)?;
+            unsynced = 0;
+        }
     }
     file.set_len(u64::try_from(full).map_err(|_| JournalIoError::Corrupt)?)
         .map_err(|_| JournalIoError::Io)?;
@@ -3286,9 +3304,19 @@ fn create_extent_file_with_media(
         .map_err(|_| JournalIoError::Io)?;
     let zeroes = vec![0_u8; 1024 * 1024];
     let mut remaining = extent_file_bytes(header.data_bytes);
+    let mut unsynced = 0_usize;
     while remaining != 0 {
         let count = remaining.min(zeroes.len());
-        if let Err(error) = file.write_all(&zeroes[..count]) {
+        let written = file.write_all(&zeroes[..count]).and_then(|()| {
+            unsynced += count;
+            if unsynced >= EXTENT_ZERO_FILL_SYNC_BYTES {
+                unsynced = 0;
+                file.sync_data()
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = written {
             drop(file);
             let _ = media.remove_file(path);
             return Err(classify_extent_creation_error(&error));
@@ -5349,6 +5377,8 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    mod zero_fill_tests;
 
     /// Whole-directory scope: `.0` and every side file it grows (journal,
     /// checkpoint, spare, rewrite, …) live in one

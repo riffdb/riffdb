@@ -152,10 +152,44 @@ pub struct AuthoritativeMutationAccumulatorV3 {
 
 struct NetTransition {
     expected_hash: Option<[u8; 32]>,
-    current_hash: Option<[u8; 32]>,
+    current: CurrentState,
     restored: bool,
     value: Option<Box<[u8]>>,
 }
+
+/// The key's state after the latest observation, as its SHA-256 digest.
+///
+/// A digest is needed only to validate a later observation of the same key or
+/// to detect an exact restoration of an existing predecessor. Nearly every
+/// receipt row is observed once, and an insert can never be a restoration, so
+/// an insert defers its digest until a second observation asks for it.
+#[derive(Clone, Copy)]
+enum CurrentState {
+    /// Deleted (or never present): the digest is absence.
+    Absent,
+    /// Present with this exact digest.
+    Hashed([u8; 32]),
+    /// Present; the digest is that of the retained `value`, not yet computed.
+    Unhashed,
+}
+
+impl NetTransition {
+    fn current_hash(&self) -> Result<Option<[u8; 32]>, ChangelogV3Error> {
+        match (self.current, self.value.as_deref()) {
+            (CurrentState::Absent, _) => Ok(None),
+            (CurrentState::Hashed(hash), _) => Ok(Some(hash)),
+            (CurrentState::Unhashed, Some(value)) => Ok(Some(Sha256::digest(value).into())),
+            // Only a retained value is left unhashed; a restoration always
+            // stores its digest before dropping the value.
+            (CurrentState::Unhashed, None) => Err(ChangelogV3Error::PredecessorMismatch),
+        }
+    }
+}
+
+// The provider receipt work bound charges `size_of::<NetTransition>()`; the
+// lazy digest must not change that admitted size.
+const _: () =
+    assert!(std::mem::size_of::<CurrentState>() == std::mem::size_of::<Option<[u8; 32]>>());
 
 impl Default for AuthoritativeMutationAccumulatorV3 {
     fn default() -> Self {
@@ -192,17 +226,24 @@ impl AuthoritativeMutationAccumulatorV3 {
         let target = (namespace, key);
         let previous = self.changes.get(&target);
         let original = if let Some(previous) = previous {
-            if expected_hash != previous.current_hash {
+            if expected_hash != previous.current_hash()? {
                 return Err(ChangelogV3Error::PredecessorMismatch);
             }
             previous.expected_hash
         } else {
             expected_hash
         };
-        let final_hash = value
-            .as_deref()
-            .map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)));
-        let is_restoration = original == final_hash;
+        let current = match (value.as_deref(), original) {
+            (None, _) => CurrentState::Absent,
+            // Only an existing predecessor can be restored exactly.
+            (Some(bytes), Some(_)) => CurrentState::Hashed(Sha256::digest(bytes).into()),
+            (Some(_), None) => CurrentState::Unhashed,
+        };
+        let is_restoration = match (original, current) {
+            (None, CurrentState::Absent) => true,
+            (Some(original), CurrentState::Hashed(hash)) => original == hash,
+            _ => false,
+        };
         let old_bytes = previous.map_or(0, |previous| {
             44 + target.1.len() + previous.value.as_ref().map_or(0, |v| v.len())
         });
@@ -226,7 +267,7 @@ impl AuthoritativeMutationAccumulatorV3 {
             target,
             NetTransition {
                 expected_hash: original,
-                current_hash: final_hash,
+                current,
                 restored: is_restoration,
                 value,
             },
