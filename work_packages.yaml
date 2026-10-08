@@ -28821,4 +28821,24 @@ work_packages:
   - A receipt byte, history checksum, journal frame byte or expected-state hash changes.
   - An accepted decision, normative requirement, or declared path scope changes.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-10-08'
+    requirements_satisfied: [REC-001, STO-032, PERF-008]
+    evidence: C3D c32 alternating comparisons (write-only +15.1% at 60 s and
+      +14.8% at 90 s, interactive +9.2%, read-only unchanged; every write and
+      interactive candidate arm above every base arm), same-run safe-app
+      PostgreSQL qualification (write-only 0.896, interactive 1.145, both
+      eligible and stable), the fail-before zero-fill tests, equivalence tests for
+      the history encoding and overlay staging, and package acceptance.
+    decision: Retain all four ADR-0280 changes. No durable byte, hash, bound,
+      ordering, publication, recovery, interface or configuration change.
+    decisions_taken:
+    - Sync extent zero-fill every 2 MiB; recycled-extent regrowth uses the same bound.
+    - Reject a persistent B+tree overlay, an authentication principal cache, and
+      bounded redb checkpoint writeback after measuring each end to end.
+    known_limitations: Write-only c32 p95 rises 6-11% and p99 5-21% while
+      throughput rises; write throughput remains below PostgreSQL; redb checkpoint
+      commits remain the largest journal stall source.
+    follow_ups:
+    - Extent recycling (WP-815) would remove most zero-fill writes entirely.
+    - Smaller or incremental checkpoint commits under ADR-0263 for the remaining stalls.

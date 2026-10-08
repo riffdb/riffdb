@@ -1,11 +1,53 @@
 # WP-828: extent pacing and writer hashing
 
-Status: open. Implements ADR-0280 (accepted 2026-10-07). Base: `4489fa2f3`. The figures
-below come from a development machine (8 vCPU, AMD EPYC 7B12, ext4 on a
-network persistent disk), which runs
-TicketDesk at roughly half the ADR-0239 C3D host's throughput. They show
-direction only: no C3D comparison or same-run PostgreSQL qualification has been
-run, and nothing here is banked.
+Status: complete (2026-10-08). Implements ADR-0280 (accepted 2026-10-07).
+Base: `4489fa2f3`; candidate: `966492cbc`. Banked results come from the
+ADR-0239 C3D host (8 vCPU, AMD EPYC 9B14, ext4 on local NVMe). Earlier
+development figures come from a second machine (8 vCPU, AMD EPYC 7B12, ext4 on
+a network persistent disk) that runs TicketDesk at roughly half the C3D's
+throughput; they are retained as mechanism evidence only.
+
+## C3D results
+
+Production release builds, diagnostics disabled, TicketDesk `--full`, 32
+clients. The comparison runs held the host exclusively: a driver waited for no
+other build, test or daemon process and load below 1 before each arm, and
+recorded any other process seen during an arm: a short foreign process for 1
+and 4 seconds in the first two write-only arms, none in the others.
+
+Alternating base/candidate/candidate/base, RiffDB only (60 s after 10 s warmup,
+and a 90 s write-only repeat after 15 s warmup):
+
+| Load | Base arms (ops/s) | Candidate arms (ops/s) | Median change | Base / candidate p95 | Base / candidate p99 | Base / candidate maximum |
+|---|---|---|---:|---|---|---|
+| Write-only, 60 s | 3,613; 3,671 | 4,253; 4,134 | +15.1% | 8.13–8.39 / 8.91–9.44 ms | 12.06–12.58 / 14.68–15.20 ms | 697–704 / 280–297 ms |
+| Write-only, 90 s | 3,622; 3,588 | 4,135; 4,145 | +14.8% | 8.39 / 8.91 ms | 13.63–14.16 / 14.68 ms | 702–1,024 / 281–283 ms |
+| Interactive (journeys), 60 s | 16,110; 16,106 | 17,615; 17,557 | +9.2% | 7.08 / 7.08–7.34 ms | 9.44 / 9.44–9.96 ms | 696–729 / 233–249 ms |
+| Read-only, 60 s | 24,319; 24,274 | 24,316; 24,294 | 0.0% | 2.36 / 2.36 ms | 3.41–3.54 / 3.41 ms | 9 / 9 ms |
+
+Every write-only and interactive candidate arm exceeds every base arm. The
+recurring 0.7–1.0 s maximum stall is gone. Write-only p95 rises 6–11% and p99
+5–21% as more commands complete per second at the same concurrency; this is a
+real tail cost of the change at c32 and is disclosed rather than averaged away.
+Process CPU per committed command falls 3.4% write-only (0.0622 to 0.0600
+ticks) and 1.8% interactive; peak sampled RSS rises about 2.6% write-only. Most
+of the gain is the ordered writer idling less: its idle time falls from about 14
+to 9 s in the 60 s write-only runs.
+
+Same-run PostgreSQL 18 `safe-app` qualification of the candidate: three 90 s
+repetitions after 15 s warmup, `--require-stable`, run from a clean candidate
+tree. Both reports are evidence-eligible (stable, correctness clean, resource
+attribution complete, same device, idle host).
+
+| Load | RiffDB median | PostgreSQL median | Throughput ratio | p95 ratio | p99 ratio |
+|---|---:|---:|---:|---:|---:|
+| Write-only | 4,191 ops/s | 4,678 ops/s | 0.896 | 0.81 | 0.97 |
+| Interactive (journeys) | 17,569 ops/s | 15,338 ops/s | 1.145 | 0.87 | 0.86 |
+
+The previous same-run qualifications (WP-818, WP-819) measured write-only at
+0.758–0.768 and interactive at 1.021–1.048 of PostgreSQL. Comparing ratios
+across sessions is indicative, not a measurement of this change; the A/B above
+is. Write throughput remains below PostgreSQL.
 
 ## Changes
 
@@ -28,7 +70,7 @@ run, and nothing here is banked.
 No durable byte, hash value, bound, ordering, publication or recovery rule
 changes.
 
-## Isolated zero-fill interference
+## Isolated zero-fill interference (development machine)
 
 A 136 KiB write plus `fdatasync` loop on a preallocated file, measured while a
 320 MiB extent is zero-filled on the same disk, three rounds each:
@@ -42,7 +84,7 @@ A 136 KiB write plus `fdatasync` loop on a preallocated file, measured while a
 
 Fill time rises from about 1.2 s to 1.3 s at 2 MiB, off the writer's path.
 
-## End-to-end comparisons
+## Development-machine comparisons
 
 TicketDesk `--full`, 32 clients, 60 s measured after 10 s warmup, RiffDB only,
 production release builds, alternating base and candidate arms (B/C/C/B twice).
@@ -94,10 +136,12 @@ write-only gain is the writer idling less.
 ## Review note
 
 Package: WP-828. Tier: guarantee; ADR-0280 was accepted on 2026-10-07 at its
-committed text. Checks: storage-api and storage-redb all-feature suites
-(1,820 passed, 0 failed, 2 ignored), clippy with warnings denied and rustfmt on
-the bench machine; the zero-fill tests fail on the single-sync implementation.
-Compatibility: no public, durable or configuration change. Hazards and
-follow-ups: C3D confirmation and same-run PostgreSQL qualification; read-only
-comparison; redb checkpoint commits remain a large write burst; extent recycling
-remains WP-815.
+committed text. Checks: package acceptance (15 of 16 steps; 1,775 nextest tests
+passed, 2 skipped; `check-adr-obligations` fails identically on the base for
+ADR-0275 to ADR-0277), clippy with warnings denied, rustfmt, and the storage
+all-feature suites on the development machine; the zero-fill tests fail on the
+single-sync implementation. Compatibility: no public, durable or configuration
+change. Hazards and follow-ups: write-only c32 p95 and p99 rise modestly; write
+throughput remains below PostgreSQL; redb checkpoint commits remain the largest
+journal stall source; extent recycling remains WP-815; `./scripts/ci-all` was
+not run before merge.
