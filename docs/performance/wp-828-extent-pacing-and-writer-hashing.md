@@ -1,6 +1,6 @@
 # WP-828: extent pacing and writer hashing
 
-Status: open. Implements ADR-0280 (proposed). Base: `4489fa2f3`. The figures
+Status: open. Implements ADR-0280 (accepted 2026-10-07). Base: `4489fa2f3`. The figures
 below come from a development machine (8 vCPU, AMD EPYC 7B12, ext4 on a
 network persistent disk), which runs
 TicketDesk at roughly half the ADR-0239 C3D host's throughput. They show
@@ -93,8 +93,8 @@ write-only gain is the writer idling less.
 
 ## Review note
 
-Package: WP-828. Tier: guarantee; ADR-0280 is proposed and needs exact-text
-acceptance before merge. Checks: storage-api and storage-redb all-feature suites
+Package: WP-828. Tier: guarantee; ADR-0280 was accepted on 2026-10-07 at its
+committed text. Checks: storage-api and storage-redb all-feature suites
 (1,820 passed, 0 failed, 2 ignored), clippy with warnings denied and rustfmt on
 the bench machine; the zero-fill tests fail on the single-sync implementation.
 Compatibility: no public, durable or configuration change. Hazards and
