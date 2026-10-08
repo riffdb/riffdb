@@ -28664,6 +28664,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Frozen native source 0d26ff43 passes all 12 full-acceptance gates and the
+      complete CI battery on the required host, with source clean. The locked
+      release build passes. Unchanged preparation seeds 64 organizations and
+      65,536 tickets, then fails source_bytes_sample_gap before the first complete
+      five-minute load window. Native diagnostics report 4,887 receipts removed
+      but no deleted or recycled extents. Preserve the failed population and
+      observations; throughput, latency and populated recovery remain unqualified.
+      Diagnose the native accounting/progress blocker before campaign integration.
+      WP-825 remains open; no 24-hour run starts.
     - A deterministic real receipt-source ownership schedule fails before repair
       with 33 nested cleanup calls. Replace failed Arc::try_unwrap disposal with
       atomic Arc::into_inner handoff; the regression and source-cursor module pass.

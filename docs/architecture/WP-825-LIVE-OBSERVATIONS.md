@@ -1692,3 +1692,32 @@ checks against the separately recorded scope commit. A preceding scope check
 used the earlier baseline and included the scope extension in its own range;
 that failed receipt is preserved, and the corrected comparison passes.
 Final-source full CI and complete rehearsal remain required.
+
+## Bounded checkpoint on the frozen native repair
+
+Frozen source `0d26ff43` passes full acceptance on the required 8-vCPU,
+32-GiB Linux SSD host: all twelve gates pass, including the complete CI battery,
+with 6,922 recorded passing test executions. The source remains clean. Earlier
+attempts fail on missing TypeScript compiler/declarations and a Go C-compiler
+name unavailable on that host. Locked dependencies and the installed compiler
+repair those prerequisites; their failed receipts remain failed. The locked
+shipping release build also passes, and its four runtime binaries are copied
+and hash-bound before preparation.
+
+The unchanged preparation seeds all 64 organizations and 65,536 tickets and
+drains the seed archive, then starts the original 100-command/s, 400-read/s load
+with 28 load workers and four reserved auxiliary slots. It stops with
+`source_bytes_sample_gap` before the first complete five-minute window. During
+load, only one complete source-byte observation arrives; logical and physical
+observations continue. No complete normal-window throughput or latency result
+is established, and populated restore is not reached.
+
+At shutdown, native diagnostics report 4,887 receipts removed, zero deleted or
+recycled extents and 9,904 reference holds. The last source-plan observation has
+resume 4,632, tail 102,256 and eligible ceiling 18,048. Native source validation
+continues, but the byte observation does not complete within the existing
+freshness and observation-gap limits. The exact starvation cause remains
+unproven. Preserve the population, artifacts and failed observations; neither
+relaxing the gap nor reporting missing bytes as zero would repair this native
+blocker. Campaign integration remains deferred while this bounded checkpoint
+is assessed. WP-825 stays open and the 24-hour run remains unstarted.

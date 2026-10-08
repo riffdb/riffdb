@@ -148,3 +148,16 @@ An earlier fixed 2-MiB columnar-stack trial passes its native checks but is
 excluded from the final implementation. This cleanup race is proven separately;
 it is not an exclusive diagnosis of the earlier process abort. Final-source
 full CI and complete rehearsal still have to pass.
+
+## Frozen checkpoint result
+
+Native source `0d26ff43` subsequently passes all twelve full-acceptance gates on
+the required host, including complete CI, with the source clean. The shipping
+release build passes. The unchanged populated preparation then fails
+`source_bytes_sample_gap` before its first complete five-minute window: the
+source-byte producer emits one complete in-load observation while logical and
+physical observations continue. This is failed native preparation evidence;
+it establishes neither normal-window throughput/latency nor populated recovery.
+The remaining work is to diagnose the production accounting/progress blocker.
+Complete campaign integration remains deferred, WP-825 remains open and no
+24-hour run has begun. The earlier abort is still not exclusively diagnosed.
