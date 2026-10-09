@@ -28665,6 +28665,22 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-013 bounded protected-event prefix evaluation: use the maintainer's
+      existing authorization for necessary database fixes to include query-
+      executor sources. Inspection finds that protected replay authorizes
+      up to 1,024 candidates before discarding the suffix beyond the requested
+      admitted row. Move only that existing prefix cut into evaluation.
+      Preserve denied observations, candidate ceilings, one pinned policy
+      snapshot, capability and row checks, final transaction-current
+      revalidation and all-selected lease authorization. The separate scope
+      predecessor passes metadata acceptance. The eager-walk regression
+      fails its intended assertion on C3D; seven prefix regressions, the
+      query-executor suite, ten row-policy conformance tests, protected-
+      consumer coverage, the server suite, Clippy and formatting pass afterward.
+      Final metadata acceptance remains required. The preceding unchanged
+      preparation still fails the native consumer deadline; the repair is
+      not qualified and makes no sole-cause claim. WP-825 stays open.
+    - >-
       D-012 target-image launch observation: an explicit pre-exec pipe barrier
       proves that closing the finite-limit proof before exec lets the owner
       pin the launcher's memory image. Keep the existing non-inheritable

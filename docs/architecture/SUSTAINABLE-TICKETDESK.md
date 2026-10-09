@@ -2963,7 +2963,7 @@ verified payload while keeping the same 64-entry and 64-MiB ceilings. Current
 canonical or checked-stub identity and metadata checks precede every refresh;
 replacement or pruning still prevents stale reinsertion. An already captured
 candidate survives eviction but cannot hide corrupted current authority.
-All 13 focused native tests, the full storage suite, 59 architecture checks
+All 13 focused native tests, the full storage suite, 59 architecture checks,
 Clippy and formatting pass on C3D, including both lookup paths and deterministic
 eviction interleavings. Final metadata acceptance and an unchanged measured
 preparation remain required. This repairs a native eviction defect without establishing it
@@ -2980,3 +2980,27 @@ the repair; all 13 persistent-owner tests, nine roster tests and the complete
 205-test lifecycle suite pass afterward on C3D. This corrects launch observation
 without relaxing the memory checks. Integrated resource qualification remains
 unproved.
+
+
+The cache and launcher fixes subsequently pass final scoped metadata acceptance
+and are committed together. A fresh unchanged preparation builds its ordinary
+release binaries successfully, then reaches the same native consumer deadline
+before load. Seeding acknowledges all tickets in 30.8 seconds. No restore or
+full-CI pass follows that refusal. A separate repetition, configured to attach a
+debugger only after the original consumer failure, instead seeds in 116.1 seconds
+and consumes all 1,024 selected seed events with zero duplicates. No debugger
+attaches; the diagnostic is stopped before load and proves no preparation gate.
+
+Source inspection identifies another native excess: protected replay authorizes
+up to 1,024 candidate events before truncating to the requested visible prefix,
+which is 32 events in this workload. A candidate repair moves that existing
+admitted-prefix cut into evaluation. Denied rows must remain in the fence and
+consume bounded candidate work; insufficient visibility must still examine the
+full bounded prefix. Capability validation, one pinned policy snapshot, current
+row and relationship checks, and the backend's final transaction-current
+revalidation remain mandatory. Other lease operations continue to authorize all
+selected candidates. The eager-walk regression fails at its intended assertion
+before the repair. Seven prefix regressions, the full query-executor suite,
+ten row-policy conformance tests, protected-consumer coverage, the server suite
+and Clippy and formatting pass on C3D. Final metadata acceptance and an unchanged preparation
+remain required; these results establish no sole-cause claim.

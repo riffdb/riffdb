@@ -2490,7 +2490,7 @@ WP-825 remains open, and no 24-hour run starts.
 PR note: Package WP-825 (open); Tier internal for the cache implementation;
 Behavior: preserve actively read historical payloads within the existing bounded
 cache, refreshing retention only after authority validation; Checks: original
-negative, 13 focused native tests, full storage suite, 59 architecture checks
+negative, 13 focused native tests, full storage suite, 59 architecture checks,
 Clippy and formatting on C3D; Compatibility: unchanged application
 interfaces, authorization, ordering, durable formats, reviewed fixtures, cache
 ceilings and qualification gates; Updated handbook: Sustainable TicketDesk
@@ -2520,3 +2520,61 @@ application interfaces, database semantics, durable formats, reviewed fixtures,
 resource bounds and qualification gates; Updated handbook: Sustainable
 TicketDesk milestone; Hazards/follow-ups: final metadata acceptance, unchanged
 preparation and integrated campaign proof remain required. No 24-hour run starts.
+
+
+The cache and launcher component passes final scope, internal classification and
+metadata acceptance on C3D and is committed. Its unchanged ordinary release build
+passes. Preparation then stops at the same consumer transport deadline before
+measured load: seeding completes in 30.8 seconds, and the consumer exits after
+30.8 seconds. There is no external heavy-work interference, panic, populated
+restore result or full-CI success. The failed receipt remains evidence.
+
+A separate diagnostic permits a debugger attachment only after the original
+consumer reports failure. This repetition instead seeds in 116.1 seconds and
+consumes all 1,024 selected seed events with zero duplicates. No debugger attaches.
+It is stopped before load using the exact owned controller; its children close
+through the normal cleanup path. The diagnostic supplies no preparation gate,
+latency result or resource qualification and does not supersede the failures.
+
+Inspection finds that native protected replay first authorizes up to 1,024 event
+candidates, then retains only the prefix through the requested admitted limit.
+This workload requests 32 visible events. The candidate repair evaluates that
+same prefix incrementally, keeping every denied observation before the last
+selected visible event. The candidate ceiling and existing final transaction-
+current recheck remain unchanged. All-selected authorization for lease operations
+remains separate. The existing authorization, anchor, current-row, relationship,
+capability and error checks still govern every required observation.
+
+The maintainer's existing approval to cover necessary database fixes extends
+WP-825's implementation paths to query-executor sources for this prefix walk and
+its unit regressions. It grants no change to authority rules, public surfaces,
+formats, ordering or qualification gates. The scope extension is recorded in a
+separate predecessor commit after scope-only metadata acceptance on C3D.
+WP-825 stays open, and no 24-hour run starts.
+
+
+The deterministic eager-walk regression reaches the intended assertion on C3D:
+a 32-item visible prefix is selected, but the original walk evaluates all 1,024
+candidates before discarding the suffix. The candidate uses the same evaluator
+and neutral observation construction, stopping once the selected admitted count
+is reached. Hidden observations before that point remain in order. The final
+backend still receives the original admitted-prefix truncation and revalidates
+all selected observations under its mutation fence. Full authorization remains
+the path for lease candidates. Seven prefix regressions, the full query-executor
+suite and ten row-policy conformance tests pass on C3D. The next protected-storage
+command initially names the wrong package and runs no tests; its failed receipt
+is preserved. A continuation over the exact same formatted Rust sources runs the
+correct protected-consumer test successfully, followed by the server suite,
+Clippy and formatting. Final metadata acceptance remains required.
+
+PR note: Package WP-825 (open); Tier internal for prefix evaluation;
+Behavior: avoid authorizing the unused suffix beyond a protected replay's
+selected visible prefix; Checks: intended eager-walk negative, seven focused
+regressions, full query-executor suite, ten row-policy conformance tests,
+protected-consumer test, server suite, Clippy and formatting on C3D; final
+metadata acceptance required; Compatibility: unchanged authority rules, final safe
+point, hidden-row semantics, candidate ceiling, public interfaces, formats,
+reviewed fixtures, ordering and qualification gates; Updated handbook:
+Sustainable TicketDesk milestone; Hazards/follow-ups: final acceptance,
+unchanged preparation, complete fault controller, populated restore, final-source
+full CI and the short campaign remain required. No 24-hour run starts.

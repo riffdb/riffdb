@@ -77,6 +77,35 @@ where
         observed_at: Timestamp,
         policy: &AuthorizedQueryRowPolicyContextV1,
     ) -> Result<EventCandidateAuthorizationV1, QueryExecutionError> {
+        self.authorize_event_candidate_prefix(event_ids, observed_at, policy, None)
+    }
+
+    /// Evaluates the exact candidate prefix through the requested visible row.
+    /// Denied candidates retain their neutral observations and consume scan
+    /// work, while the final backend still rechecks the complete selected prefix.
+    #[doc(hidden)]
+    pub fn authorize_event_candidates_through_limit(
+        &self,
+        event_ids: &[EventId],
+        observed_at: Timestamp,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        admitted_limit: std::num::NonZeroU16,
+    ) -> Result<EventCandidateAuthorizationV1, QueryExecutionError> {
+        if event_ids.len() > riffdb_storage_api::MAX_EVENT_POLICY_ADMISSION_OBSERVATIONS_V1
+            || event_ids.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+        self.authorize_event_candidate_prefix(event_ids, observed_at, policy, Some(admitted_limit))
+    }
+
+    fn authorize_event_candidate_prefix(
+        &self,
+        event_ids: &[EventId],
+        observed_at: Timestamp,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        admitted_limit: Option<std::num::NonZeroU16>,
+    ) -> Result<EventCandidateAuthorizationV1, QueryExecutionError> {
         let Some((capability_id, revision)) = policy.internal_capability_identity() else {
             return Err(QueryExecutionError::BackendIntegrity);
         };
@@ -102,68 +131,61 @@ where
             .storage
             .open_owned_snapshot()
             .map_err(map_storage_error)?;
-        let mut observations = Vec::with_capacity(event_ids.len());
-        for event_id in event_ids {
-            let event = snapshot
-                .read_durable_event(*event_id)
-                .map_err(map_storage_error)?
-                .ok_or(QueryExecutionError::BackendIntegrity)?;
-            let Some(anchor) = event.policy_anchor() else {
-                observations.push(
-                    EventPolicyAdmissionObservationV1::new(event, None, Vec::new(), false)
+        let observations = crate::event_candidate_prefix::collect_admitted_prefix(
+            event_ids,
+            admitted_limit,
+            |event_id| {
+                let event = snapshot
+                    .read_durable_event(*event_id)
+                    .map_err(map_storage_error)?
+                    .ok_or(QueryExecutionError::BackendIntegrity)?;
+                let Some(anchor) = event.policy_anchor() else {
+                    return EventPolicyAdmissionObservationV1::new(event, None, Vec::new(), false)
+                        .map(|observation| (observation, false))
+                        .map_err(|_| QueryExecutionError::BackendIntegrity);
+                };
+                let current = snapshot
+                    .read_entity(anchor.source())
+                    .map_err(map_storage_error)?;
+                let Some(record) = current else {
+                    return EventPolicyAdmissionObservationV1::new(event, None, Vec::new(), false)
+                        .map(|observation| (observation, false))
+                        .map_err(|_| QueryExecutionError::BackendIntegrity);
+                };
+                if !policy.protects(anchor.source().entity_type_id()) {
+                    return Err(QueryExecutionError::BackendIntegrity);
+                }
+                let lookups = policy
+                    .relationship_lookups(anchor.source().entity_type_id(), record.fields())
+                    .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+                let mut relationships = Vec::with_capacity(lookups.len());
+                let mut evidence = Vec::with_capacity(lookups.len());
+                for lookup in &lookups {
+                    let exists = indexed_relationship_exists(&snapshot, lookup)
+                        .map_err(map_storage_error)?;
+                    relationships.push(
+                        EventPolicyRelationshipObservationV1::new(
+                            lookup.partition().clone(),
+                            lookup.index_prefix().to_vec(),
+                            exists,
+                        )
                         .map_err(|_| QueryExecutionError::BackendIntegrity)?,
+                    );
+                    evidence.push(exists);
+                }
+                let candidate = EventPolicyCandidateV1::new(
+                    *event_id,
+                    anchor.source().key().clone(),
+                    anchor.read_policy().clone(),
                 );
-                continue;
-            };
-            let current = snapshot
-                .read_entity(anchor.source())
-                .map_err(map_storage_error)?;
-            let Some(record) = current else {
-                observations.push(
-                    EventPolicyAdmissionObservationV1::new(event, None, Vec::new(), false)
-                        .map_err(|_| QueryExecutionError::BackendIntegrity)?,
-                );
-                continue;
-            };
-            if !policy.protects(anchor.source().entity_type_id()) {
-                return Err(QueryExecutionError::BackendIntegrity);
-            }
-            let lookups = policy
-                .relationship_lookups(anchor.source().entity_type_id(), record.fields())
-                .map_err(|_| QueryExecutionError::BackendIntegrity)?;
-            let mut relationships = Vec::with_capacity(lookups.len());
-            let mut evidence = Vec::with_capacity(lookups.len());
-            for lookup in &lookups {
-                let exists =
-                    indexed_relationship_exists(&snapshot, lookup).map_err(map_storage_error)?;
-                relationships.push(
-                    EventPolicyRelationshipObservationV1::new(
-                        lookup.partition().clone(),
-                        lookup.index_prefix().to_vec(),
-                        exists,
-                    )
-                    .map_err(|_| QueryExecutionError::BackendIntegrity)?,
-                );
-                evidence.push(exists);
-            }
-            let candidate = EventPolicyCandidateV1::new(
-                *event_id,
-                anchor.source().key().clone(),
-                anchor.read_policy().clone(),
-            );
-            let admitted = policy
-                .authorize_event_release(&candidate, record.fields(), &evidence)
-                .is_allowed();
-            observations.push(
-                EventPolicyAdmissionObservationV1::new(
-                    event,
-                    Some(record),
-                    relationships,
-                    admitted,
-                )
-                .map_err(|_| QueryExecutionError::BackendIntegrity)?,
-            );
-        }
+                let admitted = policy
+                    .authorize_event_release(&candidate, record.fields(), &evidence)
+                    .is_allowed();
+                EventPolicyAdmissionObservationV1::new(event, Some(record), relationships, admitted)
+                    .map(|observation| (observation, admitted))
+                    .map_err(|_| QueryExecutionError::BackendIntegrity)
+            },
+        )?;
         EventPolicyAdmissionFenceV1::new(capability, observed_at, observations)
             .map(Box::new)
             .map(EventCandidateAuthorizationV1::Authorized)

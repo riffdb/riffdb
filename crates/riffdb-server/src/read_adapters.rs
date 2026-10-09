@@ -996,7 +996,12 @@ impl ServerAuthoritativeReadPort {
                 }
                 let admission = event_storage
                     .query_executor()
-                    .authorize_event_candidates(&candidate_events, observed_at, &policy)
+                    .authorize_event_candidates_through_limit(
+                        &candidate_events,
+                        observed_at,
+                        &policy,
+                        limit.get(),
+                    )
                     .map_err(|error| match error {
                         riffdb_query_executor::QueryExecutionError::BackendUnavailable => {
                             AuthoritativeReadError::Unavailable
