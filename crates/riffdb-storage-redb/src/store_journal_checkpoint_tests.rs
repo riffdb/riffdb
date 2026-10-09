@@ -527,3 +527,153 @@ fn multi_frame_checkpoint_validates_roots_once_per_batch_and_matches_sequential_
         Some(advanced)
     );
 }
+
+/// A store activated for V3 with three chained frames durable only in its
+/// journal, as after a crash before their checkpoint.
+fn store_with_three_journaled_frames(
+    label: &str,
+) -> (
+    crate::test_path::ScopedDirectory,
+    std::path::PathBuf,
+    RedbStore,
+    DatabaseId,
+    riffdb_storage_api::ChangelogHistoryStateV3,
+    JournalCheckpointBatch,
+    Vec<JournalFrame>,
+    Vec<riffdb_storage_api::AuthoritativeTransactionV3>,
+) {
+    let scope = crate::test_path::ScopedDirectory::new(label);
+    let path = scope.join("db.redb");
+    let mut store = RedbStore::open(&path).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
+    let history = crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        lineage,
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let (batch, sources, expected) = chained_audit_batch(&store, &path, database_id, history, 3);
+    (
+        scope,
+        path,
+        store,
+        database_id,
+        history,
+        batch,
+        sources,
+        expected,
+    )
+}
+
+fn assert_materialized_as_sequential(
+    database: &redb::Database,
+    history: riffdb_storage_api::ChangelogHistoryStateV3,
+    sources: &[JournalFrame],
+    expected: &[riffdb_storage_api::AuthoritativeTransactionV3],
+) {
+    let pin = database.begin_read().unwrap();
+    let mut advanced = history;
+    for (source, receipt) in sources.iter().zip(expected) {
+        assert_eq!(
+            crate::changelog_v3_journal::verify_materialized_frame(&pin, source)
+                .unwrap()
+                .encode()
+                .unwrap(),
+            receipt.encode().unwrap()
+        );
+        advanced = advanced.advance(receipt).unwrap();
+    }
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        Some(advanced)
+    );
+}
+
+// req: REC-001, REP-003, PERF-007
+#[test]
+fn recovery_replay_validates_roots_once_per_transaction_and_matches_sequential_receipts() {
+    let (_scope, path, store, database_id, history, _batch, sources, expected) =
+        store_with_three_journaled_frames("v3-chained-recovery");
+    let shared = Arc::clone(&store.shared);
+    drop(store);
+    // A real open registers this before recovery; stubs resolve through it.
+    shared.register_history_resolver(database_id);
+    crate::changelog_v3_roots::WRITE_ROOT_READS.with(|reads| reads.set(0));
+    crate::journal::recover_journal_path(
+        &shared.database,
+        &crate::journal::journal_path(&path),
+        database_id,
+    )
+    .unwrap();
+    // Once before the first replayed frame and once after the last.
+    assert_eq!(
+        crate::changelog_v3_roots::WRITE_ROOT_READS.with(std::cell::Cell::get),
+        2
+    );
+    assert_materialized_as_sequential(&shared.database, history, &sources, &expected);
+}
+
+// req: REC-001, REP-003, PERF-007
+#[test]
+fn published_suffix_drain_validates_roots_once_per_transaction_and_matches_sequential_receipts() {
+    let (_scope, path, store, database_id, history, batch, sources, expected) =
+        store_with_three_journaled_frames("v3-chained-drain");
+    let last = batch.frames.last().unwrap();
+    let runtime = crate::store::JournalRuntime {
+        changelog_history: Some(
+            expected
+                .iter()
+                .fold(history, |state, receipt| state.advance(receipt).unwrap()),
+        ),
+        lane: Arc::new(
+            crate::journal::JournalLane::open(
+                &crate::journal::journal_path(&path),
+                &crate::journal::JournalFileHeader::with_frontiers(
+                    database_id,
+                    None,
+                    None,
+                    batch.checkpoint_hash,
+                ),
+            )
+            .unwrap(),
+        ),
+        database_id,
+        last_sequence: None,
+        last_administration_sequence: last.covered_administration_sequence,
+        last_hash: last.frame_hash,
+        published_sequence: None,
+        published_administration_sequence: last.covered_administration_sequence,
+        published_hash: last.frame_hash,
+        suffix_transitions: batch.transition_count,
+        suffix_commands: 0,
+        suffix_audits: batch.audit_count,
+        suffix_bytes: batch.encoded_bytes,
+        suffix_physical_bytes: batch
+            .frames
+            .iter()
+            .map(|frame| frame.placement.padded_len)
+            .sum(),
+        suffix_frames: batch.frames.clone(),
+        unpublished_transitions: 0,
+        unpublished_commands: 0,
+        unpublished_audits: 0,
+        unpublished_bytes: 0,
+        reanchor_required: false,
+    };
+    let transaction = store.shared.database.begin_write().unwrap();
+    crate::changelog_v3_roots::WRITE_ROOT_READS.with(|reads| reads.set(0));
+    store
+        .shared
+        .apply_published_journal_suffix(&transaction, &runtime)
+        .unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::WRITE_ROOT_READS.with(std::cell::Cell::get),
+        2
+    );
+    transaction.commit().unwrap();
+    drop(runtime);
+    assert_materialized_as_sequential(&store.shared.database, history, &sources, &expected);
+}

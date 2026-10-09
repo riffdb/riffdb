@@ -126,6 +126,34 @@ riffdb-storage-redb all-feature suite (1,217 tests) passes; acceptance fmt,
 clippy, file-size and panic-allowance guards pass; one ci-profile test timed
 out at 120 s under workstation load and passes alone in 30.7 s (base 31.4 s).
 Compatibility: no durable, protocol, or public change. Hazards and follow-ups:
-recovery and the journal-suffix drain under the writer gate keep three root
-validations per frame and are the next candidate; write throughput remains
+recovery and the journal-suffix drain under the writer gate are addressed by
+WP-829 below; write throughput remains
 below PostgreSQL (0.946).
+
+## WP-829: recovery replay and the published-suffix drain (ADR-0281)
+
+Status: implemented, pending exact-text acceptance of ADR-0281. Recovery replay
+(`replay_frames`) and the drain every direct primary write performs under the
+writer gate (`apply_published_journal_suffix`) used the same three full root
+validations per frame. `ChainedFrameMaterialization` now validates the roots
+once before the first receipt-bearing frame of the transaction and once after
+the last, with the per-frame checks of ADR-0281 Decision 2. Every frame is
+still decoded from its own bytes, its receipt derived and bound, and every
+ordered before-image checked. A frame without a receipt source discharges the
+deferred check before it is applied.
+
+`recovery_replay_validates_roots_once_per_transaction_and_matches_sequential_receipts`
+and
+`published_suffix_drain_validates_roots_once_per_transaction_and_matches_sequential_receipts`
+record nine validations for three frames on the base and two with the change,
+and require receipts and the final history state equal to standalone
+sequential materialization.
+
+Mechanism timing, release test build on the development workstation, three
+alternating runs each: recovery replay of 2,000 chained service-audit frames
+took 194–499 ms on the base (204 and 194 ms after a cold first run) and
+63–77 ms with the change. These frames are small, so the fixed per-frame root
+cost dominates; frames carrying large command segments spend proportionally
+more time in decoding and mutation application, and their gain is smaller. The
+c32 TicketDesk profile recorded no drain samples, so no throughput change is
+expected or claimed for that workload.

@@ -4,8 +4,8 @@
 use redb::{ReadTransaction, ReadableTable, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3,
-    AuthoritativeTransactionV3, ChangelogHistoryPointV3, ChangelogTransactionSequence,
-    MAX_CHANGELOG_FRAME_BYTES, StorageError, StorageErrorKind,
+    AuthoritativeTransactionV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
+    ChangelogTransactionSequence, MAX_CHANGELOG_FRAME_BYTES, StorageError, StorageErrorKind,
 };
 use riffdb_types::DualFrontier;
 
@@ -194,58 +194,143 @@ pub(crate) fn plan_recovery(
     })
 }
 
-/// [`materialize_located_frame`] without a locator, for unit tests.
+/// One standalone frame without a locator, for unit tests: roots validated in
+/// full before and after it.
 #[cfg(test)]
 pub(crate) fn materialize_recovered_frame(
     transaction: &WriteTransaction,
     frame: &JournalFrame,
 ) -> Result<AuthoritativeTransactionV3, StorageError> {
-    materialize_located_frame(transaction, frame, None)
+    materialize_native_frame(transaction, frame, None, false, None).map(|(receipt, _, _)| receipt)
 }
 
-/// Called only with an independently decoded/validated recovery frame. The
-/// live checkpoint has a separate retained-proof path; it does not re-decode.
-/// On error the owner must abort, as for existing ordered journal application.
-/// With the frame's `locator`, its segments and its receipt are written as
-/// history stubs (ADR-0263 Amendment 3).
-pub(crate) fn materialize_located_frame(
-    transaction: &WriteTransaction,
-    frame: &JournalFrame,
-    locator: Option<crate::history_stub::StubLocator>,
-) -> Result<AuthoritativeTransactionV3, StorageError> {
-    materialize_native_frame(transaction, frame, locator, false).map(|(receipt, _)| receipt)
+/// Materializes successive frames of one redb write transaction. Called only
+/// with independently decoded/validated journal frames (recovery replay and
+/// the published-suffix drain); the live checkpoint has a separate
+/// retained-proof path and does not re-decode. On error the owner must abort,
+/// as for existing ordered journal application. With a frame's `locator`, its
+/// segments and its receipt are written as history stubs (ADR-0263
+/// Amendment 3).
+///
+/// The transaction is the batch: no state between two of its frames is
+/// durable or visible. The physical changelog roots, including the terminal
+/// receipt the history index resolves, are validated in full before the first
+/// receipt-bearing frame and again by [`Self::finish`] after the last. Between
+/// them each frame starts from the successor the previous frame staged, and
+/// `PreparedHistoryAdvance::prepare_chained` re-checks the stored root rows
+/// and the physical frontier against it. Every frame is still decoded and
+/// validated independently, its receipt derived from its own bytes and its
+/// recorded binding checked, and every ordered mutation's before-image is
+/// still checked. A frame without a receipt source breaks the chain, so the
+/// next receipt-bearing frame validates the roots in full again.
+#[derive(Default)]
+pub(crate) struct ChainedFrameMaterialization {
+    chain: Option<ChangelogHistoryStateV3>,
 }
 
-/// The live drain additionally checks its actual native preimages before any
-/// mutation, preserving only the closed source-independent audit conversion.
-pub(crate) fn materialize_located_frame_for_continuation(
-    transaction: &WriteTransaction,
-    frame: &JournalFrame,
-    locator: Option<crate::history_stub::StubLocator>,
-) -> Result<
-    (
-        AuthoritativeTransactionV3,
-        crate::source_continuation::SourceContinuationFootprint,
-    ),
-    StorageError,
-> {
-    materialize_native_frame(transaction, frame, locator, true)
+impl ChainedFrameMaterialization {
+    /// The standalone single-frame materialization, for the next frame of
+    /// this batch.
+    pub(crate) fn materialize(
+        &mut self,
+        transaction: &WriteTransaction,
+        frame: &JournalFrame,
+        locator: Option<crate::history_stub::StubLocator>,
+    ) -> Result<AuthoritativeTransactionV3, StorageError> {
+        self.materialize_inner(transaction, frame, locator, false)
+            .map(|(receipt, _)| receipt)
+    }
+
+    /// The live drain's form of [`Self::materialize`]: it additionally checks
+    /// its actual native preimages before any mutation, preserving only the
+    /// closed source-independent audit conversion.
+    pub(crate) fn materialize_for_continuation(
+        &mut self,
+        transaction: &WriteTransaction,
+        frame: &JournalFrame,
+        locator: Option<crate::history_stub::StubLocator>,
+    ) -> Result<
+        (
+            AuthoritativeTransactionV3,
+            crate::source_continuation::SourceContinuationFootprint,
+        ),
+        StorageError,
+    > {
+        self.materialize_inner(transaction, frame, locator, true)
+    }
+
+    /// Records that a frame without a receipt source is about to be applied
+    /// directly. The deferred post-image check for the frames chained so far
+    /// runs first, exactly where the unchained path ran it.
+    pub(crate) fn break_chain(
+        &mut self,
+        transaction: &WriteTransaction,
+    ) -> Result<(), StorageError> {
+        self.verify_chain(transaction)
+    }
+
+    fn materialize_inner(
+        &mut self,
+        transaction: &WriteTransaction,
+        frame: &JournalFrame,
+        locator: Option<crate::history_stub::StubLocator>,
+        qualify: bool,
+    ) -> Result<
+        (
+            AuthoritativeTransactionV3,
+            crate::source_continuation::SourceContinuationFootprint,
+        ),
+        StorageError,
+    > {
+        // A failure leaves the chain unset; the owner must abort.
+        let chain = self.chain.take();
+        let (receipt, footprint, successor) =
+            materialize_native_frame(transaction, frame, locator, qualify, Some(chain))?;
+        self.chain = successor;
+        Ok((receipt, footprint))
+    }
+
+    /// Binds the physical post-images after the batch's final frame. Must be
+    /// called, and must succeed, before the owner commits.
+    pub(crate) fn finish(mut self, transaction: &WriteTransaction) -> Result<(), StorageError> {
+        self.verify_chain(transaction)
+    }
+
+    fn verify_chain(&mut self, transaction: &WriteTransaction) -> Result<(), StorageError> {
+        match self.chain.take() {
+            None => Ok(()),
+            Some(expected) if read_checkpoint_roots_for_write(transaction)? == Some(expected) => {
+                Ok(())
+            }
+            Some(_) => Err(storage_error(StorageErrorKind::CorruptData)),
+        }
+    }
 }
 
+/// `chained` is `None` for a standalone frame, which validates the roots in
+/// full before and after itself. Inside a [`ChainedFrameMaterialization`] it
+/// is `Some(predecessor)`: the successor the previous frame staged in this
+/// transaction, or `None` to validate the roots in full first. A chained
+/// frame defers its post-image check to its owner and returns its successor.
 fn materialize_native_frame(
     transaction: &WriteTransaction,
     frame: &JournalFrame,
     locator: Option<crate::history_stub::StubLocator>,
     qualify: bool,
+    chained: Option<Option<ChangelogHistoryStateV3>>,
 ) -> Result<
     (
         AuthoritativeTransactionV3,
         crate::source_continuation::SourceContinuationFootprint,
+        Option<ChangelogHistoryStateV3>,
     ),
     StorageError,
 > {
-    let history = read_checkpoint_roots_for_write(transaction)?
-        .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+    let history = match chained {
+        Some(Some(predecessor)) => predecessor,
+        None | Some(None) => read_checkpoint_roots_for_write(transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?,
+    };
     let binding = AuthoritativeTransactionBindingV3 {
         database_id: history.lineage().database_id(),
         history_incarnation: history.lineage().history_incarnation(),
@@ -272,7 +357,10 @@ fn materialize_native_frame(
     }
     let receipt = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
         .map_err(value_error)?;
-    let advance = PreparedHistoryAdvance::prepare(transaction, &receipt)?;
+    let advance = match chained {
+        None => PreparedHistoryAdvance::prepare(transaction, &receipt)?,
+        Some(_) => PreparedHistoryAdvance::prepare_chained(transaction, history, &receipt)?,
+    };
     let tables = table_inventory(transaction)?;
     // Refuse missing target tables before any write; redb's open_table would
     // otherwise silently create them. Check cancelled net mutations as well.
@@ -331,14 +419,18 @@ fn materialize_native_frame(
         crate::journal::apply_located_mutation(transaction, mutation, locator)
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     }
-    match locator {
+    let successor = advance.successor();
+    let stub = match locator {
         // Only a frame that records its binding can re-derive its receipt.
-        Some(locator) if frame.changelog().is_some() => {
-            advance.stage_stub(transaction, &locator.receipt_stub()?)?;
-        }
-        _ => advance.stage(transaction)?,
+        Some(locator) if frame.changelog().is_some() => Some(locator.receipt_stub()?),
+        _ => None,
+    };
+    match (chained, stub) {
+        (None, Some(stub)) => advance.stage_stub(transaction, &stub)?,
+        (None, None) => advance.stage(transaction)?,
+        (Some(_), stub) => advance.stage_within_batch(transaction, stub.as_deref())?,
     }
-    Ok((receipt, footprint))
+    Ok((receipt, footprint, chained.map(|_| successor)))
 }
 
 /// Checks one already materialized overlap against its original journal source
