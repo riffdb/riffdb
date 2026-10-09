@@ -28902,3 +28902,31 @@ work_packages:
       the development workstation.
     follow_ups:
     - Receipt re-derivation is about 6% of checkpoint CPU and was not decided (ADR-0281 option 3).
+- id: WP-830
+  name: Derived sidecar absence observed once per handle
+  tier: guarantee
+  depends_on: [WP-791]
+  objective: Implement ADR-0282. A derived read that observes an absent sidecar
+    records it on the handle, so later reads serve the empty view without
+    statting the path, until the handle itself opens the sidecar.
+  requirements: [STO-030]
+  required_adrs: [ADR-0282, ADR-0240, ADR-0246]
+  allowed_paths: [work_packages.yaml, adr/0282-derived-sidecar-absence-observed-once-per-handle.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/store_open.rs, crates/riffdb-storage-redb/src/derived/tests/adr0240.rs,
+    docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - The per-handle absence observation in begin_derived_read
+  - A fail-before test holding one probe per handle and a read of a later-created sidecar
+  - A performance note with the read-path measurement
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-830
+  - ./scripts/ci-all
+  exit_gate: Reads of an absent sidecar stat it once per handle, a sidecar the
+    handle creates is always read, and every ADR-0240 proof passes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration or opt-out is added.
+    scale: Constant per handle; one probe removed per read.
+  human_review_triggers:
+  - Anything other than the handle's derived_database can create the sidecar while it is open.
+  - A derived read can return the empty view after the handle opened the sidecar.
