@@ -95,15 +95,39 @@ impl Reader {
     pub(super) fn revisions(&mut self) -> Result<Vec<u64>> {
         let mut revisions = vec![0_u64; super::model::POPULATION as usize];
         while let Some(row) = self.next()? {
-            let ticket = (row.ordinal % super::model::POPULATION) as usize;
-            let expected = row.ordinal / super::model::POPULATION;
-            if revisions[ticket] != expected {
-                return Err("witness_revision_gap");
-            }
-            revisions[ticket] += 1;
+            accept_revision(&mut revisions, &row)?;
         }
         Ok(revisions)
     }
+
+    /// The count is the load owner's exact, quiesced acknowledgement count.
+    /// Stop after those rows; the preallocated unoffered suffix supplies no
+    /// reconciliation evidence and needs no scan during a bounded handover.
+    pub(super) fn acknowledged_prefix(&mut self, count: u64) -> Result<(Acknowledged, Vec<u64>)> {
+        if self.position != 0 || count == 0 || count > self.slots {
+            return Err("witness_prefix");
+        }
+        let mut first = None;
+        let mut revisions = vec![0_u64; super::model::POPULATION as usize];
+        for _ in 0..count {
+            let row = self.next()?.ok_or("missing_command_witness")?;
+            accept_revision(&mut revisions, &row)?;
+            if first.is_none() {
+                first = Some(row);
+            }
+        }
+        Ok((first.ok_or("missing_command_witness")?, revisions))
+    }
+}
+
+fn accept_revision(revisions: &mut [u64], row: &Acknowledged) -> Result<()> {
+    let ticket = (row.ordinal % super::model::POPULATION) as usize;
+    let expected = row.ordinal / super::model::POPULATION;
+    if revisions[ticket] != expected {
+        return Err("witness_revision_gap");
+    }
+    revisions[ticket] += 1;
+    Ok(())
 }
 
 impl Witness {
@@ -305,6 +329,33 @@ mod tests {
         assert!(Reader::open(&path).is_err());
         std::os::unix::fs::symlink(&path, root.join("linked.witness")).unwrap();
         assert!(Reader::open(&root.join("linked.witness")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // req: END-003, END-007, END-008, END-010
+    #[test]
+    fn quiesced_acknowledged_prefix_reports_actual_ticket_revisions_without_scanning_future_slots()
+    {
+        let root =
+            std::env::temp_dir().join(format!("riffdb-witness-prefix-test-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let witness = Witness::create(&root, "updates.witness", 4).unwrap();
+        witness.record(1, 73, 1, 1).unwrap();
+        witness.record(0, 72, 1, 1).unwrap();
+        let mut reader = Reader::open(&root.join("updates.witness")).unwrap();
+        let (original, revisions) = reader.acknowledged_prefix(2).unwrap();
+        assert_eq!(original.ordinal, 0);
+        assert_eq!(original.sequence, 72);
+        assert_eq!((revisions[0], revisions[1]), (1, 1));
+        assert_eq!(revisions.iter().sum::<u64>(), 2);
+        assert_eq!(
+            reader.position, 2,
+            "unoffered day-sized suffix is not a prefix scan"
+        );
+        let mut reader = Reader::open(&root.join("updates.witness")).unwrap();
+        assert!(reader.acknowledged_prefix(0).is_err());
+        assert!(reader.acknowledged_prefix(5).is_err());
+        assert!(reader.acknowledged_prefix(3).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

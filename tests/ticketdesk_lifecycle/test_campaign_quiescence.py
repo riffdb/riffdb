@@ -28,6 +28,13 @@ class WorkerHandover(unittest.TestCase):
     def release(self, root):
         return QuiescentRelease(root, generation=1, version=1, incarnation=1)
 
+    def resumed_acknowledgement(self, root, *, commands=72, version=1, incarnation=1):
+        (root / "load.resumed").write_text(json.dumps({
+            "schema": "riffdb.ticketdesk-lifecycle-resumed/v1", "generation": 2,
+            "contract_version": version, "history_incarnation": incarnation,
+            "completed_commands": commands, "completed_reads": 282,
+        }) + "\n")
+
     def test_both_original_workers_must_acknowledge_before_publishing_or_resuming(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -62,8 +69,9 @@ class WorkerHandover(unittest.TestCase):
             self.assertFalse((root / "observer.quiesce").exists())
             self.assertTrue((root / "load.quiesced").exists())
             self.assertTrue((root / "observer.quiesced").exists())
+            self.resumed_acknowledgement(root, version=2)
             control.workers_resumed(3 * SECOND, generation=2, incarnation=1,
-                                    duplicates=0, completed_commands=72)
+                                    duplicates=0)
             self.assertFalse((root / "load.quiesced").exists())
             self.assertFalse((root / "observer.quiesced").exists())
 
@@ -127,8 +135,9 @@ class WorkerHandover(unittest.TestCase):
             self.assertEqual((root / "load.phase").read_bytes(), b"2 1 2 next.credential\n")
             control.resume(2 * SECOND)
             self.assertTrue((root / "observer.restore").exists())
+            self.resumed_acknowledgement(root, incarnation=2)
             control.workers_resumed(3 * SECOND, generation=2, incarnation=2,
-                                    duplicates=0, completed_commands=72)
+                                    duplicates=0)
             self.assertFalse((root / "observer.restore").exists())
 
     def test_acknowledgements_stay_until_both_new_generation_workers_make_progress(self):
@@ -141,8 +150,10 @@ class WorkerHandover(unittest.TestCase):
                 self.acknowledgements(root)
                 control.publish(SECOND, credential="next.credential", version=1, incarnation=1)
                 control.resume(2 * SECOND)
-                evidence = dict(generation=2, incarnation=1, duplicates=0, completed_commands=72)
-                evidence.update(change)
+                self.resumed_acknowledgement(root, commands=change.get("completed_commands", 72))
+                evidence = dict(generation=2, incarnation=1, duplicates=0)
+                evidence.update({key: value for key, value in change.items()
+                                 if key != "completed_commands"})
                 with self.assertRaises(QuiescenceError):
                     control.workers_resumed(3 * SECOND, **evidence)
                 self.assertTrue((root / "load.quiesced").exists())
@@ -163,6 +174,55 @@ class WorkerHandover(unittest.TestCase):
                         control.resume(11 * SECOND)
                 self.assertTrue((root / "load.quiesce").exists())
                 self.assertTrue((root / "observer.quiesce").exists())
+
+    def test_restart_can_stop_observation_while_offered_load_exercises_actual_interruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "next.credential").write_bytes(b"private fixture\n")
+            control = self.release(root)
+            control.begin(0, pause_load=False)
+            self.assertFalse((root / "load.quiesce").exists())
+            self.assertTrue((root / "observer.quiesce").exists())
+            self.acknowledgements(root)
+            (root / "load.quiesced").unlink()
+            self.assertFalse(control.poll(SECOND))
+            self.assertEqual(control.observer_snapshot["generation"], 1)
+            # The caller interrupts/restarts the actual server while load keeps
+            # submitting. Only afterward may it drain load for phase handover.
+            control.pause_load(2 * SECOND)
+            self.assertTrue((root / "load.quiesce").exists())
+            self.acknowledgements(root)
+            control.publish(3 * SECOND, credential="next.credential", version=1, incarnation=1)
+            control.resume(4 * SECOND)
+            self.resumed_acknowledgement(root)
+            control.workers_resumed(5 * SECOND, generation=2, incarnation=1,
+                                    duplicates=0)
+            self.assertFalse((root / "observer.quiesced").exists())
+
+    def test_missing_native_resume_acknowledgement_cannot_confirm_the_first_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "next.credential").write_bytes(b"private fixture\n")
+            control = self.release(root)
+            control.begin(0)
+            self.acknowledgements(root)
+            control.publish(SECOND, credential="next.credential", version=1, incarnation=1)
+            control.resume(2 * SECOND)
+            with self.assertRaises(QuiescenceError):
+                control.workers_resumed(3 * SECOND, generation=2, incarnation=1, duplicates=0)
+            self.assertTrue((root / "load.quiesced").exists())
+
+    def test_partial_pause_cannot_publish_a_phase_from_an_unrequested_load_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "next.credential").write_bytes(b"private fixture\n")
+            control = self.release(root)
+            control.begin(0, pause_load=False)
+            self.acknowledgements(root)
+            with self.assertRaises(QuiescenceError):
+                control.publish(SECOND, credential="next.credential", version=1, incarnation=1)
+            self.assertFalse((root / "load.phase").exists())
+            self.assertTrue((root / "observer.quiesce").exists())
 
 
 if __name__ == "__main__":

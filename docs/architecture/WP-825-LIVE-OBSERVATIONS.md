@@ -2172,6 +2172,8 @@ established as the sole cause of the latency refusal. Unchanged preparation,
 public populated restore, final-source CI and the complete short rehearsal remain
 required. The 24-hour run remains unstarted.
 
+
+
 PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
 Behavior: the native worker observes existing charged source rest instead of
 polling full maintenance continuously while proof work is unavailable;
@@ -2286,3 +2288,57 @@ workload, formats, fixtures and application interfaces; Updated handbook:
 Sustainable TicketDesk milestone; Hazards/follow-ups: unchanged preparation,
 public restore, final-source CI and the actual complete short rehearsal remain
 required. The 24-hour run remains unstarted.
+
+Frozen `2bc25f14` builds with the ordinary release profile and completes the
+unchanged 1,500-second preparation load. All 150,000 commands and 600,000 reads
+finish with zero retries and no post-duration operations; independent state
+reconciliation checks every one of the 65,536 tickets. Source accounting now
+records 25 complete observations, five in each window, with a maximum gap of
+66.8 seconds. Logical accounting records 25 observations and physical accounting
+24, both covering every window with gaps below 67 seconds. This resolves the
+previous measured accounting-gap refusal for this preparation, without claiming
+that all native performance defects are fixed.
+
+Preparation refuses `probe_latency`. The actual sink pause lasts 300.03 seconds
+and recovery 302.75 seconds, ending near load second 607.8. The first three
+windows therefore overlap the injected fault or recovery; their percentiles
+cannot qualify normal operation. In the 900–1,200-second normal window p95 is
+88.6 ms and p99 exceeds the histogram's 250-ms range. In the final normal window
+both percentiles exceed that range. The exact-provider charge peaks at 8,913,408
+bytes below its unchanged 1-GiB limit. Server, load and observer exit cleanly;
+there is no concurrent heavy test or build interference. These component
+observations still do not qualify the complete resource model, and allocator
+ownership at process exit remains unknown. The native latency limitation remains
+a blocker; no populated restore, full CI or 24-hour run follows this failure.
+
+The controller follow-up replaces caller-supplied resumed-command counters with
+a one-shot receipt published by the original Rust load process only after a new
+command has been validated, witnessed and acknowledged in the new release.
+Neither a read completion nor release publication supplies that proof. A test
+using actual control files fails on the preceding worker at the expected missing
+receipt assertion, then passes with the revised worker. Retained quiescence
+acknowledgements cannot be overwritten by another release before the controller
+consumes the resume receipt. Observer-first quiescence preserves active offered
+load during a restart fault, while full handover still requires both original
+workers' acknowledgements.
+
+Rotation can now validate the exact quiesced command count from the load owner
+against its acknowledgement witness, including actual current ticket revisions,
+without scanning the preallocated unoffered suffix. It still refuses revoked
+reads and replay, then validates same-principal replay of the original command.
+The existing single-update smoke remains strict. All 37 TicketDesk Rust tests,
+194 lifecycle harness tests, formatting, Clippy and scoped metadata acceptance
+pass on C3D. This is component validation; integrated population rotation,
+process replacement, resource reconciliation and the complete campaign remain
+unproved.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: native post-handover acknowledgement receipt, observer-first pause and
+actual-prefix rotation reconciliation; Checks: original-worker negative,
+37 TicketDesk tests, 194 lifecycle harness tests, formatting, Clippy and scoped
+metadata acceptance on C3D; Compatibility: unchanged application interfaces,
+authorization, command identity, ordering, durable formats, reviewed fixtures,
+workload rates and deadlines; Updated handbook: Sustainable TicketDesk milestone;
+Hazards/follow-ups: native normal-window latency still blocks preparation;
+integrated campaign faults, complete resource accounting, populated restore,
+final-source full CI and the short campaign remain required. No 24-hour run starts.

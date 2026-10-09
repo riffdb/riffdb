@@ -58,6 +58,7 @@ pub(super) struct Release {
 struct AdmissionState {
     paused: bool,
     release: Arc<Release>,
+    resume_after_commands: Option<u64>,
 }
 
 struct Admission {
@@ -72,6 +73,7 @@ impl Admission {
             state: Mutex::new(AdmissionState {
                 paused: false,
                 release: Arc::new(release),
+                resume_after_commands: None,
             }),
             current,
             changed: tokio::sync::Notify::new(),
@@ -99,10 +101,16 @@ impl Admission {
         Ok(state.paused && self.current.load(Ordering::Acquire) == 0)
     }
 
+    #[cfg(test)]
     fn replace(&self, release: Release) -> Result<()> {
+        self.replace_at(release, None)
+    }
+
+    fn replace_at(&self, release: Release, resume_after_commands: Option<u64>) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| "admission_state")?;
         if !state.paused
             || self.current.load(Ordering::Acquire) != 0
+            || state.resume_after_commands.is_some()
             || release.generation <= state.release.generation
             || !(1..=2).contains(&release.version)
             || release.version < state.release.version
@@ -112,6 +120,7 @@ impl Admission {
             return Err("release_change_requires_quiescence");
         }
         state.release = Arc::new(release);
+        state.resume_after_commands = resume_after_commands;
         Ok(())
     }
 
@@ -136,11 +145,19 @@ impl Admission {
         if phase.exists() {
             let release = read_release(root, &phase)?;
             if release != *self.release()? {
-                self.replace(release)?;
+                if root.join("load.resumed").exists() {
+                    return Err("resume_confirmation_stale");
+                }
+                let commands = metrics
+                    .lock()
+                    .map_err(|_| "observation_state")?
+                    .total_commands;
+                self.replace_at(release, Some(commands))?;
             }
         }
         if !paused {
-            return self.resume();
+            self.resume()?;
+            return self.confirm_resume(root, metrics);
         }
         if self.quiesced()? && !root.join("load.quiesced").exists() {
             let totals = metrics.lock().map_err(|_| "observation_state")?;
@@ -157,10 +174,46 @@ impl Admission {
         }
         Ok(())
     }
+
+    fn confirm_resume(&self, root: &Path, metrics: &Mutex<Metrics>) -> Result<()> {
+        let (release, after) = {
+            let state = self.state.lock().map_err(|_| "admission_state")?;
+            let Some(after) = state.resume_after_commands else {
+                return Ok(());
+            };
+            (Arc::clone(&state.release), after)
+        };
+        let (commands, reads) = {
+            let totals = metrics.lock().map_err(|_| "observation_state")?;
+            (totals.total_commands, totals.total_reads)
+        };
+        if commands <= after {
+            return Ok(());
+        }
+        // This is one acknowledgement after handover, not periodic telemetry.
+        // Native operation validation and witness recording precede these totals.
+        // Publish outside both mutexes; the control poll is the sole publisher.
+        publish_quiescence(
+            root,
+            "load.resumed",
+            &format!(
+                "{{\"schema\":\"riffdb.ticketdesk-lifecycle-resumed/v1\",\"generation\":{},\"contract_version\":{},\"history_incarnation\":{},\"completed_commands\":{commands},\"completed_reads\":{reads}}}\n",
+                release.generation, release.version, release.incarnation
+            ),
+        )?;
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        if state.release != release || state.resume_after_commands != Some(after) {
+            return Err("resume_confirmation_state");
+        }
+        state.resume_after_commands = None;
+        Ok(())
+    }
 }
 
 pub(super) fn publish_quiescence(root: &Path, name: &str, encoded: &str) -> Result<()> {
-    if !matches!(name, "load.quiesced" | "observer.quiesced") || encoded.len() > 4096 {
+    if !matches!(name, "load.quiesced" | "observer.quiesced" | "load.resumed")
+        || encoded.len() > 4096
+    {
         return Err("quiescence_output");
     }
     let pending = root.join(format!(".{name}.pending"));
@@ -592,6 +645,91 @@ pub(super) async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: END-003, END-007, END-008, END-010
+    #[test]
+    fn release_confirmation_requires_a_new_acknowledged_command_and_is_published_once() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Directory(
+            std::env::temp_dir().join(format!("riffdb-load-resume-test-{}", std::process::id())),
+        );
+        std::fs::create_dir(&root.0).unwrap();
+        std::fs::write(root.0.join("next.credential"), b"private fixture\n").unwrap();
+        let metrics = Mutex::new(Metrics::new());
+        metrics
+            .lock()
+            .unwrap()
+            .record(Operation::Update(0), Duration::ZERO)
+            .unwrap();
+        let admission = Admission::new(
+            Release {
+                generation: 1,
+                version: 1,
+                incarnation: 1,
+                credential: root.0.join("initial.credential"),
+            },
+            Arc::new(AtomicU32::new(0)),
+        );
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let original_ack = std::fs::read(root.0.join("load.quiesced")).unwrap();
+        std::fs::write(root.0.join("load.phase"), b"2 2 2 next.credential\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(!root.0.join("load.resumed").exists());
+        std::fs::remove_file(root.0.join("load.quiesce")).unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(!root.0.join("load.resumed").exists());
+        metrics
+            .lock()
+            .unwrap()
+            .record(Operation::Read(0), Duration::ZERO)
+            .unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(!root.0.join("load.resumed").exists());
+        let (active, release) = admission.admit(&AtomicU32::new(0)).unwrap().unwrap();
+        assert_eq!(
+            (release.generation, release.version, release.incarnation),
+            (2, 2, 2)
+        );
+        metrics
+            .lock()
+            .unwrap()
+            .record(Operation::Update(1), Duration::ZERO)
+            .unwrap();
+        drop(active);
+        admission.poll(&root.0, &metrics).unwrap();
+        let confirmed = std::fs::read(root.0.join("load.resumed"))
+            .expect("new acknowledged command must publish native resume confirmation");
+        assert_eq!(
+            confirmed,
+            concat!(
+                "{\"schema\":\"riffdb.ticketdesk-lifecycle-resumed/v1\",",
+                "\"generation\":2,\"contract_version\":2,\"history_incarnation\":2,",
+                "\"completed_commands\":2,\"completed_reads\":1}\n"
+            )
+            .as_bytes()
+        );
+        admission.poll(&root.0, &metrics).unwrap();
+        assert_eq!(
+            std::fs::read(root.0.join("load.resumed")).unwrap(),
+            confirmed
+        );
+        assert_eq!(
+            std::fs::read(root.0.join("load.quiesced")).unwrap(),
+            original_ack
+        );
+        // A subsequent handover cannot overwrite evidence that the controller
+        // has not consumed; generation advancement alone is insufficient.
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        std::fs::write(root.0.join("load.phase"), b"3 2 2 next.credential\n").unwrap();
+        assert!(admission.poll(&root.0, &metrics).is_err());
+        assert_eq!(admission.release().unwrap().generation, 2);
+    }
 
     // req: END-002, END-003, END-007, END-008
     #[test]

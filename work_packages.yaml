@@ -28665,6 +28665,30 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-008 native handover acknowledgement: require the original Rust load
+      owner's one-shot resume receipt after an actually acknowledged command
+      in the new release; a caller counter, read completion or generation
+      publication supplies no first-write proof. Allow observer-first pause
+      while preserving active load until restart, then require both original
+      workers to drain for shared release handover. Rotation validates the
+      exact quiesced witness prefix and actual current ticket revision while
+      retaining revoked-bearer refusal and original-identity replay. The
+      preceding worker fails the missing-receipt regression; 37 TicketDesk
+      tests, 194 lifecycle harness tests, formatting, Clippy and scoped metadata
+      acceptance pass on C3D. Full integrated faults, process replacement and
+      resource reconciliation remain unproved; this is not a complete runner.
+    - >-
+      D-007 accounting-repaired preparation: frozen 2bc25f14 completes all
+      150,000 commands and 600,000 reads with zero retries or post-duration
+      operations and reconciles 65,536 tickets. Twenty-five exact source-byte
+      observations cover all five windows with a maximum gap of 66.8 seconds;
+      logical and physical accounting also cover every window. Preparation
+      still refuses probe_latency in both normal windows after actual sink
+      recovery near second 607.8. Preserve the workload and latency gates;
+      the native performance limitation remains unresolved. Complete resource
+      qualification, populated restore, full CI and the full short campaign
+      remain required. WP-825 stays open and no 24-hour run starts.
+    - >-
       D-005 pending source accounting custody: frozen 912f974a builds normally,
       then unchanged preparation fails source_bytes_sample_gap. The last exact
       source observation is at load second 867.6 and load stops at 962.7;

@@ -2876,3 +2876,30 @@ a subsequent command completion, avoiding acknowledgement republication during
 resume. A declared restore permits exactly one incarnation advance and retains
 its marker until both workers resume. Seventeen focused controller tests pass on
 C3D. This component does not implement or qualify the complete seven-fault runner.
+
+The unchanged `2bc25f14` preparation now completes all 150,000 commands and
+600,000 reads with zero retries or post-duration work, and reconciles all 65,536
+tickets. Source accounting supplies 25 complete observations, five per load
+window, with a maximum gap of 66.8 seconds; logical and physical observations
+also cover every window. This supports the accounting scheduling repair under
+load. Preparation still refuses `probe_latency`: the sink finishes recovery
+near load second 607.8, and both later normal windows exceed the latency limits.
+The 900–1,200-second window has p95 88.6 ms and p99 beyond the 250-ms histogram;
+the 1,200–1,500-second window has both percentiles beyond that range. The provider
+charge peaks at 8,913,408 bytes within the existing 1-GiB limit. The collector's
+component observations do not qualify the complete resource model, and process
+exit allocator accounting remains unknown. Populated restore, full CI and the
+complete short campaign do not follow this failed preparation.
+
+Private campaign handover now uses a one-shot receipt from the Rust load worker
+after a newly acknowledged command, rather than a controller-supplied completion
+counter. A read completion or generation change alone supplies no confirmation.
+The controller can pause the original observer first while keeping load active
+for a restart fault, then drain load before changing the shared release. Credential
+rotation reconciles the actual quiesced acknowledgement prefix and current ticket
+revision while retaining revoked-bearer refusals and original-identity replay.
+The original worker fails the missing-confirmation regression; the revised worker
+passes all 37 TicketDesk tests, and 194 lifecycle harness tests pass on C3D along
+with formatting, Clippy and scoped metadata acceptance. These private controls
+introduce no application API or durable-format change. Complete fault execution,
+process replacement accounting and campaign qualification remain outstanding.

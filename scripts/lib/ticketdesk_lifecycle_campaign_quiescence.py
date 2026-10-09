@@ -11,6 +11,8 @@ MAX_U64 = 2**64 - 1
 LOAD_KEYS = {"schema", "generation", "completed_commands", "completed_reads"}
 OBSERVER_KEYS = {"schema", "generation", "contract_version", "history_incarnation",
                  "events_checked", "duplicates", "consumer_checkpoint", "live_head"}
+RESUMED_KEYS = {"schema", "generation", "contract_version", "history_incarnation",
+                "completed_commands", "completed_reads"}
 
 
 class QuiescenceError(ValueError):
@@ -57,10 +59,17 @@ class QuiescentRelease:
         self._failed = False
         self._state = "idle"
         self._started = self._last_ns = self._snapshot = self._release = None
+        self._release_version = None
+        self._observer = None
+        self._load_paused = False
 
     @property
     def snapshot(self):
         return deepcopy(self._snapshot)
+
+    @property
+    def observer_snapshot(self):
+        return deepcopy(self._observer)
 
     def _tick(self, now_ns):
         integer(now_ns)
@@ -74,18 +83,28 @@ class QuiescentRelease:
         os.close(descriptor)
 
     @fenced
-    def begin(self, now_ns):
+    def begin(self, now_ns, *, pause_load=True):
         integer(now_ns)
-        require(self._state == "idle", "quiescence_state")
+        require(self._state == "idle" and type(pause_load) is bool, "quiescence_state")
         require(not any((self.root / name).exists() for name in
-                        ("load.quiesced", "observer.quiesced", "observer.restore")),
+                        ("load.quiesced", "observer.quiesced", "observer.restore", "load.resumed")),
                 "quiescence_stale")
         self._started = self._last_ns = now_ns
-        self._marker("load.quiesce")
+        if pause_load:
+            self._marker("load.quiesce")
+            self._load_paused = True
         self._marker("observer.quiesce")
         self._state = "pausing"
 
-    def _ack(self, name, keys, schema):
+    @fenced
+    def pause_load(self, now_ns):
+        require(not self._load_paused, "quiescence_state")
+        self.poll(now_ns)
+        require(self._observer is not None, "quiescence_not_ready")
+        self._marker("load.quiesce")
+        self._load_paused = True
+
+    def _ack(self, name, keys, schema, *, generation=None):
         path = self.root / name
         if not path.exists():
             return None
@@ -97,7 +116,8 @@ class QuiescentRelease:
                 "quiescence_record")
         for key in keys - {"schema"}:
             integer(value[key])
-        require(value["generation"] == self.generation, "quiescence_identity")
+        require(value["generation"] == (self.generation if generation is None else generation),
+                "quiescence_identity")
         return value
 
     @fenced
@@ -107,11 +127,16 @@ class QuiescentRelease:
         load = self._ack("load.quiesced", LOAD_KEYS, "riffdb.ticketdesk-lifecycle-quiesced/v1")
         observer = self._ack("observer.quiesced", OBSERVER_KEYS,
                              "riffdb.ticketdesk-lifecycle-observer-quiesced/v1")
+        require(load is None or self._load_paused, "quiescence_identity")
         if observer is not None:
             require(observer["contract_version"] == self.version
                     and observer["history_incarnation"] == self.incarnation,
                     "quiescence_identity")
             require(observer["duplicates"] == 0, "quiescence_duplicates")
+            require(self._observer is None or self._observer == observer, "quiescence_record")
+            self._observer = observer
+        else:
+            require(self._observer is None, "quiescence_record")
         if load is None or observer is None:
             require(self._snapshot is None, "quiescence_record")
             return False
@@ -142,6 +167,7 @@ class QuiescentRelease:
             self._marker("observer.restore")
         pending.replace(self.root / "load.phase")
         self._release = (generation, incarnation)
+        self._release_version = version
         self._state = "published"
 
     @fenced
@@ -155,13 +181,20 @@ class QuiescentRelease:
         self._state = "resumed"
 
     @fenced
-    def workers_resumed(self, now_ns, *, generation, incarnation, duplicates, completed_commands):
+    def workers_resumed(self, now_ns, *, generation, incarnation, duplicates):
         self._tick(now_ns)
         require(self._state == "resumed" and (integer(generation), integer(incarnation))
-                == self._release and integer(duplicates) == 0
-                and integer(completed_commands) > self._snapshot["load"]["completed_commands"],
+                == self._release and integer(duplicates) == 0, "quiescence_resume")
+        acknowledged = self._ack("load.resumed", RESUMED_KEYS,
+                                 "riffdb.ticketdesk-lifecycle-resumed/v1", generation=generation)
+        require(acknowledged is not None
+                and acknowledged["contract_version"] == self._release_version
+                and acknowledged["history_incarnation"] == incarnation
+                and acknowledged["completed_commands"] > self._snapshot["load"]["completed_commands"]
+                and acknowledged["completed_reads"] >= self._snapshot["load"]["completed_reads"],
                 "quiescence_resume")
         (self.root / "load.quiesced").unlink()
         (self.root / "observer.quiesced").unlink()
+        (self.root / "load.resumed").unlink()
         (self.root / "observer.restore").unlink(missing_ok=True)
         self._state = "complete"
