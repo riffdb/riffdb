@@ -17,6 +17,27 @@ from lib import ticketdesk_lifecycle_persistent_usage as resources
 
 
 class PersistentUsage(unittest.TestCase):
+    def test_usage_snapshot_is_detached_and_does_not_reap_the_owned_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'usage.json'
+            child = resources.ObservedProcess([sys.executable, '-c',
+                'import sys; print("ready",flush=True); sys.stdin.buffer.read()'],
+                observation=path, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            try:
+                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertEqual(child.stdout.readline(), b'ready\n')
+                with patch.object(child, '_reap', side_effect=AssertionError('snapshot reaped')):
+                    value = child.usage
+                    value['launch_memory']['rss_bytes'] = 0
+                    self.assertGreater(child.usage['launch_memory']['rss_bytes'], 0)
+                    self.assertFalse(child.usage['exit_observed'])
+                child.kill(); child.wait(timeout=5)
+                self.assertTrue(child.usage['exit_observed'])
+                self.assertEqual(child.usage['exit_code'], -9)
+            finally:
+                if child.returncode is None: child.kill(); child.wait(timeout=5)
+                child.stdin.close(); child.stdout.close()
+
     def test_poll_reaps_peak_once_and_repeated_wait_retains_the_same_record(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'usage.json'

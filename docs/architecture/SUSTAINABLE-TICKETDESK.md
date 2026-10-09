@@ -2922,7 +2922,33 @@ of a corrupted successor row despite an older cached payload. The full storage
 suite, all 59 architecture tests, Clippy and formatting also pass on C3D. The two
 existing ignored storage qualification tests remain unrun. A lint-only move of
 an unchanged test helper preserves the production source used by the full suite.
-Scoped metadata acceptance remains pending. This demonstrates the lock-scope
+Scoped metadata acceptance also passes. This demonstrates the lock-scope
 defect and its repair; it does not establish the entire cause
 of the measured latency refusal. Cache limits, application interfaces, ordering,
 durable formats, workload rates and qualification gates are unchanged.
+
+
+The frozen native repair's first unchanged preparation stops before measured
+load: the seed acknowledges all tickets, but the event consumer reaches its
+existing 30-second transport deadline. The server remains alive and closes
+normally during cleanup. A debugger-instrumented seed diagnostic observes all
+selected seed events without duplicates and does not reproduce that timeout;
+it supplies no preparation or latency qualification. An uninterrupted repetition
+uses the same frozen binaries and preserves the failed attempt. It also reaches
+the same consumer timeout before load. Native gate residence and history decoding
+remain under investigation; the harness adds no
+retry, delayed consumer registration or relaxed deadline.
+
+The private campaign process roster now preserves earlier exit RSS peaks when
+an exact role is replaced. It admits a successor only after the original owned
+child's expected exit, kernel high water and finite inherited birth bound are
+available. The same exact descendant census runs with the currently live roles,
+including periods after explicit retirement. A short-lived operator remains
+accounted for even when it exits before the first live sample. Frozen hard
+address-space ceilings cover steady workers and one serialized launch's larger
+inherited birth ceiling; these are conservative bounds, not live allocation.
+Nine roster tests, 12 persistent-owner tests and all 204 lifecycle tests pass on
+C3D, including actual child replacement and operator exit accounting. Continuous
+sampling, all actual campaign launches, native observation epochs and the full
+fault controller remain unproved. The component continues to report incomplete
+resource-model qualification, and the 24-hour run has not started.

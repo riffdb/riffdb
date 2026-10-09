@@ -28665,6 +28665,20 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-010 campaign process roster: preserve exact live role ownership and
+      prior kernel exit RSS peaks across replacement. Require the original
+      owned child's expected exit and finite inherited birth bound before a
+      successor. Retain short operator exit evidence even before a live census;
+      freeze per-role hard address-space ceilings plus one serialized launch
+      birth ceiling without summing sequential births as simultaneous usage.
+      Refuse missing proof, unknown RSS, changed identities or ceilings,
+      untracked children, clock rewind and more than 64 incarnations. Nine
+      roster tests, 12 persistent-owner tests and all 204 lifecycle tests pass
+      on C3D, including actual bounded-parent children, server replacement and
+      operator exit. Scope and metadata acceptance, continuous sampling, native
+      epochs and complete campaign integration remain pending. Resource-model
+      qualification stays false, and WP-825 stays open.
+    - >-
       D-009 pinned payload read custody: a corrected deterministic native
       schedule reads the canonical command successfully, then proves that
       payload storage I/O still holds the index publication guard. Capture one
@@ -28678,8 +28692,11 @@ work_packages:
       full storage suite, 59 architecture tests, Clippy and formatting pass on
       C3D. A lint-only test-helper relocation preserves production source;
       existing ignored qualification tests remain unrun. Scoped metadata
-      acceptance and unchanged preparation remain pending. This defect is not
-      established as the sole latency cause. WP-825 stays open.
+      acceptance also passes. The first unchanged preparation stops before load
+      at the original consumer transport deadline; a separate debugger seed
+      diagnostic does not reproduce it and cannot qualify preparation. Preserve
+      both failed receipts: uninterrupted repetition reaches the same consumer
+      timeout before load. This defect is not established as the sole latency cause. WP-825 stays open.
     - >-
       D-008 native handover acknowledgement: require the original Rust load
       owner's one-shot resume receipt after an actually acknowledged command

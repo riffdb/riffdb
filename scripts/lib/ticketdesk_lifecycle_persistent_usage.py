@@ -5,6 +5,7 @@ This is an observation wrapper, not complete descendant or allocator evidence.
 Every restart needs a distinct owner and exclusive evidence file.
 """
 from contextlib import nullcontext
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,12 @@ class ObservedProcess:
 
     @property
     def stderr(self): return self._child.stderr
+
+    @property
+    def usage(self):
+        """Snapshot this exact owner's evidence without reading a mutable path."""
+        with self._lock:
+            return deepcopy(self._value)
 
     def _publish(self):
         self._value['elapsed_ns'] = time.monotonic_ns() - self._started

@@ -2377,7 +2377,7 @@ rejects only the placement of a test helper after the test module. Moving that
 unchanged helper preserves the production source byte for byte; all 11 focused
 tests, Clippy and formatting then pass on the corrected layout. The storage
 suite retains its two existing ignored qualification tests. Scoped metadata
-acceptance remains pending. Unchanged measured preparation is still required;
+acceptance subsequently passes on C3D. Unchanged measured preparation is still required;
 no sole-cause or qualification claim is made from these deterministic tests.
 
 PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
@@ -2390,3 +2390,61 @@ cache bounds and writer publication custody; Updated handbook: Sustainable
 TicketDesk milestone; Hazards/follow-ups: unchanged preparation, populated
 restore, final-source full CI, complete fault controller, resource reconciliation
 and the short campaign remain required. No 24-hour run starts.
+
+
+The frozen payload-custody revision passes its ordinary release build in
+293.6 seconds, but the first unchanged preparation refuses before measured load.
+The seed worker acknowledges all 65,536 tickets in 29.7 seconds. The original
+event observer then returns `observer_consumer` with `TRANSPORT_UNAVAILABLE` at
+the existing 30-second client deadline. Archive-drain liveness and observer
+cleanup refuse; the server closes with exit zero. No panic, load-window result,
+populated restore or full-CI success is inferred from that attempt.
+
+A separate debugger-instrumented diagnostic seeds in 109.1 seconds and observes
+all 1,024 selected seed events with zero duplicates. Its stacks place an event
+consumer at the existing exclusive write gate while outbox and projection paths
+resolve and decode command history. Those captures neither establish one cause
+nor reproduce the original timeout. The intentionally one-second diagnostic
+ends at the existing provider-observation coverage refusal. It cannot qualify
+preparation. An uninterrupted repetition retains the failed receipt and uses
+the exact frozen release binaries, workload, limits and deadlines. That
+uninterrupted repetition also stops before load: seeding completes in 30.3
+seconds, and the consumer again reaches the original transport deadline. Both
+failed attempts remain evidence; the debugger diagnostic does not supersede them.
+
+The next private controller component keeps an exact live process roster across
+retirement and replacement. Each role must release its actual prior owned child
+with the expected exit code, kernel RSS high water and finite inherited birth
+bound before admitting a successor. The original process-owner wrapper exposes
+a detached, locked usage snapshot without rereading a path or reaping the child.
+Short operator children retain their exit evidence even if they finish before
+the first live census. Earlier RSS peaks survive replacement; live measurements
+remain measurements of the current exact descendant tree.
+
+The roster freezes per-role hard address-space ceilings and includes one
+serialized launch's larger inherited birth ceiling in its conservative aggregate
+bound. It never sums sequential birth ceilings as if all launchers overlapped,
+nor substitutes those ceilings for measured live allocation. The controller must
+already have its finite hard ceiling. Role identity, expected exit, missing birth
+proof, unknown RSS, changed ceilings, untracked children, process replacement,
+clock rewind, cross-thread launch and the 64-incarnation bound all refuse.
+Unknown or failed evidence fences subsequent roster observations.
+
+All nine roster tests, all 12 persistent-owner tests and the complete 204-test
+lifecycle suite pass on C3D. The process test actually launches children under a
+finite parent ceiling, kills and replaces the server owner, executes a short
+operator and reconciles six exit records. These are component results. Sample
+continuity, native observation epochs, every actual campaign launch and complete
+fault execution still require integrated proof; `qualifies_resource_model`
+remains false. Package scope and metadata acceptance for this component remain
+pending, and WP-825 stays open.
+
+PR note: Package WP-825 (open); Tier internal for the roster component;
+Behavior: preserve exact live ownership and prior exit peaks across bounded
+process replacement; Checks: nine roster tests, 12 persistent-owner tests and
+all 204 lifecycle tests on C3D; Compatibility: unchanged database semantics,
+application interfaces, ordering, durable formats, reviewed fixtures, workload
+and qualification gates; Updated handbook: Sustainable TicketDesk milestone;
+Hazards/follow-ups: initial native consumer timeout, uninterrupted preparation,
+complete fault controller, continuous sampling, populated restore, final-source
+full CI and the short campaign remain required. No 24-hour run starts.
