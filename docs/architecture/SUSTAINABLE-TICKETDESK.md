@@ -3001,6 +3001,30 @@ row and relationship checks, and the backend's final transaction-current
 revalidation remain mandatory. Other lease operations continue to authorize all
 selected candidates. The eager-walk regression fails at its intended assertion
 before the repair. Seven prefix regressions, the full query-executor suite,
-ten row-policy conformance tests, protected-consumer coverage, the server suite
-and Clippy and formatting pass on C3D. Final metadata acceptance and an unchanged preparation
+ten row-policy conformance tests, protected-consumer coverage, the server suite,
+Clippy and formatting pass on C3D. Final metadata acceptance and an unchanged preparation
 remain required; these results establish no sole-cause claim.
+
+Final scoped acceptance subsequently passes all 12 checks, and the prefix repair
+is committed. Its unchanged preparation builds ordinary release binaries, then
+fails the consumer transport deadline before load. Seeding acknowledges all
+tickets in 30.2 seconds. The actual TicketDesk consumer uses an unprotected
+event-window path; the protected-replay repair is outside this failure path.
+
+A diagnostic reproduces the original consumer failure before debugger capture.
+The consumer is waiting for checkpoint completion during its native transition.
+Another diagnostic enables existing bounded checkpoint counters: 14 checkpoints
+start and complete without visible consumer progress, with selected batches
+growing from about 1 MiB to 63 MiB. Its distinct protocol refusal is preserved.
+The admission loop gives up its FIFO place during each wait, then checks a newly
+replenished suffix. This is a native writer-admission issue; neither larger
+deadlines nor a slower harness can establish sustainable progress.
+
+ADR-0282 (`adr/0282-finite-direct-mutation-checkpoint-handoff.md`) proposes
+a finite FIFO handoff after the earlier checkpoint. It would permit bounded
+native backpressure on later writers while one fixed captured tail is
+materialized, preserving reads, authorization, durability and formats. This
+proposal requires exact human acceptance before implementation. Source
+reclamation would gain no reservation or priority. Existing latency, workload
+and qualification gates remain required; the proposal is not available behavior
+and establishes no preparation success or 24-hour readiness.

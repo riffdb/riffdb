@@ -316,6 +316,7 @@ record with no front matter.
 | [0279](0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md) | Finite Checkpoint Licensing For Sustainable Source Reclamation | Accepted | guarantee |
 | [0280](0280-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
 | [0281](0281-bounded-native-bootstrap-source-custody-validation.md) | Bounded Native Bootstrap Source Custody Validation | Accepted | guarantee |
+| [0282](0282-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

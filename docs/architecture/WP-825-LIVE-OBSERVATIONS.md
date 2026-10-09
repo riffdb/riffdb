@@ -2450,6 +2450,55 @@ complete fault controller, continuous sampling, populated restore, final-source
 full CI and the short campaign remain required. No 24-hour run starts.
 
 
+Final prefix acceptance passes all 12 scoped checks on C3D, and the tested
+sources are committed. The unchanged ordinary release build passes in 293.7
+seconds. Preparation fails in 40.7 seconds before measured load: all tickets
+seed in 30.2 seconds, the consumer exits at its original transport deadline, and
+the server closes normally. There is no external heavy-work interference, panic,
+populated restore result or full-CI success. The failed receipt is preserved.
+
+Caller tracing corrects the investigation: TicketDesk uses an unprotected
+consumer and the reactive event-window adapter, not protected symbolic replay.
+The prefix repair removes real excess work but lies outside this failure path.
+The implementer should have established that caller path before selecting it.
+
+A separate repetition reproduces the transport failure before debugger capture.
+Only afterward is the exact owned controller paused briefly to prevent cleanup
+while the server is inspected; it is resumed afterward. The consumer is waiting
+in checkpoint completion during `transition_event_consumer`. The checkpoint
+worker is materializing a batch and resolving retained history through the
+physical frame checksum; the projection worker is decoding command segments.
+This diagnostic supplies no qualification result.
+
+Another repetition enables the existing bounded checkpoint diagnostic. Fourteen
+checkpoints start and finish before cleanup while no consumer progress is
+published. Selected batches grow from 1,159,982 to 65,858,775 encoded bytes, and
+ordinary capacity trigger counters remain zero. This repetition ends with a
+distinct protocol refusal and does not attach a debugger; its result is retained
+without calling it another reproduction of the transport error. Together with
+the actual admission loop, these observations identify repeated catch-up rather
+than a single unfinished checkpoint. New acknowledged writes can replenish the
+tail each time the direct owner drops its FIFO ticket to wait.
+
+ADR-0282 is proposed for exact human review before implementation. It preserves
+writer progress during the earlier checkpoint, then gives the direct owner a
+finite FIFO reservation. Later writers would wait while the fixed remaining
+tail is materialized; reads and checkpoint publication would continue. The
+proposal explicitly changes native backpressure, preserves authority and
+formats, and grants no extra source-maintenance priority. Its acceptance alone
+would establish neither latency compliance nor readiness.
+
+PR note: Package none, guarantee proposal for subsequent WP-825 implementation;
+Tier guarantee; Behavior added or changed: none yet, proposed finite checkpoint
+handoff and corrected investigation record; Checks: scoped metadata acceptance
+on C3D, preceding native component checks and failed preparation retained;
+Compatibility: no runtime, format, fixture or interface change in this proposal;
+Updated handbook: Sustainable TicketDesk milestone; Hazards/follow-ups: exact
+human acceptance, deterministic handoff and crash coverage, unchanged measured
+gates, complete controller and short rehearsal remain required. WP-825 stays
+open, and no 24-hour run starts.
+
+
 The process-roster component subsequently passes package scope, internal tier
 classification and scoped metadata acceptance on C3D. Its seven-file commit
 retains the 204-test component evidence and both native preparation failures.
