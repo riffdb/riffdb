@@ -43,7 +43,7 @@ impl TransientIndexes {
                         return Err(corrupt());
                     }
                     indexes.apply_segment_arc(Arc::clone(&segment))?;
-                    affected.push(SegmentMetadata::new(&segment)?);
+                    affected.push(Arc::new(SegmentMetadata::new(&segment)?));
                 }
                 Err(error)
                     if error.kind()
@@ -167,7 +167,7 @@ impl CommandDerivedIndexes {
     fn remove_segment(
         &mut self,
         first: CommitSequence,
-    ) -> Result<Option<SegmentMetadata>, StorageError> {
+    ) -> Result<Option<Arc<SegmentMetadata>>, StorageError> {
         let Some(segment) = self.segments.remove(&first) else {
             return Ok(None);
         };

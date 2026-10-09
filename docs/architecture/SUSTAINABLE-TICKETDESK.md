@@ -2903,3 +2903,26 @@ passes all 37 TicketDesk tests, and 194 lifecycle harness tests pass on C3D alon
 with formatting, Clippy and scoped metadata acceptance. These private controls
 introduce no application API or durable-format change. Complete fault execution,
 process replacement accounting and campaign qualification remain outstanding.
+
+The native payload-read investigation independently reproduces a publication
+lock held across storage I/O: the canonical command read succeeds, but a
+deterministic hook cannot acquire the index writer guard before payload loading.
+The repaired read selects one immutable metadata entry and at most one cache
+candidate under that guard, then resolves the same pinned storage authority
+after releasing it. Exact frontier, canonical-byte or checked-stub identity,
+checksum, metadata and member checks remain mandatory. A completed cold read
+may populate the bounded cache only while that exact metadata entry still
+belongs to the index; replacement or pruning prevents stale reinsertion.
+The existing read-root tracking continues to protect physical history extents.
+Writer-side published/unpublished probes retain their continuous guard.
+
+Eleven focused native tests pass on C3D, including cold and cached command reads,
+provenance and audit lookup, index replacement during resolution, and refusal
+of a corrupted successor row despite an older cached payload. The full storage
+suite, all 59 architecture tests, Clippy and formatting also pass on C3D. The two
+existing ignored storage qualification tests remain unrun. A lint-only move of
+an unchanged test helper preserves the production source used by the full suite.
+Scoped metadata acceptance remains pending. This demonstrates the lock-scope
+defect and its repair; it does not establish the entire cause
+of the measured latency refusal. Cache limits, application interfaces, ordering,
+durable formats, workload rates and qualification gates are unchanged.

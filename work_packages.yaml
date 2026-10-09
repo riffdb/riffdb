@@ -28665,6 +28665,22 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-009 pinned payload read custody: a corrected deterministic native
+      schedule reads the canonical command successfully, then proves that
+      payload storage I/O still holds the index publication guard. Capture one
+      immutable metadata entry and one optional cache candidate under the
+      original frontier check, then resolve the same pinned authority outside
+      that guard. Preserve every canonical, stub, checksum, metadata and
+      member validator, exact negative lookup, bounded capture retry, cache
+      limit and writer-side continuous published/unpublished guard. Reinsert
+      only while the exact metadata entry remains current; existing registered
+      roots retain physical history custody. Eleven focused native tests, the
+      full storage suite, 59 architecture tests, Clippy and formatting pass on
+      C3D. A lint-only test-helper relocation preserves production source;
+      existing ignored qualification tests remain unrun. Scoped metadata
+      acceptance and unchanged preparation remain pending. This defect is not
+      established as the sole latency cause. WP-825 stays open.
+    - >-
       D-008 native handover acknowledgement: require the original Rust load
       owner's one-shot resume receipt after an actually acknowledged command
       in the new release; a caller counter, read completion or generation

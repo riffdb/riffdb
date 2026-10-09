@@ -2342,3 +2342,51 @@ workload rates and deadlines; Updated handbook: Sustainable TicketDesk milestone
 Hazards/follow-ups: native normal-window latency still blocks preparation;
 integrated campaign faults, complete resource accounting, populated restore,
 final-source full CI and the short campaign remain required. No 24-hour run starts.
+
+The native command-payload path holds the complete index publication read guard
+while loading pinned storage bytes, resolving history stubs and decoding cold
+segments. Prior captures show an event reader in this decoding path, but neither
+that stack nor the correlation with consumer progress proves the entire latency
+cause. Cache hits already avoid decoding; there is no claim that every lookup
+decodes or that canonical validation can be omitted.
+
+A deterministic native regression uses an existing valid command fixture and a
+hook before payload storage I/O. The original command read succeeds, then fails
+the assertion that the publication writer guard is available. Earlier setups
+stop at unavailable or corrupt fixture authority, or fail to compile after the
+test moves across a private field boundary; none counts as the target negative.
+The corrected original test reaches and fails the exact guard assertion on C3D.
+
+The repair captures one immutable metadata entry and one optional cache candidate
+under the original publication/frontier check, releases the guard, and resolves
+the same pinned storage view through the unchanged canonical and semantic
+validators. Conservative decoded ownership charging also runs outside that
+guard. Reinsertion requires the exact metadata entry to remain current; a
+replaced index receives no stale payload. Complete-index negative lookups,
+eight bounded capture attempts, cache bounds and writer-side continuous
+published/unpublished guards remain intact. Existing registered read roots
+retain extent custody without another storage pin. Follower maintenance adopts
+the same metadata ownership; its first compile catches that required type
+adjustment before any positive test runs.
+
+All 11 focused native tests pass, including cold and cached read progress,
+provenance and both audit paths, index replacement, original pinned authority
+after physical overwrite, and cached refusal of a corrupt successor. The full
+storage suite and all 59 architecture tests also pass on C3D. Clippy initially
+rejects only the placement of a test helper after the test module. Moving that
+unchanged helper preserves the production source byte for byte; all 11 focused
+tests, Clippy and formatting then pass on the corrected layout. The storage
+suite retains its two existing ignored qualification tests. Scoped metadata
+acceptance remains pending. Unchanged measured preparation is still required;
+no sole-cause or qualification claim is made from these deterministic tests.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: release the index publication guard before pinned payload I/O and
+decoding, with exact metadata ownership for cache reinsertion; Checks: original
+negative, 11 focused native tests, full storage suite, 59 architecture tests,
+Clippy and formatting on C3D; Compatibility: unchanged application interfaces,
+authorization, ordering, durable formats, canonical validation, reviewed fixtures,
+cache bounds and writer publication custody; Updated handbook: Sustainable
+TicketDesk milestone; Hazards/follow-ups: unchanged preparation, populated
+restore, final-source full CI, complete fault controller, resource reconciliation
+and the short campaign remain required. No 24-hour run starts.

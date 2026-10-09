@@ -675,3 +675,27 @@ fn segment_for_mismatch(
         Some(CommandSegmentDigestV1::from_bytes([7; 32])),
     )
 }
+
+// req: REP-002, REP-003, PERF-007
+#[test]
+fn pinned_payload_resolution_releases_the_index_publication_guard_before_storage_io() {
+    let (_path, ports) = operational_fixture("payload-publication-custody", true);
+    let (segment, encoded) = segment(vec![capsule(CommitSequence::first())], None);
+    ports.assert_payload_io_releases_publication(Arc::new(segment), encoded.as_bytes());
+}
+
+// req: REP-002, REP-003
+#[test]
+fn captured_payload_keeps_its_authority_and_does_not_repopulate_a_replaced_index() {
+    let (_path, ports) = operational_fixture("payload-replaced-index", true);
+    let (segment, encoded) = segment(vec![capsule(CommitSequence::first())], None);
+    ports.assert_payload_keeps_captured_authority(Arc::new(segment), encoded.as_bytes(), true);
+}
+
+// req: REP-002, REP-003, REC-005
+#[test]
+fn captured_payload_reads_its_original_row_and_refuses_a_corrupt_successor_even_when_cached() {
+    let (_path, ports) = operational_fixture("payload-corrupt-successor", true);
+    let (segment, encoded) = segment(vec![capsule(CommitSequence::first())], None);
+    ports.assert_payload_keeps_captured_authority(Arc::new(segment), encoded.as_bytes(), false);
+}
