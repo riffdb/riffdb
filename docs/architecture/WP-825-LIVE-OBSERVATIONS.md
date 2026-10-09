@@ -2934,3 +2934,14 @@ runtime, public interfaces, durable formats and reviewed fixtures unchanged;
 Updated handbook: Sustainable TicketDesk milestone and live observations;
 Hazards/follow-ups: actual controller assembly, final complete-source CI, source
 keep-up and the real short rehearsal remain open. No 24-hour run has started.
+
+### Fixed workload reports and original-operation polling
+
+The campaign operator candidate retains one serialized actual child while
+admitting four fixed Rust check reports. It also retains exact native
+maintenance operation identities across uncertain starts. Only the unchanged
+read-only poll for a registered operation may observe the native CLI transport
+handover error, including the exact failed verified-channel connection response
+while ADR-0050 closes the listener. This is an unknown observation, never successful reconciliation
+or permission to resubmit the mutation. C3D refusal and process tests are
+pending; no campaign qualification is claimed.

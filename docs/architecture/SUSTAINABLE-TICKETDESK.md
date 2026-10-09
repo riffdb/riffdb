@@ -3183,3 +3183,32 @@ cleanup also fails; three census attempts and all existing process/thread limits
 remain unchanged. The report includes no process identities, paths or input
 text and never qualifies the resource model. All 209 controller tests pass on
 C3D, including actual load-child cleanup and diagnostic redaction.
+
+### Finite campaign worker and maintenance calls
+
+The administrative owner also runs a fixed set of Rust workload checks:
+rotation, independent state reconciliation, archive reconciliation and the V2
+ungranted-command refusal. Each report has a closed numeric/Boolean shape;
+these checks use the same serialized child slot, deadlines, output bounds,
+process census and retained exit peaks as public CLI calls. A per-call
+credential replaces the existing CLI credential flag and is never written to
+the numeric operator record.
+
+A native backup start, including an uncertain start, registers its original
+maintenance operation identifier. Only a read-only `backup.operation` call for
+that exact registered identifier may retain the CLI's exact native
+`transport_unavailable` or `tls_connection_failed` response while the offline
+listener is unavailable, as required by ADR-0050. Each new connection still
+performs mandatory peer verification. That response stays
+unknown; it supplies no successful maintenance result and never permits another
+backup or restore submission. Other failures remain fatal. At most two original
+maintenance operations and 64 total administrative children are admitted.
+
+These are controller components; they do not qualify the complete campaign,
+resource model, final-source CI or the 24-hour run. C3D validation is pending.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: finite workload checks,
+per-call credentials and original-operation maintenance polling; Checks:
+pending C3D; Compatibility: public interfaces and durable formats unchanged;
+Hazards: complete fault execution and whole-fault recovery proof remain
+required. Updated page: this handbook page.
