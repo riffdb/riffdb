@@ -3261,3 +3261,68 @@ The failed parallel run is preserved; the full rerun and acceptance are pending.
 Both stopped recovery routes also have executed negative regressions: generic
 restore admission and the exact admitted-operation retry remain open after stop.
 Their native closure fix and readiness diagnostic are still under validation.
+
+### Campaign assembly under validation
+
+The private campaign control preparation now creates fresh, least-authority
+controls and an exact-parent successor closure, without seeding or starting load.
+It uses supported 28-hour capabilities and an 8-GiB archive quota. The controller
+draft starts the original consumer before the 65,536-ticket seed, observes actual
+archive drain, and retains the original load, observer and offered clock through
+all seven planned faults. Quiesced state reconciliation reads only the original
+acknowledged witness prefix; successor authorization testing performs no extra
+application mutation. These components do not yet qualify a measured rehearsal.
+
+File observations cover live data, journal, archive, backups, derived state and
+all control/evidence files. Each file contributes the larger of apparent length
+and allocated 512-byte blocks. Retained pre-restore data and projections count
+as backup copies, never as physical reclamation. The exact open archive object
+remains counted during its controlled permission outage. Global sampling gaps,
+file limits and window maxima survive process and history replacement. Native
+physical, logical and source-history trends remain independent and overlapping
+bases are never added. Complete reconciliation and actual native fault execution
+remain open; fixed protocol fixtures and file tests prove only their components.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: private campaign
+preparation, fault-dispatch and complete-file observation components; Checks:
+required-host Python, Rust worker, formatting, Clippy and scoped acceptance
+pending; Compatibility: public database semantics, durable formats and fixtures
+unchanged; Updated pages: Sustainable TicketDesk and live observations; Hazards:
+fresh public populated restore, final campaign entry point and independent
+reconciliation, final-source full CI, and real short rehearsal remain unproved.
+
+The campaign controller separates the measured interval from final offline
+archive validation. The long archive worker is admitted only after the original
+period ends and every measured child has a retained retirement record. Ordinary
+workers and fault actions retain their existing 60-second ceiling. A measured
+extent retirement requires both a disappearance observed before the period ends
+and a complete native record from the same history incarnation. Startup records
+and later cleanup cannot supply measured retirements. These controller components
+do not independently establish a qualifying database rehearsal.
+
+### Finalization integration candidate
+
+The earlier native restore-owner fix passed the corrected regression, all 1,398
+storage tests, Clippy, formatting, scope and scoped acceptance on the required
+host. Its commit preserves exact tested source bytes. The recovery-admission
+regressions pass, but the broader server run fails primary fencing under load
+with TransportUnavailable; the cause remains under investigation. Neither a
+populated public restore nor final-source CI is qualified by those results.
+
+The controller now connects its original offered clock, seven fault actions,
+measured-incarnation extent attribution and completed-load barrier. Final
+consumer, actual projection values, outbox, original replay, full ticket state
+and offline archive reconciliation remain explicit execution gates. Process-local
+root resets are separate from persisted generation identity. Later cleanup earns
+no measured retirement credit. Controller fixtures and syntax checks supply no
+actual database rehearsal; independent complete resource and interference
+reconciliation, frozen conformance/CI evidence and the final executable remain
+required. No 24-hour run has started.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: integrate finite
+campaign finalization and attribution; Checks: C3D validation pending for this
+candidate, prior component receipts retained; Compatibility: application
+interfaces, durable formats and reviewed fixtures unchanged; Updated pages:
+sustainable TicketDesk milestone and live observations; Hazards/follow-ups:
+unresolved promotion failure, final frozen inputs, full CI, complete resource
+reconciliation and the real all-seven rehearsal remain open.

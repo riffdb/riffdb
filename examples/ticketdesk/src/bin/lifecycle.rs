@@ -73,6 +73,7 @@ async fn main() {
         Some("observe") => observe::run().await,
         Some("native-observer") => native_observer::run().await,
         Some("successor-smoke") => current::smoke().await,
+        Some("successor-authorization") => current::verify_successor_authorization().await,
         Some("recovery-smoke") => recovery::smoke().await,
         Some("archive-reconcile") => archive::run(),
         Some("rotation-smoke") => current::rotation_smoke().await,
@@ -402,10 +403,43 @@ async fn reconcile() -> Result<()> {
     if completed > model::MAX_COMMANDS {
         return Err("operation_bound");
     }
+    let quiesced = match env::var("RIFFDB_LIFECYCLE_QUIESCED_COMMANDS") {
+        Ok(value) => {
+            let count = value.parse::<u64>().map_err(|_| "reconciliation_prefix")?;
+            let root = PathBuf::from(
+                env::var_os("RIFFDB_LIFECYCLE_LOAD_CONTROL").ok_or("reconciliation_prefix")?,
+            );
+            if count != completed
+                || count == 0
+                || count.to_string() != value
+                || !root.is_absolute()
+                || root.is_symlink()
+                || !root.is_dir()
+                || !root.join("load.quiesce").is_file()
+                || !root.join("load.quiesced").is_file()
+            {
+                return Err("reconciliation_prefix");
+            }
+            Some(count)
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("reconciliation_prefix"),
+    };
     let revisions = env::var_os("RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS")
-        .map(|path| witness::Reader::open(Path::new(&path))?.revisions())
+        .map(|path| {
+            let mut reader = witness::Reader::open(Path::new(&path))?;
+            match quiesced {
+                Some(count) => reader
+                    .acknowledged_prefix(count)
+                    .map(|(_, revisions)| revisions),
+                None => reader.revisions(),
+            }
+        })
         .transpose()?
         .map(std::sync::Arc::new);
+    if quiesced.is_some() && revisions.is_none() {
+        return Err("reconciliation_prefix");
+    }
     if let Some(revisions) = &revisions
         && revisions.iter().sum::<u64>() != completed
     {

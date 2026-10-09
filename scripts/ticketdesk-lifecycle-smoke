@@ -845,6 +845,8 @@ def main():
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--worker", required=True, type=Path)
+    parser.add_argument("--prepare-campaign-control", action="store_true",
+                        help="prepare fresh campaign controls; the controller must start its original observer before seeding")
     parser.add_argument("--prepare-successor", action="store_true", help="generate the exact-parent V2 closure in the private root")
     parser.add_argument("--additive-deploy", action="store_true", help="deploy exact-parent V2 before exercising retained V1 bindings")
     parser.add_argument("--observe", action="store_true", help="register consumer and live query before seeding")
@@ -868,6 +870,13 @@ def main():
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
+    require(not args.prepare_campaign_control or args.online_retention and not any((
+        args.observe, args.archive_witness, args.population_probe_seconds, args.additive_deploy,
+        args.prepare_successor, args.restart_recovery, args.capability_rotation, args.driver,
+        args.python_native, args.consumer_outage, args.sink_outage, args.native_observations)),
+        "campaign_population_mode")
+    lifetime = 100800 if args.prepare_campaign_control else 3600
+    archive_quota = 8 * 1024**3 if args.prepare_campaign_control else 1024**3
     require(not args.native_observations or args.population_probe_seconds and args.observe,
             "native_sample_mode")
     outage_mode = args.consumer_outage or args.sink_outage
@@ -883,7 +892,8 @@ def main():
                                              or args.prepare_successor or args.driver), "restart_recovery_mode")
     require(not args.archive_witness or not (args.additive_deploy or args.restart_recovery or args.prepare_successor),
             "archive_witness_mode")
-    require(not args.online_retention or args.population_probe_seconds and args.observe or args.archive_witness,
+    require(not args.online_retention or args.population_probe_seconds and args.observe
+            or args.archive_witness or args.prepare_campaign_control,
             "retention_mode")
     require(not args.capability_rotation or args.archive_witness and not
             (args.population_probe_seconds or args.observe or args.additive_deploy or args.restart_recovery
@@ -944,7 +954,7 @@ environment = "development"
 [databases.default.outbox]
 kind = "durable_local"
 directory = {quote("archive")}
-quota_encoded_bytes = 1073741824
+quota_encoded_bytes = {archive_quota}
 {retention_document}
 ''')
     client = write(root, "client.toml", f'''[client]
@@ -962,7 +972,7 @@ tls_server_name = "127.0.0.1"
             and type(descriptor.get("projection_id")) is int and descriptor["projection_id"] > 0, "descriptor")
     bootstrap = write(root, "bootstrap.json", json.dumps({
         "principal_id": "lifecycle-smoke-operator", "actor_kind": "human",
-        "requested_lifetime_seconds": 3600, "audiences": ["riffdb-ticketdesk-lifecycle"],
+        "requested_lifetime_seconds": lifetime, "audiences": ["riffdb-ticketdesk-lifecycle"],
         "grant": {"tenant_scope": {"type": "global"}, "partition_scope": {"type": "all"},
                   "permissions": [{"type": permission} for permission in (
                       "validate_contract", "read_contract", "deploy_contract")] + [
@@ -1002,7 +1012,7 @@ tls_server_name = "127.0.0.1"
                                ("TicketDeskLifecycleApplication", "application")):
                 invoke(root, "bind-" + name, base + ["role", "bind", str(source), "--role", role,
                        "--principal", "lifecycle-smoke-" + name, "--actor-kind", "service",
-                       "--audience", "riffdb-ticketdesk-lifecycle", "--lifetime-seconds", "3600",
+                       "--audience", "riffdb-ticketdesk-lifecycle", "--lifetime-seconds", str(lifetime),
                        "--credential-output", str(root / (name + ".credential"))])
             environment = dict(os.environ,
                 RIFFDB_LIFECYCLE_ENDPOINT=f"https://127.0.0.1:{port}",
@@ -1010,9 +1020,9 @@ tls_server_name = "127.0.0.1"
                 RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
                 RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"),
                 RIFFDB_LIFECYCLE_OPERATOR_CREDENTIAL=str(root / "operator.credential"))
-            if args.archive_witness:
+            if args.archive_witness or args.prepare_campaign_control:
                 environment["RIFFDB_LIFECYCLE_WITNESS_ROOT"] = str(root)
-            if args.prepare_successor:
+            if args.prepare_successor or args.prepare_campaign_control:
                 successor = root / "successor"
                 shutil.copytree(root / "application", successor)
                 (successor / "riffdb.application.lock.json").unlink()
@@ -1027,7 +1037,34 @@ tls_server_name = "127.0.0.1"
                        str(manifest_path), "--lock", "riffdb.application.lock.json"])
                 invoke(root, "successor-check", base + ["application", "lock", "--check",
                        str(manifest_path), "--lock", "riffdb.application.lock.json"])
-                print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
+                if args.prepare_successor:
+                    print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
+                    return 0
+            if args.prepare_campaign_control:
+                maintenance_request = write(root, "maintenance-principal.json", json.dumps({
+                    "principal_id": "lifecycle-campaign-maintenance", "actor_kind": "human",
+                    "requested_lifetime_seconds": lifetime,
+                    "audiences": ["riffdb-ticketdesk-lifecycle"],
+                    "grant": {"tenant_scope": {"type": "global"}, "partition_scope": {"type": "all"},
+                              "permissions": [{"type": "administer_capabilities"}],
+                              "field_visibility": [], "max_scan_rows": 1, "approval_required": []},
+                }))
+                invoke(root, "maintenance-principal-create", base + ["capability", "create",
+                    "--request", str(maintenance_request), "--credential-output",
+                    str(root / "maintenance.credential")])
+                created = read_json(root / "maintenance-principal-create.stdout", 4096)
+                require(created.get("schema") == "riffdb.cli.output/v1"
+                        and created.get("command") == "capability.create"
+                        and created.get("ok") is True and created["result"]["status"] == "created",
+                        "campaign_maintenance_principal")
+                require(not (root / "seed.witness").exists()
+                        and not (root / "updates.witness").exists(), "campaign_controls_fresh")
+                write(root, "campaign-control.json", json.dumps({
+                    "schema": "riffdb.ticketdesk-lifecycle-control-preparation/v1",
+                    "seeded_tickets": 0, "offered_updates": 0,
+                    "capability_lifetime_seconds": lifetime, "archive_quota_encoded_bytes": archive_quota,
+                    "qualifies_campaign": False}, sort_keys=True) + "\n")
+                print("Fresh campaign controls prepared; the original observer must precede seeding.")
                 return 0
             if args.observe:
                 if args.population_probe_seconds:

@@ -171,6 +171,28 @@ impl CurrentClient {
     }
 }
 
+pub(super) async fn verify_successor_authorization() -> Result<()> {
+    let mut client = connect().await?;
+    let CurrentClient::V2(generated, _) = &mut client else {
+        return Err("successor_required");
+    };
+    let denied = generated
+        .lifecycle_version(v2::LifecycleVersionInput {
+            organization_id: super::uuid(0x8001, 0),
+            idempotency_key: "ticketdesk-lifecycle-ungranted-successor".to_owned(),
+        })
+        .await
+        .err()
+        .ok_or("successor_authorization")?;
+    if denied.semantic_error().map(|error| error.code().as_str()) != Some("RDB-AUTH-0214") {
+        return Err("successor_authorization");
+    }
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-successor-authorization/v1\",\"contract_version\":2,\"ungranted_command_refused\":true}}"
+    );
+    Ok(())
+}
+
 pub(super) async fn smoke() -> Result<()> {
     let mut client = connect().await?;
     if !matches!(&client, CurrentClient::V2(_, _)) {

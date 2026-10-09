@@ -18,7 +18,7 @@ import time
 from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
 
 COMMANDS = frozenset({"server.health", "role.bind", "capability.revoke", "application.deploy",
-    "event.retire", "event.consume", "event.nack", "event.seek", "backup.create", "backup.restore",
+    "event.retire", "event.consume", "event.nack", "event.seek", "projection.query", "backup.create", "backup.restore",
     "backup.operation", "command.run", "command.outcome"})
 MAX_STDOUT = 1024**2
 MAX_STDERR = 65536
@@ -134,7 +134,8 @@ class CampaignOperator:
                 and value["payloads_reconciled"] is True and value["policy_anchors_reconciled"] is True)
         return False
 
-    def run_worker(self, executable, kind, environment, *, elapsed_ns, timeout_s):
+    @staticmethod
+    def _worker_arguments(executable, kind, environment):
         require(type(kind) is str and kind in {"rotation-smoke", "reconcile", "archive-reconcile", "successor-authorization"},
                 "campaign_operator_worker")
         require(type(executable) is str and type(environment) is dict and len(environment) <= 256
@@ -143,8 +144,19 @@ class CampaignOperator:
                         for key, value in environment.items())
                 and sum(len(key.encode()) + len(value.encode()) for key, value in environment.items()) <= 131072,
                 "campaign_operator_environment")
+    def run_worker(self, executable, kind, environment, *, elapsed_ns, timeout_s):
+        self._worker_arguments(executable, kind, environment)
         return self._run(kind, [], elapsed_ns=elapsed_ns, timeout_s=timeout_s,
                          base=[executable, kind], environment=environment, worker=True)
+
+    def run_final_archive(self, executable, environment, *, elapsed_ns, duration_s, timeout_s):
+        require(type(duration_s) is int and duration_s % 300 == 0 and 73 <= duration_s // 300 <= 288
+                and type(elapsed_ns) is int and elapsed_ns >= duration_s * 10**9
+                and not self.roster.children, "campaign_archive_not_offline")
+        self._worker_arguments(executable, "archive-reconcile", environment)
+        return self._run("archive-reconcile", [], elapsed_ns=elapsed_ns, timeout_s=timeout_s,
+                         base=[executable, "archive-reconcile"], environment=environment, worker=True,
+                         terminal_archive=True)
 
     def run(self, command, arguments, *, elapsed_ns, timeout_s):
         return self._run(command, arguments, elapsed_ns=elapsed_ns, timeout_s=timeout_s,
@@ -180,7 +192,7 @@ class CampaignOperator:
                 ("transport_unavailable", "the gRPC transport is unavailable"),
                 ("tls_connection_failed", "the verified TLS channel could not connect")})
 
-    def _run(self, command, arguments, *, elapsed_ns, timeout_s, base, environment, worker):
+    def _run(self, command, arguments, *, elapsed_ns, timeout_s, base, environment, worker, terminal_archive=False):
         require(not self.failed, "campaign_operator_failed")
         child, readers, refusals = None, [], []
         self.busy, was_busy = True, self.busy
@@ -190,7 +202,10 @@ class CampaignOperator:
             require(type(command) is str and (worker or command in COMMANDS), "campaign_operator_command")
             require(type(elapsed_ns) is int and 0 <= elapsed_ns < 2**64
                     and (self.last_ns is None or elapsed_ns >= self.last_ns), "campaign_operator_clock")
-            require(type(timeout_s) in (int, float) and 0 < timeout_s <= 60,
+            require(type(terminal_archive) is bool and (not terminal_archive or
+                    (worker and command == "archive-reconcile" and not self.roster.children)),
+                    "campaign_archive_not_offline")
+            require(type(timeout_s) in (int, float) and 0 < timeout_s <= (900 if terminal_archive else 60),
                     "campaign_operator_deadline")
             self._arguments(arguments)
             self._arguments(base + arguments)
