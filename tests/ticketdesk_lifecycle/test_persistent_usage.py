@@ -17,6 +17,58 @@ from lib import ticketdesk_lifecycle_persistent_usage as resources
 
 
 class PersistentUsage(unittest.TestCase):
+    def test_launch_proof_stays_open_until_the_target_image_is_installed(self):
+        from lib.ticketdesk_lifecycle_address_space import AddressSpaceLaunch, MAX_PROOF
+        scripts = str(Path(__file__).resolve().parents[2] / 'scripts')
+        entered_read, entered_write = resources.os.pipe()
+        release_read, release_write = resources.os.pipe()
+        child = None
+        released = False
+        try:
+            with AddressSpaceLaunch([sys.executable, '-c', 'print("executed")'],
+                                    128*1024*1024) as launch:
+                code = '''import os,sys
+sys.path.insert(0,sys.argv.pop(1))
+from lib import ticketdesk_lifecycle_address_space as launcher
+entered,release=int(sys.argv.pop(1)),int(sys.argv.pop(1))
+os.set_inheritable(entered,False);os.set_inheritable(release,False)
+actual=os.execvpe
+def blocked_exec(*arguments):
+ os.write(entered,b'entered')
+ assert os.read(release,1)==b'1'
+ os.close(entered);os.close(release)
+ actual(*arguments)
+os.execvpe=blocked_exec
+raise SystemExit(launcher.launch())
+'''
+                options = launch.options(dict(pass_fds=(entered_write, release_read),
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+                child = subprocess.Popen([sys.executable, '-c', code, scripts,
+                    str(entered_write), str(release_read), *launch.arguments[3:]], **options)
+                resources.os.close(launch.write); launch.write = None
+                self.assertTrue(select.select([entered_read], [], [], 10)[0])
+                self.assertEqual(resources.os.read(entered_read, 7), b'entered')
+                poller = select.poll(); poller.register(launch.read, select.POLLHUP)
+                self.assertEqual(poller.poll(0), [],
+                    'launch proof must remain open until the target image is installed')
+                resources.os.write(release_write, b'1'); released = True
+                with resources.os.fdopen(resources.os.dup(launch.read), 'rb') as proof:
+                    value = json.loads(proof.read(MAX_PROOF + 1))
+                self.assertTrue(value['enforced'])
+                self.assertEqual(value['limit_bytes'], 128*1024*1024)
+                output, errors = child.communicate(timeout=10)
+                self.assertEqual(child.returncode, 0, errors.decode())
+                self.assertEqual(output, b'executed\n')
+        finally:
+            if child is not None:
+                if not released: resources.os.write(release_write, b'1')
+                try: child.wait(timeout=10)
+                except subprocess.TimeoutExpired: child.kill(); child.wait(timeout=5)
+                if child.stdout is not None: child.stdout.close()
+                if child.stderr is not None: child.stderr.close()
+            for descriptor in (entered_read, entered_write, release_read, release_write):
+                resources.os.close(descriptor)
+
     def test_usage_snapshot_is_detached_and_does_not_reap_the_owned_child(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'usage.json'

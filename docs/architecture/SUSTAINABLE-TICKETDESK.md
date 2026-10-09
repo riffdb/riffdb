@@ -2952,3 +2952,31 @@ C3D, including actual child replacement and operator exit accounting. Continuous
 sampling, all actual campaign launches, native observation epochs and the full
 fault controller remain unproved. The component continues to report incomplete
 resource-model qualification, and the 24-hour run has not started.
+
+
+The roster's scope, internal classification and metadata acceptance also pass
+on C3D. A separate native regression then reproduces cache eviction based only
+on commit sequence: reading the oldest retained payload does not protect it
+from the next new publication, so an active historical reader decodes it again.
+The original test fails at that assertion. The repair evicts the least recently
+verified payload while keeping the same 64-entry and 64-MiB ceilings. Current
+canonical or checked-stub identity and metadata checks precede every refresh;
+replacement or pruning still prevents stale reinsertion. An already captured
+candidate survives eviction but cannot hide corrupted current authority.
+All 13 focused native tests, the full storage suite, 59 architecture checks
+Clippy and formatting pass on C3D, including both lookup paths and deterministic
+eviction interleavings. Final metadata acceptance and an unchanged measured
+preparation remain required. This repairs a native eviction defect without establishing it
+as the entire cause of the consumer timeout or latency refusal. No workload,
+request deadline, format, authorization or qualification gate changes.
+
+
+A deterministic process barrier also exposes a private launcher race: its proof
+pipe closes before the target executable is installed. The parent can therefore
+capture the launcher's virtual-memory high water and mistake the target's lower
+post-exec value for a regression. The launcher now leaves the non-inheritable
+proof descriptor open until exec closes it. The original assertion fails before
+the repair; all 13 persistent-owner tests, nine roster tests and the complete
+205-test lifecycle suite pass afterward on C3D. This corrects launch observation
+without relaxing the memory checks. Integrated resource qualification remains
+unproved.

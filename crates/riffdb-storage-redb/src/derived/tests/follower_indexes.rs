@@ -699,3 +699,131 @@ fn captured_payload_reads_its_original_row_and_refuses_a_corrupt_successor_even_
     let (segment, encoded) = segment(vec![capsule(CommitSequence::first())], None);
     ports.assert_payload_keeps_captured_authority(Arc::new(segment), encoded.as_bytes(), false);
 }
+
+fn payload_cache_at_capacity() -> (
+    TransientIndexes,
+    BTreeMap<CommitSequence, Vec<u8>>,
+    Option<CommandSegmentDigestV1>,
+) {
+    let mut indexes = TransientIndexes::default();
+    let mut stored = BTreeMap::new();
+    let mut prior = None;
+    for number in 1..=64 {
+        let sequence = CommitSequence::new(number).unwrap();
+        let (value, encoded) = segment(vec![capsule(sequence)], prior);
+        prior = Some(value.segment_digest());
+        let canonical: Arc<[u8]> = Arc::from(encoded.as_bytes());
+        stored.insert(sequence, canonical.to_vec());
+        indexes.apply(
+            crate::transient::TransientIndexDelta::CommandSegmentPublished(
+                Arc::new(value),
+                Some(canonical),
+            ),
+        );
+    }
+    assert_eq!(indexes.payload_stats().0, 64);
+    (indexes, stored, prior)
+}
+
+// req: REP-002, REP-003, PERF-007
+#[test]
+fn an_active_older_payload_survives_new_publications_within_the_unchanged_cache_budget() {
+    for captured_read in [false, true] {
+        let (mut indexes, stored, prior) = payload_cache_at_capacity();
+        let read = |indexes: &TransientIndexes, sequence| {
+            if captured_read {
+                let mut resolved = indexes
+                    .capture_command_at(sequence)
+                    .unwrap()
+                    .unwrap()
+                    .resolve(|first| Ok(stored.get(&first).cloned()))
+                    .unwrap();
+                assert_eq!(resolved.segment.first_commit_sequence(), sequence);
+                indexes.retain_resolved_payload(&mut resolved).unwrap();
+            } else {
+                let command = indexes
+                    .command_at(sequence, |first| Ok(stored.get(&first).cloned()))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(command.commit_sequence(), sequence);
+            }
+        };
+        crate::transient::PAYLOAD_COLD_DECODES.with(|count| count.set(0));
+        read(&indexes, CommitSequence::first());
+        let sequence = CommitSequence::new(65).unwrap();
+        let (value, encoded) = segment(vec![capsule(sequence)], prior);
+        indexes.apply(
+            crate::transient::TransientIndexDelta::CommandSegmentPublished(
+                Arc::new(value),
+                Some(Arc::from(encoded.as_bytes())),
+            ),
+        );
+        read(&indexes, CommitSequence::first());
+        assert_eq!(
+            crate::transient::PAYLOAD_COLD_DECODES.with(std::cell::Cell::get),
+            0,
+            "new publications must not repeatedly decode an actively read older payload"
+        );
+        read(&indexes, CommitSequence::new(2).unwrap());
+        assert_eq!(
+            crate::transient::PAYLOAD_COLD_DECODES.with(std::cell::Cell::get),
+            1,
+            "the cold entry still resolves through its canonical stored authority"
+        );
+        let (entries, bytes) = indexes.payload_stats();
+        assert_eq!(entries, 64);
+        assert!(bytes <= 64 * 1024 * 1024);
+    }
+}
+
+// req: REP-002, REP-003, PERF-007
+#[test]
+fn an_evicted_captured_payload_reenters_only_after_authority_validation() {
+    let (mut indexes, stored, prior) = payload_cache_at_capacity();
+    let captured = indexes
+        .capture_command_at(CommitSequence::first())
+        .unwrap()
+        .unwrap();
+    let sequence = CommitSequence::new(65).unwrap();
+    let (value, encoded) = segment(vec![capsule(sequence)], prior);
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(
+            Arc::new(value),
+            Some(Arc::from(encoded.as_bytes())),
+        ),
+    );
+    crate::transient::PAYLOAD_COLD_DECODES.with(|count| count.set(0));
+    let mut resolved = captured
+        .resolve(|first| Ok(stored.get(&first).cloned()))
+        .unwrap();
+    assert_eq!(
+        resolved.segment.commands()[0],
+        capsule(CommitSequence::first())
+    );
+    indexes.retain_resolved_payload(&mut resolved).unwrap();
+    assert_eq!(
+        indexes
+            .command_at(CommitSequence::first(), |first| Ok(stored
+                .get(&first)
+                .cloned()))
+            .unwrap(),
+        Some(capsule(CommitSequence::first()))
+    );
+    assert_eq!(
+        crate::transient::PAYLOAD_COLD_DECODES.with(std::cell::Cell::get),
+        0,
+        "the captured candidate survives eviction and restores its verified authority"
+    );
+    let candidate = indexes
+        .capture_command_at(CommitSequence::first())
+        .unwrap()
+        .unwrap();
+    assert!(
+        candidate
+            .resolve(|_| Ok(Some(b"corrupt successor".to_vec())))
+            .is_err_and(|error| error.kind() == StorageErrorKind::CorruptData)
+    );
+    let (entries, bytes) = indexes.payload_stats();
+    assert_eq!(entries, 64);
+    assert!(bytes <= 64 * 1024 * 1024);
+}

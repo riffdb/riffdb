@@ -135,7 +135,8 @@ def launch():
                                 launch_virtual_peak_bytes=peak,
                                 inherited_hard_limit_bytes=inherited), sort_keys=True).encode()
         if os.write(descriptor, proof) != len(proof): raise ValueError()
-        os.close(descriptor); descriptor = None
+        # The descriptor is non-inheritable. Its EOF must follow successful
+        # exec, so the owner cannot pin the launcher's pre-exec memory image.
         os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
     except (OSError, ValueError, IndexError, MemoryError):
         if descriptor is not None: os.close(descriptor)

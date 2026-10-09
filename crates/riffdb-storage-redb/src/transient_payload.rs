@@ -2,6 +2,7 @@
 use super::*;
 use riffdb_storage_api::CommandSegmentManifestV1;
 use riffdb_types::DatabaseId;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -9,6 +10,11 @@ const MAX_PAYLOAD_ENTRIES: usize = 64;
 /// One seeded segment in this many is decoded from its canonical bytes and
 /// compared with the writer's segment before it is retained.
 pub(crate) const PAYLOAD_SEED_VERIFY_EVERY: u64 = 64;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PAYLOAD_COLD_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 // Normalize through the canonical decoder before retention. Charge non-value
 // DTOs, shared scalar/key/string views and allocation headers conservatively at
 // 64 times their wire footprint, plus the complete fixed command layouts.
@@ -166,7 +172,24 @@ struct CachedPayload {
 #[derive(Default)]
 struct PayloadEntries {
     entries: BTreeMap<CommitSequence, CachedPayload>,
+    recency: VecDeque<CommitSequence>,
     bytes: usize,
+}
+
+impl PayloadEntries {
+    fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
+        let entry = self.entries.remove(&first);
+        let position = self.recency.iter().position(|value| *value == first);
+        match (entry, position) {
+            (Some(entry), Some(position)) => {
+                self.recency.remove(position).ok_or_else(corrupt)?;
+                self.bytes = self.bytes.checked_sub(entry.charge).ok_or_else(corrupt)?;
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            _ => Err(corrupt()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -224,8 +247,12 @@ fn decode_payload(
         )
     }) {
         metadata.validate(&cached.decoded)?;
-        return Ok((cached.decoded, None));
+        // Only an authority-checked hit refreshes retention. New writes must
+        // not evict an active older reader solely because its sequence is old.
+        return Ok((Arc::clone(&cached.decoded), Some(cached)));
     }
+    #[cfg(test)]
+    PAYLOAD_COLD_DECODES.with(|count| count.set(count.get() + 1));
     let segment = Arc::new(
         crate::history_stub::decode_retained_segment(&bytes)
             .map_err(|_| corrupt())?
@@ -277,10 +304,7 @@ impl PayloadCache {
     }
     pub(super) fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
         let state = self.state.get_mut().map_err(|_| corrupt())?;
-        if let Some(old) = state.entries.remove(&first) {
-            state.bytes -= old.charge;
-        }
-        Ok(())
+        state.remove(first)
     }
 
     pub(super) fn resolve(
@@ -351,15 +375,14 @@ impl PayloadCache {
     ) -> Result<(), StorageError> {
         let charge = retained.charge;
         let mut state = self.state.lock().map_err(|_| corrupt())?;
-        if let Some(old) = state.entries.remove(&first) {
-            state.bytes -= old.charge;
-        }
+        state.remove(first)?;
         while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
         {
-            let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
-            state.bytes -= old.charge;
+            let first = state.recency.front().copied().ok_or_else(corrupt)?;
+            state.remove(first)?;
         }
         state.entries.insert(first, retained);
+        state.recency.push_back(first);
         state.bytes += charge;
         Ok(())
     }

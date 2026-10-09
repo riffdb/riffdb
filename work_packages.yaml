@@ -28665,6 +28665,28 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-012 target-image launch observation: an explicit pre-exec pipe barrier
+      proves that closing the finite-limit proof before exec lets the owner
+      pin the launcher's memory image. Keep the existing non-inheritable
+      descriptor open until exec closes it. The original assertion fails;
+      all 13 persistent-owner tests, nine roster tests and 205 lifecycle tests
+      pass afterward on C3D. Preserve every memory bound and refusal. Final
+      metadata acceptance and integrated campaign evidence remain required.
+    - >-
+      D-011 active historical payload retention: a deterministic native
+      regression reads the oldest of 64 cached segments, publishes one newer
+      segment and proves the active older read unnecessarily decodes again.
+      The original test fails at that exact assertion on C3D. Evict the least
+      recently verified payload instead of the smallest commit sequence,
+      preserving the 64-entry and 64-MiB ceilings and every canonical, stub,
+      metadata and member check. Refresh only after authority validation and
+      reinsert only while the exact metadata entry remains current. Thirteen
+      focused native tests pass, including both lookup paths and capture,
+      eviction, revalidation and corrupt-successor schedules. Full storage,
+      59 architecture checks, Clippy and formatting also pass on C3D. Final
+      metadata acceptance and unchanged preparation remain required;
+      no sole-cause claim is made. WP-825 stays open.
+    - >-
       D-010 campaign process roster: preserve exact live role ownership and
       prior kernel exit RSS peaks across replacement. Require the original
       owned child's expected exit and finite inherited birth bound before a

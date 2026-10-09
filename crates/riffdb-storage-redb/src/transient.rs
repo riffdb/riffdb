@@ -5,6 +5,8 @@ pub(crate) mod follower;
 #[path = "transient_payload.rs"]
 mod payload;
 #[cfg(test)]
+pub(crate) use payload::PAYLOAD_COLD_DECODES;
+#[cfg(test)]
 pub(crate) use payload::PAYLOAD_SEED_VERIFY_EVERY;
 pub(crate) use payload::{CapturedCommandPayload, ResolvedCommandPayload};
 use payload::{PayloadCache, SegmentMetadata};

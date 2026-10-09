@@ -2448,3 +2448,75 @@ and qualification gates; Updated handbook: Sustainable TicketDesk milestone;
 Hazards/follow-ups: initial native consumer timeout, uninterrupted preparation,
 complete fault controller, continuous sampling, populated restore, final-source
 full CI and the short campaign remain required. No 24-hour run starts.
+
+
+The process-roster component subsequently passes package scope, internal tier
+classification and scoped metadata acceptance on C3D. Its seven-file commit
+retains the 204-test component evidence and both native preparation failures.
+Full campaign execution and resource-model qualification remain unproved.
+
+A later seed diagnostic captures the original event reader inside command
+payload decoding at seed second 25. Like the earlier debugger attempt, it
+observes a slower successful seed and does not reproduce the uninterrupted
+consumer timeout. This capture identifies work on the request path, not an
+exclusive cause or a passing preparation.
+
+A separate deterministic native regression proves an eviction defect. With the
+existing 64-entry cache full, it successfully reads the oldest command, publishes
+one newer segment, then finds that reading the same active older command decodes
+its canonical payload again. Eviction selected the smallest commit sequence
+regardless of verified read activity. The original test reaches and fails that
+exact assertion on C3D; it does not fail on fixture authority or compilation.
+
+The repair retains the same 64-entry and 64-MiB decoded-payload ceilings, but
+selects the least recently verified payload for eviction. Only a successful
+current canonical-byte or checked-stub identity and metadata validation refreshes
+retention. A captured cache candidate can survive concurrent eviction and
+reenter only while its exact metadata entry still belongs to the index. The
+bounded recency queue and payload map remove and evict entries together; stale
+or inconsistent bookkeeping refuses. Cold authority still decodes through the
+original validators, and a corrupted successor still refuses despite a cached
+candidate. No storage format, writer ordering, read authority, scan ceiling,
+canonical validation, cache size or request deadline changes.
+
+All 13 focused native tests pass on C3D, exercising the original writer-side
+lookup and the captured read path, eviction between capture and resolution,
+corrupt successor refusal and the existing publication-custody schedules.
+The full storage suite, all 59 architecture checks and Clippy also pass on
+C3D. Formatting also passes; final metadata acceptance remains in progress. A fresh unchanged measured preparation remains required; this
+regression does not establish the entire latency or consumer-timeout cause.
+WP-825 remains open, and no 24-hour run starts.
+
+PR note: Package WP-825 (open); Tier internal for the cache implementation;
+Behavior: preserve actively read historical payloads within the existing bounded
+cache, refreshing retention only after authority validation; Checks: original
+negative, 13 focused native tests, full storage suite, 59 architecture checks
+Clippy and formatting on C3D; Compatibility: unchanged application
+interfaces, authorization, ordering, durable formats, reviewed fixtures, cache
+ceilings and qualification gates; Updated handbook: Sustainable TicketDesk
+milestone; Hazards/follow-ups: final metadata acceptance, unchanged preparation,
+complete campaign integration, populated restore, final-source full CI and the
+short campaign remain required.
+
+
+A separate explicit pre-exec barrier reproduces a launcher observation race.
+The original launcher closes its finite-limit proof pipe before exec, so the
+owner can pin the launcher's memory image rather than the target's. The test
+fails at the exact requirement that the proof stay open until target image
+installation. The repair relies on the existing non-inheritable descriptor:
+successful exec closes it after image installation. Launch errors still refuse
+and join the owned child; no memory bound or counter check is weakened.
+
+All 13 persistent-owner tests, nine process-roster tests and the complete
+205-test lifecycle suite pass on C3D with the repair. The deterministic barrier
+uses pipes rather than synchronization sleeps. Native preparation, continuous
+resource sampling and full campaign qualification remain required.
+
+PR note: Package WP-825 (open); Tier internal for launch observation;
+Behavior: complete the finite-limit launch handshake at exec before pinning
+worker memory; Checks: original deterministic negative, 13 persistent-owner,
+nine roster and all 205 lifecycle tests on C3D; Compatibility: unchanged
+application interfaces, database semantics, durable formats, reviewed fixtures,
+resource bounds and qualification gates; Updated handbook: Sustainable
+TicketDesk milestone; Hazards/follow-ups: final metadata acceptance, unchanged
+preparation and integrated campaign proof remain required. No 24-hour run starts.
