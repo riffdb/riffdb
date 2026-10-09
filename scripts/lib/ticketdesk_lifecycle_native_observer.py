@@ -111,7 +111,12 @@ class NativeObserverProcess:
     It never fabricates successful accounting for an interrupted native sample.
     """
 
-    def __init__(self, root, command, environment, identity):
+    def __init__(self, root, command, environment, identity, *, roster=None,
+                 address_space_limit_bytes=None):
+        if roster is not None:
+            from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+            require(isinstance(roster, CampaignProcessRoster)
+                    and address_space_limit_bytes is None, "native_sample_owner")
         self.samples = NativeSamples(identity)
         self.messages = queue.Queue(maxsize=2)
         self.failure = None
@@ -122,9 +127,12 @@ class NativeObserverProcess:
         self.last_elapsed_ns = None
         try:
             with (self.root / "native-observer.stderr").open("xb") as errors:
-                self.process = ObservedProcess(command, env=environment, stdin=subprocess.PIPE,
-                                                observation=self.root / "native-observer.process-usage.json",
-                                                stdout=subprocess.PIPE, stderr=errors)
+                options = dict(env=environment, stdin=subprocess.PIPE,
+                    observation=self.root / "native-observer.process-usage.json",
+                    stdout=subprocess.PIPE, stderr=errors)
+                self.process = (roster.launch("native_sampler", command, **options)
+                    if roster is not None else ObservedProcess(command,
+                        address_space_limit_bytes=address_space_limit_bytes, **options))
             self.reader = threading.Thread(target=self._read, daemon=True)
             self.reader.start()
             ready = self._next(10)

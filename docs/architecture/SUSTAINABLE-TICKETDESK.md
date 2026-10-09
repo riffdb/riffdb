@@ -503,6 +503,18 @@ without adding fields to the frozen component evidence. These are controller
 prerequisites; actual fault execution and complete resource reconciliation
 remain required, and their qualification flags remain false.
 
+The epoch component passes all 229 controller tests and scoped acceptance on the
+required host. Native sampler construction now accepts an explicit initial
+address-space limit, or routes a successor through the exact campaign roster's
+serialized launcher. A competing caller limit is refused before opening output
+or launching a process. Closing the sampler retains its exact child object for
+the controller's explicit expected-exit retirement. Epoch sampling calls that
+same owned sampler with the current release version and checks its returned
+elapsed field before recording the unchanged raw native schema. A different
+owner, plan identity or timestamp cannot supply evidence for the current epoch.
+These connections still require component acceptance and actual campaign
+integration; they do not establish resource-model qualification.
+
 ## Separate durable seal publication from spare preparation
 
 The preparation on `ea572072` still fails `source_bytes_sample_gap`, with no

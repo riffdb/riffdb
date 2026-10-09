@@ -16,6 +16,7 @@ import test_logical_bytes as logicals
 import test_physical_bytes as physicals
 import test_native_observer as natives
 from lib.ticketdesk_lifecycle_campaign_native_epochs import CampaignNativeEpochs, EpochError
+from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess, NativeSamples
 
 SECOND = 10**9
 IDENTITY = natives.NativeSampleContinuity.identity
@@ -252,6 +253,35 @@ class NativeCampaignEpochs(unittest.TestCase):
             epochs.transition("backup_restore", SECOND, version=1, incarnation=2, identity=IDENTITY)
             with self.assertRaisesRegex(ValueError, "^source_bytes_incarnation$"):
                 epochs.observe("source", sources.line(root=2, incarnation=1), 60 * SECOND)
+
+    def test_native_collection_calls_the_exact_sampler_and_keeps_its_original_elapsed_field(self):
+        with self.fixture() as (_, _, roster, epochs):
+            owner = NativeObserverProcess.__new__(NativeObserverProcess)
+            owner.process = roster.children["native_sampler"]
+            owner.samples = NativeSamples(IDENTITY)
+            value = dict(natives.NativeSampleContinuity().sample(index=1), elapsed_ns=SECOND)
+            with patch.object(owner, "sample", return_value=value) as sample:
+                self.assertEqual(epochs.sample_native(owner, SECOND), value)
+                sample.assert_called_once_with(SECOND, version=1)
+            self.assertEqual(epochs.native_count, 2)
+            self.assertEqual(epochs.native_transport_attempts, 6)
+            self.assertEqual(value["elapsed_ns"], SECOND)
+
+    def test_wrong_sampler_or_returned_clock_never_becomes_current_epoch_evidence(self):
+        for fault in ("owner", "identity", "clock"):
+            with self.subTest(fault=fault), self.fixture() as (_, _, roster, epochs):
+                owner = NativeObserverProcess.__new__(NativeObserverProcess)
+                owner.process = (owners.FixtureProcess(999) if fault == "owner"
+                                 else roster.children["native_sampler"])
+                owner.samples = NativeSamples(dict(projection_id=8, projection_plan_hash="b" * 64)
+                                              if fault == "identity" else IDENTITY)
+                value = dict(natives.NativeSampleContinuity().sample(index=1), elapsed_ns=0)
+                with patch.object(owner, "sample", return_value=value) as sample:
+                    with self.assertRaisesRegex(EpochError,
+                            "^campaign_epoch_clock$" if fault == "clock" else "^campaign_epoch_owner$"):
+                        epochs.sample_native(owner, SECOND)
+                    if fault != "clock": sample.assert_not_called()
+                self.assertEqual(epochs.native_count, 1)
 
 
 if __name__ == "__main__": unittest.main()

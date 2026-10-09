@@ -6,6 +6,7 @@ import os
 import tempfile
 from unittest.mock import patch
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
@@ -113,12 +114,88 @@ class NativeProcessOwnership(unittest.TestCase):
             records = [json.loads(line) for line in (root / 'native-observations.jsonl').read_bytes().splitlines()]
             self.assertEqual([record['index'] for record in records], [0, 1])
 
+    def test_actual_bounded_parent_routes_the_replacement_sampler_through_its_roster(self):
+        from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
+        scripts = str(Path(__file__).resolve().parents[2] / "scripts")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = self.script(root)
+            code = '''import json,os,select,subprocess,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
+from lib.ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess
+root=Path(sys.argv[2]);command=json.loads(sys.argv[3]);identity=json.loads(sys.argv[4])
+owned=[];roster=None;first=None;replacement=None
+arguments=[sys.executable,'-c','import sys;print("ready",flush=True);sys.stdin.buffer.read()']
+try:
+ initial=root/'initial';initial.mkdir()
+ first=NativeObserverProcess(initial,command,dict(os.environ),identity,
+                             address_space_limit_bytes=128*1024**2)
+ original=first.process;owned.append(original);children={'native_sampler':original}
+ for role in ('server','load','observer'):
+  child=ObservedProcess(arguments,observation=root/(role+'.json'),
+      address_space_limit_bytes=128*1024**2,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+  owned.append(child);children[role]=child
+  assert select.select([child.stdout],[],[],10)[0] and child.stdout.readline()==b'ready\\n'
+ limits={'controller':256*1024**2,**{role:128*1024**2 for role in children}}
+ roster=CampaignProcessRoster(os.getpid(),children,limits)
+ roster.sample(0);first.sample(0);first.close()
+ roster.retire('native_sampler',original,expected_exit=0)
+ successor=root/'successor';successor.mkdir()
+ replacement=NativeObserverProcess(successor,command,dict(os.environ),identity,roster=roster)
+ current=replacement.process;owned.append(current)
+ assert roster.children['native_sampler'] is current
+ assert current.usage['address_space_proof']['limit_bytes']==128*1024**2
+ replacement.sample(1);roster.sample(1);replacement.close()
+ roster.retire('native_sampler',current,expected_exit=0)
+ for role in ('server','load','observer'):
+  child=children[role];child.stdin.close();assert child.wait(timeout=10)==0
+  roster.retire(role,child,expected_exit=0)
+ final=roster.sample(2)
+ assert final['roles']['native_sampler']['incarnations']==2
+ assert final['retired_incarnations']==5 and len(final['processes'])==1
+ assert current.usage['exit_rss_peak_bytes']>0 and current.usage['exit_observed']
+ print(json.dumps({'sampler_incarnations':2,'retired':5,'finite_exit_peak':True}))
+finally:
+ for owner in (first,replacement):
+  if owner is not None and owner.process is not None:owner.close(failed=True)
+ pending=owned+([] if roster is None else list(roster.children.values()))
+ for child in {id(child):child for child in pending}.values():
+  if child.poll() is None:child.kill();child.wait(timeout=5)
+  for stream in (child.stdin,child.stdout,child.stderr):
+   if stream is not None:stream.close()
+'''
+            outer = ObservedProcess([sys.executable, "-c", code, scripts, str(root),
+                json.dumps(command), json.dumps(NativeSampleContinuity.identity)],
+                observation=root / "controller.json", address_space_limit_bytes=256 * 1024**2,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertEqual(outer.wait(timeout=60), 0, outer.stderr.read().decode())
+                self.assertEqual(json.loads(outer.stdout.read()),
+                    dict(sampler_incarnations=2, retired=5, finite_exit_peak=True))
+            finally:
+                if outer.poll() is None: outer.kill(); outer.wait(timeout=5)
+                outer.stdout.close(); outer.stderr.close()
+
     def test_boolean_ready_slot_refuses_and_joins_the_actual_child(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with self.assertRaisesRegex(NativeObservationError, '^native_sample_ready$'):
                 NativeObserverProcess(root, self.script(root, ready_slots=True), dict(os.environ), NativeSampleContinuity.identity)
             self.assertFalse((root / 'native-observations.jsonl').exists())
+
+    def test_invalid_roster_and_competing_limit_refuse_before_opening_or_launching(self):
+        from lib.ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "must-not-exist"
+            for roster, limit in ((object(), None),
+                                  (CampaignProcessRoster.__new__(CampaignProcessRoster), 128 * 1024**2)):
+                with self.subTest(limit=limit), self.assertRaisesRegex(NativeObservationError, "^native_sample_owner$"):
+                    NativeObserverProcess(root, ["must-not-launch"], {}, NativeSampleContinuity.identity,
+                                          roster=roster, address_space_limit_bytes=limit)
+            self.assertFalse(root.exists())
 
     def test_expired_graceful_shutdown_remains_a_failure_after_forced_exit(self):
         with tempfile.TemporaryDirectory() as directory:

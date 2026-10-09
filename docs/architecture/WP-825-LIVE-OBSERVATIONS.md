@@ -2810,3 +2810,27 @@ fixtures, workload and qualification thresholds; Updated handbook: Sustainable
 TicketDesk milestone and live observations; Hazards/follow-ups: investigate
 native audit failure, then populated restore, full CI and the real fault
 rehearsal with complete resource reconciliation. No 24-hour run has started.
+
+All 229 controller tests and actual scoped acceptance pass for the exact epoch
+component. The native audit failure remains under investigation using a
+separately preserved diagnostic build with fixed stage and error-kind messages.
+The original failed preparation remains failed evidence; an instrumented or
+debugger-observed run cannot qualify the measured workload.
+
+Sampler integration adds explicit finite initial launch, exact roster-backed
+successor launch and epoch collection from the owned sampler's real output.
+Regression cases require a real bounded parent, native-protocol child handshake,
+normal sampler shutdown, explicit exact-owner retirement and retained exit RSS.
+Separate hostile-input cases require refusal of conflicting limits, wrong
+sampler identity and substituted elapsed time. Intended missing-interface
+negatives and positive acceptance remain required on the host; these cases do
+not claim execution of the seven-fault campaign.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: connect native sampler
+launch and continuous epoch collection to exact owned processes; Checks:
+required-host regression and scoped acceptance pending; Compatibility: original
+preparation behavior, native runtime, public interfaces, formats, reviewed
+fixtures and qualification gates unchanged; Updated handbook: Sustainable
+TicketDesk milestone and live observations; Hazards/follow-ups: native audit
+failure, full campaign assembly, populated restore, full CI and real rehearsal
+remain open.

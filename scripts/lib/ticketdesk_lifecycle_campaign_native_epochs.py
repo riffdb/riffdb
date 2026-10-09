@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 
 from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster, MAX_INCARNATIONS
-from .ticketdesk_lifecycle_native_observer import NativeSamples, MAX_SAMPLES
+from .ticketdesk_lifecycle_native_observer import (
+    NativeObserverProcess, NativeSamples, MAX_SAMPLES, FIELDS as NATIVE_FIELDS,
+)
 from .ticketdesk_lifecycle_provider_budget import ProviderSamples, parse_sample as provider_sample
 from .ticketdesk_lifecycle_source_bytes import SourceBytesSamples, parse_sample_v2, PREFIX_V2
 from .ticketdesk_lifecycle_logical_bytes import LogicalBytesSamples, parse_sample as logical_sample
@@ -206,6 +208,27 @@ class CampaignNativeEpochs:
                 "campaign_epoch_frontier")
         self.samples[name].observe(encoded, elapsed_ns)
         self.floors.pop(name, None)
+
+    @fenced
+    def sample_native(self, owner, elapsed_ns):
+        """Collect from the exact owned process; retain its original clock field."""
+        self._clock(elapsed_ns)
+        self._owners_current()
+        require(isinstance(owner, NativeObserverProcess) and owner.process is self.sampler
+                and isinstance(owner.samples, NativeSamples)
+                and owner.samples.identity == self.native.identity, "campaign_epoch_owner")
+        require(self.native_output is not None and elapsed_ns < self.duration_ns
+                and self.native_count < MAX_SAMPLES
+                and (self.native_last_ns is None or elapsed_ns > self.native_last_ns),
+                "campaign_epoch_bound")
+        value = owner.sample(elapsed_ns, version=self.version)
+        require(type(value) is dict and value.keys() == NATIVE_FIELDS | {"elapsed_ns"}
+                and type(value["elapsed_ns"]) is int and value["elapsed_ns"] == elapsed_ns,
+                "campaign_epoch_clock")
+        raw = dict(value)
+        del raw["elapsed_ns"]
+        self.observe_native(raw, elapsed_ns)
+        return dict(value)
 
     @fenced
     def observe_native(self, value, elapsed_ns):
