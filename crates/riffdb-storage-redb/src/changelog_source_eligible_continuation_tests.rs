@@ -865,3 +865,88 @@ fn completed_newer_source_byte_prefix_survives_an_older_qualified_mutation_proof
     observer.check_qualification(epoch + 1);
     assert!(observer.continued.is_none());
 }
+
+#[test]
+fn pending_newer_source_byte_capture_finishes_before_an_older_mutation_proof_is_offered() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    Arc::get_mut(&mut ports.shared)
+        .unwrap()
+        .application_commit_profile = crate::RedbCommitProfile::Standard;
+    for ordinal in 0..1030 {
+        append(&ports, if ordinal % 2 == 0 { 17 } else { 31 });
+    }
+    let (older_source, older_history, epoch) = validated(&ports);
+    let ceiling = older_history.tail().sequence().get();
+    let page = riffdb_storage_api::EvidencePageLimit::new(256).unwrap();
+    let mut calibration = RetainedHistoryValidation::new_source(older_source.clone())
+        .unwrap()
+        .unwrap();
+    calibration.bind_qualification(epoch);
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        assert!(pages <= 32, "the bounded fixture must finish");
+        if calibration.advance(page).unwrap() {
+            break;
+        }
+    }
+    assert!(pages > 1);
+    drop(calibration);
+    let mut walk = RetainedHistoryValidation::new_source(older_source.clone())
+        .unwrap()
+        .unwrap();
+    walk.bind_qualification(epoch);
+    for _ in 1..pages {
+        assert!(!walk.advance(page).unwrap());
+    }
+    drop(older_source);
+    append(&ports, 47);
+    let (newer_source, newer_history, successor_epoch) = validated(&ports);
+    assert_eq!(successor_epoch, epoch);
+    assert!(newer_history.tail().sequence() > older_history.tail().sequence());
+    let expected = oracle(&newer_source, newer_history, ceiling);
+    let captured = Instant::now();
+    let mut control = ports.replication_source_control();
+    control.online_validation = Some(walk);
+    control
+        .eligible_bytes
+        .capture_qualified(newer_source, newer_history, ceiling, epoch, captured)
+        .unwrap();
+    let cadence = control.eligible_bytes.next_capture;
+    let gate_before = ports.shared.mutation_gate.source_census().unwrap();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    let pending = control
+        .eligible_bytes
+        .continued
+        .as_ref()
+        .expect("an older mutation proof must not discard unfinished newer accounting");
+    assert!(pending.pending());
+    assert_eq!(pending.captured, captured);
+    assert_eq!(pending.checked_rows, 256);
+    assert_eq!(control.eligible_bytes.next_capture, cadence);
+    assert_eq!(
+        ports.shared.mutation_gate.source_census().unwrap(),
+        gate_before
+    );
+    assert!(control.online_validation.as_ref().unwrap().is_complete());
+    for _ in 0..8 {
+        control.advance_source_byte_observation_off_gate().unwrap();
+    }
+    let completed = control.eligible_bytes.continued.as_ref().unwrap();
+    let sample = completed.sample(Instant::now()).unwrap();
+    assert_eq!(sample[5], expected);
+    assert_eq!(sample[11], sample[4]);
+    assert_eq!(sample[10], 0);
+    assert!(completed.root.is_none());
+    assert_eq!(control.eligible_bytes.next_capture, cadence);
+    // Accounting grants no mutation authority: the completed source proof
+    // still needs its ordinary current validation and first observation.
+    for _ in 0..8 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        if control.reclamation_yields()[0] == 1 {
+            break;
+        }
+    }
+    assert!(control.online_validation.as_ref().unwrap().is_complete());
+    assert_eq!(control.reclamation_yields()[0], 1);
+}

@@ -2232,3 +2232,57 @@ rates and deadlines; Updated handbook: Sustainable TicketDesk milestone;
 Hazards/follow-ups: the complete seed-failure and latency causes remain unresolved;
 unchanged preparation, public restore, final-source CI and the full short rehearsal
 remain required. The 24-hour campaign remains unstarted.
+
+The frozen `912f974a` release builds normally, then unchanged preparation fails
+`source_bytes_sample_gap`. Seeding completes 65,536 tickets in 118.2 seconds.
+Measured load is terminated after 962.7 seconds; its last complete source-byte
+observation is at second 867.6. The observer checks 3,072 events without duplicates
+and exits cleanly, as does the server. No populated restore or full CI follows.
+The third five-minute latency window exceeds the histogram range. The first
+window overlaps the preparation's sink outage, which starts near second five;
+its passing percentile values are not a normal-window qualification result.
+
+A deterministic native schedule independently reproduces discarded accounting:
+the last page completes an older mutation-proof snapshot while a newer exact
+accounting capture still needs bounded pages. Existing sharing correctly refuses
+the older snapshot for that unfinished capture, discarding it until the next
+capture cadence. An initial test misses the final proof page and passes; the
+corrected schedule calibrates the bounded proof on the same immutable source,
+then fails the missing-candidate assertion on C3D. This establishes a native
+scheduling defect, without establishing it as the sole cause of the measured gap.
+
+The repair lets already captured accounting pages finish before offering a
+completed mutation proof's pin. It keeps both existing pins, every snapshot
+sharing validator, the original capture timestamp and cadence, and the ordinary
+source-proof admission path. No new writer turn, checkpoint, snapshot, deletion
+authority or relaxation of freshness is introduced. A first repaired run proves
+the accounting survives and completes, then fails a test assumption that the
+refreshed source proof finishes in one page. The final test requires completion
+through the existing bounded steps before the first observation can be recorded.
+The corrected 34 accounting tests, five checkpoint-license tests, 24 retention
+worker tests, 59 architecture tests, Clippy, formatting and scoped metadata
+acceptance pass on C3D. Unchanged preparation and complete qualification remain
+pending. The initial remaining-check runner rejects an extra test-filter argument
+before executing worker tests; the corrected worker, architecture, Clippy and
+metadata commands all pass. No runtime failure is silently ignored.
+
+The separate controller handover component passes 17 focused tests on C3D. Its
+shared release file stays unpublished until both original workers acknowledge
+quiescence. Load and observer acknowledgements remain until the actual new
+observer generation and a subsequent load completion can be confirmed, preventing
+a paused load poll from recreating a stale acknowledgement during resume. Restore
+markers survive until that confirmation. Stale identity, duplicate events,
+oversized or recursive records, clock rewind and timeout fail closed. The complete
+seven-fault runner, process replacement and resource reconciliation remain open.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: bounded native accounting finishes before offering an older completed
+mutation proof's pin; the controller helper fences generation handover and delays
+acknowledgement cleanup until both workers resume; Checks: corrected negative
+native schedule, accounting/license/worker/architecture tests, Clippy, formatting,
+focused controller tests and scoped metadata acceptance on C3D; Compatibility:
+unchanged snapshot validators, source authority, two-pin bound, maintenance rest,
+workload, formats, fixtures and application interfaces; Updated handbook:
+Sustainable TicketDesk milestone; Hazards/follow-ups: unchanged preparation,
+public restore, final-source CI and the actual complete short rehearsal remain
+required. The 24-hour run remains unstarted.

@@ -28665,6 +28665,32 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-005 pending source accounting custody: frozen 912f974a builds normally,
+      then unchanged preparation fails source_bytes_sample_gap. The last exact
+      source observation is at load second 867.6 and load stops at 962.7;
+      the observer and server exit cleanly, with no restore or full CI result.
+      A corrected deterministic native schedule completes an older mutation
+      proof while newer accounting is unfinished and reproduces its discard
+      through the existing fail-closed snapshot-sharing rule. Finish captured
+      bounded accounting pages before offering that completed proof's pin.
+      Preserve both existing pins, every sharing validator, cadence, freshness,
+      writer admission, rest, deletion authority, formats and workload gates.
+      All 34 accounting tests, five license tests, 24 worker tests, 59
+      architecture tests, Clippy, formatting and scoped metadata acceptance
+      pass on C3D. Unchanged preparation remains pending.
+      This defect does not establish the sole cause of the observed accounting
+      gap or latency refusal. WP-825 remains open; no 24-hour run starts.
+    - >-
+      D-006 controller quiescence component: require both original worker
+      acknowledgements before publishing the canonical shared release file.
+      Preserve acknowledgement files until the observer reports the new
+      generation and a subsequent load command completes; retain the restore
+      marker until that confirmation. Permit only one declared incarnation
+      advance and refuse stale identity, duplicate events, unbounded records,
+      clock rewind and timeout. Seventeen focused controller tests pass on C3D.
+      This component does not implement or qualify the complete seven-fault
+      campaign, process replacement or resource reconciliation.
+    - >-
       D-004 immutable reactive-module reader: frozen source-paced preparation
       builds but stops during seed archive drain with observer_consumer and
       TRANSPORT_UNAVAILABLE, before measured load. A separate diagnostic replay

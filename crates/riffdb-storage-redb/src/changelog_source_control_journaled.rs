@@ -67,6 +67,15 @@ impl ReplicationSourceControl {
         {
             return Ok(0);
         }
+        // Finish already captured accounting before offering this proof's pin.
+        // The final proof page can belong to an older snapshot than unfinished
+        // accounting. Sharing that older pin correctly refuses reuse but would
+        // discard the sample until the next capture cadence. Keep the two
+        // existing pins and every sharing check; this bounded turn grants no
+        // writer or additional snapshot. Captured pages continue off-gate.
+        if self.eligible_bytes.pending() {
+            return Ok(0);
+        }
         crash_edge("continuation-qualified");
         let proof = walk.proof()?;
         let source = proof.source().clone();

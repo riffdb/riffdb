@@ -2855,3 +2855,24 @@ short diagnostic nevertheless refuses latency. Neither diagnostic
 establishes the complete failure cause. Preparation, populated public restore,
 final-source CI and the complete short rehearsal remain required before the
 24-hour run can be ready.
+
+The next frozen release, `912f974a`, reaches measured load but fails the unchanged
+source-byte observation gap after its last complete sample at second 867.6.
+Load stops after 962.7 seconds; the server and consumer exit cleanly. A corrected
+deterministic native schedule reproduces an older completed mutation proof
+discarding newer unfinished accounting through the existing fail-closed pin
+sharing rule. The native scheduler now finishes the already captured accounting
+pages before offering that proof's pin, preserving both existing pins and every
+sharing check. This grants no writer turn or new snapshot. The scheduling repair
+passes 34 accounting tests, five checkpoint-license tests, 24 worker tests,
+59 architecture tests, Clippy, formatting and scoped metadata acceptance on C3D.
+Unchanged preparation, restore, final-source CI and the complete campaign remain
+required; no qualification result is implied by these focused checks.
+
+The campaign control-file helper now requires both original workers to acknowledge
+quiescence before publishing the shared next-generation release. It keeps the
+acknowledgements until the observer reports the new generation and the load makes
+a subsequent command completion, avoiding acknowledgement republication during
+resume. A declared restore permits exactly one incarnation advance and retains
+its marker until both workers resume. Seventeen focused controller tests pass on
+C3D. This component does not implement or qualify the complete seven-fault runner.
