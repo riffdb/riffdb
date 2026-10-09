@@ -1889,3 +1889,53 @@ tests and storage/server Clippy pass on the required host. These are native
 implementation checks; original shipping preparation, populated restore and
 final-source full CI still gate measured qualification. Preserve every earlier
 failure. WP-825 remains open and the 24-hour run remains unstarted.
+
+
+### Outbox prefix materialization blocks mandatory statistics audits
+
+Shipping revision `d6e44640` builds with the ordinary release profile, but its
+unchanged preparation fails `projection_sample_failed` after 745.1 seconds.
+The aggregate native observer deadline is five seconds. There is no server
+panic; its shutdown succeeds. The native outbox census records a maximum
+published-suffix application of 3,899,091 microseconds under the writer gate.
+A separate checkpoint benchmark overlaps this attempt, so its latency is not
+qualified as isolated host performance.
+
+A separate numeric diagnostic retains the original deadlines, rates, faults
+and release settings. After the earlier competing benchmark finishes, this
+attempt records 98 complete observer triplets. Its maximum Statistics call is
+4,075,279 microseconds, versus 12,577 for Health and 6,867 for projection. The
+outbox census records suffix application of 3,527,529 microseconds under the
+writer gate. The original observer timeout does not recur; preparation instead
+fails `source_bytes_sample_gap` after 838.2 seconds. The last exact byte sample
+is at 398.991 seconds. Neither attempt reaches populated restore or final CI.
+Preserve both failed populations and their immutable artifact identities.
+
+Statistics retains its intrinsic durable audit. That audit shares the native
+writer with outbox status transitions. Those transitions previously drained
+an entire published journal suffix while holding the sole writer gate. Native
+admission now prepares oversized prefixes through the existing asynchronous
+checkpoint and waits outside the writer gate and checkpoint state lock. Its
+closing suffix uses the existing closed 256-transition, 1-MiB scanner. The
+outbox transaction still uses the selected Immediate profile, exact reciprocal
+validation and status CAS, one captured receipt and post-commit membership.
+Claims remain individual; successful completion groups remain at most sixteen.
+
+An explicitly paused checkpoint regression fails against the original native
+path, then passes after repair: another audit acknowledges durably before the
+checkpoint is released. The negative run also exposes a fixture-only watchdog
+poisoning its pause lock before cleanup; release that lock before asserting the
+watchdog result and repeat the original negative without destructor abort.
+A second native regression covers unfinished spare preparation before rotation.
+The combined repair passes both native regressions, 1,330 active storage tests
+with two unchanged ignored tests, all 59 architecture checks, storage/server
+Clippy and thirteen metadata gates on the required host. Restrict the unused
+unbounded-drain convenience wrapper to its existing test callers; focused
+regressions and Clippy pass after that annotation. The first broad candidate
+exposes an architecture guard tied to the old scanner name; its corrected guard
+retains one transaction and verifies the bounded outbox scanner before capture.
+An intermediate compile failure identifies two test-only sealer constructors;
+both now publish the same completion signal when their explicit schedule ends.
+Unchanged measured preparation, populated recovery and final-source full CI
+remain pending. The separate source-byte freshness gap remains open; no deadline or workload gate
+has been relaxed. WP-825 remains open and the 24-hour run remains unstarted.

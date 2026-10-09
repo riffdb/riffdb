@@ -26,6 +26,7 @@ pub enum RedbCheckpointTestPoint {
     BeforeCommandApply,
     BeforeSealPublication,
     BeforeSparePreparation,
+    BeforeOutboxCheckpointPreparation,
 }
 
 #[derive(Default)]
@@ -65,7 +66,7 @@ impl Pause {
 
 #[derive(Default)]
 pub(super) struct CheckpointScheduleInner {
-    points: [Pause; 11],
+    points: [Pause; 12],
     requested: AtomicBool,
 }
 
@@ -104,7 +105,9 @@ impl RedbCheckpointTestSchedule {
                 |state| !state.entered,
             )
             .expect("schedule observation");
-        assert!(state.entered, "storage did not reach {point:?}");
+        let entered = state.entered;
+        drop(state);
+        assert!(entered, "storage did not reach {point:?}");
     }
 
     pub fn release(&self, point: RedbCheckpointTestPoint) {

@@ -697,13 +697,17 @@ mod tests {
         let proof = walk.complete().unwrap();
         let (entered, entry) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
+        let finished = Arc::new(crate::store::CheckpointCompletion::default());
+        let completion = crate::store::CheckpointPublisher(Arc::clone(&finished));
         let worker = std::thread::spawn(move || {
             entered.send(()).unwrap();
             released.recv().unwrap();
+            completion.publish(Ok(()));
         });
         *ports.shared.journal_sealer.lock().unwrap() = Some(crate::store::JournalSealer {
             handle: worker,
             publication_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finished,
         });
         entry.recv().unwrap();
         let epoch = ports.shared.durable_commit_epoch();

@@ -178,6 +178,16 @@ impl SharedRedb {
     }
 
     pub(super) fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
+        self.start_async_checkpoint(false)
+    }
+
+    pub(super) fn start_async_checkpoint_for_direct_write(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        self.start_async_checkpoint(true)
+    }
+
+    fn start_async_checkpoint(self: &Arc<Self>, direct_write: bool) -> Result<(), StorageError> {
         if self.mutation_gate.source_publication_requested()? {
             // The ordinary writer owns this lease. Complete only its existing
             // submitted FIFO prefix, retaining results for original owners.
@@ -212,6 +222,7 @@ impl SharedRedb {
         #[cfg(not(feature = "test-fixtures"))]
         let requested = false;
         let requested = requested
+            || (direct_write && runtime.suffix_transitions != 0)
             || (runtime.suffix_transitions != 0
                 && self.mutation_gate.source_checkpoint_requested()?);
         if !requested
@@ -361,7 +372,8 @@ impl SharedRedb {
                 reanchor_required: false,
             });
 
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let receiver = Arc::new(CheckpointCompletion::default());
+        let sender = CheckpointPublisher(Arc::clone(&receiver));
         *checkpoint_guard = Some(AsyncJournalCheckpoint {
             batch: batch.clone(),
             covered_view,
@@ -389,7 +401,7 @@ impl SharedRedb {
                 }
                 #[cfg(feature = "test-fixtures")]
                 let controller = worker_shared.test_controller.clone();
-                let _ = sender.send(result);
+                sender.publish(result);
                 drop(worker_shared);
                 #[cfg(feature = "test-fixtures")]
                 if let Some(controller) = controller {

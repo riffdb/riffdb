@@ -1437,11 +1437,19 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
         .0;
     assert_eq!(direct.matches("database.begin_write()").count(), 1);
     assert!(
-        direct.find("apply_published_journal_suffix(").unwrap()
+        direct
+            .find("apply_published_journal_suffix_with_limits(")
+            .unwrap()
             < direct
                 .find("OperationalWriteTransaction::from_checked_drain(")
                 .unwrap()
     );
+    assert!(direct.replace(",)", ")").contains(
+        "apply_published_journal_suffix_with_limits(&transaction,runtime,bounded_outbox)"
+    ));
+    assert!(direct.contains(
+        "letbounded_outbox=source==riffdb_storage_api::ChangelogAttributionV3::OutboxTransition;"
+    ));
     let commit = store
         .split_once("fncommit_with_observations(")
         .unwrap()

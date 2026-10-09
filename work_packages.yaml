@@ -28665,6 +28665,21 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 native outbox admission under ADR-0273: prepare oversized published
+      prefixes with the existing asynchronous checkpoint and wait outside the
+      writer gate and checkpoint state lock, then reenter the unchanged FIFO
+      writer. Close at most 256 transitions and 1 MiB through the existing bounded
+      scanner. Preserve selected Immediate profiles, individual claims, checked
+      sixteen-success groups, reciprocal validation, CAS, captured receipts,
+      post-commit membership and uncertainty fencing. Mandatory Statistics audits
+      remain durable. The large-prefix regression fails before repair and passes
+      afterward, as does a separate unfinished-spare regression. All 1,330 active
+      storage tests, 59 architecture checks, storage/server Clippy and thirteen
+      metadata gates pass on the required host. Restrict the unused full-drain
+      convenience wrapper to tests and repeat focused checks and Clippy.
+      Unchanged measured preparation, populated recovery and final-source CI
+      remain pending. The separate source-byte gap stays open.
+    - >-
       D-003 completion of fixed-prefix observation lifecycle: a newer completed
       observation keeps its actual identity and deadline when an older qualified
       proof is offered; pending candidates retain fail-closed sharing. Finish

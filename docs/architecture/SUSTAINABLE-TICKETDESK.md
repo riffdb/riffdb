@@ -2672,3 +2672,43 @@ partial-line and custody refusals; Compatibility: no runtime, durable format,
 application interface or qualification threshold change; Updated handbook: this
 milestone handoff; Hazards and follow-ups: final-source checks and an actual
 complete short rehearsal remain required. No 24-hour run is started.
+
+
+## WP-825 bounded native outbox admission
+
+Required-host preparation exposes a native writer bottleneck: outbox status
+updates materialize the entire published journal suffix under the writer gate.
+The Statistics operation waits behind that work because its audit is durable
+and mandatory. A bounded numeric diagnostic observes a 4.075-second Statistics
+call and a 3.528-second outbox suffix materialization. The original five-second
+observer deadline and every workload gate remain unchanged.
+
+Prepare a large prefix with the existing asynchronous checkpoint before opening
+the outbox transaction. Wait for checkpoint materialization and unfinished
+sealer/spare preparation outside the writer gate and checkpoint state lock,
+then reenter the existing FIFO writer and revalidate the actual suffix. The
+closing scan admits at most 256 transitions and 1 MiB. Retain the selected
+Immediate transaction, exact status CAS and reciprocal validation, receipt
+capture, membership publication, uncertainty fencing and individual claims.
+Successful completion groups retain their sixteen-entry limit. No new journal
+encoding, batching worker, public control or weakened audit is introduced.
+
+The native large-prefix regression fails before repair and passes afterward;
+it explicitly pauses materialization while another durable audit completes.
+The spare-preparation regression also fails before repair and passes afterward.
+All 1,330 active storage tests pass with two unchanged ignored tests; all 59
+architecture checks, storage/server Clippy and thirteen metadata gates pass on
+the required host. The unused unbounded-drain helper is test-only; focused
+checks and Clippy pass after that annotation. Unchanged measured preparation
+remains pending. The separate source-byte accounting freshness gap
+still gates rehearsal readiness. Preserve failed populations and earlier
+attempts; do not substitute relaxed observation deadlines for a native repair.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded native outbox
+admission with checkpoint preparation outside the writer gate; Checks: both native
+negative/repaired regressions, 1,330 active storage tests, 59 architecture checks,
+storage/server Clippy and thirteen metadata gates on the required host; Compatibility: unchanged application interfaces, durable
+encodings, Immediate profiles, CAS and receipt semantics; Updated handbook:
+this milestone page; Hazards/follow-ups: source-byte freshness, unchanged preparation, populated
+recovery and final-source CI.
+The 24-hour qualification run remains unstarted.
