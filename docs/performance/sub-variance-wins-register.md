@@ -29,6 +29,7 @@ effect is **measured in aggregate** with the others rather than claimed alone.
 | Hardware CRC-32C for envelope checksums | 5.54 → 9.52 GB/s at the 6,393-byte frame size, 1.72x, 482 ns saved per call | ~0.34% (encode and decode) | `crc_matches_the_software_table_across_sizes_and_alignments` |
 | Tokenized-text paging clones only the returned page | removes a key clone and a `CanonicalRecord` clone per candidate outside the page | dormant; no contract declares the provider | `paging_returns_the_same_order_and_rows_as_one_unpaged_page` |
 | `long_pattern` incremental postings | O(N^2) → O(N); 250/500/1000 inserts at 5.25/11.09/23.61 ms | dormant; no contract declares the provider | `incremental_maintenance_equals_a_full_rebuild_over_the_same_rows` |
+| Derived sidecar absence observed once per handle (ADR-0282) | `statx` per read 1.0 → 0.000 on the second development machine (8 vCPU, AMD EPYC 7B12), c32 and c1 read-only; read throughput and CPU per read within that host's spread | ~1.6% of tokio-worker CPU in the c32 read-only C3D profile | `absent_sidecar_is_probed_once_and_a_later_creation_is_read` |
 
 ## Deferred, not yet taken
 

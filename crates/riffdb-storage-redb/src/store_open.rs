@@ -126,6 +126,7 @@ impl RedbStore {
                 derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
                 derived_in_memory,
+                derived_absent: AtomicBool::new(false),
                 path: path.to_path_buf(),
                 journal_media,
                 application_commit_profile,

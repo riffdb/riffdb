@@ -383,6 +383,56 @@ fn concurrent_first_touch_of_the_sidecar_never_reports_unavailable() {
 }
 
 // req: STO-030
+/// An absent sidecar is observed on disk once, not on every read, and a
+/// sidecar this handle then creates is read rather than the empty view.
+#[test]
+fn absent_sidecar_is_probed_once_and_a_later_creation_is_read() {
+    use redb::ReadableTableMetadata as _;
+    let frontier_rows = |read: &redb::ReadTransaction| {
+        read.open_table(crate::layout::PROJECTION_FRONTIER)
+            .map_or(0, |table| table.len().unwrap())
+    };
+
+    let (path, ports) = operational("derived-absent-probe");
+    assert!(!crate::store::derived_store_path(&path.0).exists());
+    crate::store::DERIVED_PATH_PROBES.with(|probes| probes.set(0));
+    for _ in 0..16 {
+        let read = ports.begin_derived_read().unwrap();
+        assert_eq!(frontier_rows(&read), 0);
+    }
+    assert_eq!(
+        crate::store::DERIVED_PATH_PROBES.with(std::cell::Cell::get),
+        1,
+        "an absent sidecar must be probed once per handle"
+    );
+    assert!(!crate::store::derived_store_path(&path.0).exists());
+
+    let write = ports.begin_derived_write().unwrap();
+    write
+        .transaction()
+        .unwrap()
+        .open_table(crate::layout::PROJECTION_FRONTIER)
+        .unwrap()
+        .insert(b"probe".as_slice(), [1_u8].as_slice())
+        .unwrap();
+    write
+        .commit_for(crate::hooks::RedbTestOperation::ProjectionMutation)
+        .unwrap();
+    assert!(crate::store::derived_store_path(&path.0).exists());
+    let read = ports.begin_derived_read().unwrap();
+    assert_eq!(
+        frontier_rows(&read),
+        1,
+        "a sidecar created by this handle must be read, not the empty view"
+    );
+    assert_eq!(
+        crate::store::DERIVED_PATH_PROBES.with(std::cell::Cell::get),
+        1
+    );
+    drop(ports);
+}
+
+// req: STO-030
 /// ADR-0085 Amendment 2 fence after ADR-0240: document projection frontiers
 /// live in the derived sidecar, and retention must read them there. Before
 /// this, retention read only the primary's table, so a catching-up projection
