@@ -3083,3 +3083,16 @@ slots. Preserve serialized births, exact retirement, the request concurrency
 limit and all frozen address-space ceilings. The regression exercises every
 operator slot and declared replacement and refuses the next owner. C3D
 validation is pending; no measured run is underway and no in-flight limit changes.
+
+### Recovery admission validation candidate
+
+The stopped generic and exact-retry recovery routes refuse new restore admission
+while retaining only the service owner admitted before stopping. A fixed,
+best-effort process diagnostic follows actual recovery-service installation;
+it supplies no authority and cannot replace native admission. The controlled
+promotion comparison passes the unchanged test for baseline and candidate and
+all 26 parallel follower tests with bounded native child traces. No OOM kill
+occurs. The original full-server TransportUnavailable failure remains preserved;
+these comparisons do not establish its cause or erase it. Ordinary full-server
+validation and scoped acceptance are pending for this candidate. Populated
+public restore, final-source CI and the real all-seven campaign remain required.
