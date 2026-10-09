@@ -314,9 +314,9 @@ record with no front matter.
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
 | [0278](0278-journaled-bounded-source-reclamation.md) | Journaled Bounded Source Reclamation | Accepted | guarantee |
 | [0279](0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md) | Finite Checkpoint Licensing For Sustainable Source Reclamation | Accepted | guarantee |
-| [0280](0280-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
 | [0281](0281-bounded-native-bootstrap-source-custody-validation.md) | Bounded Native Bootstrap Source Custody Validation | Accepted | guarantee |
 | [0282](0282-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
+| [0283](0283-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
