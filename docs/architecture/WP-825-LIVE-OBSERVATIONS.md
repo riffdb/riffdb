@@ -2785,3 +2785,28 @@ These observations warrant investigation of native proof, pacing and checkpoint
 progress; they neither prove a sole cause nor establish six-hour stability.
 The source, logical and physical bases remain independent, with unchanged
 rest, sampling, foreground workload and qualification gates.
+
+The continuous memory change passes all 213 controller tests and final scoped
+acceptance on the required host. A fresh preparation using the same verified
+native binaries then fails after about 359 seconds, before its first completed
+load window, without observed competing heavy work. The observer reports
+`observer_ack` with `storage_unavailable`; the server records an
+`AuditUnavailable` runtime stop and exits unsuccessfully. The harness also
+reports observer and server shutdown failures. Original data, receipts and
+process-exit observations remain preserved. Restore and full CI do not run.
+This is a native failure requiring investigation, not a harness retry or an
+excuse to weaken fail-closed audit behavior.
+
+The proposed controller epoch component preserves global component gaps and
+bounds across actual declared process replacements. Its missing-module
+regression is confirmed on the required host. Positive component and scoped
+acceptance checks remain required; no complete campaign is claimed.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: bind continuous native
+observations to exact declared process replacements; Checks: required-host
+missing-module negative, positive component and scoped acceptance pending;
+Compatibility: unchanged native runtime, interfaces, durable formats, reviewed
+fixtures, workload and qualification thresholds; Updated handbook: Sustainable
+TicketDesk milestone and live observations; Hazards/follow-ups: investigate
+native audit failure, then populated restore, full CI and the real fault
+rehearsal with complete resource reconciliation. No 24-hour run has started.

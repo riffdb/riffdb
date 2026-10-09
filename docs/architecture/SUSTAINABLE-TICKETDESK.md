@@ -490,6 +490,19 @@ records and both retained exit peaks, under the unchanged 4-KiB record bound.
 Final source acceptance remains required; these are component tests, not
 measured fault-campaign evidence.
 
+The continuous memory integration subsequently passes all 213 controller tests
+and final scoped acceptance on the required host. The next native-observation
+component binds counter epochs to the exact roster's server and sampler owners.
+A declared restart requires their observed expected exits and exactly one new
+incarnation; deployment retains the live provider pool, and restore requires
+the next native history incarnation. Component observations retain one global
+clock, count, coverage array, byte ceiling and provider peak. Same-lineage
+durable frontiers cannot rewind, and restore cannot rewind the previously
+observed command head. An independent bounded epoch stream records the boundary
+without adding fields to the frozen component evidence. These are controller
+prerequisites; actual fault execution and complete resource reconciliation
+remain required, and their qualification flags remain false.
+
 ## Separate durable seal publication from spare preparation
 
 The preparation on `ea572072` still fails `source_bytes_sample_gap`, with no
