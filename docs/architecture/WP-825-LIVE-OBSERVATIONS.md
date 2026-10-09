@@ -3061,3 +3061,14 @@ interfaces, durable formats and reviewed fixtures unchanged; Updated pages:
 sustainable TicketDesk milestone and live observations; Hazards/follow-ups:
 unresolved promotion failure, final frozen inputs, full CI, complete resource
 reconciliation and the real all-seven rehearsal remain open.
+
+### Independent resource observations candidate
+
+The resource reconciler reads immutable, private, bounded memory and disk
+collector inputs and independently checks their original clock, whole-file
+accounting basis, complete window coverage, retained process-role peaks and
+serialized launcher birth ceiling. Control and evidence files remain bounded
+separately from the seven public receipt resources. Host, launch/exit custody,
+native history, interference and artifact evidence remain mandatory independent
+checks; arithmetic fixtures supply no actual campaign qualification. C3D
+validation is pending for this candidate. WP-825 remains open.
