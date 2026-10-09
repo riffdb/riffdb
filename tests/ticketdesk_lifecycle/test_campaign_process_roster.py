@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
 from lib.ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
-from lib.ticketdesk_lifecycle_resources import ResourceError
+from lib.ticketdesk_lifecycle_resources import CampaignMemorySamples, ResourceError
 
 MIB = 1024**2
 
@@ -44,7 +44,7 @@ class FixtureProcess(ObservedProcess):
 
 
 class CampaignRosterTests(unittest.TestCase):
-    def fixture(self, root):
+    def fixture(self, root, *, extra_roles=()):
         self.controller = os.getpid()
         ceiling = patch("lib.ticketdesk_lifecycle_campaign_process_roster.resource.getrlimit",
                         return_value=(256 * MIB, 256 * MIB))
@@ -52,7 +52,7 @@ class CampaignRosterTests(unittest.TestCase):
         self.children = {"server": FixtureProcess(124), "load": FixtureProcess(125),
                          "observer": FixtureProcess(126), "native_sampler": FixtureProcess(127)}
         self.limits = {"controller": 256 * MIB,
-                       **{role: 128 * MIB for role in self.children}, "operator": 128 * MIB}
+                       **{role: 128 * MIB for role in (*self.children, *extra_roles)}, "operator": 128 * MIB}
         self.tree(root, [child.pid for child in self.children.values()])
         return CampaignProcessRoster(self.controller, self.children, self.limits, proc_root=root)
 
@@ -132,6 +132,96 @@ class CampaignRosterTests(unittest.TestCase):
             root = Path(directory); roster = self.fixture(root)
             first = roster.sample(0); first["roles"]["server"]["rss_peak_upper_bound_bytes"] = 1
             self.assertEqual(roster.sample(1)["roles"]["server"]["rss_peak_upper_bound_bytes"], 19 * MIB)
+
+    def test_continuous_sampling_keeps_exit_peaks_and_global_coverage_across_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); roster = self.fixture(root)
+            with CampaignMemorySamples.from_roster(root, roster, 21900) as samples:
+                samples.poll(0)
+                original = self.children["server"]
+                original.exit(-9, rss=90 * MIB)
+                roster.retire("server", original, expected_exit=-9)
+                self.tree(root, [125, 126, 127])
+                samples.poll(60 * 10**9)
+                replacement = FixtureProcess(128)
+                self.tree(root, [125, 126, 127, 128])
+                with patch.object(roster, "_spawn", return_value=replacement):
+                    roster.launch("server", ["fixture"])
+                samples.poll(120 * 10**9)
+                self.assertEqual(samples.count, 3)
+                self.assertEqual(samples.coverage, [3] + [0] * 72)
+                for elapsed in range(180, 21901, 60):
+                    samples.poll(elapsed * 10**9)
+                samples.finish()
+            import json
+            rows = [json.loads(line) for line in samples.path.read_bytes().splitlines()]
+            self.assertEqual(len(rows), 365)
+            self.assertNotIn("server", rows[1]["processes"])
+            self.assertEqual(rows[1]["roles"]["server"]["rss_peak_upper_bound_bytes"], 90 * MIB)
+            self.assertEqual(rows[2]["roles"]["server"]["incarnations"], 2)
+            self.assertEqual(rows[-1]["rss_peak_upper_bound_bytes"], 90 * MIB + 4 * 19 * MIB)
+            self.assertEqual(samples.coverage, [5] * 73)
+            self.assertTrue(all(row["qualifies_resource_model"] is False for row in rows))
+
+    def test_replacement_cannot_reset_the_continuous_sample_gap_or_hide_a_failed_census(self):
+        for fault in ("gap", "untracked"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); roster = self.fixture(root)
+                with CampaignMemorySamples.from_roster(root, roster, 21900) as samples:
+                    samples.poll(0)
+                    original = self.children["server"]
+                    original.exit(-9)
+                    roster.retire("server", original, expected_exit=-9)
+                    self.tree(root, [125, 126, 127, 128])
+                    if fault == "gap":
+                        with patch.object(roster, "_spawn", return_value=FixtureProcess(128)):
+                            roster.launch("server", ["fixture"])
+                    with self.assertRaisesRegex(ResourceError,
+                            "^resource_sample_gap$" if fault == "gap" else "^resource_process_inventory$"):
+                        samples.poll(75 * 10**9 + 1 if fault == "gap" else 60 * 10**9)
+                    self.assertEqual(samples.count, 1)
+                    self.assertEqual(samples.coverage, [1] + [0] * 72)
+
+    def test_continuous_roster_sampling_preserves_the_existing_duration_and_record_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); roster = self.fixture(root)
+            for duration in (True, 21600, 21901, 86700):
+                with self.subTest(duration=duration), self.assertRaises(ResourceError):
+                    CampaignMemorySamples.from_roster(root, roster, duration)
+            with self.assertRaises(ResourceError):
+                CampaignMemorySamples.from_roster(root, object(), 21900)
+            with CampaignMemorySamples.from_roster(root, roster, 86400) as samples:
+                for elapsed in range(0, 86401, 60):
+                    samples.poll(elapsed * 10**9)
+                samples.finish()
+                self.assertEqual(samples.count, 1440)
+                self.assertEqual(samples.coverage, [5] * 288)
+            self.assertTrue(all(len(line) + 1 <= 4096
+                                for line in samples.path.read_bytes().splitlines()))
+            self.assertEqual(samples.path.stat().st_mode & 0o777, 0o600)
+
+    def test_all_declared_roles_fit_one_bounded_record_and_keep_transient_exit_peaks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); roster = self.fixture(root, extra_roles=("typescript_driver",))
+            self.tree(root, [124, 125, 126, 127, 128, 129])
+            operator, driver = FixtureProcess(128), FixtureProcess(129)
+            for role, child in (("operator", operator), ("typescript_driver", driver)):
+                with patch.object(roster, "_spawn", return_value=child):
+                    roster.launch(role, ["fixture"])
+            with CampaignMemorySamples.from_roster(root, roster, 21900) as samples:
+                samples.poll(0)
+                operator.exit(0, rss=110 * MIB); driver.exit(0, rss=99 * MIB)
+                roster.retire("operator", operator, expected_exit=0)
+                roster.retire("typescript_driver", driver, expected_exit=0)
+                self.tree(root, [124, 125, 126, 127])
+                samples.poll(60 * 10**9)
+            import json
+            rows = [json.loads(line) for line in samples.path.read_bytes().splitlines()]
+            self.assertEqual(len(rows[0]["processes"]), 7)
+            self.assertEqual(rows[1]["rss_peak_upper_bound_bytes"], (5 * 19 + 110 + 99) * MIB)
+            self.assertEqual(rows[1]["retired_incarnations"], 2)
+            self.assertTrue(all(len(line) + 1 <= 4096
+                                for line in samples.path.read_bytes().splitlines()))
 
     def test_short_child_exit_is_retained_until_explicit_expected_exit_retirement(self):
         with tempfile.TemporaryDirectory() as directory:

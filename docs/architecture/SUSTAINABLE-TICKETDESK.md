@@ -454,18 +454,23 @@ and populated restore remain open. No 24-hour run has started.
 ## Bounded continuous campaign memory observations
 
 The private `CampaignMemorySamples` collector supports the timeline's exact
-73–288 five-minute windows with a fixed native process inventory. Sampling
+73–288 five-minute windows with a fixed native process inventory or the exact
+replacement roster through `from_roster`. Sampling
 once per minute produces at most 1,440 observations over a day; the existing
 2,048-record and 4-KiB-per-record ceilings remain. A gap above 75 seconds,
 including first and terminal coverage, refuses rather than filling a window
 from old data. Completion requires actual terminal clock coverage.
 
 The collector preserves exact process-incarnation and descendant checks and
-the explicit whole-process virtual-address-space upper bound. It cannot
-substitute memory reclamation for an exited or replaced owner. Preparation
+the explicit whole-process virtual-address-space upper bound. A roster-backed
+collector keeps one observation clock, count and coverage array through a
+declared retirement and replacement. Prior exit RSS peaks remain attributed
+to their roles while current RSS includes only the live owners. Replacement
+cannot reset the 75-second gap or erase prior peaks. An untracked successor
+still fails the original exact descendant census. Preparation
 keeps its existing 1,500-second limit and five-second cadence. Every record
-still says `qualifies_resource_model: false`: fault-driven owner replacement,
-transient launch/exit coverage and independent model reconciliation remain
+still says `qualifies_resource_model: false`: routing every actual campaign
+launch through the roster and independent model reconciliation remain
 required. This private collector is a runner prerequisite; it is not yet a
 public campaign command or measured campaign evidence.
 
@@ -476,6 +481,14 @@ acceptance checks pass; Compatibility: native behavior, fixtures, preparation
 limits and qualification thresholds unchanged; Updated handbook: this milestone
 page; Hazards and follow-ups: connect the complete fault/resource controller
 and repeat final-source CI and real rehearsal. No 24-hour run has started.
+
+The roster integration reaches the missing-owner-interface failure first on
+the required host. Twelve roster tests, five fixed-inventory memory tests and
+all 212 lifecycle controller tests pass afterward. A further seven-role case
+passes with live operator and TypeScript driver owners, their exact retirement
+records and both retained exit peaks, under the unchanged 4-KiB record bound.
+Final source acceptance remains required; these are component tests, not
+measured fault-campaign evidence.
 
 ## Separate durable seal publication from spare preparation
 

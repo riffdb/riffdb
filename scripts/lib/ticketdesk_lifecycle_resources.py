@@ -402,8 +402,12 @@ class PreparationMemorySamples:
         self._initialize(root, pids, duration, proc_root)
 
     def _initialize(self, root, pids, duration, proc_root):
-        self.inventory = (OwnedProcessMemory(pids, proc_root=proc_root) if "native_sampler" in pids
-                          else PersistentProcessMemory(pids, proc_root=proc_root))
+        inventory = (OwnedProcessMemory(pids, proc_root=proc_root) if "native_sampler" in pids
+                     else PersistentProcessMemory(pids, proc_root=proc_root))
+        self._initialize_inventory(root, inventory, duration)
+
+    def _initialize_inventory(self, root, inventory, duration):
+        self.inventory = inventory
         self.duration_ns = duration * 1000000000
         self.coverage = [0] * ((duration + 299) // 300)
         self.last_elapsed_ns = None
@@ -456,20 +460,39 @@ class PreparationMemorySamples:
 
 
 class CampaignMemorySamples(PreparationMemorySamples):
-    """Continuous, fixed-inventory campaign observations, still incomplete.
+    """Continuous campaign observations over a fixed inventory or owned roster.
 
     One sample per minute fits 1,440 records for a day. An observation gap above
     75 seconds refuses, including initial and terminal coverage. Process exits,
-    replacement ownership, transient children and complete model reconciliation
-    still require their separate evidence; this class cannot qualify them.
+    replacement ownership and transient children require a CampaignProcessRoster.
+    Complete model reconciliation remains separate; this class cannot qualify it.
     """
 
     def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
-        require(type(duration) is int and duration % 300 == 0
-                and 73 <= duration // 300 <= 288, "resource_sample_bound")
+        self._validate_duration(duration)
         require(type(pids) is dict and "native_sampler" in pids,
                 "resource_process_inventory")
         self._initialize(root, pids, duration, proc_root)
+        self._campaign_cadence()
+
+    @staticmethod
+    def _validate_duration(duration):
+        require(type(duration) is int and duration % 300 == 0
+                and 73 <= duration // 300 <= 288, "resource_sample_bound")
+
+    @classmethod
+    def from_roster(cls, root, roster, duration):
+        # Import after module initialization: the roster uses the same bounded
+        # process readers and ResourceError, and must retain their exact types.
+        from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+        cls._validate_duration(duration)
+        require(isinstance(roster, CampaignProcessRoster), "resource_process_inventory")
+        samples = cls.__new__(cls)
+        samples._initialize_inventory(root, roster, duration)
+        samples._campaign_cadence()
+        return samples
+
+    def _campaign_cadence(self):
         self.cadence_ns = 60000000000
         self.maximum_gap_ns = 75000000000
 

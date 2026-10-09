@@ -2719,3 +2719,69 @@ integrated acceptance required; Compatibility: no application interface, format,
 fixture or qualification change; Updated handbook: Sustainable TicketDesk;
 Hazards/follow-ups: repeat unchanged preparation and resolve actual measured
 refusals and latency before any rehearsal qualification.
+
+
+The reconciled main integration passes three actual mixed source-cut tests,
+three ordinary root-count tests, the full native backend suite including
+doctests, Clippy and formatting on the required host. The clean integrated
+source passes all 13 final scoped acceptance checks. An earlier draft's failed
+doctest command remains failed evidence and supplies no qualifying result.
+
+The unchanged preparation then passes on that integrated source. Its five
+five-minute windows each settle all 30,000 offered commands and 120,000 reads
+without retries or post-duration completions. Window p95 values are 30,455,
+98,728, 96,744, 71,881 and 88,887 microseconds; p99 values are 48,429, 126,364,
+155,153, 114,255 and 136,422 microseconds. Native observations, archive and
+independent ticket-state reconciliation complete without external heavy-work
+interference. This preparation result establishes neither the complete fault
+campaign nor its three physical retirements and six final quiet hours.
+
+The subsequent private populated-restore helper stops before backup creation
+because it expects `sync` rather than the actual standard-profile `group`
+durability label. The original command replays with the witnessed sequence,
+contract version and Updated outcome. SPEC 10.5 and the explicit production
+component graph permit and select `group`; no database semantics are changed.
+A separately frozen helper changes only its two exact durability expectations
+to `group`, retaining every original identity, independent state reconciliation
+and 60-second first-successful-write check. The first corrected retry waits
+for other host activity and encounters expired one-hour preparation credentials
+before maintenance principal creation. Both failures and the original source,
+dataset and artifacts remain intact. A fresh unchanged preparation with the
+same verified binaries encounters external benchmark activity during load and
+cannot qualify. The maintainer pauses this attempt; its owned children close,
+and its queued follow-up acceptance is cancelled. The failed receipt retains
+both the interference samples and explicit cancellation. The maintainer then
+reserves the host for WP-825 and resumes work. No full-CI, restore or 24-hour
+success is claimed.
+
+The memory collector now consumes the actual campaign replacement roster while
+preserving its original global clock, sample count, per-window coverage and
+75-second gap. An intended missing-interface failure precedes twelve roster,
+five memory and all 212 controller passes on the required host. A separate
+seven-role case also passes under the unchanged 4-KiB bound and retains both
+transient owners' exit peaks. Final acceptance remains required.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: connect continuous
+memory observation to exact declared replacements and record actual preparation
+and restore outcomes; Checks: required-host missing-interface negative, roster
+and memory suites, 212 controller tests and seven-role bound case; final
+acceptance pending; Compatibility: unchanged native behavior, application
+interfaces, formats, reviewed fixtures, workload and qualification thresholds;
+Updated handbook: Sustainable TicketDesk milestone and live observations;
+Hazards/follow-ups: fresh populated restore, full CI, complete fault controller,
+required short campaign and independent resource reconciliation remain open.
+
+
+Further review of the successful preparation finds five distinct native
+retirement witnesses, matching five physically removed extent generations:
+three recycled and two deleted. Those actual preparation observations do not
+supply the required later campaign's retirement evidence. The separate source
+component grows from 14,046,476 to 734,207,280 canonical receipt/key bytes during
+load, while eligible logical values and removed keys fall from 66,872,540 to
+506,419 bytes. At shutdown, the source resume is 126,143 against an independently
+covered ceiling of 260,789 and tail 335,663. The source admission census reports
+616 granted turns, 2,461,861 microseconds held and 1,108,954 microseconds waiting.
+These observations warrant investigation of native proof, pacing and checkpoint
+progress; they neither prove a sole cause nor establish six-hour stability.
+The source, logical and physical bases remain independent, with unchanged
+rest, sampling, foreground workload and qualification gates.
