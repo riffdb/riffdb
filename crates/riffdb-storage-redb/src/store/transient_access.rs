@@ -324,9 +324,9 @@ impl RedbWriteAccess {
         }
         found = found.or(unpublished);
         if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
-            let mut deltas = epoch.transient_deltas.iter().rev();
-            if let Some(record) = deltas
-                .next()
+            if let Some(record) = epoch
+                .transient_deltas
+                .last()
                 .and_then(TransientIndexDelta::command_audit_tail)
                 .filter(|record| record.administration_sequence() == sequence)
                 .cloned()
@@ -336,7 +336,10 @@ impl RedbWriteAccess {
                 }
                 return Ok(Some(record));
             }
-            for delta in deltas {
+            // A non-tail member may still belong to the newest segment.
+            // The fast tail probe must not consume that segment before the
+            // exact-member search, which also preserves duplicate detection.
+            for delta in epoch.transient_deltas.iter().rev() {
                 if let Some(record) = delta.command_audit_record(sequence)
                     && found.replace(record).is_some()
                 {
@@ -409,6 +412,86 @@ impl RedbOperationalPorts {
             "payload storage I/O must not retain the index publication guard"
         );
         result
+    }
+
+    pub(crate) fn assert_private_epoch_resolves_every_command_audit(
+        &self,
+        published: Arc<StoredCommandSegmentV1>,
+        encoded: &[u8],
+        staged: Arc<StoredCommandSegmentV1>,
+    ) {
+        self.install_payload_fixture(&published, encoded);
+        let mut epoch = self.begin_deferred_epoch().unwrap();
+        epoch
+            .transient_deltas
+            .push(TransientIndexDelta::CommandSegmentPublished(
+                Arc::clone(&staged),
+                None,
+            ));
+        let mut access = epoch.begin_write().unwrap();
+        // Query the tail first, then every earlier audit in the same newest
+        // private segment. No durable publication supplies these records.
+        let expected = staged
+            .commands()
+            .iter()
+            .rev()
+            .flat_map(|command| {
+                [
+                    command.base().terminal_audit(),
+                    command.base().started_audit(),
+                ]
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let actual = expected
+            .iter()
+            .map(|audit| access.command_audit_record(audit.administration_sequence()))
+            .collect::<Vec<_>>();
+        let absent = access
+            .command_audit_record(riffdb_types::AdministrationSequence::new(u64::MAX).unwrap());
+        let predecessor = published.commands()[0].base().started_audit();
+        let prior = access.command_audit_record(predecessor.administration_sequence());
+        let Some(RedbWriteOwnership::Epoch(epoch)) = access.ownership.as_mut() else {
+            panic!("private epoch ownership");
+        };
+        epoch
+            .transient_deltas
+            .push(TransientIndexDelta::CommandSegmentPublished(
+                Arc::clone(&staged),
+                None,
+            ));
+        let duplicate = access.command_audit_record(
+            staged.commands()[0]
+                .base()
+                .started_audit()
+                .administration_sequence(),
+        );
+        // This isolated lookup fixture stages no authoritative mutation. Clear
+        // its synthetic index delta before cancellation, keeping the production
+        // rule that dropping real unpublished state fences the store.
+        let Some(RedbWriteOwnership::Epoch(epoch)) = access.ownership.as_mut() else {
+            panic!("private epoch ownership");
+        };
+        epoch.transient_deltas.clear();
+        access.abort().unwrap();
+        assert_eq!(absent.unwrap(), None, "an absent audit stays absent");
+        assert_eq!(
+            prior.unwrap(),
+            Some(predecessor.clone()),
+            "published predecessor authority is preserved"
+        );
+        assert_eq!(
+            duplicate.unwrap_err().kind(),
+            StorageErrorKind::CorruptData,
+            "duplicate private authority must fail closed"
+        );
+        for (found, expected) in actual.into_iter().zip(expected) {
+            assert_eq!(
+                found.unwrap(),
+                Some(expected),
+                "every private command-owned audit remains exactly resolvable"
+            );
+        }
     }
 
     pub(crate) fn assert_payload_io_releases_publication(

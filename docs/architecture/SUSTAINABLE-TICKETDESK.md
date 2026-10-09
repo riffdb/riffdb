@@ -512,8 +512,18 @@ the controller's explicit expected-exit retirement. Epoch sampling calls that
 same owned sampler with the current release version and checks its returned
 elapsed field before recording the unchanged raw native schema. A different
 owner, plan identity or timestamp cannot supply evidence for the current epoch.
-These connections still require component acceptance and actual campaign
-integration; they do not establish resource-model qualification.
+These connections pass all 233 controller tests and scoped acceptance on the
+required host, including a real bounded-parent sampler replacement. Actual
+campaign integration and resource-model qualification remain required.
+
+A focused native regression also finds that command-audit lookup can hide a
+started audit in the newest private durability-epoch segment: probing its tail
+consumes that segment before the fallback searches other members. The repair
+keeps the existing tail fast path and searches every private segment for an
+exact non-tail member, retaining duplicate-authority refusal and publication
+custody. The regression fails at that exact missing-record assertion on the
+required host. Full positive storage and package validation remain required;
+its relationship to the earlier native audit stop is unproven.
 
 ## Separate durable seal publication from spare preparation
 

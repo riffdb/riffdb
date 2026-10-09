@@ -2834,3 +2834,33 @@ fixtures and qualification gates unchanged; Updated handbook: Sustainable
 TicketDesk milestone and live observations; Hazards/follow-ups: native audit
 failure, full campaign assembly, populated restore, full CI and real rehearsal
 remain open.
+
+
+The sampler ownership checks first stop at a missing `subprocess` import in the
+new test; this supplies no intended-negative proof. After correcting the import,
+both actual missing-interface regressions reach their intended errors. All 233
+controller tests and actual scoped acceptance then pass for the exact six-file
+sampler integration. The independently preserved audit diagnostic completes all
+150,000 commands and 600,000 reads with no retries or post-duration operations,
+without reproducing the native audit stop. Its instrumented build and debugger
+attachment prevent qualification. The original failure remains unresolved.
+
+Code review identifies a separate native exact-lookup defect. An isolated test
+publishes one canonical command segment and stages a newer two-command segment
+only in a private epoch. The newest terminal audit resolves, but its started
+audit incorrectly returns absent. The actual required-host regression fails at
+that exact assertion, rather than at setup or compilation. The repair retains
+the tail fast path and includes the newest segment in the bounded exact-member
+fallback. Positive coverage also requires exact absence, published predecessor
+identity and refusal of duplicate private authority. Full positive validation
+remains required; no causal relationship to the failed preparation is claimed.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: preserve exact lookup
+of every private command-owned audit member without consuming the newest segment
+in the fast path; Checks: required-host intended negative confirmed, positive
+regression, full storage, Clippy, formatting and scoped acceptance pending;
+Compatibility: unchanged authorization, ordering, atomicity, durable formats,
+reviewed fixtures, public interfaces, workload and qualification thresholds;
+Updated handbook: Sustainable TicketDesk milestone and live observations;
+Hazards/follow-ups: native audit-stop cause, populated restore, full final-source
+CI, complete fault runner and real short rehearsal remain open.

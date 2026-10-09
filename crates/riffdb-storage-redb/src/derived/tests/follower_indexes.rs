@@ -827,3 +827,22 @@ fn an_evicted_captured_payload_reenters_only_after_authority_validation() {
     assert_eq!(entries, 64);
     assert!(bytes <= 64 * 1024 * 1024);
 }
+
+// req: REP-002, REP-003
+#[test]
+fn newest_private_command_segment_keeps_non_tail_audit_records_resolvable() {
+    let (_path, ports) = operational_fixture("private-command-audit-members", true);
+    let (published, encoded) = segment(vec![capsule(CommitSequence::first())], None);
+    let (staged, _) = segment(
+        vec![
+            capsule(CommitSequence::new(2).unwrap()),
+            capsule(CommitSequence::new(3).unwrap()),
+        ],
+        Some(published.segment_digest()),
+    );
+    ports.assert_private_epoch_resolves_every_command_audit(
+        Arc::new(published),
+        encoded.as_bytes(),
+        Arc::new(staged),
+    );
+}
