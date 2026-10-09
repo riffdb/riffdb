@@ -2067,8 +2067,9 @@ work. Bounded kernel sampling and five short debugger snapshots establish a
 native outbox engine flush holding the writer gate while the audit writer and
 event consumer wait. They also observe retention planning under the gate and
 source-byte canonical accounting outside it. These are sampled paths, not a
-complete attribution of the tail latency. Aggregate retention gate residence
-alone is insufficient to explain all overflowing requests.
+complete attribution of the tail latency. Aggregate gate residence does not
+identify which stalls produced the overflowing requests: a short writer stall
+can delay many offered requests in the bounded queue.
 
 Read-only cloud metrics independently show approximately 6,000 sustained write
 IOPS during catch-up on the 500-GiB `pd-balanced` disk. Normal windows later show
@@ -2097,3 +2098,88 @@ Hazards/follow-ups: identify the seed failure, repair native latency, qualify
 unchanged preparation and populated public restore, run final-source full CI,
 integrate all actual campaign handlers and complete the short rehearsal. No
 24-hour run has started.
+
+
+### Paused-consumer and retention-disabled isolation controls
+
+The observer-diagnostic revision 435984fd uses native binaries from
+883e1987 in both controls. Neither control qualifies preparation: one changes
+consumer progress, and the other disables retention and its source-accounting
+collector. Both retain the offered rate, request slots, workload population,
+timeouts, sink outage and durability profiles. No competing heavy work is
+recorded. These are diagnostic comparisons, not proposed campaign settings.
+
+The first control pauses its consumer after load second 600.909. It completes
+all 150,000 commands and 600,000 reads with no retries or post-duration work.
+The consumer checked 2,048 events without duplicates before pausing; live updates
+continue. The helper exits successfully after 1,861.3 seconds. Pausing also freezes
+the consumer retention floor, so this does not isolate acknowledgement I/O alone.
+
+The second control keeps its consumer active while disabling retention. It also
+completes all 150,000 commands and 600,000 reads without retries or post-duration
+work. The consumer checks 4,096 events without duplicates. The helper exits
+successfully after 1,883.7 seconds. Source accounting is also absent in this
+control; the result cannot separate accounting, logical pruning and their
+interaction with checkpoint or outbox I/O.
+
+| Load seconds | Paused consumer p95/p99, microseconds | Disabled retention p95/p99, microseconds |
+| --- | ---: | ---: |
+| 0–300 | 48,099 / 80,777 | 28,668 / 33,449 |
+| 300–600 | 107,989 / 147,440 | 98,674 / 123,234 |
+| 600–900 | 68,954 / 93,291 | 68,949 / 88,736 |
+| 900–1200 | 72,975 / 123,782 | 68,642 / 87,902 |
+| 1200–1500 | 70,171 / 89,459 | 69,402 / 89,439 |
+
+The controls narrow the investigation to retention-related work. They do not
+establish a single cause or prove a repair. Consumer and delivery transitions
+are explicitly source-independent in the native continuation classifier; direct
+consumer checkpoint updates invalidating that source epoch are not established.
+The earlier seed observer failure does not recur in either control and remains
+unexplained, rather than being declared fixed by a successful replay.
+
+A bounded syscall diagnostic also needs qualification limits. The first capture
+writes stack samples to the measured disk and is unsuitable for an uncontaminated
+I/O attribution. Replacement captures use bounded RAM with no user stacks. They
+show substantial outbox writes during a passing paused-consumer recovery window;
+retained samples do not prove exact operation counts, complete capture coverage
+or exclusive responsibility for the failed baseline. Private capture preservation
+initially fails on privileged file ownership, then succeeds with verified file
+hashes. Raw samples and machine identity stay outside the repository.
+
+The baseline reports 695,212 target/row-boundary holds and 135,938 fenced holds.
+The pending-validation branch selects zero idle rest even while the shared native
+source scheduler refuses further proof work until its already-charged rest ends.
+That repeatedly reenters full maintenance preparation instead of parking between
+bounded progress checks. The deterministic worker regression fails with zero
+delay instead of the outstanding source-rest slice. The real native observer
+regression separately fails to report that charged rest. Both negatives run on
+C3D before repair, without sleeps as synchronization.
+
+The native phase now reports the shared scheduler's remaining rest. An idle or
+fenced worker with pending validation observes at most the existing 100-ms poll
+slice of that already-charged rest. Ready source work and actual committed
+source deletion retain immediate progress rechecks. Captured read-only pages
+continue inside the wait; writer-residence rest, source admission and proof
+checks remain intact. The worker regression also proves cancellation and that
+neither checkpoint authority nor writer residence can be inferred from waiting.
+
+The repaired worker's 24 tests, 22 native source-byte tests, four continuation
+tests, the checkpoint-license test, shared-source pacing test and 59 architecture
+tests pass on C3D, as do storage/server Clippy and scoped metadata acceptance.
+Final edits, frozen release builds and the unchanged workload still need checks.
+The passing paused-consumer control also polls heavily, so this defect is not yet
+established as the sole cause of the latency refusal. Unchanged preparation,
+public populated restore, final-source CI and the complete short rehearsal remain
+required. The 24-hour run remains unstarted.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: the native worker observes existing charged source rest instead of
+polling full maintenance continuously while proof work is unavailable;
+Checks: paired negative/repaired worker and actual-native rest observations,
+source/worker/architecture suites, Clippy and scoped metadata acceptance on C3D;
+Compatibility: unchanged application interfaces, fixtures, source validators,
+FIFO admission, maintenance budgets, durable formats and durability profiles;
+Updated handbook: Sustainable TicketDesk milestone;
+Hazards/follow-ups: this bounded-work repair does not prove the complete latency
+cause; qualify final unchanged preparation, populated restore, final-source CI
+and the complete short rehearsal before 24-hour readiness.

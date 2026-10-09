@@ -562,8 +562,15 @@ fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
     // Actual durable source deletion is progress even when the separate
     // logical watermark is at its target or fenced. The full writer-residence
     // rest below still applies; zero-progress source attempts retain backoff.
-    if phases.receipt_validation_pending || phases.reclaimed_receipts > 0 {
+    if phases.reclaimed_receipts > 0 {
         Duration::ZERO
+    } else if phases.receipt_validation_pending {
+        // The pending-proof exception drives ready bounded pages, not a spin
+        // through full maintenance while its shared scheduler is resting.
+        // Observe only a short slice of already charged rest: source readiness
+        // is rechecked natively, and captured read-only pages continue inside
+        // the existing pause without granting another writer or proof turn.
+        phases.source_work_wait.min(RETENTION_LANE_CHECKPOINT_SLICE)
     } else {
         RETENTION_LANE_RECHECK
     }

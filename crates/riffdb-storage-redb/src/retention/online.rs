@@ -73,6 +73,9 @@ pub struct OnlineRetentionPhases {
     pub receipt_gate_us: u64,
     /// Another bounded off-gate receipt page remains before exact end.
     pub receipt_validation_pending: bool,
+    /// Remaining rest already charged by the shared source scheduler. This
+    /// observation grants no source work, writer turn or checkpoint authority.
+    pub source_work_wait: std::time::Duration,
     /// Receipt/audit rows streamed during the complete initial source pass.
     pub source_initial_rows: u64,
     /// Receipt/audit rows streamed after closed publication qualification.
@@ -361,6 +364,7 @@ impl RedbOnlineRetentionLane {
         if !source.source_background_work_ready() {
             return Ok(OnlineRetentionPhases {
                 receipt_validation_pending: source.receipt_validation_pending(),
+                source_work_wait: source.source_work_wait(),
                 ..OnlineRetentionPhases::default()
             });
         }
@@ -373,6 +377,7 @@ impl RedbOnlineRetentionLane {
             source_continuation_rows: continued,
             source_validation_invalidations: invalidated,
             receipt_validation_pending: source.receipt_validation_pending(),
+            source_work_wait: source.source_work_wait(),
             ..OnlineRetentionPhases::default()
         })
     }
@@ -470,6 +475,7 @@ impl RedbOnlineRetentionLane {
             phases.receipt_validation_pending = source_control.receipt_validation_pending();
             (0, 0)
         };
+        phases.source_work_wait = source_control.source_work_wait();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;

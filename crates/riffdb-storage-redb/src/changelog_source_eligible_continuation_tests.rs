@@ -428,6 +428,10 @@ fn captured_source_byte_pages_progress_during_source_proof_rest_without_advancin
     assert!(lane.captured_read_only_observation_pending().unwrap());
     for _ in 0..2 {
         let phases = lane.advance_captured_observations_off_gate().unwrap();
+        assert!(
+            !phases.source_work_wait.is_zero(),
+            "the worker must observe the actual charged source rest"
+        );
         assert_eq!(phases.source_initial_rows, 0);
         assert_eq!(phases.source_continuation_rows, 0);
         assert_eq!(phases.reclaimed_receipts, 0);
@@ -435,6 +439,24 @@ fn captured_source_byte_pages_progress_during_source_proof_rest_without_advancin
     }
     assert!(!lane.captured_read_only_observation_pending().unwrap());
     assert!(lane.captured_observations_pending().unwrap());
+    let (step, phases) = lane
+        .step_timed(
+            std::num::NonZeroU64::new(1).unwrap(),
+            std::num::NonZeroU64::new(256).unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        step,
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::TargetReached)
+    );
+    assert!(
+        !phases.source_work_wait.is_zero(),
+        "an idle native turn must report its outstanding proof rest"
+    );
+    assert!(phases.receipt_validation_pending);
+    assert_eq!(phases.reclaimed_receipts, 0);
+    assert_eq!(phases.gate_held_us(), 0);
     let control = owner.lock().unwrap();
     assert!(
         !control.source_background_work_ready(),

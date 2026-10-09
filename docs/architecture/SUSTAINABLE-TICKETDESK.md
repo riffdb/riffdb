@@ -2822,3 +2822,20 @@ acknowledgement and status failures now emit one bounded diagnostic containing
 only the closed call stage and validated error class. Peer text, payloads,
 incident identifiers and context are excluded. The original fatal return codes
 and refusal behavior remain intact; the diagnostic adds no retry policy.
+
+
+Two diagnostic isolation controls complete all 150,000 commands and 600,000
+reads without retries or post-duration work. Pausing the consumer after load
+second 600 produces passing later windows, but also freezes its retention floor.
+Keeping the consumer active while disabling retention also produces passing
+normal windows; that control disables source accounting as well. These results
+narrow the native investigation to retention-related work without assigning one
+exclusive cause. Neither control is qualification evidence or a campaign setting.
+Two regressions separately reproduce the retention worker's zero-delay polling
+and its missing observation of actual charged source rest. The native worker now
+observes a bounded slice of that existing rest while captured read-only pages
+continue progressing. Ready proof work, actual durable deletion, writer-residence
+rest, admission and source validators retain their existing rules. Repaired worker,
+source-accounting and architecture tests and Clippy pass on C3D. This repairs
+bounded maintenance work; its latency effect still needs the final unchanged
+preparation and all remaining milestone gates.

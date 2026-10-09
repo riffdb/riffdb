@@ -226,6 +226,79 @@ fn completed_source_deletion_is_progress_even_when_logical_retention_is_idle() {
     }
 }
 
+// req: STO-030, STO-031, END-007, END-008
+#[test]
+fn pending_source_validation_observes_charged_rest_without_polling_full_maintenance() {
+    use std::cell::Cell;
+    for remaining in [Duration::from_millis(17), Duration::from_secs(19)] {
+        let phases = OnlineRetentionPhases {
+            receipt_validation_pending: true,
+            source_work_wait: remaining,
+            ..OnlineRetentionPhases::default()
+        };
+        let expected = remaining.min(RETENTION_LANE_CHECKPOINT_SLICE);
+        let pause = idle_recheck_pause(&phases);
+        assert_eq!(
+            pause, expected,
+            "pending proof work cannot bypass charged source rest"
+        );
+        let (rest, checkpoint) = maintenance_wait_policy(pause, false, Duration::ZERO, &phases);
+        assert!(
+            !checkpoint,
+            "source rest cannot manufacture checkpoint authority"
+        );
+        assert_eq!(phases.gate_held_us(), 0, "waiting is not writer residence");
+        assert_eq!(
+            maintenance_wait_policy(pause, false, Duration::from_secs(1), &phases),
+            (Duration::from_secs(19), false),
+            "source rest cannot shorten the existing writer-residence rest"
+        );
+        let clock = Cell::new(Duration::ZERO);
+        let pages = Cell::new(0);
+        assert!(
+            !pause_with_captured_observations(
+                rest,
+                (true, || Ok(pages.get() == 0)),
+                || clock.get(),
+                |slice| {
+                    clock.set(clock.get() + slice);
+                    (false, false)
+                },
+                || {
+                    pages.set(pages.get() + 1);
+                    clock.set(clock.get() + Duration::from_millis(1));
+                    Ok(false)
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            pages.get(),
+            1,
+            "captured read-only work must continue inside source rest"
+        );
+        assert_eq!(
+            clock.get(),
+            expected,
+            "the recheck cannot consume or reset source rest"
+        );
+    }
+    let ready = OnlineRetentionPhases {
+        receipt_validation_pending: true,
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(idle_recheck_pause(&ready), Duration::ZERO);
+    let progressed = OnlineRetentionPhases {
+        reclaimed_receipts: 256,
+        source_work_wait: Duration::from_secs(19),
+        ..OnlineRetentionPhases::default()
+    };
+    assert_eq!(idle_recheck_pause(&progressed), Duration::ZERO);
+    let control = LaneControl::default();
+    control.stop();
+    assert!(control.pause(RETENTION_LANE_CHECKPOINT_SLICE));
+}
+
 // req: STO-030, STO-031, END-008
 #[test]
 fn source_progress_rechecks_preserve_gate_rest_and_idle_backoff() {

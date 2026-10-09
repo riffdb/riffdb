@@ -28665,6 +28665,24 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 native pending-proof rest observation: paused-consumer and
+      retention-disabled controls pass later normal windows while the unchanged
+      retention-enabled baseline refuses latency. Neither control qualifies the
+      milestone or establishes a single cause. The baseline also records more
+      than 800,000 idle/fenced attempts: pending proof selects zero worker delay
+      while the shared source scheduler is still resting. The deterministic
+      worker assertion and actual native rest observation both fail before repair
+      on C3D. Report the existing charged rest in native phases and observe at most
+      the existing 100-ms poll slice on idle/fenced pending-proof rechecks.
+      Captured read-only pages continue inside the wait. Ready proof work and
+      actual committed source deletion keep immediate progress rechecks; preserve
+      writer-residence rest, source pacing charge, FIFO admission, validators,
+      budgets, cancellation, interfaces, reviewed fixtures and durability.
+      Worker/source/architecture tests, Clippy and scoped metadata acceptance pass
+      on C3D. Final-source edits, unchanged preparation, populated public restore,
+      full CI and the actual complete short rehearsal remain required; no 24-hour
+      campaign starts and WP-825 remains open.
+    - >-
       D-003 observer failure diagnostics: a frozen consumer-isolation replay
       fails during seed with observer_consumer before measured load or its
       planned pause. Preserve the failure and keep the original fatal return
