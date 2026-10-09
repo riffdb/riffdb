@@ -313,6 +313,7 @@ record with no front matter.
 | [0276](0276-registry-completion-writer-compatibility-edge.md) | Registry Completion Writer Compatibility Edge | Accepted | guarantee |
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
 | [0280](0280-paced-journal-extent-zero-fill-and-writer-hash-deduplication.md) | Paced Journal Extent Zero Fill And Writer Hash Deduplication | Accepted | guarantee |
+| [0281](0281-changelog-root-validation-once-per-replay-transaction.md) | Changelog Root Validation Once Per Replay Transaction | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

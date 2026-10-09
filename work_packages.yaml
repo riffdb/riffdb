@@ -28842,3 +28842,38 @@ work_packages:
     follow_ups:
     - Extent recycling (WP-815) would remove most zero-fill writes entirely.
     - Smaller or incremental checkpoint commits under ADR-0263 for the remaining stalls.
+- id: WP-829
+  name: Changelog root validation once per replay and drain transaction
+  tier: guarantee
+  depends_on: [WP-828]
+  objective: Implement ADR-0281. Recovery replay and the published-suffix drain
+    validate the complete changelog roots once before and once after the frames
+    of one redb write transaction instead of three times per frame, with every
+    frame still decoded, its receipt derived and bound, and every before-image
+    checked.
+  requirements: [REC-001, REP-003]
+  required_adrs: [ADR-0281, ADR-0104, ADR-0186, ADR-0263]
+  allowed_paths: [work_packages.yaml, adr/0281-changelog-root-validation-once-per-replay-transaction.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/changelog_v3_journal.rs,
+    crates/riffdb-storage-redb/src/journal.rs, crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/store_journal_checkpoint_tests.rs, docs/performance/**,
+    docs/SUMMARY.md]
+  deliverables:
+  - A chained frame materializer used by recovery replay and the published-suffix drain
+  - Fail-before tests holding two root validations per transaction and receipts equal to standalone sequential materialization
+  - A performance page section recording the result
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-829
+  - ./scripts/ci-all
+  exit_gate: Replay and drain transactions perform exactly two full root validations
+    plus one per receipt-source break, every recovery and drain suite passes, and
+    no durable byte or recovery outcome for a valid journal changes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration, or opt-out is added; no
+      caller can skip the final validation before commit.
+    scale: Full root validations per transaction are constant in the number of
+      frames; per-frame work is bounded by the frame.
+  human_review_triggers:
+  - A journal frame is applied without being decoded from its own bytes, or its receipt is not derived and bound.
+  - Any ordered mutation's before-image stops being checked.
+  - A replay or drain transaction commits without the final full root validation.
