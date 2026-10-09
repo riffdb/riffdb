@@ -1,11 +1,11 @@
 ---
 adr: "0281"
 title: Changelog Root Validation Once Per Replay Transaction
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-08
-accepted: null
-acceptance: null
+accepted: '2026-10-08'
+acceptance: 'maintainer, in session, 2026-10-08: "i approve", in response to the exact-text acceptance request for ADR-0281 as committed at ef92b5615'
 requires: [ADR-0104, ADR-0186, ADR-0263]
 amends: []
 supersedes: []
