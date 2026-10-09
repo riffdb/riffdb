@@ -733,6 +733,14 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
+        // Watermark validation reads the retained V3 receipt chain. The source
+        // is offline and may have no live resolver; retain this restored copy's
+        // own verified extents through every stamp and fencing read.
+        let _history_resolver = crate::history_stub::HistoryResolver::register(
+            manifest.database_id(),
+            &target_artifact,
+            std::sync::Arc::new(crate::media::RealJournalMedia),
+        );
         // Stamp/re-derive the retention watermark from the manifest so restore
         // of pre-stamp artifacts and fencing drift stay fail-safe (ADR-0085 A2).
         apply_restored_retention_watermark(

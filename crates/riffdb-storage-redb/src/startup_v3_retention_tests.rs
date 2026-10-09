@@ -7,7 +7,10 @@ use riffdb_storage_api::{
 };
 
 fn initialized(path: &TestDatabasePath) {
-    let id = database_id(0xd5);
+    initialized_with_identity(path, database_id(0xd5));
+}
+
+fn initialized_with_identity(path: &TestDatabasePath, id: DatabaseId) {
     let (store, _) = checkpointable_history_store(path, id, 3);
     crate::changelog_v3_activation::activate_validated(
         store.shared.database.begin_write().unwrap(),
@@ -243,4 +246,186 @@ fn actual_v3_prune_crashes_keep_checkpoint_invalidation_and_subrange_atomic() {
         assert_eq!(receipts(&path.0).len(), 5);
         drop(open_cleanly(RedbStore::open(&path.0).unwrap()));
     }
+}
+
+// req: REC-001, STO-012, END-008, END-009
+#[test]
+fn offline_pruned_backup_restore_resolves_its_own_retained_journal_after_source_closes() {
+    use crate::journal::{
+        FrameChangelogBinding, JournalFileHeader, JournalFrame, JournalLane, JournalMutation,
+        JournalTable,
+    };
+    use riffdb_storage_api::{
+        BackupBuildMetadataV1, OfflineBackupPersistencePort, OfflineRestoreOverwritePolicyV1,
+        OfflineRestorePersistencePort, OfflineRestoreResultV1,
+    };
+    let path = TestDatabasePath::new("pruned-backup-restore-resolver");
+    // A distinct identity keeps concurrent fixtures out of the resolver lookup;
+    // the production registry deliberately allows same-identity backup copies.
+    let id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, *b"prunedrest").unwrap();
+    initialized_with_identity(&path, id);
+    assert_eq!(
+        crate::RedbOfflineRetention::bind(&path.0)
+            .prune_to(2)
+            .unwrap()
+            .watermark_sequence,
+        2
+    );
+    let store = RedbStore::open(&path.0).unwrap();
+    let before = crate::changelog_v3_roots::validate_retained_history(
+        &store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let predecessor = before.tail().frontier();
+    let assigned =
+        AdministrationSequence::new(predecessor.administration().unwrap().get() + 1).unwrap();
+    let unbound = JournalFrame::service_audit(
+        before.lineage().database_id(),
+        predecessor.application(),
+        predecessor.administration(),
+        Some(assigned),
+        1,
+        [0x42; 32],
+        vec![
+            JournalMutation::put(
+                JournalTable::Audit,
+                crate::keys::encode_audit_key(assigned),
+                crate::test_audit::canonical_denied_service_audit(assigned),
+            )
+            .unwrap(),
+            JournalMutation::replace(
+                JournalTable::Meta,
+                META_ADMINISTRATION_SEQUENCE.as_bytes(),
+                codec::encode_administration_sequence_allocator_v1(
+                    AdministrationSequenceAllocator::Next(assigned),
+                )
+                .unwrap()
+                .as_bytes(),
+                codec::encode_administration_sequence_allocator_v1(
+                    AdministrationSequenceAllocator::Next(
+                        AdministrationSequence::new(assigned.get() + 1).unwrap(),
+                    ),
+                )
+                .unwrap()
+                .into_bytes(),
+            )
+            .unwrap(),
+            JournalMutation::replace(
+                JournalTable::Meta,
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+                riffdb_storage_api::proto_codec::encode_changelog_transaction_allocator_v3(
+                    before.expected_allocator(),
+                )
+                .unwrap()
+                .as_bytes(),
+                riffdb_storage_api::proto_codec::encode_changelog_transaction_allocator_v3(
+                    before.expected_allocator().allocate_one().unwrap().1,
+                )
+                .unwrap()
+                .into_bytes(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let write = store.shared.database.begin_write().unwrap();
+    let receipt =
+        crate::changelog_v3_journal::materialize_recovered_frame(&write, &unbound).unwrap();
+    write.abort().unwrap();
+    let source = unbound.with_changelog(Some(FrameChangelogBinding::new(
+        &receipt.binding(),
+        before.lineage().catalog_digest(),
+    )));
+    drop(store);
+    let journal = crate::journal::journal_path(&path.0);
+    // The fixture has no journaled suffix; initialize its next real source from
+    // the already durable checkpoint rather than claiming an application write.
+    if journal.exists() {
+        std::fs::remove_file(&journal).unwrap();
+    }
+    let lane = JournalLane::open(
+        &journal,
+        &JournalFileHeader::with_frontiers(
+            before.lineage().database_id(),
+            predecessor.application(),
+            predecessor.administration(),
+            source.previous_hash(),
+        ),
+    )
+    .unwrap();
+    lane.submit(source.encode().unwrap())
+        .unwrap()
+        .wait()
+        .unwrap();
+    drop(lane);
+    let recovered = RedbStore::open(&path.0).unwrap();
+    let read = recovered.shared.database.begin_read().unwrap();
+    let table = read
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .unwrap();
+    let tail = table.last().unwrap().unwrap().1.value().to_vec();
+    assert!(
+        crate::history_stub::HistoryStub::decode(&tail)
+            .unwrap()
+            .is_some(),
+        "the test must exercise an actual recovered journal locator"
+    );
+    assert_eq!(
+        crate::history_stub::resolve_history_value(&tail)
+            .unwrap()
+            .as_ref(),
+        receipt.encode().unwrap()
+    );
+    drop(table);
+    drop(read);
+    drop(recovered);
+    assert_eq!(
+        crate::history_stub::resolve_history_value(&tail)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::Unavailable,
+        "no live source resolver may make restore pass accidentally"
+    );
+    let scope = crate::test_path::ScopedDirectory::new("pruned-backup-restore-target");
+    let backup = scope.join("backup");
+    let manifest = crate::RedbOfflineBackup::bind(&path.0, &backup)
+        .create_offline_backup(
+            &BackupBuildMetadataV1::new("0.1.0", "abc", "rustc", 1, vec![]).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(manifest.effective_retention_watermark_sequence(), 2);
+    let backup_database = backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+    assert!(std::fs::metadata(&backup_database).unwrap().len() <= 64 * 1024 * 1024);
+    let original = std::fs::read(&backup_database).unwrap();
+    let target = scope.join("restored");
+    let result = crate::RedbOfflineRestore::bind(&backup, &target)
+        .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty);
+    assert!(
+        matches!(result, Ok(OfflineRestoreResultV1::Restored { .. })),
+        "pruned backup must resolve its own retained receipt while restoring its watermark: {result:?}"
+    );
+    let restored =
+        RedbStore::open(target.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let read = restored.shared.database.begin_read().unwrap();
+    let history = crate::changelog_v3_roots::validate_retained_history(&read)
+        .unwrap()
+        .unwrap();
+    assert_eq!(history, before.advance(&receipt).unwrap());
+    assert_eq!(
+        crate::retention::load_watermark(&read)
+            .unwrap()
+            .unwrap()
+            .watermark_sequence(),
+        2
+    );
+    assert_eq!(
+        std::fs::metadata(&backup_database).unwrap().len(),
+        original.len() as u64
+    );
+    assert_eq!(std::fs::read(&backup_database).unwrap(), original);
 }

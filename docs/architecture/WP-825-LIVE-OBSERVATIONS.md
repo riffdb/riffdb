@@ -2945,3 +2945,52 @@ handover error, including the exact failed verified-channel connection response
 while ADR-0050 closes the listener. This is an unknown observation, never successful reconciliation
 or permission to resubmit the mutation. C3D refusal and process tests are
 pending; no campaign qualification is claimed.
+
+
+### Restore a pruned backup after every source owner closes
+
+The ordinary release preparation completed its unchanged 1,500-second load,
+all five original windows and final state/archive reconciliation. A separate
+native restore diagnostic then identified a retained-history ownership defect:
+offline restore copies the journal artifacts but retention-watermark validation
+has no resolver for their receipt locators after the source store closes. It
+returns `Unavailable` despite a checksum-verified backup. A small regression
+using an actually pruned command history and a recovered journal receipt
+reproduces that exact failure with no live source resolver.
+
+Restore now retains a resolver for its own verified target extents through
+watermark stamping and fencing reads. It keeps checksum, history, watermark,
+tombstone and immutable-source checks intact; it changes no format or public
+error handling. Required-host positive storage tests, Clippy, formatting and
+scoped acceptance are pending.
+
+The completed-load barrier separately passed all 39 lifecycle tests, Clippy,
+formatting and scoped acceptance on the required host. The finite operator
+integration passed all 256 controller tests and scoped acceptance there. Earlier
+candidate notes marked those checks pending; these results close only those
+component checks.
+
+A distinct instrumented startup diagnostic reproduces the initial public
+`storage_unavailable` before recovery-route installation: opening TCP does not
+prove recovery admission. Both original failed attempts remain preserved. An
+explicit native recovery-admission signal and fresh public restore proof remain
+required; no mutation retry, fixed startup delay or relaxed recovery deadline
+qualifies them.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: retain the restored
+journal resolver during offline retention normalization; Checks: actual native
+semantic negative on the required host, positive checks pending; Compatibility:
+public interfaces, encodings and reviewed fixtures unchanged; Updated pages:
+Sustainable TicketDesk milestone and live observations; Hazards/follow-ups:
+recovery admission, fresh populated public restore, complete resource model,
+final-source full CI and the real short rehearsal remain open. No 24-hour run
+has started.
+
+The corrected regression passed alone, but the parallel storage run exposed a
+fixture identity collision: other tests use the same database identity, so their
+live resolvers affect the expected missing-owner error. The regression now uses
+its own deterministic identity and retains the exact missing-owner assertion.
+The failed parallel run is preserved; the full rerun and acceptance are pending.
+Both stopped recovery routes also have executed negative regressions: generic
+restore admission and the exact admitted-operation retry remain open after stop.
+Their native closure fix and readiness diagnostic are still under validation.
