@@ -28680,6 +28680,23 @@ work_packages:
       Unchanged measured preparation, populated recovery and final-source CI
       remain pending. The separate source-byte gap stays open.
     - >-
+      D-003 production bridge completion: the first bounded-admission shipping
+      candidate builds normally but fails initial archive drain before measured
+      load, with observer_ack and no server panic. The production bridge retains
+      its operational-port cell during off-gate outbox checkpoint waits, excluding
+      event consumer acknowledgements. A real-database bridge regression fails
+      against that composition. Forward all six mutations through a restricted
+      native outbox capability over the same activated database, retaining the
+      existing FIFO gate, captured Immediate transactions and uncertainty fencing.
+      Keep the outbox capability move-only behind its own sharing cell and preserve
+      one fail-closed poison flag across both cells, with deterministic tests in
+      both directions. The initial bridge repair passes the full required-host
+      server suite, architecture, Clippy and metadata; final capability and poison
+      composition passes all four bridge tests, both checkpoint regressions, the
+      full server suite, compile-fail move-only proof, architecture, Clippy and
+      scoped metadata acceptance on C3D. Unchanged preparation, populated restore,
+      source-byte freshness and final-source full CI remain pending.
+    - >-
       D-003 completion of fixed-prefix observation lifecycle: a newer completed
       observation keeps its actual identity and deadline when an older qualified
       proof is offered; pending candidates retain fail-closed sharing. Finish

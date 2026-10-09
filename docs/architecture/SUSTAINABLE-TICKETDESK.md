@@ -2712,3 +2712,46 @@ encodings, Immediate profiles, CAS and receipt semantics; Updated handbook:
 this milestone page; Hazards/follow-ups: source-byte freshness, unchanged preparation, populated
 recovery and final-source CI.
 The 24-hour qualification run remains unstarted.
+
+The first shipping candidate for bounded outbox admission builds normally but
+fails initial archive drain after 41.7 seconds. The event observer exits with
+`observer_ack`; the server does not panic and closes cleanly. That candidate's outbox adapter
+held the server's shared operational-port cell throughout checkpoint admission,
+although the lower storage layer releases the writer gate. Event acknowledgement
+needs that cell, so off-gate checkpoint waits can still exclude it.
+
+The activated server bridge now owns a restricted native outbox capability.
+Forward all six outbox mutation paths through the existing storage implementation without
+holding the operational-port cell. Retain the cell for other existing mutable
+ports, and retain the pure-read handle's refusal of mutation. The bridge regression
+explicitly holds the cell across an outbox transition and fails against the old
+composition with its deadlock watchdog. Repaired C3D checks pass; unchanged shipping
+preparation remains required. This finding does not close the source-byte freshness
+gap or qualify a 24-hour run.
+
+The native outbox capability remains move-only in its own server sharing cell.
+Only that cell is held across outbox admission; event consumer operations use
+the original cell. Both cells share one fail-closed poison flag, published on
+unwind before releasing the local lock. Deterministic tests cover lock exclusion
+and poison refusal in both directions. Writer sequencing and pure-read authority
+remain unchanged. The final move-only composition passes all four bridge
+regressions, both checkpoint regressions, the full server suite, the compile-fail
+move-only capability proof, 59 architecture checks, storage/server Clippy and
+scoped metadata acceptance on C3D. The original bridge regression fails before
+repair, and the first draft also fails the poison-refusal regression before that
+policy is restored. No accepted ordering, durability, archive protocol, public
+interface, fixture or qualification gate changes. Unchanged preparation, populated
+public restore and final-source full CI remain required.
+
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: native outbox checkpoint
+admission releases the server operational-port cell, preserving one move-only
+dispatcher capability and shared poison refusal; Checks: negative/repaired bridge
+and poison regressions, four final bridge tests, two checkpoint regressions, full
+server suite, compile-fail capability proof, 59 architecture tests, storage/server
+Clippy and scoped metadata acceptance on C3D; Compatibility: unchanged application
+interfaces, reviewed fixtures, journal formats, selected Immediate durability,
+FIFO writer policy, CAS, receipts and uncertainty fencing; Updated handbook: this
+milestone page; Hazards/follow-ups: unchanged shipping preparation, source-byte
+freshness, populated public restore, final-source full CI and the complete short
+rehearsal. WP-825 remains open and the 24-hour run remains unstarted.

@@ -40,6 +40,7 @@ mod changelog_v3_retained_validation;
 mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
+mod outbox_ports;
 mod outbox_stage_census;
 mod source_validation_pin;
 mod source_validation_read;
@@ -349,6 +350,7 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
+pub use outbox_ports::RedbOutboxPorts;
 pub use retention::{
     ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
     OnlineRetentionStep, RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,

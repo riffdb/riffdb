@@ -1939,3 +1939,42 @@ both now publish the same completion signal when their explicit schedule ends.
 Unchanged measured preparation, populated recovery and final-source full CI
 remain pending. The separate source-byte freshness gap remains open; no deadline or workload gate
 has been relaxed. WP-825 remains open and the 24-hour run remains unstarted.
+
+### Production outbox admission retains the server port-cell lock
+
+Shipping revision `88420cc2` builds the four ordinary release binaries in
+296.1 seconds. Unchanged preparation fails after 41.7 seconds, before measured
+load: initial archive drain reports `archive_drain_liveness`, and the event
+observer reports `observer_ack`. The server has no panic and shuts down cleanly.
+The 65,536-ticket seed finishes. Preserve the failed population and immutable
+artifacts. The dependent full-CI run correctly remains unstarted.
+
+The production bridge holds its operational-port cell while calling all six
+outbox mutations. Lower-level admission releases the writer gate during an
+asynchronous checkpoint wait, but the bridge retains its cell. Event consumer
+acknowledgements and inspection also acquire that cell. A bridge regression
+explicitly holds the cell during a completion attempt against a real database;
+the original composition fails the watchdog after ten seconds. Release the
+barrier before asserting so a failed regression still cleans up normally.
+
+The repair obtains a restricted native outbox capability from the activated
+storage bundle and forwards the six mutations without the cell. It delegates
+to the same outbox implementation, sole FIFO writer, canonical reciprocal
+checks, status CAS, captured Immediate transaction and post-commit publication.
+No raw transaction, command or administration authority escapes the capability.
+Pure-read handles still refuse mutation. Repaired C3D validation and unchanged
+shipping preparation remain pending; the source-byte freshness gap remains open.
+
+The native outbox capability remains move-only in its own server sharing cell.
+Only that cell is held across outbox admission; event consumer operations use
+the original cell. Both cells share one fail-closed poison flag, published on
+unwind before releasing the local lock. Deterministic tests cover lock exclusion
+and poison refusal in both directions. Writer sequencing and pure-read authority
+remain unchanged. The final move-only composition passes all four bridge
+regressions, both checkpoint regressions, the full server suite, the compile-fail
+move-only capability proof, 59 architecture checks, storage/server Clippy and
+scoped metadata acceptance on C3D. The original bridge regression fails before
+repair, and the first draft also fails the poison-refusal regression before that
+policy is restored. No accepted ordering, durability, archive protocol, public
+interface, fixture or qualification gate changes. Unchanged preparation, populated
+public restore and final-source full CI remain required.

@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
@@ -64,7 +64,7 @@ use riffdb_storage_api::{
     VectorObservationTargetV1, VectorProjectionControlRepository,
     VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
-use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
+use riffdb_storage_redb::{RedbOperationalPorts, RedbOutboxPorts, RedbSharedPorts};
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1,
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DefinitionFingerprint,
@@ -101,6 +101,7 @@ pub(crate) fn columnar_control_recovery_reads() -> u64 {
 pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
     shared: RedbSharedPorts,
+    outbox: SharedStorageCell<RedbOutboxPorts>,
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
     query_modules: Arc<CurrentQueryModuleView>,
@@ -109,6 +110,16 @@ pub(crate) struct SharedRedbOperationalPorts {
 }
 
 impl SharedRedbOperationalPorts {
+    fn with_outbox<R>(
+        &mut self,
+        operation: impl FnOnce(&mut RedbOutboxPorts) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError> {
+        // Preserve the bridge's fail-closed poison policy without retaining
+        // its lock across native writer/checkpoint admission.
+        self.cell.check_poison()?;
+        self.outbox.with_mut(operation)
+    }
+
     /// Sample committed undelivered membership without rebuilding or scanning.
     pub(crate) fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
         self.shared.pending_outbox_delivery_count()
@@ -130,6 +141,7 @@ impl SharedRedbOperationalPorts {
         // Both bounded startup selectors exclude the population walk.
         crate::startup_census::record_bounded_population_walk(bounded_clean_startup);
         let shared = ports.shared_ports();
+        let outbox = ports.outbox_ports();
         let catalog = if bounded_clean_startup {
             CurrentCatalogView::rebuild_from_clean_startup(&shared)?
         } else {
@@ -141,9 +153,12 @@ impl SharedRedbOperationalPorts {
             CurrentCapabilityView::rebuild(&shared)?
         };
         let query_modules = CurrentQueryModuleView::rebuild(&shared)?;
+        let cell = SharedStorageCell::new(ports);
+        let outbox = cell.share_poison(outbox);
         Ok(Self {
-            cell: SharedStorageCell::new(ports),
+            cell,
             shared,
+            outbox,
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
             query_modules: Arc::new(query_modules),
@@ -357,6 +372,7 @@ impl Clone for SharedRedbOperationalPorts {
         Self {
             cell: self.cell.clone(),
             shared: self.shared.clone(),
+            outbox: self.outbox.clone(),
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
             query_modules: Arc::clone(&self.query_modules),
@@ -379,6 +395,17 @@ impl fmt::Debug for SharedRedbOperationalPorts {
 )]
 struct SharedStorageCell<T> {
     inner: Arc<RwLock<T>>,
+    poison: Arc<AtomicBool>,
+}
+
+struct StorageBridgePoisonGuard<'a>(&'a AtomicBool);
+
+impl Drop for StorageBridgePoisonGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
 }
 
 #[allow(
@@ -389,14 +416,37 @@ impl<T> SharedStorageCell<T> {
     fn new(value: T) -> Self {
         Self {
             inner: Arc::new(RwLock::new(value)),
+            poison: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn share_poison<U>(&self, value: U) -> SharedStorageCell<U> {
+        SharedStorageCell {
+            inner: Arc::new(RwLock::new(value)),
+            poison: Arc::clone(&self.poison),
+        }
+    }
+
+    fn check_poison(&self) -> Result<(), StorageError> {
+        if self.inner.is_poisoned() {
+            self.poison.store(true, Ordering::Release);
+        }
+        if self.poison.load(Ordering::Acquire) {
+            return Err(poisoned_storage_bridge());
+        }
+        Ok(())
     }
 
     fn with_mut<R>(
         &self,
         operation: impl FnOnce(&mut T) -> Result<R, StorageError>,
     ) -> Result<R, StorageError> {
+        self.check_poison()?;
         let mut guard = self.inner.write().map_err(|_| poisoned_storage_bridge())?;
+        self.check_poison()?;
+        // Publish poison before the local write guard unlocks on unwind, so
+        // the other sharing cell retains the original fail-closed policy.
+        let _poison = StorageBridgePoisonGuard(&self.poison);
         operation(&mut guard)
     }
 }
@@ -405,6 +455,7 @@ impl<T> Clone for SharedStorageCell<T> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            poison: Arc::clone(&self.poison),
         }
     }
 }
@@ -1951,8 +2002,7 @@ impl OutboxRepository for SharedRedbOperationalPorts {
         &mut self,
         group: &riffdb_storage_api::OutboxSucceedGroupV1,
     ) -> Result<riffdb_storage_api::OutboxSucceedGroupResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::succeed_outbox_group(ports, group))
+        self.with_outbox(|ports| OutboxRepository::succeed_outbox_group(ports, group))
     }
 
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
@@ -1985,40 +2035,35 @@ impl OutboxRepository for SharedRedbOperationalPorts {
         &mut self,
         transition: &OutboxClaimV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::claim_outbox(ports, transition))
+        self.with_outbox(|ports| OutboxRepository::claim_outbox(ports, transition))
     }
 
     fn renew_outbox(
         &mut self,
         transition: &OutboxRenewV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::renew_outbox(ports, transition))
+        self.with_outbox(|ports| OutboxRepository::renew_outbox(ports, transition))
     }
 
     fn succeed_outbox(
         &mut self,
         transition: &OutboxSucceedV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::succeed_outbox(ports, transition))
+        self.with_outbox(|ports| OutboxRepository::succeed_outbox(ports, transition))
     }
 
     fn retry_outbox(
         &mut self,
         transition: &OutboxRetryV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::retry_outbox(ports, transition))
+        self.with_outbox(|ports| OutboxRepository::retry_outbox(ports, transition))
     }
 
     fn dead_letter_outbox(
         &mut self,
         transition: &OutboxDeadLetterV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::dead_letter_outbox(ports, transition))
+        self.with_outbox(|ports| OutboxRepository::dead_letter_outbox(ports, transition))
     }
 }
 
@@ -2105,6 +2150,124 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 
 #[cfg(test)]
 mod tests {
+    // req: OUT-001, REC-001, END-008
+    #[test]
+    fn production_outbox_bridge_propagates_poison_to_other_mutating_ports() {
+        let real = crate::real_storage_support::RealStorage::open("outbox-poison-propagation");
+        let outbox = real.storage.outbox.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _: Result<(), riffdb_storage_api::StorageError> =
+                    outbox.with_mut(|_| panic!("explicit outbox poison schedule"));
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            real.storage.cell.with_mut(|_| Ok(())).unwrap_err().kind(),
+            riffdb_storage_api::StorageErrorKind::InvariantViolation
+        );
+        assert!(real.storage.cell.poison.load(super::Ordering::Acquire));
+    }
+
+    // req: OUT-001, REC-001, END-008
+    #[test]
+    fn production_outbox_bridge_preserves_poison_refusal() {
+        use riffdb_storage_api::{OutboxRepository, StorageErrorKind};
+
+        let mut real = crate::real_storage_support::RealStorage::open("outbox-cell-poison");
+        let cell = real.storage.cell.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _: Result<(), riffdb_storage_api::StorageError> =
+                    cell.with_mut(|_| panic!("explicit bridge poison schedule"));
+            })
+            .join()
+            .is_err()
+        );
+        let claim = riffdb_storage_api::OutboxClaimV1::new(
+            riffdb_types::EventId::new(riffdb_types::CommitSequence::first(), 0),
+            riffdb_storage_api::OutboxStatusObservationV1::AbsentInitialPending,
+            riffdb_storage_api::OutboxDestinationIdV1::new("test").unwrap(),
+            riffdb_types::Timestamp::new(10, 0).unwrap(),
+            riffdb_types::Timestamp::new(20, 0).unwrap(),
+        )
+        .unwrap();
+        let success = riffdb_storage_api::OutboxSucceedV1::new(
+            claim.updated().clone(),
+            riffdb_types::Timestamp::new(11, 0).unwrap(),
+        )
+        .unwrap();
+        let group = riffdb_storage_api::OutboxSucceedGroupV1::new(vec![success]).unwrap();
+        assert_eq!(
+            real.storage
+                .succeed_outbox_group(&group)
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::InvariantViolation
+        );
+        assert_eq!(
+            real.storage.claim_outbox(&claim).unwrap_err().kind(),
+            StorageErrorKind::InvariantViolation
+        );
+    }
+
+    // req: OUT-001, REC-001, END-008
+    #[test]
+    fn production_outbox_bridge_does_not_wait_under_the_shared_storage_cell() {
+        use riffdb_storage_api::{OutboxRepository, OutboxSucceedGroupResultV1};
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let real = crate::real_storage_support::RealStorage::open("outbox-cell-exclusion");
+        let cell = real.storage.cell.clone();
+        let entered = std::sync::Arc::new(Barrier::new(2));
+        let release = std::sync::Arc::new(Barrier::new(2));
+        let locked = {
+            let entered = entered.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                cell.with_mut(|_| {
+                    entered.wait();
+                    release.wait();
+                    Ok(())
+                })
+                .unwrap();
+            })
+        };
+        entered.wait();
+        let mut outbox = real.storage.clone();
+        let event_id = riffdb_types::EventId::new(riffdb_types::CommitSequence::first(), 0);
+        let claim = riffdb_storage_api::OutboxClaimV1::new(
+            event_id,
+            riffdb_storage_api::OutboxStatusObservationV1::AbsentInitialPending,
+            riffdb_storage_api::OutboxDestinationIdV1::new("test").unwrap(),
+            riffdb_types::Timestamp::new(10, 0).unwrap(),
+            riffdb_types::Timestamp::new(20, 0).unwrap(),
+        )
+        .unwrap();
+        let success = riffdb_storage_api::OutboxSucceedV1::new(
+            claim.updated().clone(),
+            riffdb_types::Timestamp::new(11, 0).unwrap(),
+        )
+        .unwrap();
+        let group = riffdb_storage_api::OutboxSucceedGroupV1::new(vec![success]).unwrap();
+        let (sent, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sent.send(outbox.succeed_outbox_group(&group)).unwrap();
+        });
+        // Explicitly hold the bridge cell throughout the transition. The
+        // timeout is only a deadlock watchdog; release before asserting.
+        let result = received.recv_timeout(Duration::from_secs(10));
+        release.wait();
+        locked.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            result.unwrap().unwrap(),
+            OutboxSucceedGroupResultV1::AuthoritativeIntentMissing
+        );
+    }
+
     // req: EFF-002, REC-001, END-008
     #[test]
     fn production_outbox_bridge_forwards_atomic_completion_without_widening_read_only_authority() {
