@@ -56,6 +56,7 @@ mod command_prefix;
 mod command_segment_preparation;
 mod composite_view;
 mod consumer;
+mod consumer_ports;
 mod derived;
 #[cfg(feature = "test-fixtures")]
 mod durable_fixtures;
@@ -287,6 +288,7 @@ pub use consumer::{
     ProtectedEventConsumerResolutionV1, ProtectedEventReplayDispositionV1,
     ProtectedEventReplayPageV1, ProtectedEventReplayResultV1, ProtectedEventReplayV1,
 };
+pub use consumer_ports::RedbEventConsumerPorts;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};

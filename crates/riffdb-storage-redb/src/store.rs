@@ -5727,8 +5727,20 @@ impl RedbOperationalPorts {
         let publish_span = stage(Stage::PrefixPublish);
         self.shared.publish_pending_journal_prefix()?;
         drop(publish_span);
-        let bounded_outbox = source == riffdb_storage_api::ChangelogAttributionV3::OutboxTransition;
-        if bounded_outbox {
+        #[cfg(feature = "test-fixtures")]
+        if source == riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+            && let Some(controller) = &self.shared.test_controller
+        {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeConsumerCheckpointPreparation,
+            );
+        }
+        let bounded_background = matches!(
+            source,
+            riffdb_storage_api::ChangelogAttributionV3::OutboxTransition
+                | riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+        );
+        if bounded_background {
             self.shared.poll_async_checkpoint_locked(false)?;
             let oversized = self
                 .shared
@@ -5810,7 +5822,7 @@ impl RedbOperationalPorts {
             match self.shared.apply_published_journal_suffix_with_limits(
                 &transaction,
                 runtime,
-                bounded_outbox,
+                bounded_background,
             ) {
                 Ok(footprint) => footprint,
                 Err(error) => {

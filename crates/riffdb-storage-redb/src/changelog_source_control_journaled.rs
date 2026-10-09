@@ -209,18 +209,18 @@ impl ReplicationSourceControl {
         self.submit_journaled_cut(prepared)
     }
 
-    // A known fixed interval does not depend on validating newly appended
-    // receipts above it. Capture only on an ordinary paced source turn, never
+    // Accounting below an existing finite license does not depend on validating
+    // newly appended receipts above it. Capture on an ordinary paced turn, never
     // from the no-new-pin continuation used during proof/writer rest. Native
-    // qualification preserves the checked prefix; the actual current pin and
-    // eligibility must still match before creating a genuinely new observation.
-    pub(super) fn refresh_completed_source_byte_prefix(
+    // qualification preserves a checked prefix. New eligibility or missing
+    // accounting requires bounded canonical validation on the actual current pin.
+    pub(super) fn refresh_qualified_source_byte_prefix(
         &mut self,
         epoch: u64,
     ) -> Result<(), StorageError> {
         let now = std::time::Instant::now();
         if !self.source_background_work_ready()
-            || !self.eligible_bytes.completed_prefix_capture_due(epoch, now)
+            || !self.eligible_bytes.qualified_prefix_capture_due(epoch, now)
             || !self
                 .online_validation
                 .as_ref()
@@ -231,7 +231,7 @@ impl ReplicationSourceControl {
         let Some(license) = self.online_license else {
             return Ok(());
         };
-        // Completed accounting retains no pin. This capture and the existing
+        // Completed or absent accounting retains no pin. This capture and the existing
         // mutation-proof candidate therefore remain within the two-pin bound.
         let source = self.shared.capture_source_validation_pin()?;
         let history = source.history()?.ok_or_else(corrupt)?;
@@ -262,7 +262,7 @@ impl ReplicationSourceControl {
         drop(derived);
         if !self
             .eligible_bytes
-            .matches_completed_prefix(history, observation[5], epoch)
+            .can_capture_qualified_prefix(history, observation[5], epoch)
             || self
                 .shared
                 .source_continuation_epoch
@@ -273,10 +273,10 @@ impl ReplicationSourceControl {
         }
         self.eligible_bytes
             .capture_qualified(source, history, observation[5], epoch, now)?;
-        // The exact fixed interval contains no new rows. Finish its bounded
-        // zero-row observation now, releasing this pin before mutation proof
-        // preparation can capture an independent checkpoint. Freshness and
-        // qualification are checked through the ordinary observer continuation.
+        // Unchanged intervals finish with zero new rows. Added eligibility or
+        // absent accounting stays unknown until bounded pages complete. The
+        // mutation-proof path shares its pin before capturing an independent
+        // checkpoint, preserving the two-pin bound for pending observations.
         self.advance_source_byte_observation_off_gate()
     }
 

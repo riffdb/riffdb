@@ -461,7 +461,7 @@ impl ReplicationSourceControl {
     }
 
     fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
-        self.refresh_completed_source_byte_prefix(
+        self.refresh_qualified_source_byte_prefix(
             self.shared
                 .source_continuation_epoch
                 .load(Ordering::Acquire),

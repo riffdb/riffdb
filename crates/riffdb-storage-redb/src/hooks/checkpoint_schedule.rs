@@ -27,6 +27,7 @@ pub enum RedbCheckpointTestPoint {
     BeforeSealPublication,
     BeforeSparePreparation,
     BeforeOutboxCheckpointPreparation,
+    BeforeConsumerCheckpointPreparation,
 }
 
 #[derive(Default)]
@@ -66,7 +67,7 @@ impl Pause {
 
 #[derive(Default)]
 pub(super) struct CheckpointScheduleInner {
-    points: [Pause; 12],
+    points: [Pause; 13],
     requested: AtomicBool,
 }
 

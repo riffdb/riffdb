@@ -2755,3 +2755,48 @@ FIFO writer policy, CAS, receipts and uncertainty fencing; Updated handbook: thi
 milestone page; Hazards/follow-ups: unchanged shipping preparation, source-byte
 freshness, populated public restore, final-source full CI and the complete short
 rehearsal. WP-825 remains open and the 24-hour run remains unstarted.
+
+The ordinary release candidate `a605ec69` clears initial archive drain and event
+acknowledgement, but unchanged preparation fails `source_bytes_sample_gap`
+after 1,510.8 seconds without recorded competing host activity. Its accounting
+refresh requires an identical completed eligibility interval. Expanded
+eligibility and reclamation of that old interval can prevent a fresh count
+while unrelated source-tail proof continues.
+
+The native observer now starts a paced bounded capture under the existing
+finite checkpoint license in both cases. It reuses only a covered qualified
+prefix and canonically validates new receipts or missing accounting before
+publishing exact bytes. Incomplete counts stay unknown. Reclamation authority,
+holds, two validation pins, cadence, freshness and workload gates remain intact.
+Four negative/repaired regressions and the nineteen source-byte, twelve
+continuation and five checkpoint-license tests pass on C3D. The accounting
+candidate also passes all 1,334 active storage tests with two unchanged ignored
+tests, including 59 architecture checks, and storage/server Clippy. Final-source
+acceptance and CI remain required. The recovery latency spike is still unexplained;
+unchanged preparation, populated public restore, final-source CI and the complete
+short rehearsal remain required before starting the 24-hour run.
+
+A second native regression establishes that event-consumer checkpoint waits
+can also retain the ordered writer and block durable audits. Its production
+bridge separately retains the shared operational-port cell. Consumer admission
+now waits outside the FIFO writer and uses the existing bounded checkpoint
+preparation. A separate move-only consumer cell forwards the original native
+transitions and protected operations, preserving shared poison refusal,
+transaction-current authority, leases, source holds, receipts and durability.
+Both negative regressions fail before repair. Both repaired consumer checkpoint
+tests, three consumer bridge tests, both outbox checkpoint tests, four outbox
+bridge tests, the compile-fail capability proof, 59 architecture checks and
+storage/server Clippy pass on C3D. Frozen-source measurement must establish whether
+this repair resolves the recovery latency spike.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: bounded qualified
+source-byte capture after eligibility growth or accounting retirement, and
+consumer checkpoint waits release the writer and shared operational-port cell;
+Checks: paired negative/repaired native and bridge regressions, accounting
+candidate's 1,334 active storage tests, source-byte/continuation/license suites,
+consumer and outbox regressions, architecture, Clippy and capability proof on
+C3D; Compatibility: unchanged application interfaces, authority, ordering,
+durability, journal encodings and reviewed fixtures; Updated handbook: this
+milestone page; Hazards/follow-ups: final-source acceptance and CI, unchanged
+preparation, latency qualification, populated public restore and complete short
+rehearsal. The 24-hour run remains unstarted.

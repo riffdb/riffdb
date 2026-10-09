@@ -545,7 +545,32 @@ fn hardened_completed_source_byte_prefix_refreshes_while_unrelated_tail_proof_is
     fixed_prefix_refresh(crate::RedbCommitProfile::Hardened);
 }
 
+#[test]
+fn growing_source_byte_prefix_refreshes_while_unrelated_tail_proof_is_incomplete() {
+    prefix_refresh(crate::RedbCommitProfile::Standard, true, false);
+}
+
+#[test]
+fn hardened_growing_source_byte_prefix_refreshes_while_unrelated_tail_proof_is_incomplete() {
+    prefix_refresh(crate::RedbCommitProfile::Hardened, true, false);
+}
+
 fn fixed_prefix_refresh(profile: crate::RedbCommitProfile) {
+    prefix_refresh(profile, false, false);
+}
+
+#[test]
+fn absent_source_byte_accounting_captures_a_licensed_prefix_without_waiting_for_tail_proof() {
+    prefix_refresh(crate::RedbCommitProfile::Standard, false, true);
+}
+
+#[test]
+fn hardened_absent_source_byte_accounting_captures_a_licensed_prefix_without_waiting_for_tail_proof()
+ {
+    prefix_refresh(crate::RedbCommitProfile::Hardened, false, true);
+}
+
+fn prefix_refresh(profile: crate::RedbCommitProfile, growing: bool, without_accounting: bool) {
     let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
     Arc::get_mut(&mut ports.shared)
         .unwrap()
@@ -598,22 +623,62 @@ fn fixed_prefix_refresh(profile: crate::RedbCommitProfile) {
     control.online_license = Some(license);
     control.observed = Some(checkpoint);
     let expected = oracle(&source, history, ceiling);
+    let initial_ceiling = if growing { ceiling - 257 } else { ceiling };
+    let held_prefix = growing.then(|| {
+        let point = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+            &source
+                .receipt(
+                    riffdb_storage_api::ChangelogTransactionSequence::new(initial_ceiling).unwrap(),
+                    None,
+                )
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        crate::derived_source_pin::RedbDerivedSourcePin::capture(
+            ports.begin_composite_read().unwrap(),
+            Arc::clone(&ports.shared.derived_source_pins),
+        )
+        .unwrap()
+        .at(point)
+        .unwrap()
+    });
+    {
+        let mut derived = ports.shared.derived_source_pins.reclamation().unwrap();
+        let (_, observation) = retention::floor(
+            &source,
+            history,
+            license.ceiling(),
+            derived.oldest(history.lineage()),
+        )
+        .unwrap();
+        assert_eq!(observation[5], initial_ceiling);
+    }
+    let initial_expected = oracle(&source, history, initial_ceiling);
     let captured = Instant::now();
     // Establish a genuine exact interval, then make the next ordinary cadence
     // due deterministically. No capture is extended and no pending page expires.
-    control.eligible_bytes.next_capture = None;
-    control
-        .eligible_bytes
-        .capture_qualified(source, history, ceiling, epoch, captured)
-        .unwrap();
-    for _ in 0..4 {
-        control.advance_source_byte_observation_off_gate().unwrap();
+    if !without_accounting {
+        control.eligible_bytes.next_capture = None;
+        control
+            .eligible_bytes
+            .capture_qualified(source, history, initial_ceiling, epoch, captured)
+            .unwrap();
+        for _ in 0..4 {
+            control.advance_source_byte_observation_off_gate().unwrap();
+        }
+        let prior = control.eligible_bytes.continued.as_ref().unwrap();
+        assert!(prior.completed.is_some());
+        assert_eq!(prior.bytes, initial_expected);
+        assert!(prior.root.is_none());
+    } else {
+        assert!(control.eligible_bytes.continued.is_none());
+        drop(source);
     }
-    let prior = control.eligible_bytes.continued.as_ref().unwrap();
-    assert!(prior.completed.is_some());
-    assert_eq!(prior.bytes, expected);
-    assert!(prior.root.is_none());
     control.eligible_bytes.next_capture = Some(captured);
+    // Releasing a real derived hold expands eligibility inside the same finite
+    // checkpoint license; no new mutation authority or tail proof is supplied.
+    drop(held_prefix);
 
     for ordinal in 0..600 {
         append(&ports, if ordinal % 2 == 0 { 41 } else { 43 });
@@ -636,14 +701,33 @@ fn fixed_prefix_refresh(profile: crate::RedbCommitProfile) {
     let refreshed = control.eligible_bytes.continued.as_ref().unwrap();
     assert!(
         refreshed.captured > captured,
-        "a completed fixed-prefix observation must refresh without waiting for the entire unrelated source tail"
+        "licensed accounting must capture without waiting for the unrelated source tail"
     );
+    if growing || without_accounting {
+        assert!(refreshed.pending());
+        assert!(refreshed.sample(Instant::now()).is_err());
+        assert_eq!(refreshed.checked_rows, 256);
+        assert_eq!(refreshed.pages, 1);
+    }
     control.advance_source_byte_observation_off_gate().unwrap();
     let refreshed = control.eligible_bytes.continued.as_ref().unwrap();
     let sample = refreshed.sample(Instant::now()).unwrap();
     assert_eq!(sample[5], expected);
-    assert_eq!(sample[10], sample[4]);
-    assert_eq!((sample[11], sample[9]), (0, 0));
+    if without_accounting {
+        assert_eq!(sample[10], 0);
+        assert_eq!(sample[11], sample[4]);
+        assert_eq!(sample[9], 2);
+    } else if growing {
+        assert_eq!(
+            sample[10],
+            initial_ceiling - history.minimum_resume().sequence().get()
+        );
+        assert_eq!((sample[11], sample[9]), (257, 2));
+        assert_eq!(sample[10] + sample[11], sample[4]);
+    } else {
+        assert_eq!(sample[10], sample[4]);
+        assert_eq!((sample[11], sample[9]), (0, 0));
+    }
     assert!(refreshed.root.is_none());
     assert_eq!(
         control.eligible_bytes.next_capture,

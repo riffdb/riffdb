@@ -21,23 +21,25 @@ pub(super) struct Observer {
 }
 
 impl Observer {
-    pub(super) fn completed_prefix_capture_due(&self, qualification: u64, now: Instant) -> bool {
+    pub(super) fn qualified_prefix_capture_due(&self, qualification: u64, now: Instant) -> bool {
         self.next_capture.is_none_or(|next| now >= next)
+            && !self.pending()
             && self
                 .continued
                 .as_ref()
-                .is_some_and(|probe| probe.completed_prefix(qualification))
+                .is_none_or(|probe| probe.qualifies(qualification))
     }
 
-    pub(super) fn matches_completed_prefix(
+    pub(super) fn can_capture_qualified_prefix(
         &self,
         history: History,
         ceiling: u64,
         qualification: u64,
     ) -> bool {
-        self.continued
-            .as_ref()
-            .is_some_and(|probe| probe.matches_completed_prefix(history, ceiling, qualification))
+        self.continued.as_ref().is_none_or(|probe| {
+            !probe.completed_prefix(qualification)
+                || probe.covers_completed_prefix(history, ceiling, qualification)
+        })
     }
 
     pub(super) fn pending(&self) -> bool {

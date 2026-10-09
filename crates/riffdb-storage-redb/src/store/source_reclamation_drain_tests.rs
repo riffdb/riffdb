@@ -484,6 +484,24 @@ fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
 #[cfg(feature = "test-fixtures")]
 #[test]
 fn outbox_admission_checkpoints_large_suffix_without_blocking_audited_writers() {
+    background_admission_checkpoints_large_suffix(
+        riffdb_storage_api::ChangelogAttributionV3::OutboxTransition,
+    );
+}
+
+// req: REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn event_consumer_admission_checkpoints_large_suffix_without_blocking_audited_writers() {
+    background_admission_checkpoints_large_suffix(
+        riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+    );
+}
+
+#[cfg(feature = "test-fixtures")]
+fn background_admission_checkpoints_large_suffix(
+    source: riffdb_storage_api::ChangelogAttributionV3,
+) {
     use crate::hooks::RedbCheckpointTestPoint as Point;
     use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
     let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
@@ -495,24 +513,30 @@ fn outbox_admission_checkpoints_large_suffix_without_blocking_audited_writers() 
         shared: Arc::clone(&ports.shared),
     };
     let writer = std::thread::spawn(move || {
-        let access = outbox
-            .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::OutboxTransition)
-            .unwrap();
+        let access = outbox.begin_attributed_write(source).unwrap();
         access.abort().unwrap();
     });
     schedule.wait(Point::BeforeMaterialization);
     // Acknowledging another audit while the checkpoint is explicitly paused
-    // proves neither its receiver nor the writer gate is held by outbox admission.
-    let ServiceAuditGroupAppend::Submitted(fence) = ports
-        .submit_service_audit_group(&[source_audit_intent(301)])
-        .unwrap()
-    else {
-        panic!("the audit retains its original durable fence");
-    };
-    assert_eq!(fence.wait().unwrap().len(), 1);
-    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 1);
+    // proves neither its receiver nor the writer gate is held by admission.
+    let shared = Arc::clone(&ports.shared);
+    let (sent, received) = std::sync::mpsc::channel();
+    let audit = std::thread::spawn(move || {
+        let result = match ports.submit_service_audit_group(&[source_audit_intent(301)]) {
+            Ok(ServiceAuditGroupAppend::Submitted(fence)) => fence.wait().map(|rows| rows.len()),
+            Ok(_) => panic!("the audit retains its original durable completion fence"),
+            Err(error) => Err(error),
+        };
+        sent.send(result).unwrap();
+        ports
+    });
+    let progressed = received.recv_timeout(Duration::from_secs(10));
+    let remaining = shared.journal_suffix_activity();
     schedule.release(Point::BeforeMaterialization);
+    let ports = audit.join().unwrap();
     writer.join().unwrap();
+    assert_eq!(progressed.unwrap().unwrap(), 1);
+    assert_eq!(remaining.unwrap().1, 1);
     assert_eq!(
         ports
             .begin_composite_read()
@@ -572,6 +596,56 @@ fn outbox_admission_waits_for_spare_preparation_outside_the_writer_gate() {
     let outbox_result = writer.join().unwrap();
     assert_eq!(progressed.unwrap().unwrap(), 1);
     outbox_result.unwrap();
+}
+
+// req: REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn event_consumer_checkpoint_wait_releases_the_ordered_writer_gate() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 300);
+    schedule.arm(Point::BeforeMaterialization);
+    schedule.request_checkpoint();
+    ports
+        .begin_deferred_service_audit_write()
+        .unwrap()
+        .abort()
+        .unwrap();
+    schedule.wait(Point::BeforeMaterialization);
+    schedule.arm(Point::BeforeConsumerCheckpointPreparation);
+    let consumer = RedbOperationalPorts {
+        shared: Arc::clone(&ports.shared),
+    };
+    let writer = std::thread::spawn(move || {
+        consumer
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .and_then(|access| access.abort())
+    });
+    schedule.wait(Point::BeforeConsumerCheckpointPreparation);
+    let (sent, received) = std::sync::mpsc::channel();
+    let audit = std::thread::spawn(move || {
+        let result = match ports.submit_service_audit_group(&[source_audit_intent(301)]) {
+            Ok(ServiceAuditGroupAppend::Submitted(fence)) => fence.wait().map(|rows| rows.len()),
+            Ok(_) => panic!("the audit retains its original durable completion fence"),
+            Err(error) => Err(error),
+        };
+        sent.send(result).unwrap();
+    });
+    schedule.release(Point::BeforeConsumerCheckpointPreparation);
+    // The checkpoint stays explicitly paused until the audit acknowledges.
+    // This timeout is a deadlock watchdog, not schedule synchronization.
+    let progressed = received.recv_timeout(Duration::from_secs(10));
+    schedule.release(Point::BeforeMaterialization);
+    audit.join().unwrap();
+    let consumer_result = writer.join().unwrap();
+    assert_eq!(progressed.unwrap().unwrap(), 1);
+    consumer_result.unwrap();
 }
 
 #[cfg(feature = "test-fixtures")]

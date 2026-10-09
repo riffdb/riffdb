@@ -1445,10 +1445,10 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
                 .unwrap()
     );
     assert!(direct.replace(",)", ")").contains(
-        "apply_published_journal_suffix_with_limits(&transaction,runtime,bounded_outbox)"
+        "apply_published_journal_suffix_with_limits(&transaction,runtime,bounded_background)"
     ));
     assert!(direct.contains(
-        "letbounded_outbox=source==riffdb_storage_api::ChangelogAttributionV3::OutboxTransition;"
+        "letbounded_background=matches!(source,riffdb_storage_api::ChangelogAttributionV3::OutboxTransition|riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition);"
     ));
     let commit = store
         .split_once("fncommit_with_observations(")

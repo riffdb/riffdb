@@ -1978,3 +1978,61 @@ repair, and the first draft also fails the poison-refusal regression before that
 policy is restored. No accepted ordering, durability, archive protocol, public
 interface, fixture or qualification gate changes. Unchanged preparation, populated
 public restore and final-source full CI remain required.
+
+### Licensed source-byte capture after eligibility growth
+
+Shipping revision `a605ec69` builds the four ordinary release binaries in
+295.9 seconds. Initial archive drain finishes in 230.2 seconds and the event
+observer keeps acknowledging. Unchanged preparation nevertheless fails
+`source_bytes_sample_gap` after 1,510.8 seconds. No competing host activity is
+recorded during build or preparation. Preserve the failed population and its
+immutable artifacts; populated restore and dependent full CI remain unstarted.
+
+The last in-load exact sample has resume 98,036 and ceiling 98,504. The final
+native source observation has resume 102,856 and eligibility ceiling 244,138.
+The accounting refresh required an identical completed ceiling and an existing
+completed accounting certificate. Releasing holds can expand eligibility, and
+checked reclamation can consume that old accounting interval. Either case
+prevents an ordinary accounting capture while unrelated tail proof is unfinished.
+
+Under ADR-0279 decision 6, start a paced read-only capture below the existing
+finite checkpoint license on an actual current qualified pin. Reuse a completed
+exact prefix only when its interval is covered by current eligibility. Validate
+newly eligible receipts through the existing bounded canonical pages; absent
+accounting starts a complete bounded walk of the licensed interval. Incomplete
+counts remain unknown. Current holds, coverage, mutation proof, two validation
+pins, capture cadence and freshness retain their existing checks and bounds.
+
+Four native regressions fail before repair and pass afterward, covering growing
+eligibility and absent accounting under both commit profiles. All nineteen
+source-byte, twelve continuation and five checkpoint-license tests pass on C3D.
+The accounting candidate passes all 1,334 active storage tests with two
+unchanged ignored tests, including 59 architecture checks, and storage/server
+Clippy. Final-source acceptance and CI remain required. The third five-minute
+load window also exceeds the latency histogram bounds during recovery; its
+cause remains unestablished. This failed preparation does not qualify sustainable
+latency, the complete short rehearsal or a 24-hour run.
+
+### Native event-consumer checkpoint waits also block durable audits
+
+A deterministic native regression pauses a real checkpoint before materialization.
+The original consumer admission retains the ordered writer while waiting for it;
+another audit cannot acknowledge before the ten-second watchdog. A separate
+real-database bridge regression explicitly holds the operational-port cell;
+the original consumer transition cannot finish until that cell is released.
+Both negative tests release their pauses before asserting, preserving cleanup.
+
+Consumer admission now uses the existing asynchronous checkpoint preparation and
+bounded 256-transition, 1-MiB closing scanner, releasing the FIFO writer during
+the wait. The production bridge owns a separate move-only native consumer port
+cell sharing the original poison flag. Consumer transitions and protected lease
+coordination, validation, resolution and replay delegate to their original native
+implementation. Transaction-current authority, lease CAS, source holds, selected
+Immediate profiles, captured receipts and uncertainty fencing remain unchanged.
+
+Both consumer checkpoint tests, three consumer bridge tests, both outbox
+checkpoint tests, four existing outbox bridge tests, the move-only compile-fail
+proof, all 59 architecture checks and storage/server Clippy pass on C3D. The
+native blocking defect is established; its contribution to the recovered-load
+latency spike still requires frozen-source measurement. No harness deadline,
+workload, observation rule, protocol or compatibility fixture is changed.

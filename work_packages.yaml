@@ -28665,6 +28665,44 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 native consumer checkpoint admission: an explicitly paused checkpoint
+      prevents another durable audit while the original consumer admission holds
+      the writer gate. The original production consumer bridge separately holds
+      the shared operational-port cell; its real-database exclusion test fails.
+      Both negatives release their pauses before asserting. Prepare oversized
+      consumer prefixes through the same existing asynchronous checkpoint and
+      bounded 256-transition, 1-MiB closing scanner as outbox admission, waiting
+      outside the sole FIFO gate. Forward consumer transitions, protected lease
+      coordination, validation, resolution and replay through the original native
+      implementation using a move-only capability in a separate sharing cell.
+      Preserve shared poison refusal, transaction-current authority, lease CAS,
+      source holds, Immediate profiles, canonical receipts and uncertainty fencing.
+      Both consumer checkpoint tests, three production consumer bridge tests, both
+      outbox checkpoint tests, four existing outbox bridge tests, the move-only
+      compile-fail proof, 59 architecture checks and storage/server Clippy pass
+      on C3D. The separate recovered-load latency spike still needs measurement
+      on frozen final source. No workload, deadline, protocol or fixture changes.
+    - >-
+      D-003 licensed source-byte capture under ADR-0279 decision 6: the ordinary
+      release candidate a605ec69 clears initial archive drain and observer
+      acknowledgement, but unchanged preparation fails source_bytes_sample_gap
+      after 1,510.8 seconds without recorded competing host activity. Eligibility
+      grows beyond the completed accounting ceiling and reclamation consumes
+      that old interval. Permit a paced bounded read-only capture below the
+      existing finite checkpoint license without waiting for unrelated tail
+      proof, including when the previous accounting certificate is absent.
+      Reuse only a qualified completed prefix covered by current eligibility;
+      canonically validate newly eligible receipts or the entire missing count.
+      Incomplete accounting remains unknown. Preserve current holds, license
+      coverage, mutation authority, two validation pins, original freshness,
+      cadence and workload gates. Four real native regressions fail before
+      repair under both commit profiles and pass afterward; all nineteen
+      source-byte, twelve continuation and five checkpoint-license tests pass
+      on C3D. The accounting candidate passes all 1,334 active storage tests
+      with two unchanged ignored tests, including 59 architecture checks, and
+      storage/server Clippy. Final-source acceptance and qualification remain
+      required. The recovery latency spike remains unexplained.
+    - >-
       D-003 native outbox admission under ADR-0273: prepare oversized published
       prefixes with the existing asynchronous checkpoint and wait outside the
       writer gate and checkpoint state lock, then reenter the unchanged FIFO

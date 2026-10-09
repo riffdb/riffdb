@@ -150,14 +150,14 @@ impl ContinuedProbe {
         self.completed.is_some() && self.qualifies(qualification)
     }
 
-    pub(super) fn matches_completed_prefix(
+    pub(super) fn covers_completed_prefix(
         &self,
         history: History,
         ceiling: u64,
         qualification: u64,
     ) -> bool {
         self.completed_prefix(qualification)
-            && self.ceiling == ceiling
+            && self.ceiling <= ceiling
             && self.history.lineage() == history.lineage()
             && self.history.anchor() == history.anchor()
             && self.history.minimum_resume() == history.minimum_resume()

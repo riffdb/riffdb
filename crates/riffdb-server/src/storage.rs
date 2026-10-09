@@ -64,7 +64,9 @@ use riffdb_storage_api::{
     VectorObservationTargetV1, VectorProjectionControlRepository,
     VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
-use riffdb_storage_redb::{RedbOperationalPorts, RedbOutboxPorts, RedbSharedPorts};
+use riffdb_storage_redb::{
+    RedbEventConsumerPorts, RedbOperationalPorts, RedbOutboxPorts, RedbSharedPorts,
+};
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1,
     CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DefinitionFingerprint,
@@ -102,6 +104,7 @@ pub(crate) struct SharedRedbOperationalPorts {
     cell: SharedStorageCell<RedbOperationalPorts>,
     shared: RedbSharedPorts,
     outbox: SharedStorageCell<RedbOutboxPorts>,
+    consumer: SharedStorageCell<RedbEventConsumerPorts>,
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
     query_modules: Arc<CurrentQueryModuleView>,
@@ -110,6 +113,14 @@ pub(crate) struct SharedRedbOperationalPorts {
 }
 
 impl SharedRedbOperationalPorts {
+    fn with_consumer<R>(
+        &self,
+        operation: impl FnOnce(&mut RedbEventConsumerPorts) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError> {
+        self.cell.check_poison()?;
+        self.consumer.with_mut(operation)
+    }
+
     fn with_outbox<R>(
         &mut self,
         operation: impl FnOnce(&mut RedbOutboxPorts) -> Result<R, StorageError>,
@@ -142,6 +153,7 @@ impl SharedRedbOperationalPorts {
         crate::startup_census::record_bounded_population_walk(bounded_clean_startup);
         let shared = ports.shared_ports();
         let outbox = ports.outbox_ports();
+        let consumer = ports.event_consumer_ports();
         let catalog = if bounded_clean_startup {
             CurrentCatalogView::rebuild_from_clean_startup(&shared)?
         } else {
@@ -155,10 +167,12 @@ impl SharedRedbOperationalPorts {
         let query_modules = CurrentQueryModuleView::rebuild(&shared)?;
         let cell = SharedStorageCell::new(ports);
         let outbox = cell.share_poison(outbox);
+        let consumer = cell.share_poison(consumer);
         Ok(Self {
             cell,
             shared,
             outbox,
+            consumer,
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
             query_modules: Arc::new(query_modules),
@@ -332,8 +346,7 @@ impl SharedRedbOperationalPorts {
         &self,
         request: riffdb_storage_redb::ProtectedEventConsumerLeaseV1,
     ) -> Result<riffdb_storage_api::CoordinateConsumerLeaseResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| ports.coordinate_protected_event_consumer_lease(request))
+        self.with_consumer(|ports| ports.coordinate_protected_event_consumer_lease(request))
     }
 
     /// Validates one reaction lease together with current trigger-event row
@@ -343,8 +356,7 @@ impl SharedRedbOperationalPorts {
         request: riffdb_storage_redb::ProtectedEventConsumerLeaseValidationV1,
     ) -> Result<riffdb_storage_redb::ProtectedEventConsumerLeaseValidationResultV1, StorageError>
     {
-        self.cell
-            .with_mut(|ports| ports.validate_protected_event_consumer_lease(request))
+        self.with_consumer(|ports| ports.validate_protected_event_consumer_lease(request))
     }
 
     /// Resolves one protected event lease only while its current authority and
@@ -353,8 +365,7 @@ impl SharedRedbOperationalPorts {
         &self,
         request: riffdb_storage_redb::ProtectedEventConsumerResolutionV1,
     ) -> Result<riffdb_storage_api::EventConsumerTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| ports.coordinate_protected_event_consumer_resolution(request))
+        self.with_consumer(|ports| ports.coordinate_protected_event_consumer_resolution(request))
     }
 
     /// Executes protected replay under one current capability/row snapshot.
@@ -362,8 +373,7 @@ impl SharedRedbOperationalPorts {
         &self,
         request: riffdb_storage_redb::ProtectedEventReplayV1,
     ) -> Result<riffdb_storage_redb::ProtectedEventReplayResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| ports.replay_protected_events(request))
+        self.with_consumer(|ports| ports.replay_protected_events(request))
     }
 }
 
@@ -373,6 +383,7 @@ impl Clone for SharedRedbOperationalPorts {
             cell: self.cell.clone(),
             shared: self.shared.clone(),
             outbox: self.outbox.clone(),
+            consumer: self.consumer.clone(),
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
             query_modules: Arc::clone(&self.query_modules),
@@ -1499,7 +1510,7 @@ impl EventConsumerRepository for SharedRedbOperationalPorts {
         &self,
         consumer_identity_hash: EventConsumerIdentityHash,
     ) -> Result<Option<EventConsumerSnapshotV1>, StorageError> {
-        self.cell.with_mut(|ports| {
+        self.with_consumer(|ports| {
             EventConsumerRepository::inspect_event_consumer(ports, consumer_identity_hash)
         })
     }
@@ -1508,20 +1519,21 @@ impl EventConsumerRepository for SharedRedbOperationalPorts {
         &mut self,
         transition: EventConsumerTransitionV1,
     ) -> Result<EventConsumerTransitionResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| EventConsumerRepository::transition_event_consumer(ports, transition))
+        self.with_consumer(|ports| {
+            EventConsumerRepository::transition_event_consumer(ports, transition)
+        })
     }
 
     fn inspect_event_consumer_inventory(
         &self,
     ) -> Result<Vec<EventConsumerSnapshotV1>, StorageError> {
-        self.cell
-            .with_mut(|ports| EventConsumerRepository::inspect_event_consumer_inventory(ports))
+        self.with_consumer(|ports| EventConsumerRepository::inspect_event_consumer_inventory(ports))
     }
 
     fn event_consumer_retention_low_water(&self) -> Result<Option<u64>, StorageError> {
-        self.cell
-            .with_mut(|ports| EventConsumerRepository::event_consumer_retention_low_water(ports))
+        self.with_consumer(|ports| {
+            EventConsumerRepository::event_consumer_retention_low_water(ports)
+        })
     }
 }
 
@@ -2150,6 +2162,100 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 
 #[cfg(test)]
 mod tests {
+    // req: REC-001, END-008
+    #[test]
+    fn production_consumer_bridge_preserves_shared_poison_refusal() {
+        let mut real = crate::real_storage_support::RealStorage::open("consumer-cell-poison");
+        let cell = real.storage.cell.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _: Result<(), StorageError> =
+                    cell.with_mut(|_| panic!("explicit shared poison"));
+            })
+            .join()
+            .is_err()
+        );
+        let result = real
+            .storage
+            .transition_event_consumer(EventConsumerTransitionV1::Retire {
+                consumer_identity_hash: EventConsumerIdentityHash::from_bytes([0x44; 32]),
+                expected_revision: riffdb_types::EventConsumerRevision::first(),
+            });
+        assert_eq!(
+            result.unwrap_err().kind(),
+            StorageErrorKind::InvariantViolation
+        );
+    }
+
+    // req: REC-001, END-008
+    #[test]
+    fn production_consumer_bridge_propagates_poison_to_other_mutating_ports() {
+        let real = crate::real_storage_support::RealStorage::open("consumer-shared-poison");
+        let consumer = real.storage.consumer.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _: Result<(), StorageError> =
+                    consumer.with_mut(|_| panic!("explicit consumer poison"));
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            real.storage.cell.with_mut(|_| Ok(())).unwrap_err().kind(),
+            StorageErrorKind::InvariantViolation
+        );
+        assert_eq!(
+            real.storage.outbox.with_mut(|_| Ok(())).unwrap_err().kind(),
+            StorageErrorKind::InvariantViolation
+        );
+    }
+
+    // req: REC-001, END-008
+    #[test]
+    fn production_consumer_bridge_does_not_wait_under_the_shared_storage_cell() {
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let real = crate::real_storage_support::RealStorage::open("consumer-cell-exclusion");
+        let cell = real.storage.cell.clone();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let locked = {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                cell.with_mut(|_| {
+                    entered.wait();
+                    release.wait();
+                    Ok(())
+                })
+                .unwrap();
+            })
+        };
+        entered.wait();
+        let mut consumer = real.storage.clone();
+        let (sent, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sent.send(
+                consumer.transition_event_consumer(EventConsumerTransitionV1::Retire {
+                    consumer_identity_hash: EventConsumerIdentityHash::from_bytes([0x44; 32]),
+                    expected_revision: riffdb_types::EventConsumerRevision::first(),
+                }),
+            )
+            .unwrap();
+        });
+        // Explicit barriers hold the shared cell throughout the transition;
+        // the timeout is a deadlock watchdog and cleanup precedes assertions.
+        let result = received.recv_timeout(Duration::from_secs(10));
+        release.wait();
+        locked.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            result.unwrap().unwrap(),
+            EventConsumerTransitionResultV1::NotFound
+        );
+    }
+
     // req: OUT-001, REC-001, END-008
     #[test]
     fn production_outbox_bridge_propagates_poison_to_other_mutating_ports() {
