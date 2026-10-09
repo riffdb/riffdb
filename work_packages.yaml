@@ -28629,7 +28629,7 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-005, REC-006, REC-007, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0281, ADR-0283]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0283, ADR-0284]
   # Maintainer approved necessary native fixes in session, 2026-10-04.
   # Exact ADR-0269 accepted in session, 2026-10-05; engine, offline scrub and simulator repair scope.
   # Exact revised ADR-0271 accepted in session, 2026-10-05; bounded FIFO source admission and native drain.
@@ -28643,9 +28643,10 @@ work_packages:
   # ADR-0279 exact text accepted in session, 2026-10-07; finite licensing and exact byte continuation.
   # ADR-0283 (originally ADR-0280) exact text and commit-layer scope accepted in session, 2026-10-07.
   # Maintainer approved ADR-0280 to ADR-0283 renumbering and reference updates in session, 2026-10-09.
-  # ADR-0281 exact text and bootstrap read-custody scope accepted in session, 2026-10-07.
+  # Bootstrap decision accepted as ADR-0281 in session, 2026-10-07; now ADR-0284.
+  # Maintainer approved ADR-0281 to ADR-0284 identifier-only reconciliation in session, 2026-10-09.
   # Standing necessary-native-fix approval covers the receipt-cursor architecture guard consequence.
-  allowed_paths: [crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0281-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0283-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
+  allowed_paths: [crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0283-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
   - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
@@ -28983,7 +28984,7 @@ work_packages:
       under the standing native-fix scope. All 59 architecture tests and the scope,
       acceptance-commit, coverage, obligation, file-size and performance checks
       pass against the recorded scope commit. WP-825 remains open.
-    - ADR-0281 exact text and its decision path accepted in session on
+    - Bootstrap decision (originally ADR-0281, now ADR-0284) accepted in session on
       2026-10-07. Read-only bootstrap custody now has an authored closed native
       preparation using the existing shared proof owner and unchanged deadlines.
       Three named oracle/refusal/cancellation proofs and an additional actual
@@ -29002,7 +29003,7 @@ work_packages:
       The original process suite remains 25 passing with bootstrap held attachment
       failing. The interrupted prior test stage stays failed; corrected-source
       scoped acceptance subsequently passes all 14 checks and 2,855 tests under
-      the stock CI profile. ADR-0281 is accepted separately; its later source is
+      the stock CI profile. ADR-0284 is accepted separately; its later source is
       not qualified by that earlier receipt. WP-825 remains open.
     - ADR-0283 native development passes all 13 acknowledgement tests, existing
       source-admission schedules, shared pacing, the production bridge, three
