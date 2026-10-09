@@ -28877,3 +28877,28 @@ work_packages:
   - A journal frame is applied without being decoded from its own bytes, or its receipt is not derived and bound.
   - Any ordered mutation's before-image stops being checked.
   - A replay or drain transaction commits without the final full root validation.
+  closure:
+    status: complete
+    completed_at: '2026-10-08'
+    requirements_satisfied: [REC-001, REP-003]
+    evidence: Fail-before tests for recovery replay and the published-suffix
+      drain (nine full root validations for three frames on the base, two with
+      the change; receipts and final history equal standalone sequential
+      materialization), the riffdb-storage-redb all-feature suite (1,219 passed),
+      a 2,000-frame recovery replay timing (about 200 ms on the base, 63-77 ms),
+      package acceptance, and the ci-all battery with its workspace tests passing.
+    decision: Retain ChainedFrameMaterialization for replay and drain. No
+      durable byte, encoding, ordering, atomicity, acknowledgement, publication,
+      recovery outcome for a valid journal, or public interface change.
+    decisions_taken:
+    - A frame without a receipt source discharges the deferred root check before it is applied.
+    - The unused single-frame materialization wrappers are removed.
+    known_limitations: History stubs of frames before the last in one transaction
+      are resolved by readers and the scrub rather than at replay; no throughput
+      change is claimed for TicketDesk, whose c32 profile recorded no drain samples.
+      ci-all steps that need the TypeScript toolchain (check-operator-acceptance and
+      its two dependents, check-generated, check-ticketdesk-lifecycle-preparation)
+      and check-adr-obligations (ADR-0275 to ADR-0277) fail identically on main on
+      the development workstation.
+    follow_ups:
+    - Receipt re-derivation is about 6% of checkpoint CPU and was not decided (ADR-0281 option 3).

@@ -132,7 +132,7 @@ below PostgreSQL (0.946).
 
 ## WP-829: recovery replay and the published-suffix drain (ADR-0281)
 
-Status: implemented, pending exact-text acceptance of ADR-0281. Recovery replay
+Status: complete (2026-10-08); ADR-0281 accepted 2026-10-08. Recovery replay
 (`replay_frames`) and the drain every direct primary write performs under the
 writer gate (`apply_published_journal_suffix`) used the same three full root
 validations per frame. `ChainedFrameMaterialization` now validates the roots
