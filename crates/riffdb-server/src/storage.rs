@@ -1155,8 +1155,14 @@ impl ReactiveModuleRepository for SharedRedbOperationalPorts {
         &self,
         module_hash: ReactiveModuleHash,
     ) -> Result<Option<StoredReactiveModuleV1>, StorageError> {
-        self.cell
-            .with_mut(|ports| ReactiveModuleRepository::read_reactive_module(ports, module_hash))
+        // This immutable repository read needs its own native read transaction,
+        // not the operational writer cell (ADR-0060). Keep the bridge's poison
+        // policy before and after the read, including unwind propagation.
+        self.cell.check_poison()?;
+        let _poison = StorageBridgePoisonGuard(&self.cell.poison);
+        let result = ReactiveModuleRepository::read_reactive_module(&self.shared, module_hash);
+        self.cell.check_poison()?;
+        result
     }
 }
 
@@ -2162,6 +2168,66 @@ impl ProjectionRecoveryRepository for SharedRedbOperationalPorts {
 
 #[cfg(test)]
 mod tests {
+    // req: REC-001, END-008
+    #[test]
+    fn production_reactive_module_read_does_not_wait_under_the_shared_storage_cell() {
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let real = crate::real_storage_support::RealStorage::open("reactive-read-cell-exclusion");
+        let cell = real.storage.cell.clone();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let locked = {
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                cell.with_mut(|_| {
+                    entered.wait();
+                    release.wait();
+                    Ok(())
+                })
+                .unwrap();
+            })
+        };
+        entered.wait();
+        let reader = real.storage.clone();
+        let (sent, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sent.send(reader.read_reactive_module(ReactiveModuleHash::from_bytes([0x44; 32])))
+                .unwrap();
+        });
+        // The barriers hold the outer cell throughout the read. The timeout
+        // is a deadlock watchdog; release and join before asserting the result.
+        let result = received.recv_timeout(Duration::from_secs(10));
+        release.wait();
+        locked.join().unwrap();
+        worker.join().unwrap();
+        assert!(result.unwrap().unwrap().is_none());
+    }
+
+    // req: REC-001, END-008
+    #[test]
+    fn production_reactive_module_read_preserves_shared_poison_refusal() {
+        let real = crate::real_storage_support::RealStorage::open("reactive-read-cell-poison");
+        let cell = real.storage.cell.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _: Result<(), StorageError> =
+                    cell.with_mut(|_| panic!("explicit shared poison"));
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            real.storage
+                .read_reactive_module(ReactiveModuleHash::from_bytes([0x44; 32]))
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::InvariantViolation
+        );
+    }
+
     // req: REC-001, END-008
     #[test]
     fn production_consumer_bridge_preserves_shared_poison_refusal() {

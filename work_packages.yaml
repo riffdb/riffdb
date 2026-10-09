@@ -28665,6 +28665,25 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-004 immutable reactive-module reader: frozen source-paced preparation
+      builds but stops during seed archive drain with observer_consumer and
+      TRANSPORT_UNAVAILABLE, before measured load. A separate diagnostic replay
+      makes progress and captures a reactive-module read waiting on the broad
+      operational cell; this does not establish the entire fatal or latency cause.
+      Add a real-storage barrier regression for read progress while that cell is
+      occupied and a poison-refusal assertion. Delegate the unchanged native
+      immutable repository read through the existing least-authority shared
+      reader under ADR-0060, with poison checks before and after and on unwind.
+      Preserve native validation, authorization, ordering, durable formats,
+      fixtures, request deadlines, workload rates and fatal refusal. The original
+      locked reader fails the barrier regression on C3D; repaired bridge, exact
+      native module/absence/nonmutation tests, architecture, Clippy, formatting
+      and scoped metadata acceptance pass. The separate 300-second diagnostic
+      refuses latency despite completing all 30,000 commands and 120,000 reads
+      without retries or post-duration work. Unchanged preparation, populated
+      public restore, final-source CI and the actual complete short rehearsal
+      remain required. WP-825 stays open and no 24-hour run starts.
+    - >-
       D-003 native pending-proof rest observation: paused-consumer and
       retention-disabled controls pass later normal windows while the unchanged
       retention-enabled baseline refuses latency. Neither control qualifies the

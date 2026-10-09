@@ -5831,6 +5831,24 @@ mod tests {
             .expect("reuse attempt returns phase conflict, not success");
         assert!(matches!(reuse, ServiceAuditAppendResult::PhaseConflict));
     }
+    // req: REC-001, END-008, REP-002
+    #[test]
+    fn shared_reactive_reader_preserves_exact_module_and_absence_without_mutation() {
+        let (_path, ports, module, _) = published_reactive_module("reactive-shared-exact-read");
+        let reader = ports.shared_ports();
+        let records_before = audit_count(&ports);
+        let tickets_before = ports.mutation_gate_tickets();
+        assert_eq!(
+            reader.read_reactive_module(module.module_hash()).unwrap(),
+            Some(module.clone())
+        );
+        let absent = ReactiveModuleHash::from_bytes([0xab; 32]);
+        assert_ne!(absent, module.module_hash());
+        assert_eq!(reader.read_reactive_module(absent).unwrap(), None);
+        assert_eq!(ports.mutation_gate_tickets(), tickets_before);
+        assert_eq!(audit_count(&ports), records_before);
+    }
+
     // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn redb_reactive_republish_answers_without_taking_the_write_lock() {

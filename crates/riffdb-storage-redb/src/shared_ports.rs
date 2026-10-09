@@ -523,6 +523,18 @@ impl QueryModuleRepository for RedbSharedPorts {
     }
 }
 
+impl riffdb_storage_api::ReactiveModuleRepository for RedbSharedPorts {
+    fn read_reactive_module(
+        &self,
+        module_hash: riffdb_types::ReactiveModuleHash,
+    ) -> Result<Option<riffdb_storage_api::StoredReactiveModuleV1>, StorageError> {
+        riffdb_storage_api::ReactiveModuleRepository::read_reactive_module(
+            &self.operational(),
+            module_hash,
+        )
+    }
+}
+
 impl CapabilityReader for RedbSharedPorts {
     fn read_capability(
         &self,

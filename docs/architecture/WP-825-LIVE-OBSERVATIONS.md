@@ -2183,3 +2183,52 @@ Updated handbook: Sustainable TicketDesk milestone;
 Hazards/follow-ups: this bounded-work repair does not prove the complete latency
 cause; qualify final unchanged preparation, populated restore, final-source CI
 and the complete short rehearsal before 24-hour readiness.
+
+The frozen `120b1b0f` release builds successfully, but its unchanged preparation
+stops during initial archive drain, before measured load. Seeding completes all
+65,536 tickets in 31.2 seconds. The observer's closed diagnostic reports
+`stage=observer_consumer`, `class=TRANSPORT_UNAVAILABLE`; neither process reports
+a panic. No latency result, populated restore or full-CI result follows from this
+attempt. The preceding charged-rest repair therefore remains unqualified under
+the unchanged workload.
+
+A separate, unqualified seed diagnostic captures the same native release at
+three points. The first two captures show the authoritative event reader loading
+and decoding command segments; a later capture shows reactive-module lookup
+waiting for the operational bridge's write lock. The observer subsequently makes
+progress, so these captures do not establish the cause of the fatal attempt or
+prove checkpoint starvation. Inspection confirms that this immutable module read
+still uses the broad operational cell. A deterministic real-storage regression
+holds that cell with explicit barriers while requesting the module through the
+production bridge; the native correction delegates the unchanged repository
+read through the existing narrow shared reader and preserves shared poison
+refusal. These observations grant no readiness claim or workload exemption.
+
+That seed diagnostic finishes with `probe_latency`, rather than the fatal
+consumer error. All 30,000 commands and 120,000 reads complete with zero retries
+or post-duration work, but both percentile values exceed the 250-millisecond
+histogram range (13,103 overflow samples). The observer checks 2,048 events with
+no duplicates. Its captured pauses occur during seed, before this measured load;
+the shortened diagnostic and successful seed still grant no qualification. The
+new production-bridge regression then fails on C3D with the original locked
+reader: its deadlock watchdog expires while the barriers keep the cell occupied.
+Cleanup releases the holder and joins both threads before the assertion. This
+establishes unnecessary reader serialization, not responsibility for the complete
+latency failure. The repaired bridge's 24 tests, native exact-module and absence
+checks, 59 architecture tests, Clippy, formatting and scoped metadata acceptance
+pass on C3D. The exact-module regression also proves that neither a mutation-gate
+ticket nor an audit record is added. These checks do not constitute full CI.
+Unchanged preparation, populated public restore, final-source CI and the complete
+short rehearsal remain required before 24-hour readiness.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: immutable reactive-module lookup uses the existing native narrow reader
+instead of waiting for the operational writer cell, retaining poison checks before
+and after the read and on unwind; Checks: failing original barrier schedule,
+repaired bridge and exact-native module/absence/nonmutation assertions, architecture,
+Clippy, formatting and scoped metadata acceptance on C3D; Compatibility: original
+repository validation, authorization, ordering, durable formats, fixtures, workload
+rates and deadlines; Updated handbook: Sustainable TicketDesk milestone;
+Hazards/follow-ups: the complete seed-failure and latency causes remain unresolved;
+unchanged preparation, public restore, final-source CI and the full short rehearsal
+remain required. The 24-hour campaign remains unstarted.

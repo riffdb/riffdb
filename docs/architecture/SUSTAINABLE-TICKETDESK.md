@@ -2839,3 +2839,19 @@ rest, admission and source validators retain their existing rules. Repaired work
 source-accounting and architecture tests and Clippy pass on C3D. This repairs
 bounded maintenance work; its latency effect still needs the final unchanged
 preparation and all remaining milestone gates.
+
+The frozen `120b1b0f` release builds, but unchanged preparation stops during seed
+archive drain with a consumer `TRANSPORT_UNAVAILABLE` diagnostic. All 65,536
+tickets are seeded; measured load never starts. The charged-rest repair therefore
+has no qualified latency result. A separate diagnostic replay makes consumer
+progress and captures a reactive-module read waiting on the operational bridge's
+write lock. The narrow-reader correction keeps the original immutable
+repository read and poison refusal; a real-storage barrier test checks that this
+read can finish while the operational cell remains occupied. Native exact-module
+and absence checks also prove that reading adds neither mutation-gate tickets nor
+audit records. The original locked reader fails its barrier regression; repaired
+bridge, native, architecture, Clippy and scoped metadata checks pass on C3D. The
+short diagnostic nevertheless refuses latency. Neither diagnostic
+establishes the complete failure cause. Preparation, populated public restore,
+final-source CI and the complete short rehearsal remain required before the
+24-hour run can be ready.
