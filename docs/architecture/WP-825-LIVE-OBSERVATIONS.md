@@ -2910,3 +2910,27 @@ Hazards/follow-ups: assemble and validate actual fault execution and maintenance
 recovery, complete resource reconciliation, ordinary preparation, populated
 restore, final-source full CI and the real short rehearsal. No 24-hour run has
 started.
+
+
+Campaign assembly identifies a terminal ownership race: the load process exits
+immediately after printing final counts, while native epoch completion requires
+that same original owner to remain alive. The explicit campaign-only terminal
+handshake retains that owner after its original operations, windows, drain and
+witness finish. It releases no additional database operations and supplies no
+invented observation. The controller must finish its real accounting before
+publishing the exact current phase release, within the 60-second terminal wait.
+
+The handshake refuses stale markers, wrong release identity, phase changes,
+quiescence and expired or reversed clocks. Deterministic schedules and a real
+child-process release protocol exercise these conditions. Required-host tests,
+Clippy, formatting and scoped acceptance remain required before integration.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: keep the original
+completed load owner alive for finite campaign accounting through an explicit
+release protocol; Checks: required-host terminal schedules and actual child
+protocol, lifecycle tests, Clippy, formatting and scoped acceptance pending;
+Compatibility: existing preparation, offered load, operation counts, native
+runtime, public interfaces, durable formats and reviewed fixtures unchanged;
+Updated handbook: Sustainable TicketDesk milestone and live observations;
+Hazards/follow-ups: actual controller assembly, final complete-source CI, source
+keep-up and the real short rehearsal remain open. No 24-hour run has started.

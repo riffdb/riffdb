@@ -211,8 +211,10 @@ impl Admission {
 }
 
 pub(super) fn publish_quiescence(root: &Path, name: &str, encoded: &str) -> Result<()> {
-    if !matches!(name, "load.quiesced" | "observer.quiesced" | "load.resumed")
-        || encoded.len() > 4096
+    if !matches!(
+        name,
+        "load.quiesced" | "observer.quiesced" | "load.resumed" | "load.terminal"
+    ) || encoded.len() > 4096
     {
         return Err("quiescence_output");
     }
@@ -431,6 +433,13 @@ pub(super) async fn run() -> Result<()> {
         }
         admission.poll(root, &metrics)?;
     }
+    let terminal_configuration = match env::var("RIFFDB_LIFECYCLE_TERMINAL_BARRIER") {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("terminal_configuration"),
+    };
+    let terminal =
+        super::terminal::configured(control.as_deref(), terminal_configuration.as_deref())?;
     let offered_commands = Arc::new(AtomicU64::new(0));
     let mut workers = JoinSet::new();
     for worker in 0..u64::from(WORKERS) {
@@ -627,18 +636,33 @@ pub(super) async fn run() -> Result<()> {
     if let Some(witness) = witness {
         witness.finish()?;
     }
-    let final_state = metrics.lock().map_err(|_| "observation_state")?;
+    let (total_commands, total_reads, post_commands, post_reads) = {
+        let final_state = metrics.lock().map_err(|_| "observation_state")?;
+        (
+            final_state.total_commands,
+            final_state.total_reads,
+            final_state.commands,
+            final_state.reads,
+        )
+    };
     println!(
         concat!(
             "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\",",
             "\"completed_updates\":{},\"completed_reads\":{},",
             "\"post_duration_updates\":{},\"post_duration_reads\":{}}}"
         ),
-        final_state.total_commands,
-        final_state.total_reads,
-        final_state.commands,
-        final_state.reads
+        total_commands, total_reads, post_commands, post_reads
     );
+    io::stdout().flush().map_err(|_| "observation_output")?;
+    if terminal {
+        super::terminal::hold(
+            control.as_deref().ok_or("terminal_configuration")?,
+            (*admission.release()?).clone(),
+            total_commands,
+            total_reads,
+        )
+        .await?;
+    }
     Ok(())
 }
 

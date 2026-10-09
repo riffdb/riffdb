@@ -52,6 +52,8 @@ mod observe;
 mod probe;
 #[path = "../lifecycle_workload/recovery.rs"]
 mod recovery;
+#[path = "../lifecycle_workload/terminal.rs"]
+mod terminal;
 #[path = "../lifecycle_workload/witness.rs"]
 mod witness;
 

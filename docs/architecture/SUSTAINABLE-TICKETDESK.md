@@ -560,6 +560,29 @@ short CLI exits and bounded output refusal. Numeric kernel and diagnostic
 fixtures remain component tests. These checks do not establish the real
 seven-fault runner, complete resource model or rehearsal readiness.
 
+## Retain the completed campaign load owner until accounting finishes
+
+The actual campaign can explicitly enable `RIFFDB_LIFECYCLE_TERMINAL_BARRIER=1`
+with its existing load-control directory and canonical release phase. The load
+still offers the same commands and reads, closes each window at its original
+deadline, drains under the existing limit and finishes its acknowledgement
+witness. It then flushes its unchanged final counts, publishes a bounded
+terminal marker and remains alive without issuing further operations. This
+lets the controller finish accounting against the original process owner.
+
+The terminal marker contains the current release generation, contract version,
+history incarnation and exact completed counts. The controller releases that
+same owner through a canonical phase record with the identical credential
+reference. The wait is limited to 60 seconds; missing initial phase, stale
+markers, changed phase, quiescence, mismatched release, malformed input or an
+expired or reversed clock refuse. The marker remains private evidence. The
+existing preparation path does not enable this campaign-only handshake.
+
+Deterministic schedules and an actual child-process protocol check publication,
+continued ownership before release, exact identity, stale input and deadline
+refusal. These are component checks, not proof of a complete resource model or
+execution of the real seven-fault campaign.
+
 ## Separate durable seal publication from spare preparation
 
 The preparation on `ea572072` still fails `source_bytes_sample_gap`, with no
