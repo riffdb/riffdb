@@ -1637,7 +1637,7 @@ acknowledgement composition now bind the shared scheduler monotonically, while
 storage primitives retain their explicit-step semantics and all validation and
 mutation bounds. The original recovery tests remain unchanged; C3D validation
 of the repair is in progress. Bootstrap proof reuse separately requires exact
-acceptance of proposed ADR-0281 before implementation. No final-source full CI
+acceptance of proposed ADR-0284 before implementation. No final-source full CI
 or rehearsal qualification is established.
 
 
@@ -1647,13 +1647,13 @@ the actual production graph binding check, shared pacing, production bridge,
 three coordinator tests and four-crate all-target Clippy on the required host.
 The original process suite remains 25 passing with initial bootstrap held
 attachment failing. Complete scoped acceptance is being rerun on the corrected
-source. The interrupted earlier acceptance stays failed. Proposed ADR-0281 has
+source. The interrupted earlier acceptance stays failed. Proposed ADR-0284 has
 passed proposal governance checks and still awaits exact acceptance.
 
 
 ## Accepted bounded bootstrap custody repair
 
-The maintainer accepted the exact ADR-0281 text and its decision-path scope in
+The maintainer accepted the exact ADR-0284 text and its decision-path scope in
 session on 2026-10-07. Acceptance and scope are recorded before implementation.
 The native closed read custodian and its three named proof tests are authored;
 new required-host validation remains pending. Previous failed bootstrap receipts
@@ -2655,3 +2655,67 @@ accepted branch implementations; Updated handbook: Sustainable TicketDesk and
 follower/bootstrap review pages; Hazards/follow-ups: repeat unchanged
 preparation on integrated source, retain ADR-0282 as proposed, complete full CI
 and the short fault campaign. WP-825 and WP-826 stay open.
+
+
+The next main synchronization integrates completed WP-829 and its accepted
+ADR-0281 transaction-level replay/drain root validation. The bootstrap custody
+record is renumbered to ADR-0284 under the maintainer's explicit 2026-10-09
+identifier-only approval. Its complete Decision section is byte-identical to
+its original accepted ADR-0281 text, whose acceptance history is retained.
+Main's replay decision and performance record keep their ADR-0281 identity.
+
+The native reconciliation preserves WP-825's bounded two-pass streaming
+recovery and applies the chained materialization to its actual write
+transaction. Every source-cut frame still receives complete bounded proof
+validation before mutation and exact root verification after staging. Its
+changed retained floor becomes the predecessor for the next frame. Two new
+real recovery/drain regressions reach Corrupt/CorruptData without that carry;
+the existing mixed checkpoint test still passes in the negative candidate.
+The positive candidate, three ordinary root-count regressions, full backend
+suite, Clippy and formatting require C3D confirmation before branch advancement.
+
+The preceding unchanged preparation over the earlier main integration builds
+ordinary release binaries, then fails after 1,731.3 seconds with the closed
+resource_process_inventory refusal. There is no external heavy interference.
+Four complete five-minute windows each settle all 30,000 offered commands and
+120,000 offered reads without retry. Their p95 values are 30,534, 99,635,
+108,705 and 82,702 microseconds; p99 values are 62,069, 126,305, 157,448 and
+136,569 microseconds. One window exceeds the normal p95 ceiling; outage-window
+classification, full reconciliation and qualification are incomplete. The last
+memory sample is at elapsed 1,377.263 seconds; the server has accumulated 15
+task-census restarts. The generic refusal does not identify the failing check,
+so census exhaustion remains a hypothesis. The failed source, artifacts,
+observations and dataset are preserved. No populated restore or full CI ran.
+ADR-0282 remains proposed, without a finite-handoff implementation or acceptance.
+
+PR note: Package none (main integration of WP-825 and completed WP-829);
+Tier guarantee; Behavior: preserve streaming recovery, complete source cuts and
+main's transaction-level root validation while reconciling accepted identities;
+Checks: C3D intended replay/drain negatives and approved metadata acceptance;
+positive native suites and final integrated acceptance required; Compatibility:
+no new formats, fixtures, public interfaces, workload, deadlines or gates;
+Updated handbook: bootstrap review, summary and Sustainable TicketDesk evidence;
+Hazards/follow-ups: classify the resource refusal, resolve measured latency,
+repeat unchanged preparation, complete populated restore, full CI and the
+required short fault campaign. WP-825 and WP-826 stay open; no 24-hour run starts.
+
+
+The resource-accounting follow-up adds closed refusal context rather than
+changing census behavior. A diagnostic negative first reaches the missing
+observation interface. The corrected source passes 17 owned-process tests,
+32 preparation tests and all 209 controller tests on C3D. An actual child test
+proves the original private refusal record survives a second cleanup error and
+the load child is reaped. Arbitrary input and invalid diagnostic context are
+redacted; no PID, process identity or path enters the report. The earlier
+zero-test setup remains failed and is not counted as negative evidence.
+No retry, process/thread ceiling, workload, deadline or qualification gate
+changes. The new report has yet to identify the original run's generic refusal.
+
+PR note: Package WP-825 (open); Tier internal for refusal diagnostics;
+Behavior: preserve bounded private failure reasons before cleanup while retaining
+the original fail-closed error and every observation bound; Checks: C3D intended
+negative, 17 owned-process, 32 preparation and 209 controller tests; final
+integrated acceptance required; Compatibility: no application interface, format,
+fixture or qualification change; Updated handbook: Sustainable TicketDesk;
+Hazards/follow-ups: repeat unchanged preparation and resolve actual measured
+refusals and latency before any rehearsal qualification.

@@ -1,6 +1,6 @@
 # WP-825: accepted bootstrap source custody repair
 
-ADR-0281 exact text and its WP-825 scope extension were accepted by the
+ADR-0284 exact text and its WP-825 scope extension were accepted by the
 maintainer in session on 2026-10-07 ("Accepted"). Native implementation is
 authorized after recording that acceptance and scope.
 The previously accepted ADR-0283 repair is being validated separately. WP-825
@@ -53,7 +53,7 @@ no compatibility fixture diff is proposed.
 
 Current WP-825 paths already cover storage API, redb, server, tests and docs.
 The accepted scope extension adds only
-`adr/0281-bounded-native-bootstrap-source-custody-validation.md` for recording
+`adr/0284-bounded-native-bootstrap-source-custody-validation.md` for recording
 this decision. Record it and the accepted dependency in WP-825 before native
 implementation. Acceptance is a standalone guarantee metadata change.
 
@@ -175,7 +175,7 @@ Source-byte accounting is an observation under ADR-0279 decision 6, not source
 mutation-proof preparation. Restore its already captured page continuation
 beside logical/physical observations during the existing lane's wait/rest.
 Proof preparation and writer work retain shared source pacing under ADR-0283
-and ADR-0281. The deterministic negative/positive regression preserves the exact
+and ADR-0284. The deterministic negative/positive regression preserves the exact
 charged deadline, source-proof progress, writer census and authoritative history.
 This is a D-003 implementation choice: accepted decision text, public surfaces,
 durable identities, source qualification, canonical validation, limits and

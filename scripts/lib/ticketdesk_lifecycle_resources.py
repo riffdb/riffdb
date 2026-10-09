@@ -25,8 +25,40 @@ OWNED_ROLES = frozenset({"controller", "server", "load", "observer", "native_sam
                          "typescript_driver", "operator"})
 
 
+RESOURCE_REFUSAL_CODES = frozenset({
+    "resource_measurement", "resource_process_identity", "resource_process_inventory",
+    "resource_process_unavailable", "resource_sample_bound", "resource_sample_clock",
+    "resource_sample_coverage", "resource_sample_gap", "resource_sample_terminal",
+})
+RESOURCE_REFUSAL_REASONS = frozenset({
+    "unspecified", "task_census_exhausted", "lost_child_evidence", "changed_children",
+    "untracked_descendant", "self_descendant", "invalid_parent_map", "ownership_cycle",
+    "disconnected_tree", "thread_count_bound", "thread_identity", "child_inventory_bound",
+    "duplicate_child", "child_identity", "census_counter_overflow",
+})
+
 class ResourceError(ValueError):
-    """Closed diagnostics contain no process name, identity, path or input text."""
+    """Keep the original refusal and expose only a closed diagnostic context."""
+
+    def __init__(self, code, *, reason="unspecified", role=None, census_attempts=None):
+        super().__init__(code)
+        self.reason = (reason if type(reason) is str and reason in RESOURCE_REFUSAL_REASONS
+                       else "unspecified")
+        self.role = role if type(role) is str and role in OWNED_ROLES else None
+        self.census_attempts = (census_attempts if type(census_attempts) is int
+                                and 0 <= census_attempts <= 3 else None)
+
+    def for_role(self, role):
+        self.role = role if type(role) is str and role in OWNED_ROLES else None
+        return self
+
+    def observation(self):
+        code = str(self)
+        return {"schema": "riffdb.ticketdesk-lifecycle-resource-refusal/v1",
+                "code": code if code in RESOURCE_REFUSAL_CODES else "resource_observation_refusal",
+                "reason": self.reason, "role": self.role,
+                "census_attempts": self.census_attempts,
+                "qualifies_resource_model": False}
 
 
 class _TaskCensusChanged(Exception):
@@ -46,9 +78,9 @@ def retired_task(task, name, error, children):
     raise error
 
 
-def require(condition, code):
+def require(condition, code, *, reason="unspecified", role=None):
     if not condition:
-        raise ResourceError(code)
+        raise ResourceError(code, reason=reason, role=role)
 
 
 def number(encoded):
@@ -136,9 +168,9 @@ def thread_children(directory):
         with os.scandir(task) as entries:
             for entry in entries:
                 count += 1
-                require(count <= MAX_OWNED_THREADS, "resource_process_inventory")
+                require(count <= MAX_OWNED_THREADS, "resource_process_inventory", reason="thread_count_bound")
                 tid = number(entry.name.encode())
-                require(0 < tid <= 2**31 - 1, "resource_process_inventory")
+                require(0 < tid <= 2**31 - 1, "resource_process_inventory", reason="thread_identity")
                 try:
                     thread = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                      dir_fd=task)
@@ -157,9 +189,9 @@ def thread_children(directory):
                     require(len(encoded) <= MAX_STAT_BYTES, "resource_process_inventory")
                     for field in encoded.split():
                         pid = number(field)
-                        require(0 < pid <= 2**31 - 1 and pid not in children
-                                and len(children) < MAX_OWNED_PROCESSES,
-                                "resource_process_inventory")
+                        require(0 < pid <= 2**31 - 1, "resource_process_inventory", reason="child_identity")
+                        require(pid not in children, "resource_process_inventory", reason="duplicate_child")
+                        require(len(children) < MAX_OWNED_PROCESSES, "resource_process_inventory", reason="child_inventory_bound")
                         children.add(pid)
                 finally:
                     os.close(thread)
@@ -209,14 +241,14 @@ class ProcessMemory:
         for _attempt in range(3):
             try:
                 value, children = self._tree_sample_once()
-                require(observed <= children, "resource_process_inventory")
+                require(observed <= children, "resource_process_inventory", reason="lost_child_evidence")
                 value["task_census_restarts"] = self.task_census_restarts
                 return value, children
             except _TaskCensusChanged as error:
                 observed.update(error.children)
                 self.task_census_restarts += 1
-                require(self.task_census_restarts <= MAX_U64, "resource_process_inventory")
-        raise ResourceError("resource_process_inventory")
+                require(self.task_census_restarts <= MAX_U64, "resource_process_inventory", reason="census_counter_overflow")
+        raise ResourceError("resource_process_inventory", reason="task_census_exhausted", census_attempts=3)
 
     def _tree_sample_once(self):
         directory = None
@@ -246,7 +278,7 @@ class ProcessMemory:
                 later_children = thread_children(directory)
             except _TaskCensusChanged as error:
                 raise _TaskCensusChanged(children | error.children) from error
-            require(children == later_children, "resource_process_inventory")
+            require(children == later_children, "resource_process_inventory", reason="changed_children")
             require(before == identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid),
                     "resource_process_identity")
             self.start = before
@@ -285,8 +317,13 @@ class OwnedProcessMemory:
         fields = ("rss_bytes", "allocator_bytes", "rss_peak_bytes", "allocator_peak_bytes",
                   "reported_rss_peak_bytes", "reported_allocator_peak_bytes")
         for role, owner in self.owners.items():
-            sample, children = owner.tree_sample()
-            require(children <= known and owner.pid not in children, "resource_process_inventory")
+            try:
+                sample, children = owner.tree_sample()
+            except ResourceError as error:
+                error.for_role(role)
+                raise
+            require(children <= known, "resource_process_inventory", reason="untracked_descendant", role=role)
+            require(owner.pid not in children, "resource_process_inventory", reason="self_descendant", role=role)
             edges[owner.pid] = children
             values[role] = {name: sample[name] for name in fields}
             values[role]["task_census_restarts"] = sample["task_census_restarts"]
@@ -294,17 +331,21 @@ class OwnedProcessMemory:
         # to the controller. A disconnected cycle must not look like a tree.
         parents = [pid for children in edges.values() for pid in children]
         require(len(parents) == len(set(parents))
-                and set(parents) == known - {self.controller}, "resource_process_inventory")
+                and set(parents) == known - {self.controller}, "resource_process_inventory", reason="invalid_parent_map")
         reached, pending = set(), [self.controller]
         while pending:
             current = pending.pop()
-            require(current not in reached, "resource_process_inventory")
+            require(current not in reached, "resource_process_inventory", reason="ownership_cycle")
             reached.add(current)
             pending.extend(edges[current])
-        require(reached == known, "resource_process_inventory")
+        require(reached == known, "resource_process_inventory", reason="disconnected_tree")
         for role, owner in self.owners.items():
-            later, children = owner.tree_sample()
-            require(children == edges[owner.pid], "resource_process_inventory")
+            try:
+                later, children = owner.tree_sample()
+            except ResourceError as error:
+                error.for_role(role)
+                raise
+            require(children == edges[owner.pid], "resource_process_inventory", reason="changed_children", role=role)
             for name in ("rss_peak_bytes", "allocator_peak_bytes"):
                 values[role][name] = max(values[role][name], later[name])
             values[role]["later_reported_rss_peak_bytes"] = later["reported_rss_peak_bytes"]

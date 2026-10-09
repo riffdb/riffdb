@@ -8131,18 +8131,24 @@ impl SharedRedb {
         };
         // The drained frames become history stubs, which must resolve.
         self.register_history_resolver(runtime.database_id);
+        // `visit` may run for no frame at all; the chain then has nothing to
+        // bind. A chained frame defers its root post-check to `finish` below.
+        let chain = std::cell::RefCell::new(
+            crate::changelog_v3_journal::ChainedFrameMaterialization::default(),
+        );
         let visit = |frame: &crate::journal::JournalFrame,
                      locator: Option<crate::history_stub::StubLocator>| {
             if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
-                let (_, checked) =
-                    crate::changelog_v3_journal::materialize_located_frame_for_continuation(
-                        transaction,
-                        frame,
-                        locator,
-                    )
+                let (_, checked) = chain
+                    .borrow_mut()
+                    .materialize_for_continuation(transaction, frame, locator)
                     .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
                 footprint.combine(checked);
             } else {
+                chain
+                    .borrow_mut()
+                    .break_chain(transaction)
+                    .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
                 for mutation in frame.mutations() {
                     crate::journal::apply_located_mutation(transaction, mutation, locator)?;
                 }
@@ -8178,6 +8184,7 @@ impl SharedRedb {
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        chain.into_inner().finish(transaction)?;
         Ok(footprint)
     }
 

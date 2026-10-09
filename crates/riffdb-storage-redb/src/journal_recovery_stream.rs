@@ -97,9 +97,11 @@ fn replay(
     tx.set_durability(Durability::Immediate)
         .map_err(|_| JournalIoError::Io)?;
     let mut index = 0_usize;
+    let mut chain = crate::changelog_v3_journal::ChainedFrameMaterialization::default();
     let observed = scan_located_journal_with_media(media, path, database_id, |frame, locator| {
         if index >= replay_from {
-            crate::changelog_v3_journal::materialize_located_frame(&tx, frame, locator)
+            chain
+                .materialize(&tx, frame, locator)
                 .map_err(recovery_error)?;
         }
         index = index.checked_add(1).ok_or(JournalIoError::Corrupt)?;
@@ -110,6 +112,7 @@ fn replay(
     if observed.as_ref() != Some(&(header.clone(), *tail)) || index != frames {
         return Err(JournalIoError::Corrupt);
     }
+    chain.finish(&tx).map_err(recovery_error)?;
     #[cfg(test)]
     crate::changelog_v3_journal::recovery_crash_edge("staged");
     tx.commit().map_err(|_| JournalIoError::Io)?;

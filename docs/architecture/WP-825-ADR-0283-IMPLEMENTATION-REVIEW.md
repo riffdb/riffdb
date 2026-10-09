@@ -195,6 +195,6 @@ unchanged. The separate bootstrap read-custody proposal is pending exact review.
 The corrected acknowledgement-only snapshot subsequently passes complete scoped
 acceptance on the required host: all fourteen checks and 2,855 tests pass under
 the stock CI profile. Preserve the preceding failed and interrupted receipts.
-ADR-0281 is now accepted separately; its later native implementation still needs
+ADR-0284 is now accepted separately; its later native implementation still needs
 whole-suite and final-source qualification. This scoped pass does not establish
 rehearsal readiness.

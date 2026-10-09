@@ -460,6 +460,45 @@ class ChildOwnership(unittest.TestCase):
                     os.kill(pid, 0)
 
 
+    def test_resource_refusal_survives_cleanup_failure_and_reaps_the_load_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "fixture-worker"
+            worker.write_text("#!/usr/bin/env python3\nimport os,signal\n"
+                "from pathlib import Path\n"
+                "Path(__file__).with_name('pid').write_text(str(os.getpid()))\n"
+                "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
+                "signal.pause()\n")
+            worker.chmod(0o700)
+            refusal = preparation.ResourceError("resource_process_inventory",
+                reason="task_census_exhausted", role="server", census_attempts=3)
+            server, observer = Mock(pid=124), Mock(pid=126)
+            server.poll.return_value = observer.poll.return_value = None
+            projection = Mock()
+            projection.stop.side_effect = preparation.SmokeError("projection_sample_shutdown")
+            with patch.object(preparation, "PreparationMemorySamples", autospec=True) as memory, \
+                    patch.object(preparation, "ProviderLog", autospec=True):
+                memory.return_value.poll.side_effect = refusal
+                with self.assertRaisesRegex(preparation.SmokeError, "^projection_sample_shutdown$"):
+                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                        observer, preparation.queue.Queue(maxsize=1), False,
+                        server=server, projection=projection)
+                memory.return_value.__exit__.assert_called_once()
+            encoded = (root / "resource-refusal.json").read_text()
+            report = json.loads(encoded)
+            self.assertEqual(report["code"], "resource_process_inventory")
+            self.assertEqual(report["reason"], "task_census_exhausted")
+            self.assertEqual(report["role"], "server")
+            self.assertEqual(report["census_attempts"], 3)
+            self.assertFalse(report["qualifies_resource_model"])
+            self.assertLessEqual(len(encoded), 512)
+            self.assertNotIn(str(root), encoded)
+            pid = int((root / "pid").read_text())
+            self.assertNotIn(str(pid), encoded)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+
 class ArchiveReadiness(unittest.TestCase):
     def test_only_one_explicit_healthy_outbox_component_proves_delivery_drain(self):
         good = {"schema": "riffdb.cli.output/v1", "command": "server.health", "ok": True,

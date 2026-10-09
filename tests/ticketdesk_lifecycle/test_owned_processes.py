@@ -284,6 +284,51 @@ class OwnedProcessObservations(unittest.TestCase):
             self.assertEqual(sample["reported_rss_peak_bytes"], 18 * 1024)
             self.assertEqual(sample["task_census_restarts"], 1)
 
+    def test_census_exhaustion_retains_closed_refusal_reason_without_qualifying_a_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.tree(root)
+            inventory = resources.OwnedProcessMemory(self.roles, proc_root=root)
+            # Refuse three incomplete censuses exactly as before; the error must
+            # distinguish unstable tasks from an untracked process or bad tree.
+            def churn(_directory):
+                raise resources._TaskCensusChanged(set())
+            with patch.object(resources, "thread_children", side_effect=churn):
+                with self.assertRaisesRegex(ResourceError, "^resource_process_inventory$") as caught:
+                    inventory.sample(5)
+            report = caught.exception.observation()
+            self.assertEqual(report["reason"], "task_census_exhausted")
+            self.assertEqual(report["role"], "controller")
+            self.assertEqual(report["census_attempts"], 3)
+            self.assertFalse(report["qualifies_resource_model"])
+            self.assertNotIn(str(root), json.dumps(report))
+            self.assertNotIn('"pid"', json.dumps(report))
+
+    def test_untracked_descendant_refusal_names_only_a_closed_reason_and_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.tree(root)
+            self.fixture(root, 124, children=(128,))
+            with self.assertRaisesRegex(ResourceError, "^resource_process_inventory$") as caught:
+                resources.OwnedProcessMemory(self.roles, proc_root=root).sample(5)
+            report = caught.exception.observation()
+            self.assertEqual(report["reason"], "untracked_descendant")
+            self.assertEqual(report["role"], "server")
+            self.assertIsNone(report["census_attempts"])
+            self.assertFalse(report["qualifies_resource_model"])
+            for private in (str(root), '128', '124'):
+                self.assertNotIn(private, json.dumps(report))
+
+    def test_refusal_report_redacts_arbitrary_error_text_and_invalid_context(self):
+        error = ResourceError("private process input", reason="private reason", role="private role", census_attempts=999)
+        report = error.observation()
+        self.assertEqual(report["code"], "resource_observation_refusal")
+        self.assertEqual(report["reason"], "unspecified")
+        self.assertIsNone(report["role"])
+        self.assertIsNone(report["census_attempts"])
+        self.assertNotIn("private", json.dumps(report))
+        self.assertLessEqual(len(json.dumps(report)), 512)
+
 
 if __name__ == "__main__":
     unittest.main()

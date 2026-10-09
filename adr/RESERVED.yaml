@@ -22,9 +22,3 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0281"
-    status: reserved
-    note: >-
-      Held for main's independently accepted changelog replay root-validation
-      record while the bootstrap decision is reconciled as ADR-0284. Remove
-      this reservation when the main record is integrated.

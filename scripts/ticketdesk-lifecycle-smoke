@@ -647,6 +647,13 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     "start_elapsed_ns": int((paused_at - started) * 1000000000),
                     "paused_events": oracle.first["events_checked"], "drained_events": 2048,
                     "observed_samples": oracle.samples, "live_progress_during_pause": True}))
+        except ResourceError as error:
+            # Preserve the closed original refusal before cleanup can raise a
+            # second error. This record is diagnostic and never qualifies a run.
+            encoded = json.dumps(error.observation(), sort_keys=True) + "\n"
+            require(len(encoded) <= 512, "resource_refusal_bound")
+            write(root, "resource-refusal.json", encoded)
+            raise
         finally:
             if logical_bytes is not None:
                 logical_bytes.__exit__(None, None, None)

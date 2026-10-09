@@ -3050,3 +3050,30 @@ sources, integrating at bounded implementation milestones. Record the source
 revision for each new run; preserve sources and artifacts of in-flight and
 completed runs. An integration requires its own validation and cannot inherit a
 previous revision's qualification.
+
+
+The following main update includes accepted ADR-0281 and completed WP-829:
+transaction-level root validation for replay and direct-write suffix draining.
+Bootstrap source custody is now ADR-0284 under separate identifier-only human
+approval, preserving its original acceptance and complete Decision text.
+Integration preserves bounded streaming recovery and complete source-cut checks;
+real replay/drain tests cover a cut followed by another audit frame.
+
+The earlier integrated source's unchanged preparation reached four complete
+five-minute load windows before failing process-inventory accounting. All offered
+operations in those windows completed without retry. The run remains failed;
+one window's p95 exceeds the normal ceiling, and neither full reconciliation,
+populated restore nor full CI ran. Preserve its frozen evidence and identify the
+resource refusal without relaxing census bounds or workload gates. Repeat
+preparation on the newly validated main integration. ADR-0282 remains proposed;
+no finite-handoff implementation or 24-hour readiness is established.
+
+
+Preparation now preserves a bounded private `resource-refusal.json` when process
+memory accounting refuses a sample. It distinguishes a changing task census,
+untracked descendant, changed child set and ownership-tree refusal using only
+closed reasons and roles. The original refusal still fails the run, even if
+cleanup also fails; three census attempts and all existing process/thread limits
+remain unchanged. The report includes no process identities, paths or input
+text and never qualifies the resource model. All 209 controller tests pass on
+C3D, including actual load-child cleanup and diagnostic redaction.

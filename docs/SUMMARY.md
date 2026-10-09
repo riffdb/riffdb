@@ -111,7 +111,7 @@
   - [Registry completion implementation review](architecture/WP-825-REGISTRY-COMPLETION-IMPLEMENTATION.md)
   - [Journaled source reclamation fixture review](architecture/WP-825-ADR-0278-FIXTURE-REVIEW.md)
   - [Follower acknowledgement validation proposal](architecture/WP-825-ADR-0283-IMPLEMENTATION-REVIEW.md)
-  - [Bootstrap source custody validation implementation](architecture/WP-825-ADR-0281-IMPLEMENTATION-REVIEW.md)
+  - [Bootstrap source custody validation implementation](architecture/WP-825-ADR-0284-IMPLEMENTATION-REVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)

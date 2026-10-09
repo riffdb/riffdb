@@ -4503,16 +4503,24 @@ fn replay_frames(
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| JournalIoError::Io)?;
+    let mut chain = crate::changelog_v3_journal::ChainedFrameMaterialization::default();
     for (frame, locator) in frames.iter().zip(locators) {
         if crate::changelog_v3_journal::has_receipt_source(frame) {
-            crate::changelog_v3_journal::materialize_located_frame(&transaction, frame, *locator)
+            chain
+                .materialize(&transaction, frame, *locator)
                 .map_err(|_| JournalIoError::Corrupt)?;
         } else {
+            chain
+                .break_chain(&transaction)
+                .map_err(|_| JournalIoError::Corrupt)?;
             for mutation in frame.mutations() {
                 apply_located_mutation(&transaction, mutation, *locator)?;
             }
         }
     }
+    chain
+        .finish(&transaction)
+        .map_err(|_| JournalIoError::Corrupt)?;
     #[cfg(test)]
     crate::changelog_v3_journal::recovery_crash_edge("staged");
     transaction.commit().map_err(|_| JournalIoError::Io)?;
