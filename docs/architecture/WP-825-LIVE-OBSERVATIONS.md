@@ -2852,15 +2852,61 @@ audit incorrectly returns absent. The actual required-host regression fails at
 that exact assertion, rather than at setup or compilation. The repair retains
 the tail fast path and includes the newest segment in the bounded exact-member
 fallback. Positive coverage also requires exact absence, published predecessor
-identity and refusal of duplicate private authority. Full positive validation
-remains required; no causal relationship to the failed preparation is claimed.
+identity and refusal of duplicate private authority. The positive regression, full storage suite, Clippy, formatting and scoped
+acceptance subsequently pass. No causal relationship to the failed preparation
+is claimed.
 
 PR note: Package WP-825 (open); Tier guarantee; Behavior: preserve exact lookup
 of every private command-owned audit member without consuming the newest segment
-in the fast path; Checks: required-host intended negative confirmed, positive
-regression, full storage, Clippy, formatting and scoped acceptance pending;
+in the fast path; Checks: required-host intended negative, positive regression, full storage, Clippy,
+formatting and scoped acceptance pass;
 Compatibility: unchanged authorization, ordering, atomicity, durable formats,
 reviewed fixtures, public interfaces, workload and qualification thresholds;
 Updated handbook: Sustainable TicketDesk milestone and live observations;
 Hazards/follow-ups: native audit-stop cause, populated restore, full final-source
 CI, complete fault runner and real short rehearsal remain open.
+
+
+A second separately instrumented diagnostic completes all 150,000 commands and
+600,000 reads without retries or post-duration operations. It records no audit
+failure or first-stop diagnostic, with no debugger attached. Instrumentation
+still prevents qualification, and the original failed preparation remains
+unresolved evidence rather than becoming a pass.
+
+The diagnostic retains 25 observations in each native byte component and
+records six physical retirements over the whole preparation, including preload.
+The qualified source-prefix bytes rise from 21,062,904 at load second 21.7 to
+159,242,142 at second 1490.1. The interval and ceiling also change; this does not
+measure every later unqualified source receipt or establish six-hour stability.
+The final physical sample reports zero eligible allocated bytes but 1,419,018,240
+reference-protected allocated bytes. Those bases remain distinct. Real physical
+progress cannot substitute for source accounting, and an observed native
+keep-up limitation must be fixed rather than excused by a per-command allowance.
+
+The log-ownership regression reaches the missing binding interface on the
+predecessor. All 244 controller tests pass after integration. Collection binds
+actual stderr ownership, preserves complete retired records and replacement
+startup records, and keeps every existing global observation gap. Actual bounded
+parent/child tests supplement the explicitly numeric fixtures. The initial
+administrative-owner negative is one missing-module loader error, with zero
+actual test functions executed; it is absence evidence, not a semantic negative.
+All 249 controller tests then pass, including five administrative-owner
+cases and actual short-child exit/output-bound checks. A further actual
+regression proves that the preceding helper rejects the native backup/restore
+uncertainty protocol. The repair admits only exit 3 with the exact registered
+uncertainty class, poll action and canonical maintenance operation ID. Other
+nonzero exits remain fatal, and no uncertainty is classified as action success
+or permission to retry the mutation. All 250 controller tests pass afterward,
+including hostile maintenance evidence.
+
+PR note: Package WP-825 (open); Tier internal; Behavior: bind continuous native
+logs across exact observed replacements and serialize bounded public CLI child
+ownership with retained exit peaks; Checks: required-host intended missing-log
+interface, administrative missing-module absence, typed maintenance uncertainty, all 250 controller tests and final scoped
+acceptance; Compatibility: unchanged native runtime, public
+interfaces, formats, reviewed fixtures, request slots and qualification gates;
+Updated handbook: Sustainable TicketDesk milestone and live observations;
+Hazards/follow-ups: assemble and validate actual fault execution and maintenance
+recovery, complete resource reconciliation, ordinary preparation, populated
+restore, final-source full CI and the real short rehearsal. No 24-hour run has
+started.

@@ -522,8 +522,43 @@ consumes that segment before the fallback searches other members. The repair
 keeps the existing tail fast path and searches every private segment for an
 exact non-tail member, retaining duplicate-authority refusal and publication
 custody. The regression fails at that exact missing-record assertion on the
-required host. Full positive storage and package validation remain required;
-its relationship to the earlier native audit stop is unproven.
+required host. The positive regression, full storage suite, Clippy, formatting
+and scoped package acceptance also pass. Its relationship to the earlier native
+audit stop remains unproven.
+
+## Preserve campaign log and administrative child ownership
+
+Continuous native log collection now binds the regular-file inode to the exact
+server owner's kernel stderr descriptor. The initial bind excludes preload
+records; each replacement starts at byte zero. Before replacement, collection
+drains the retired server's complete terminal records only after both old
+server and sampler have their observed expected exits. A killed partial tail
+remains in its private source file and supplies no observation. A partial
+normal-shutdown record, changed inode, symlink, truncation or malformed native
+record refuses. The aggregate log ceiling is 16 MiB, with at most 64 lines per
+poll and 4 KiB per line. One global clock, coverage, peak and original 75/95-second
+observation gaps survive every replacement.
+
+Administrative CLI calls use one serialized roster-owned child in the fourth
+reserved auxiliary slot. Each call has a real deadline of at most 60 seconds,
+retains at most 1 MiB of stdout and 64 KiB of stderr, and requires the native CLI
+schema and command identity with a successful result or the exact native
+maintenance-uncertainty protocol. Its actual wait4 exit and peak
+memory proof precede the next census, including for a child that already exited
+before its first census. Exit 3 is admitted only for backup creation or restore
+with an exact `outcome_unknown`, `poll_maintenance_operation` and canonical
+operation ID. Every other nonzero exit remains unexpected. Uncertainty requires
+polling that original operation; it never reconciles an action or permits a
+mutation retry. Output or deadline refusal kills and reaps the owned child; cleanup cannot erase the
+original failure. The controller must collect between calls and preserve every
+continuous observation gap. This helper alone supplies no maintenance recovery
+protocol or action reconciliation.
+
+All 250 controller tests pass on the required host, including actual bounded
+parent/child launches, replacement stderr binding, terminal peak retention,
+short CLI exits and bounded output refusal. Numeric kernel and diagnostic
+fixtures remain component tests. These checks do not establish the real
+seven-fault runner, complete resource model or rehearsal readiness.
 
 ## Separate durable seal publication from spare preparation
 

@@ -9,15 +9,18 @@ from functools import wraps
 import json
 import os
 from pathlib import Path
+import stat
 
 from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster, MAX_INCARNATIONS
 from .ticketdesk_lifecycle_native_observer import (
     NativeObserverProcess, NativeSamples, MAX_SAMPLES, FIELDS as NATIVE_FIELDS,
 )
-from .ticketdesk_lifecycle_provider_budget import ProviderSamples, parse_sample as provider_sample
-from .ticketdesk_lifecycle_source_bytes import SourceBytesSamples, parse_sample_v2, PREFIX_V2
-from .ticketdesk_lifecycle_logical_bytes import LogicalBytesSamples, parse_sample as logical_sample
-from .ticketdesk_lifecycle_physical_bytes import PhysicalBytesSamples, parse_sample as physical_sample
+from .ticketdesk_lifecycle_provider_budget import (
+    ProviderSamples, parse_sample as provider_sample, PREFIX as PROVIDER_PREFIX,
+)
+from .ticketdesk_lifecycle_source_bytes import SourceBytesSamples, parse_sample_v2, PREFIX_V2, FAMILY as SOURCE_FAMILY
+from .ticketdesk_lifecycle_logical_bytes import LogicalBytesSamples, parse_sample as logical_sample, FAMILY as LOGICAL_FAMILY
+from .ticketdesk_lifecycle_physical_bytes import PhysicalBytesSamples, parse_sample as physical_sample, FAMILY as PHYSICAL_FAMILY
 
 MAX_U64 = 2**64 - 1
 GAPS = dict(provider=75000000000, source=95000000000,
@@ -27,6 +30,9 @@ PARSERS = dict(provider=provider_sample, source=parse_sample_v2,
 CURSORS = dict(source=("resume",), logical=("watermark", "head"),
                physical=("watermark", "minimum_resume", "active_generation"))
 KINDS = frozenset({"additive_deploy", "graceful_restart", "process_kill", "backup_restore"})
+LOG_FAMILIES = dict(provider=PROVIDER_PREFIX, source=SOURCE_FAMILY,
+                    logical=LOGICAL_FAMILY, physical=PHYSICAL_FAMILY)
+MAX_LOG_BYTES = 16 * 1024**2
 
 
 class EpochError(ValueError):
@@ -83,6 +89,11 @@ class CampaignNativeEpochs:
                              for role in ("server", "native_sampler")}
         self.started_counts = {name: 0 for name in self.samples}
         self.started_native = 0
+        self.log_enabled = False
+        self.log_source = self.log_path = self.log_owner = None
+        self.log_identity = self.log_epoch = self.log_retired_kind = None
+        self.log_identities = set()
+        self.log_completed_bytes = self.log_observed_size = 0
 
     def _clock(self, elapsed_ns):
         require(type(elapsed_ns) is int and 0 <= elapsed_ns <= MAX_U64
@@ -90,7 +101,7 @@ class CampaignNativeEpochs:
                 and not self.complete, "campaign_epoch_clock")
         self.last_ns = elapsed_ns
 
-    def _owners_current(self):
+    def _owners_current(self, *, check_log=True):
         self.roster._check()
         require(self.roster.children.get("server") is self.server
                 and self.roster.children.get("native_sampler") is self.sampler
@@ -98,6 +109,9 @@ class CampaignNativeEpochs:
                 and all(child.poll() is None for child in
                         (self.server, self.sampler, *self.workers.values())),
                 "campaign_epoch_owner")
+        if check_log and self.log_enabled:
+            require(self.log_source is not None and self.log_owner is self.server,
+                    "campaign_epoch_log")
 
     def _write(self, stream, record):
         require(stream is not None, "campaign_epoch_output")
@@ -160,6 +174,10 @@ class CampaignNativeEpochs:
         require(deploy or identity == self.native.identity, "campaign_epoch_identity")
         same_projection = identity == self.native.identity
         next_native = NativeSamples(identity)
+        if self.log_enabled:
+            require((self.log_source is not None and self.log_owner is self.server) if deploy
+                    else (self.log_source is None and self.log_retired_kind == kind),
+                    "campaign_epoch_log")
         # The roster's census proves the new owners' live identity, ancestry,
         # finite launch limits and the exact absence of untracked descendants.
         self.roster.sample(elapsed_ns)
@@ -198,6 +216,9 @@ class CampaignNativeEpochs:
     def observe(self, name, encoded, elapsed_ns):
         self._clock(elapsed_ns)
         self._owners_current()
+        self._observe_component(name, encoded, elapsed_ns)
+
+    def _observe_component(self, name, encoded, elapsed_ns):
         require(type(name) is str and name in self.samples, "campaign_epoch_component")
         if name == "source":
             require(type(encoded) is bytes and encoded.startswith(PREFIX_V2),
@@ -208,6 +229,124 @@ class CampaignNativeEpochs:
                 "campaign_epoch_frontier")
         self.samples[name].observe(encoded, elapsed_ns)
         self.floors.pop(name, None)
+
+    def _log_info(self, *, live):
+        require(self.log_source is not None and self.log_owner is self.server,
+                "campaign_epoch_log")
+        info = self.log_path.lstat()
+        opened = os.fstat(self.log_source.fileno())
+        require(stat.S_ISREG(info.st_mode) and stat.S_ISREG(opened.st_mode)
+                and (info.st_dev, info.st_ino) == self.log_identity
+                == (opened.st_dev, opened.st_ino)
+                and self.log_source.tell() <= info.st_size
+                and self.log_observed_size <= info.st_size
+                and self.log_completed_bytes + info.st_size <= MAX_LOG_BYTES,
+                "campaign_epoch_log")
+        if live:
+            stderr = (self.roster.proc_root / str(self.server.pid) / "fd" / "2").stat()
+            require(stat.S_ISREG(stderr.st_mode)
+                    and (stderr.st_dev, stderr.st_ino) == self.log_identity,
+                    "campaign_epoch_log")
+        self.log_observed_size = info.st_size
+        return info
+
+    @fenced
+    def bind_log(self, path, elapsed_ns):
+        """Initial seed tail is excluded; each replacement starts at byte zero."""
+        self._clock(elapsed_ns)
+        self.roster.sample(elapsed_ns)
+        self._owners_current(check_log=False)
+        require(self.output is not None and self.log_source is None
+                and elapsed_ns < self.duration_ns
+                and ((not self.log_enabled and self.epoch == 0)
+                     or (self.log_enabled and self.epoch > self.log_epoch
+                         and self.log_owner is not self.server)), "campaign_epoch_log")
+        path = Path(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        source = os.fdopen(descriptor, "rb")
+        try:
+            info = os.fstat(source.fileno())
+            identity = (info.st_dev, info.st_ino)
+            require(stat.S_ISREG(info.st_mode) and identity not in self.log_identities
+                    and len(self.log_identities) < MAX_INCARNATIONS, "campaign_epoch_log")
+            self.log_source, self.log_path, self.log_owner = source, path, self.server
+            self.log_identity, self.log_observed_size = identity, 0
+            self._log_info(live=True)
+            if not self.log_enabled: source.seek(0, os.SEEK_END)
+            self._owners_current(check_log=False)
+            self.log_identities.add(identity)
+            self.log_epoch, self.log_retired_kind, self.log_enabled = self.epoch, None, True
+            self._write(self.output, dict(schema="riffdb.ticketdesk-lifecycle-native-epoch/v1",
+                kind="bound_log", epoch=self.epoch, elapsed_ns=elapsed_ns,
+                server_incarnation=self.owner_counts["server"],
+                sampler_incarnation=self.owner_counts["native_sampler"],
+                excluded_initial_bytes=source.tell(), qualifies_complete_resource_model=False))
+        except BaseException:
+            source.close()
+            self.log_source = None
+            raise
+
+    def _close_retired_log(self, kind, elapsed_ns, *, partial_bytes):
+        info = self._log_info(live=False)
+        require((partial_bytes == 0 or kind == "process_kill")
+                and self.log_source.tell() + partial_bytes == info.st_size,
+                "campaign_epoch_log")
+        self._write(self.output, dict(schema="riffdb.ticketdesk-lifecycle-native-epoch/v1",
+            kind="retired_log", epoch=self.epoch, elapsed_ns=elapsed_ns,
+            server_incarnation=self.owner_counts["server"],
+            sampler_incarnation=self.owner_counts["native_sampler"],
+            bytes=info.st_size, terminal_partial_bytes=partial_bytes,
+            qualifies_complete_resource_model=False))
+        self.log_completed_bytes += info.st_size
+        self.log_retired_kind = kind
+        self.log_source.close()
+        self.log_source = None
+
+    @fenced
+    def poll_log(self, elapsed_ns, *, retired_kind=None):
+        """Drain only this exact owner, with no invented clocks or lost records.
+
+        A second record of one component waits for the caller's next actual
+        poll. A killed partial tail remains in the private old file and supplies
+        no observation; a successor must satisfy the unchanged global gaps.
+        """
+        self._clock(elapsed_ns)
+        retired = retired_kind is not None
+        if retired:
+            require(type(retired_kind) is str and retired_kind in KINDS
+                    and retired_kind != "additive_deploy", "campaign_epoch_kind")
+            self._retired("server", self.server, -9 if retired_kind == "process_kill" else 0)
+            self._retired("native_sampler", self.sampler, 0)
+            self.roster.sample(elapsed_ns)
+            require(all(self.roster.children.get(role) is child for role, child in self.workers.items()),
+                    "campaign_epoch_owner")
+        else:
+            self.roster.sample(elapsed_ns)
+            self._owners_current()
+        self._log_info(live=not retired)
+        seen = set()
+        for index in range(65):
+            offset = self.log_source.tell()
+            encoded = self.log_source.readline(4097)
+            if not encoded:
+                if retired: self._close_retired_log(retired_kind, elapsed_ns, partial_bytes=0)
+                else: self._log_info(live=True)
+                return True
+            require(index < 64 and len(encoded) <= 4096, "campaign_epoch_log_bound")
+            if not encoded.endswith(b"\n"):
+                self.log_source.seek(offset)
+                if retired:
+                    self._close_retired_log(retired_kind, elapsed_ns, partial_bytes=len(encoded))
+                    return True
+                return False
+            name = next((name for name, prefix in LOG_FAMILIES.items()
+                         if encoded.startswith(prefix)), None)
+            if name in seen:
+                self.log_source.seek(offset)
+                return False
+            if name is not None:
+                self._observe_component(name, encoded, elapsed_ns)
+                seen.add(name)
 
     @fenced
     def sample_native(self, owner, elapsed_ns):
@@ -270,6 +409,11 @@ class CampaignNativeEpochs:
                     qualifies_complete_resource_model=False)
 
     def __exit__(self, kind, error, traceback):
-        if self.stack is not None: self.stack.__exit__(kind, error, traceback)
-        self.output = self.native_output = None
+        try:
+            if self.stack is not None: self.stack.__exit__(kind, error, traceback)
+        finally:
+            if self.log_source is not None:
+                self.log_source.close()
+                self.log_source = None
+            self.output = self.native_output = None
         return False
