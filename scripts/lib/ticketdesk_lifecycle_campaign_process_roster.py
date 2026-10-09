@@ -19,7 +19,10 @@ from .ticketdesk_lifecycle_resources import (
 )
 
 REQUIRED = frozenset({"server", "load", "observer", "native_sampler"})
-MAX_INCARNATIONS = 64
+# One controller, four server owners, five sampler owners, the two original
+# workload owners and all 64 serialized operator slots. This is a frozen
+# lifetime count, not a concurrency or memory-ceiling increase.
+MAX_INCARNATIONS = 1 + 4 + 5 + 2 + 64
 
 
 def integer(value):

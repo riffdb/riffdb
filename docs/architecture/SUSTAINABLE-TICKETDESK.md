@@ -3337,3 +3337,14 @@ separately from the seven public receipt resources. Host, launch/exit custody,
 native history, interference and artifact evidence remain mandatory independent
 checks; arithmetic fixtures supply no actual campaign qualification. C3D
 validation is pending for this candidate. WP-825 remains open.
+
+### Frozen owner-slot capacity candidate
+
+The original 64-incarnation roster ceiling could not accommodate the existing
+64 serialized operator slots together with the original workers and declared
+replacements. Derive one finite lifetime cap of 76: one controller, four server
+owners, five sampler owners, the two original workload owners and 64 operator
+slots. Preserve serialized births, exact retirement, the request concurrency
+limit and all frozen address-space ceilings. The regression exercises every
+operator slot and declared replacement and refuses the next owner. C3D
+validation is pending; no measured run is underway and no in-flight limit changes.

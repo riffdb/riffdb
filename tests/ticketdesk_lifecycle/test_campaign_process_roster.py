@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
-from lib.ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+from lib.ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster, MAX_INCARNATIONS
 from lib.ticketdesk_lifecycle_resources import CampaignMemorySamples, ResourceError
 
 MIB = 1024**2
@@ -90,6 +90,26 @@ class CampaignRosterTests(unittest.TestCase):
             self.assertEqual(final["allocator_peak_upper_bound_bytes"], first["allocator_peak_upper_bound_bytes"])
             self.assertFalse(final["qualifies_resource_model"])
             self.assertNotIn("pid", str(final))
+
+    def test_all_frozen_operator_slots_and_process_replacements_fit_one_finite_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); roster = self.fixture(root)
+            next_pid = 200
+            for role in [*("operator" for _ in range(64)),
+                         *("server" for _ in range(3)),
+                         *("native_sampler" for _ in range(4))]:
+                if role != "operator":
+                    old = roster.children[role]
+                    old.exit(); roster.retire(role, old, expected_exit=0)
+                replacement = FixtureProcess(next_pid); next_pid += 1
+                self.tree(root, [*(owner.pid for owner in roster.children.values()), replacement.pid])
+                with patch.object(roster, "_spawn", return_value=replacement):
+                    roster.launch(role, ["fixture"])
+                if role == "operator":
+                    replacement.exit(); roster.retire(role, replacement, expected_exit=0)
+            self.assertEqual(roster.count, 76)
+            self.assertEqual(roster.retired, 71)
+            with self.assertRaises(ResourceError):roster.launch("operator", ["fixture"])
 
     def test_live_overlap_unexpected_exit_and_unknown_birth_proof_refuse(self):
         for fault in ("overlap", "unexpected_exit", "unknown_birth", "unknown_rss", "changed_limit"):
@@ -251,9 +271,11 @@ class CampaignRosterTests(unittest.TestCase):
     def test_incarnation_count_and_frozen_role_limits_are_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); roster = self.fixture(root)
-            roster.count = 64
-            with patch.object(roster, "_spawn", return_value=FixtureProcess(128)):
-                with self.assertRaises(ResourceError): roster.launch("operator", ["fixture"])
+            roster.count = MAX_INCARNATIONS
+            with patch.object(roster, "_spawn", return_value=FixtureProcess(128)) as launch:
+                with self.assertRaisesRegex(ResourceError, "^resource_roster_launch$"):
+                    roster.launch("operator", ["fixture"])
+                launch.assert_not_called()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); self.fixture(root)
             self.limits["server"] = 512 * MIB
