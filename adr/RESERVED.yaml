@@ -9,12 +9,6 @@
 # removed when its record lands, and the check fails if a reservation and a
 # record both exist.
 reserved:
-  - adr: "0280"
-    status: in-flight
-    note: >-
-      Main owns the accepted extent-pacing record under this number. This
-      temporary reservation accompanies the separately approved follower-record
-      renumbering and is removed by the following main integration.
   - adr: "0067"
     status: abandoned
     note: >-

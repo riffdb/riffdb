@@ -29294,3 +29294,60 @@ work_packages:
     known_limitations: Query timing remains within measurement noise; merged-snapshot
       cell cloning remains unchanged and is outside this package.
     follow_ups: []
+
+- id: WP-828
+  name: Paced extent zero-fill and deduplicated writer hashing and staging
+  tier: guarantee
+  depends_on: [WP-815]
+  objective: Implement ADR-0280. Bound unsynced journal-extent zero-fill to one
+    2 MiB chunk, defer insert digests in the receipt accumulator, encode each
+    persisted receipt once, and stage overlay mutations in one descent, with no
+    durable byte, bound, ordering, or recovery change.
+  requirements: [REC-001, STO-032, PERF-008]
+  required_adrs: [ADR-0280, ADR-0263, ADR-0239]
+  allowed_paths: [work_packages.yaml, adr/0280-paced-journal-extent-zero-fill-and-writer-hash-deduplication.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/journal.rs,
+    crates/riffdb-storage-redb/src/journal/tests/**, crates/riffdb-storage-redb/src/changelog_v3_write.rs,
+    crates/riffdb-storage-api/src/composite_view.rs, crates/riffdb-storage-api/src/changelog_v3/**,
+    crates/riffdb-storage-api/tests/changelog_history_v3.rs, docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - Chunk-synced fresh and recycled extent preparation with fail-before tests
+  - Lazy accumulator digest, single-encode history advance and single-descent staging with equivalence tests
+  - Production c32 write-only, interactive and read-only alternating comparisons on the ADR-0239 host,
+    same-run safe-application PostgreSQL qualification, a performance page and closure
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-828
+  - ./scripts/ci-all
+  exit_gate: Every durable byte and bound is unchanged, the full battery passes, and the retained
+    benefit survives repeated ADR-0239 host comparisons; otherwise the changes are removed.
+  standing_design_tests:
+    interface_safety: No public interface, configuration, or opt-out is added; durability,
+      idempotency, scoping, freshness and bounds keep their exact behavior.
+    scale: Unsynced zero-fill is bounded by one chunk regardless of extent size; staging and
+      hashing do strictly less work per mutation and keep the overlay charge and refusal exact.
+  human_review_triggers:
+  - Extent sync, directory sync or spare publication order changes.
+  - A receipt byte, history checksum, journal frame byte or expected-state hash changes.
+  - An accepted decision, normative requirement, or declared path scope changes.
+  closure:
+    status: complete
+    completed_at: '2026-10-08'
+    requirements_satisfied: [REC-001, STO-032, PERF-008]
+    evidence: C3D c32 alternating comparisons (write-only +15.1% at 60 s and
+      +14.8% at 90 s, interactive +9.2%, read-only unchanged; every write and
+      interactive candidate arm above every base arm), same-run safe-app
+      PostgreSQL qualification (write-only 0.896, interactive 1.145, both
+      eligible and stable), the fail-before zero-fill tests, equivalence tests for
+      the history encoding and overlay staging, and package acceptance.
+    decision: Retain all four ADR-0280 changes. No durable byte, hash, bound,
+      ordering, publication, recovery, interface or configuration change.
+    decisions_taken:
+    - Sync extent zero-fill every 2 MiB; recycled-extent regrowth uses the same bound.
+    - Reject a persistent B+tree overlay, an authentication principal cache, and
+      bounded redb checkpoint writeback after measuring each end to end.
+    known_limitations: Write-only c32 p95 rises 6-11% and p99 5-21% while
+      throughput rises; write throughput remains below PostgreSQL; redb checkpoint
+      commits remain the largest journal stall source.
+    follow_ups:
+    - Extent recycling (WP-815) would remove most zero-fill writes entirely.
+    - Smaller or incremental checkpoint commits under ADR-0263 for the remaining stalls.

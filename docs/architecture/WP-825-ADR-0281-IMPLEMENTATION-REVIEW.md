@@ -3,7 +3,7 @@
 ADR-0281 exact text and its WP-825 scope extension were accepted by the
 maintainer in session on 2026-10-07 ("Accepted"). Native implementation is
 authorized after recording that acceptance and scope.
-The previously accepted ADR-0280 repair is being validated separately. WP-825
+The previously accepted ADR-0283 repair is being validated separately. WP-825
 stays open, no merge or push is requested, and the 24-hour run remains unstarted.
 
 ## Measured native limitation
@@ -47,7 +47,7 @@ reclamation license, mutable turn or extra maintenance budget.
 
 Keep bootstrap hold registration and attachment, receiver construction/rebuild,
 startup/offline/engine integrity, candidate publication/recovery, archive and
-promotion validators unchanged. The proposal extends ADR-0280 only for source
+promotion validators unchanged. The proposal extends ADR-0283 only for source
 read custody. It grants no application interface, wire or durable format change;
 no compatibility fixture diff is proposed.
 
@@ -174,7 +174,7 @@ repair remain unproven. Diagnostic binaries qualify no release performance.
 Source-byte accounting is an observation under ADR-0279 decision 6, not source
 mutation-proof preparation. Restore its already captured page continuation
 beside logical/physical observations during the existing lane's wait/rest.
-Proof preparation and writer work retain shared source pacing under ADR-0280
+Proof preparation and writer work retain shared source pacing under ADR-0283
 and ADR-0281. The deterministic negative/positive regression preserves the exact
 charged deadline, source-proof progress, writer census and authoritative history.
 This is a D-003 implementation choice: accepted decision text, public surfaces,

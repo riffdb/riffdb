@@ -47,6 +47,20 @@ impl SharedRedb {
         let mut command_count = 0_usize;
         let mut audit_count = 0_usize;
         let mut encoded_bytes = 0_usize;
+        // The batch is one redb transaction: no state between two of its frames
+        // is durable or visible. The physical roots, including the terminal
+        // receipt the history index resolves, are therefore validated in full
+        // once before the first frame and once after the last. Between them the
+        // history state is the successor the previous frame staged here, and
+        // `prepare_chained` re-checks every stored root row against it.
+        let mut chain = if v3 {
+            Some(
+                crate::changelog_v3_roots::read_checkpoint_roots_for_write(&transaction)?
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
+            )
+        } else {
+            None
+        };
         for frame in &batch.frames {
             let source_proof = frame.source_reclamation.as_deref();
             if (frame.encoded.kind() == crate::journal::JournalFrameKind::SourceReclamation)
@@ -70,10 +84,7 @@ impl SharedRedb {
                 let _ = transaction.abort();
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
-            let advance = if v3 {
-                let history =
-                    crate::changelog_v3_roots::read_checkpoint_roots_for_write(&transaction)?
-                        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let advance = if let Some(history) = chain {
                 let binding = AuthoritativeTransactionBindingV3 {
                     database_id: frame.database_id,
                     history_incarnation: history.lineage().history_incarnation(),
@@ -120,16 +131,19 @@ impl SharedRedb {
                 }
                 if let Some(proof) = source_proof {
                     crate::changelog_source_reclamation_journal::verify(&transaction, proof)?;
-                    source_successor = Some(history.advance(&receipt).map_err(value_error)?);
                     // Submission already invalidated the old source epoch. This
                     // independently checked materialization installs the same
                     // acknowledged cut, not another source publication.
                 }
-                Some(if frame.encoded.records_changelog() {
-                    PreparedHistoryAdvance::prepare_stub(&transaction, &receipt)?
+                let advance = if frame.encoded.records_changelog() {
+                    PreparedHistoryAdvance::prepare_stub_chained(&transaction, history, &receipt)?
                 } else {
-                    PreparedHistoryAdvance::prepare(&transaction, &receipt)?
-                })
+                    PreparedHistoryAdvance::prepare_chained(&transaction, history, &receipt)?
+                };
+                if source_proof.is_some() {
+                    source_successor = Some(advance.successor());
+                }
+                Some(advance)
             } else {
                 if frame.changelog_binding.is_some() {
                     return Err(storage_error(StorageErrorKind::CorruptData));
@@ -202,20 +216,36 @@ impl SharedRedb {
                 }
             }
             if let Some(advance) = advance {
+                chain = Some(advance.successor());
                 if frame.encoded.records_changelog() {
-                    advance.stage_stub(&transaction, &frame_locator(frame).receipt_stub()?)?;
+                    let stub = frame_locator(frame).receipt_stub()?;
+                    advance.stage_within_batch(&transaction, Some(&stub))?;
                 } else {
                     // Only a frame that records its binding can re-derive its
                     // receipt, so any other keeps the receipt bytes.
-                    advance.stage(&transaction)?;
+                    advance.stage_within_batch(&transaction, None)?;
                 }
             }
             if let Some(proof) = source_proof {
-                crate::changelog_source_reclamation_journal::stage(
-                    &transaction,
-                    proof,
-                    source_successor.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
-                )?;
+                let successor =
+                    source_successor.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                crate::changelog_source_reclamation_journal::stage(&transaction, proof, successor)?;
+                // A source cut changes the retained floor as well as advancing
+                // the receipt. Carry that exact staged state into the next
+                // frame, retaining the cut's complete physical root validation.
+                let retained = riffdb_storage_api::ChangelogHistoryStateV3::new(
+                    successor.lineage(),
+                    successor.anchor(),
+                    successor.tail(),
+                    proof.retained().minimum_resume(),
+                )
+                .map_err(value_error)?;
+                if crate::changelog_v3_roots::read_checkpoint_roots_for_write(&transaction)?
+                    != Some(retained)
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                chain = Some(retained);
             }
             transition_count = transition_count
                 .checked_add(usize::from(frame.transition_count))
@@ -240,6 +270,13 @@ impl SharedRedb {
             || command_count != batch.command_count
             || audit_count != batch.audit_count
             || encoded_bytes != batch.encoded_bytes
+        {
+            let _ = transaction.abort();
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        // Bind the actual physical post-images of the whole batch, including
+        // the terminal receipt resolved through the history index.
+        if v3 && crate::changelog_v3_roots::read_checkpoint_roots_for_write(&transaction)? != chain
         {
             let _ = transaction.abort();
             return Err(storage_error(StorageErrorKind::CorruptData));

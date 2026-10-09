@@ -1571,16 +1571,16 @@ not release throughput measurements or rehearsal qualification.
 Source acknowledgements repeatedly validate the whole retained history inside
 the general drained writer barrier. This is native population-dependent writer
 work. It requires a bounded proof/preparation protocol, not a relaxed deadline
-or a smaller workload. ADR-0280 was accepted exactly in session on 2026-10-07 for that authority
+or a smaller workload. ADR-0283 was accepted exactly in session on 2026-10-07 for that authority
 extension. Its acceptance and commit-layer scope are recorded separately
 before native implementation. Development validation is in progress; no
 final-source runtime qualification is established. The
-[follower acknowledgement review](WP-825-ADR-0280-IMPLEMENTATION-REVIEW.md)
+[follower acknowledgement review](WP-825-ADR-0283-IMPLEMENTATION-REVIEW.md)
 records the concrete boundary and remaining proofs. Other earlier intermittent
 failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
 
 
-ADR-0280 development snapshot validation on the required host now passes 11
+ADR-0283 development snapshot validation on the required host now passes 11
 native acknowledgement tests, including independent complete-validation oracles,
 shared-owner cancellation, qualification overflow and process-level atomicity;
 one explicit-clock source-pacing test; one coordinator FIFO test; and all-target,
@@ -2627,3 +2627,31 @@ reviewed fixtures, ordering and qualification gates; Updated handbook:
 Sustainable TicketDesk milestone; Hazards/follow-ups: final acceptance,
 unchanged preparation, complete fault controller, populated restore, final-source
 full CI and the short campaign remain required. No 24-hour run starts.
+
+
+Main integration reconciles 18 missing commits, including checkpoint root
+validation once per ordinary batch. The follower acknowledgement record is
+renumbered from ADR-0280 to ADR-0283 under explicit maintainer approval dated
+2026-10-09. Its accepted decisions and those of the bootstrap record remain
+byte-identical; original acceptance history is retained. Main's extent-pacing
+record keeps ADR-0280. Handbook references use the reconciled follower identity.
+
+The merge preserves borrowed canonical receipt inspection, one canonical
+encoding when receipt bytes are persisted, and stub-only preparation otherwise.
+Source cuts still run their complete validators and carry the exact retained
+floor into the following frame. The new mixed audit/cut/audit regression reaches
+the intended CorruptData refusal without that carry, then passes with it.
+C3D passes both focused checkpoint regressions, the full storage API and backend
+suites, Clippy and formatting. Final integrated acceptance remains a separate
+required check; these tests establish no preparation, full-CI or campaign result.
+
+PR note: Package none (main integration of WP-825 and completed WP-828);
+Tier guarantee; Behavior added or changed: preserve both branches' accepted
+storage behavior, reconcile their checkpoint paths and accepted ADR identities;
+Checks: C3D standalone metadata acceptance and native merge regressions, full
+storage suites, Clippy and formatting; final integrated acceptance required;
+Compatibility: no new format, fixture or public interface change beyond the
+accepted branch implementations; Updated handbook: Sustainable TicketDesk and
+follower/bootstrap review pages; Hazards/follow-ups: repeat unchanged
+preparation on integrated source, retain ADR-0282 as proposed, complete full CI
+and the short fault campaign. WP-825 and WP-826 stay open.

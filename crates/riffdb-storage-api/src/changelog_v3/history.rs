@@ -247,18 +247,38 @@ impl ChangelogHistoryStateV3 {
     /// Derives an unchanged-or-successful successor value from the original receipt.
     /// The caller persists it only with that receipt in the same engine transaction.
     pub fn advance(self, receipt: &AuthoritativeTransactionV3) -> Result<Self, ChangelogV3Error> {
-        super::frame::validate_receipt_catalog(receipt, self.lineage.catalog_digest())?;
-        self.advance_checked(
-            receipt.binding(),
-            ChangelogHistoryPointV3::from_receipt(receipt)?,
-        )
+        self.check_successor(receipt)?;
+        self.successor(receipt, receipt.history_hash()?)
     }
 
-    fn advance_checked(
+    /// [`Self::advance`] for a caller that also persists the canonical receipt
+    /// bytes: encodes once and derives the successor's history hash from the
+    /// trailing checksum of exactly those bytes, rather than encoding and
+    /// hashing the complete receipt a second time.
+    pub fn advance_and_encode(
+        self,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<(Self, Vec<u8>), ChangelogV3Error> {
+        self.check_successor(receipt)?;
+        let encoded = receipt.encode()?;
+        let history_hash = encoded
+            .len()
+            .checked_sub(32)
+            .and_then(|start| encoded.get(start..))
+            .and_then(|tail| <[u8; 32]>::try_from(tail).ok())
+            .ok_or(ChangelogV3Error::InvalidEncoding)?;
+        Ok((self.successor(receipt, history_hash)?, encoded))
+    }
+
+    fn check_successor(self, receipt: &AuthoritativeTransactionV3) -> Result<(), ChangelogV3Error> {
+        super::frame::validate_receipt_catalog(receipt, self.lineage.catalog_digest())?;
+        self.check_binding(receipt.binding())
+    }
+
+    fn check_binding(
         self,
         row: super::AuthoritativeTransactionBindingV3,
-        point: ChangelogHistoryPointV3,
-    ) -> Result<Self, ChangelogV3Error> {
+    ) -> Result<(), ChangelogV3Error> {
         if row.database_id != self.lineage.database_id
             || row.history_incarnation != self.lineage.history_incarnation
             || row.predecessor != Some(self.tail.sequence)
@@ -267,7 +287,30 @@ impl ChangelogHistoryStateV3 {
         {
             return Err(ChangelogV3Error::PredecessorMismatch);
         }
+        Ok(())
+    }
+
+    fn advance_checked(
+        self,
+        row: super::AuthoritativeTransactionBindingV3,
+        point: ChangelogHistoryPointV3,
+    ) -> Result<Self, ChangelogV3Error> {
+        self.check_binding(row)?;
         Self::new(self.lineage, self.anchor, point, self.minimum_resume)
+    }
+
+    fn successor(
+        self,
+        receipt: &AuthoritativeTransactionV3,
+        history_hash: [u8; 32],
+    ) -> Result<Self, ChangelogV3Error> {
+        let row = receipt.binding();
+        Self::new(
+            self.lineage,
+            self.anchor,
+            ChangelogHistoryPointV3::new(row.sequence, history_hash, row.covered_frontier),
+            self.minimum_resume,
+        )
     }
 }
 

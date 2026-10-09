@@ -3028,3 +3028,25 @@ proposal requires exact human acceptance before implementation. Source
 reclamation would gain no reservation or priority. Existing latency, workload
 and qualification gates remain required; the proposal is not available behavior
 and establishes no preparation success or 24-hour readiness.
+
+
+Main integration brings in the accepted extent pacing and receipt-hash changes
+and checkpoint root validation once per ordinary batch. Follower acknowledgement
+validation is now ADR-0283, preserving its accepted decisions and original
+acceptance history; main's extent-pacing record retains ADR-0280. The maintainer
+approved this identifier reconciliation separately.
+
+The integrated checkpoint path preserves borrowed canonical validation and
+journal history stubs. A source cut retains its complete validators and carries
+its exact new retained floor into following frames. A mixed audit/cut/audit
+regression fails without that carry and passes with it; the ordinary-batch
+regression, full storage API/backend suites, Clippy and formatting pass on C3D.
+These component results remain distinct from final integrated acceptance and
+measured preparation. ADR-0282 remains proposed; repeat unchanged preparation
+on the integrated source before deciding whether its handoff is needed.
+
+Check main at active work-session boundaries and before freezing CI or rehearsal
+sources, integrating at bounded implementation milestones. Record the source
+revision for each new run; preserve sources and artifacts of in-flight and
+completed runs. An integration requires its own validation and cannot inherit a
+previous revision's qualification.

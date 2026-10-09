@@ -735,23 +735,53 @@ impl CompositeMutationStage {
             .staged_lineage_bytes
             .checked_add(lineage_key_charge(mutation.key())?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        let mut next_charge = self.charged_bytes;
-        if let Some(prior) = table.get(key.as_ref()) {
-            next_charge = next_charge
-                .checked_sub(entry_charge(&key, prior)?)
-                .ok_or(StorageValueError::SizeOverflow)?;
-        }
-        next_charge = next_charge
-            .checked_add(entry_charge(&key, &replacement)?)
+        let replacement_charge = entry_charge(&key, &replacement)?;
+        let within_limit = |charge: usize| {
+            charge
+                .checked_add(self.predecessor_lineage_bytes)
+                .and_then(|charge| charge.checked_add(next_staged_lineage_bytes))
+                .is_some_and(|charge| charge <= MAX_COMPOSITE_OVERLAY_BYTES)
+        };
+        let upper_bound = self
+            .charged_bytes
+            .checked_add(replacement_charge)
             .ok_or(StorageValueError::SizeOverflow)?;
-        if next_charge
-            .checked_add(self.predecessor_lineage_bytes)
-            .and_then(|charge| charge.checked_add(next_staged_lineage_bytes))
-            .is_none_or(|charge| charge > MAX_COMPOSITE_OVERLAY_BYTES)
-        {
-            return Err(StorageValueError::LimitExceeded);
-        }
-        table.insert(key, replacement);
+        let next_charge = if within_limit(upper_bound) {
+            // Even with no prior to release, the replacement fits, so one
+            // descent can insert and return the prior for exact accounting.
+            match table.insert_replacing(Arc::clone(&key), replacement) {
+                None => upper_bound,
+                Some(prior) => {
+                    let released = entry_charge(&key, &prior)?;
+                    match upper_bound.checked_sub(released) {
+                        Some(charge) => charge,
+                        None => {
+                            // Accounting cannot release more than it charged.
+                            // Restore the prior in place (same key, no shape
+                            // change) so a failure leaves the stage unchanged.
+                            table.insert_replacing(key, prior);
+                            return Err(StorageValueError::SizeOverflow);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Near the bound: resolve the exact charge before any change.
+            let mut next_charge = self.charged_bytes;
+            if let Some(prior) = table.get(key.as_ref()) {
+                next_charge = next_charge
+                    .checked_sub(entry_charge(&key, prior)?)
+                    .ok_or(StorageValueError::SizeOverflow)?;
+            }
+            next_charge = next_charge
+                .checked_add(replacement_charge)
+                .ok_or(StorageValueError::SizeOverflow)?;
+            if !within_limit(next_charge) {
+                return Err(StorageValueError::LimitExceeded);
+            }
+            table.insert(key, replacement);
+            next_charge
+        };
         self.charged_bytes = next_charge;
         self.staged_lineage_bytes = next_staged_lineage_bytes;
         self.mutations.push(mutation);
@@ -1619,7 +1649,19 @@ impl PersistentOverlayMap {
     }
 
     fn insert(&mut self, key: Arc<[u8]>, value: OverlayValue) {
-        self.root = Some(insert_overlay_node(self.root.take(), key, value));
+        self.insert_replacing(key, value);
+    }
+
+    /// Inserts in one descent and returns the value it replaced, if any.
+    fn insert_replacing(&mut self, key: Arc<[u8]>, value: OverlayValue) -> Option<OverlayValue> {
+        let mut prior = None;
+        self.root = Some(insert_overlay_node(
+            self.root.take(),
+            key,
+            value,
+            &mut prior,
+        ));
+        prior
     }
 
     fn from_sorted_entries(entries: BTreeMap<Arc<[u8]>, OverlayValue>) -> Self {
@@ -1667,6 +1709,7 @@ fn insert_overlay_node(
     node: Option<Arc<OverlayNode>>,
     key: Arc<[u8]>,
     value: OverlayValue,
+    prior: &mut Option<OverlayValue>,
 ) -> Arc<OverlayNode> {
     let Some(mut node) = node else {
         return overlay_node(key, value, None, None);
@@ -1676,14 +1719,14 @@ fn insert_overlay_node(
     let owned = Arc::make_mut(&mut node);
     match key.as_ref().cmp(owned.key.as_ref()) {
         std::cmp::Ordering::Less => {
-            owned.left = Some(insert_overlay_node(owned.left.take(), key, value));
+            owned.left = Some(insert_overlay_node(owned.left.take(), key, value, prior));
         }
         std::cmp::Ordering::Equal => {
             owned.key = key;
-            owned.value = value;
+            *prior = Some(std::mem::replace(&mut owned.value, value));
         }
         std::cmp::Ordering::Greater => {
-            owned.right = Some(insert_overlay_node(owned.right.take(), key, value));
+            owned.right = Some(insert_overlay_node(owned.right.take(), key, value, prior));
         }
     }
     update_overlay_height(owned);
@@ -2243,6 +2286,158 @@ mod tests {
             successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
             Ok(Some(b"closed".to_vec()))
         );
+    }
+
+    /// Every overlay entry's charge, recomputed independently of the stage.
+    fn recomputed_charge(stage: &CompositeMutationStage) -> usize {
+        stage
+            .tables
+            .iter()
+            .flat_map(|table| table.range(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded))
+            .map(|(key, value)| entry_charge(key, value).expect("charge"))
+            .sum()
+    }
+
+    fn overlay_rows(stage: &CompositeMutationStage) -> Vec<(usize, Vec<u8>, Option<Vec<u8>>)> {
+        stage
+            .tables
+            .iter()
+            .enumerate()
+            .flat_map(|(index, table)| {
+                table
+                    .range(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded)
+                    .map(move |(key, value)| {
+                        let value = match value {
+                            OverlayValue::Value(value) => Some(value.to_vec()),
+                            OverlayValue::Tombstone => None,
+                        };
+                        (index, key.to_vec(), value)
+                    })
+            })
+            .collect()
+    }
+
+    // req: STO-012
+    #[test]
+    fn single_descent_staging_charges_exactly_the_overlay_it_leaves() {
+        let mut base = Base::default();
+        for key in 0..8_u8 {
+            base.insert(CompositeTableV1::Entities, &[b'k', key], &[key; 3]);
+        }
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        // Deterministic mixed history: inserts, growing and shrinking
+        // replacements, deletes, and reinserts after delete across 16 keys.
+        let mut current: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        for step in 0..600_u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let key = vec![b'k', u8::try_from(state % 16).unwrap()];
+            let observed = current.get(&key).cloned().unwrap_or_else(|| {
+                base.rows
+                    .get(&(CompositeTableV1::Entities, key.clone()))
+                    .cloned()
+            });
+            let value =
+                vec![u8::try_from(step % 251).unwrap(); 1 + usize::try_from(state % 97).unwrap()];
+            let mutation = match (&observed, state % 3) {
+                (Some(before), 0) => CompositeMutationV1::delete_matching(
+                    CompositeTableV1::Entities,
+                    key.as_slice(),
+                    before,
+                ),
+                (Some(before), _) => CompositeMutationV1::replace(
+                    CompositeTableV1::Entities,
+                    key.as_slice(),
+                    before,
+                    value.clone(),
+                ),
+                (None, _) => CompositeMutationV1::put(
+                    CompositeTableV1::Entities,
+                    key.as_slice(),
+                    value.clone(),
+                ),
+            }
+            .expect("mutation");
+            let deleted = observed.is_some() && state.is_multiple_of(3);
+            stage.apply(mutation, &base).expect("stage");
+            current.insert(key, (!deleted).then_some(value));
+            assert_eq!(
+                stage.charged_bytes,
+                recomputed_charge(&stage),
+                "step {step}"
+            );
+        }
+        for (key, value) in &current {
+            assert_eq!(
+                stage.resolve_point(&base, CompositeTableV1::Entities, key),
+                Ok(value.clone())
+            );
+        }
+    }
+
+    // req: STO-012
+    #[test]
+    fn staging_near_the_overlay_bound_is_exact_and_a_refusal_changes_nothing() {
+        let base = Base::default();
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        let large = vec![7_u8; 1_000];
+        stage
+            .apply(
+                CompositeMutationV1::put(
+                    CompositeTableV1::Entities,
+                    b"row".as_slice(),
+                    large.clone(),
+                )
+                .expect("put"),
+                &base,
+            )
+            .expect("seed");
+        let entry = stage.charged_bytes;
+        // Leave room for a replacement only once the prior entry is released,
+        // so the conservative single-descent bound refuses and the exact
+        // path must decide.
+        let lineage = stage.predecessor_lineage_bytes
+            + stage.staged_lineage_bytes
+            + lineage_key_charge(b"row").expect("lineage");
+        stage.charged_bytes = MAX_COMPOSITE_OVERLAY_BYTES - lineage - 100;
+        let headroom_charge = stage.charged_bytes;
+        let smaller = vec![8_u8; 900];
+        stage
+            .apply(
+                CompositeMutationV1::replace(
+                    CompositeTableV1::Entities,
+                    b"row".as_slice(),
+                    &large,
+                    smaller.clone(),
+                )
+                .expect("replace"),
+                &base,
+            )
+            .expect("exact path admits a shrinking replacement");
+        assert_eq!(stage.charged_bytes, headroom_charge - entry + (entry - 100));
+
+        let rows = overlay_rows(&stage);
+        let charged = stage.charged_bytes;
+        let staged = stage.mutation_count();
+        assert_eq!(
+            stage.apply(
+                CompositeMutationV1::put(
+                    CompositeTableV1::Entities,
+                    b"new".as_slice(),
+                    vec![1; 200]
+                )
+                .expect("put"),
+                &base,
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(overlay_rows(&stage), rows);
+        assert_eq!(stage.charged_bytes, charged);
+        assert_eq!(stage.mutation_count(), staged);
     }
 
     #[test]
