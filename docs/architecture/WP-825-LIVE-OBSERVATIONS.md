@@ -2036,3 +2036,64 @@ proof, all 59 architecture checks and storage/server Clippy pass on C3D. The
 native blocking defect is established; its contribution to the recovered-load
 latency spike still requires frozen-source measurement. No harness deadline,
 workload, observation rule, protocol or compatibility fixture is changed.
+
+### Frozen consumer/accounting candidate: progress, latency refusal and seed failure
+
+Revision `883e1987` passes the final server suite and scoped metadata acceptance
+on the required host. Its ordinary four-binary release build takes 293.8 seconds.
+Unchanged 1,500-second preparation completes all 150,000 commands and 600,000
+reads with zero retries and zero post-duration operations, but refuses
+`probe_latency`. It records 24 complete in-load source-byte captures across all
+five windows and one recycled physical generation. The final exact capture
+contains 163,826 rows, 859,365,208 canonical bytes and 1,310,608 key bytes. This
+does not prove the required three retired generations or populated restore.
+
+| Load seconds | p95, microseconds | p99, microseconds | Histogram overflows |
+| --- | ---: | ---: | ---: |
+| 0–300 | 32,209 | 92,033 | 392 |
+| 300–600 | 105,342 | 132,058 | 784 |
+| 600–900 | beyond range | beyond range | 22,144 |
+| 900–1200 | 84,291 | beyond range | 1,960 |
+| 1200–1500 | beyond range | beyond range | 21,672 |
+
+The sink pause lasts 300.05 seconds and recovery takes 322.27 seconds with
+29,972 public writes and continuing live progress. The last two windows are
+fault-free; both fail the unchanged latency limits. Beyond-range percentiles
+are sentinels, not measured latency values. Final archive reconciliation and
+dependent full CI correctly remain unstarted after the preparation refusal.
+
+A private diagnostic replay reproduces the failure without competing heavy
+work. Bounded kernel sampling and five short debugger snapshots establish a
+native outbox engine flush holding the writer gate while the audit writer and
+event consumer wait. They also observe retention planning under the gate and
+source-byte canonical accounting outside it. These are sampled paths, not a
+complete attribution of the tail latency. Aggregate retention gate residence
+alone is insufficient to explain all overflowing requests.
+
+Read-only cloud metrics independently show approximately 6,000 sustained write
+IOPS during catch-up on the 500-GiB `pd-balanced` disk. Normal windows later show
+minute-average I/O queues exceeding 40 requests. Peak metrics and sustained
+metrics have different meanings; the observations do not prove one limit causes
+every failed window. No disk setting, durability profile or workload gate changes.
+Raw samples, stack traces, machine identities and cloud responses remain private.
+
+The subsequent consumer-isolation diagnostic exits after 45.4 seconds during
+seeding with `observer_consumer` and `archive_drain_liveness`. The observer had
+published readiness, but no measured load or planned consumer pause occurs.
+Preserve this new failure; do not classify it as an isolation result. The closed
+return code lacks the nested native class, so add bounded fatal-only observer
+diagnostics for consumer, acknowledgement and status calls. Both new tests fail
+before classification is implemented; they then pass with TicketDesk tests and
+Clippy on C3D. Only validated registry codes and closed local variants may render;
+an untrusted status payload remains absent. Existing fatal codes, no-retry
+behavior, application interfaces and fixtures remain unchanged.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: fatal observer diagnostics retain a closed native failure category;
+Checks: paired negative/repaired diagnostic assertions and TicketDesk tests and
+Clippy on C3D; Compatibility: unchanged application behavior, reviewed fixtures,
+ordering and durability; Updated handbook: Sustainable TicketDesk milestone;
+Hazards/follow-ups: identify the seed failure, repair native latency, qualify
+unchanged preparation and populated public restore, run final-source full CI,
+integrate all actual campaign handlers and complete the short rehearsal. No
+24-hour run has started.

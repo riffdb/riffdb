@@ -2800,3 +2800,25 @@ durability, journal encodings and reviewed fixtures; Updated handbook: this
 milestone page; Hazards/follow-ups: final-source acceptance and CI, unchanged
 preparation, latency qualification, populated public restore and complete short
 rehearsal. The 24-hour run remains unstarted.
+
+The frozen `883e1987` preparation clears initial archive drain and records
+24 complete in-load source-byte captures across five load windows. It completes
+150,000 commands and 600,000 reads with no retries or post-duration work, but
+fails `probe_latency`. Two fault-free windows exceed the histogram's
+250-millisecond range. This establishes accounting progress, not latency
+qualification. Populated public restore and dependent full CI remain unstarted.
+
+A separate diagnostic replay reproduces the latency refusal. Cloud disk metrics
+show recovery reaching the 500-GiB `pd-balanced` disk's sustained write-IOPS
+ceiling; later normal windows also show substantial I/O queues. A sampled native
+stack establishes an outbox engine flush holding the writer gate while an audit
+and a consumer wait. These observations do not yet assign the complete latency
+failure to one cause. Durability profiles and workload gates remain unchanged.
+
+The next consumer-isolation diagnostic fails during seed, before its planned
+pause or measured load. Its observer returns `observer_consumer`, so this is
+neither an isolation result nor a successful preparation. Observer consumer,
+acknowledgement and status failures now emit one bounded diagnostic containing
+only the closed call stage and validated error class. Peer text, payloads,
+incident identifiers and context are excluded. The original fatal return codes
+and refusal behavior remain intact; the diagnostic adds no retry policy.

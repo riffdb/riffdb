@@ -28665,6 +28665,18 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 observer failure diagnostics: a frozen consumer-isolation replay
+      fails during seed with observer_consumer before measured load or its
+      planned pause. Preserve the failure and keep the original fatal return
+      codes. Emit only a bounded closed call stage and validated registry code
+      or closed client variant; never render peer text, payloads, context or
+      incident identifiers. Both diagnostic tests fail before classification
+      is implemented and pass after repair with TicketDesk tests and Clippy
+      on C3D. No retries, workload gates, public interfaces, fixtures, ordering
+      or durability change. The native seed failure remains unexplained until
+      a new diagnostic replay supplies its class; preparation and full campaign
+      qualification remain pending.
+    - >-
       D-003 native consumer checkpoint admission: an explicitly paused checkpoint
       prevents another durable audit while the original consumer admission holds
       the writer gate. The original production consumer bridge separately holds

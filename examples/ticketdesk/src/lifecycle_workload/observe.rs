@@ -10,6 +10,70 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[derive(Clone, Copy)]
+enum ObserverCallStage {
+    Consumer,
+    Acknowledgement,
+    Status,
+}
+
+impl ObserverCallStage {
+    const fn failure(self) -> &'static str {
+        match self {
+            Self::Consumer => "observer_consumer",
+            Self::Acknowledgement => "observer_ack",
+            Self::Status => "observer_status",
+        }
+    }
+}
+
+fn observer_failure_class(error: &riffdb_client_rust::ApplicationClientError) -> &'static str {
+    use riffdb_client_rust::{ApplicationClientError, ClientError, DetailsFreeStatus};
+
+    // Only closed variants and validated registry codes may enter this diagnostic.
+    match error {
+        ApplicationClientError::InvalidInput => "INVALID_INPUT",
+        ApplicationClientError::InvalidResponse => "INVALID_RESPONSE",
+        ApplicationClientError::IdentifierUnavailable => "IDENTIFIER_UNAVAILABLE",
+        ApplicationClientError::Client(error) => match error {
+            ClientError::Application(error) => error.code().as_str(),
+            ClientError::Public(error) => error.code(),
+            ClientError::DetailsFree(status) => match status {
+                DetailsFreeStatus::Unauthenticated => "UNAUTHENTICATED",
+                DetailsFreeStatus::Cancelled => "CANCELLED",
+                DetailsFreeStatus::DeadlineExceeded => "DEADLINE_EXCEEDED",
+                DetailsFreeStatus::ResponseTooLarge => "RESPONSE_TOO_LARGE",
+                DetailsFreeStatus::EmergencyInternal => "EMERGENCY_INTERNAL",
+                DetailsFreeStatus::TransportUnavailable => "TRANSPORT_UNAVAILABLE",
+            },
+            ClientError::Protocol(_) => "PROTOCOL_INVALID",
+            ClientError::IdentifierGeneration(_) => "IDENTIFIER_UNAVAILABLE",
+            ClientError::ConnectionFailure => "CONNECTION_FAILURE",
+            ClientError::Tls(_) => "TLS_FAILURE",
+            ClientError::OutcomeUnknown(_) => "OUTCOME_UNKNOWN",
+        },
+    }
+}
+
+fn format_observer_failure(
+    stage: ObserverCallStage,
+    error: &riffdb_client_rust::ApplicationClientError,
+) -> String {
+    format!(
+        "riffdb-ticketdesk-observer-failure-v1\tstage={}\tclass={}",
+        stage.failure(),
+        observer_failure_class(error),
+    )
+}
+
+fn observer_call_failure(
+    stage: ObserverCallStage,
+    error: riffdb_client_rust::ApplicationClientError,
+) -> &'static str {
+    eprintln!("{}", format_observer_failure(stage, &error));
+    stage.failure()
+}
+
 struct EventOracle {
     latest: Vec<Option<(ApplicationEventId, TicketEventsEvent)>>,
 }
@@ -380,7 +444,7 @@ pub(super) async fn run() -> Result<()> {
     let initial = client
         .next_events(options)
         .await
-        .map_err(|_| "observer_consumer")?;
+        .map_err(|error| observer_call_failure(ObserverCallStage::Consumer, error))?;
     if !initial.events.is_empty() {
         return Err("observer_requires_fresh_consumer");
     }
@@ -490,7 +554,7 @@ pub(super) async fn run() -> Result<()> {
                 }
                 if !halted && !pause.exists() {
                 let batch = client.next_events(options).await
-                    .map_err(|_| "observer_consumer")?;
+                    .map_err(|error| observer_call_failure(ObserverCallStage::Consumer, error))?;
                 for delivery in &batch.events {
                     let evidence = &delivery.evidence().event;
                     let event = delivery.event();
@@ -508,10 +572,12 @@ pub(super) async fn run() -> Result<()> {
                     } else {
                         duplicates += 1;
                     }
-                    validate_ack(client.ack_event(delivery).await.map_err(|_| "observer_ack")?)?;
+                    validate_ack(client.ack_event(delivery).await.map_err(|error|
+                        observer_call_failure(ObserverCallStage::Acknowledgement, error))?)?;
                 }
                 let Some(ApplicationEventConsumerPublicStatus::Exact(status)) =
-                    client.events_status().await.map_err(|_| "observer_status")? else {
+                    client.events_status().await.map_err(|error|
+                        observer_call_failure(ObserverCallStage::Status, error))? else {
                     return Err("observer_status");
                 };
                 if status.history_incarnation != incarnation || status.live_leases != 0
@@ -557,6 +623,69 @@ pub(super) async fn run() -> Result<()> {
 mod tests {
     use super::*;
     use crate::application::{TicketEventsTicketCreated, TicketEventsTicketUpdated};
+
+    // req: END-003, END-007, END-008
+    #[test]
+    fn observer_failure_retains_native_storage_capacity_and_deadline_classes() {
+        use riffdb_client_rust::{ApplicationClientError, ClientError};
+        use riffdb_errors::{
+            ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+        };
+        for code in [
+            ApplicationErrorCode::StorageUnavailable,
+            ApplicationErrorCode::Overloaded,
+            ApplicationErrorCode::DeadlineExceeded,
+            ApplicationErrorCode::InternalDefect,
+            ApplicationErrorCode::AuthorizationDenied,
+        ] {
+            let error = ApplicationClientError::Client(ClientError::Application(Box::new(
+                ApplicationError::new(
+                    code,
+                    ApplicationOperation::ExecuteQuery,
+                    ApplicationErrorContext::empty(),
+                    None,
+                ),
+            )));
+            assert_eq!(observer_failure_class(&error), code.as_str());
+            let line = format_observer_failure(ObserverCallStage::Consumer, &error);
+            assert_eq!(
+                line,
+                format!(
+                    "riffdb-ticketdesk-observer-failure-v1\tstage=observer_consumer\tclass={}",
+                    code.as_str()
+                )
+            );
+            assert!(line.len() <= 192);
+        }
+        let error = ApplicationClientError::Client(ClientError::Public(
+            riffdb_errors::PublicError::storage_unavailable(),
+        ));
+        assert_eq!(
+            observer_failure_class(&error),
+            riffdb_errors::PublicError::storage_unavailable().code()
+        );
+    }
+
+    // req: END-003, END-007, END-008
+    #[test]
+    fn observer_failure_distinguishes_transport_and_never_renders_untrusted_status() {
+        use riffdb_client_rust::{ApplicationClientError, ClientError, DetailsFreeStatus};
+        let error = ApplicationClientError::Client(ClientError::DetailsFree(
+            DetailsFreeStatus::TransportUnavailable,
+        ));
+        assert_eq!(observer_failure_class(&error), "TRANSPORT_UNAVAILABLE");
+        let secret = "private observer payload must never appear";
+        let error = ApplicationClientError::Client(ClientError::from_status(
+            tonic::Status::unavailable(secret),
+        ));
+        let line = format_observer_failure(ObserverCallStage::Acknowledgement, &error);
+        assert_eq!(
+            line,
+            "riffdb-ticketdesk-observer-failure-v1\tstage=observer_ack\tclass=PROTOCOL_INVALID"
+        );
+        assert!(!line.contains(secret));
+        assert!(line.len() <= 192);
+    }
 
     // req: END-003, END-008
     #[test]
