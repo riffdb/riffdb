@@ -28986,3 +28986,30 @@ work_packages:
   human_review_triggers:
   - A segment decode depends on anything other than the exact row bytes it is given.
   - A remembered segment is served for different row bytes, or a refusal is remembered.
+  closure:
+    status: complete
+    completed_at: '2026-10-10'
+    requirements_satisfied: [REC-007, REC-008]
+    evidence: Fail-before tests (128 segment decodes for the link checks with
+      reuse disabled, 33 with it; identical members and refusals across changed
+      row bytes; the running-total row observation), the riffdb-storage-redb and
+      riffdb-server all-feature suites, package acceptance, the ci-all battery
+      with its workspace tests passing except one archive-repository lock test
+      that passed five of five reruns alone, and alternating write-only runs on
+      the second development machine (post-start scrub 19.8 s median on the
+      base, 9.3 s with the change).
+    decision: Retain the one-segment memo for the complete structural walk and
+      the running-total scrub row observation. No durable byte, encoding,
+      ordering, atomicity, acknowledgement, health state or public interface
+      change.
+    decisions_taken:
+    - The memo lives in the evidence session and the sampled checkpoint pass; codec.rs takes a segment decoder so its integration-test inclusion does not depend on the memo type.
+    - The derived segment fixture is re-exported for startup tests without changing the test-module marker the architecture scan relies on.
+    known_limitations: Under workstation load averages of 20 to 40, crash-process
+      and staged-archive tests exceed the nextest ci-profile 120 s limit; all
+      eighteen pass when rerun with lower parallelism, and the two slowest take
+      about 118 s serially. ci-all steps that need the TypeScript toolchain and
+      check-adr-obligations (ADR-0275 to ADR-0277) fail identically on main on
+      the development workstation.
+    follow_ups:
+    - The second SHA-256 over each resolved frame and the encode-then-decode of each rebuilt receipt remain (ADR-0283 Consequences).
