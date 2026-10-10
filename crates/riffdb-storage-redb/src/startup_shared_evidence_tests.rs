@@ -112,9 +112,13 @@ fn exact_bundle_bindings_match_physical_validation_and_do_not_cross_snapshots() 
 }
 
 fn shared_evidence_capsule() -> StoredCommandCapsuleV2 {
-    let sequence = CommitSequence::first();
     let bundle = stored_bundle("shared-command", 1, b"command catalog");
     let plan = checkpoint_count_plan(&bundle);
+    shared_evidence_capsule_for_plan(plan)
+}
+
+fn shared_evidence_capsule_for_plan(plan: ExecutablePlanRef) -> StoredCommandCapsuleV2 {
+    let sequence = CommitSequence::first();
     let base = history_commit(sequence, plan, &[]);
     let event_id = EventId::new(sequence, 0);
     let payload = CanonicalRecord::new(Vec::new()).unwrap();
@@ -315,4 +319,103 @@ fn shared_outbox_event_lookup_preserves_legacy_segment_and_checkpoint_domains() 
             }
         }
     }
+}
+
+#[test]
+fn page_catalog_reuse_keeps_every_command_plan_validation_and_evicts_exact_bindings() {
+    let source = include_str!("../../../examples/ticketdesk/lifecycle/riffdb/contract.riff");
+    let first =
+        ValidatedContractBundle::from_compiler_bundle(compile_contract_source(source).unwrap())
+            .unwrap();
+    let second = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_source(&source.replacen("version 1", "version 2", 1)).unwrap(),
+    )
+    .unwrap();
+    let plan = |bundle: &ValidatedContractBundle, bad: bool| {
+        let command = bundle.bundle().commands().first().unwrap();
+        ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            command.command_id(),
+            if bad {
+                PlanHash::from_bytes([0xff; 32])
+            } else {
+                command.plan_hash()
+            },
+        )
+    };
+    let command = |reference| {
+        shared_evidence_capsule_for_plan(reference)
+            .with_prefix_evidence(
+                riffdb_storage_api::CommandPrefixEvidenceV1::new(
+                    riffdb_types::DualFrontier::new(None, None),
+                    riffdb_types::DualFrontier::new(
+                        Some(CommitSequence::first()),
+                        Some(AdministrationSequence::new(2).unwrap()),
+                    ),
+                    Vec::new(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    };
+    let path = TestDatabasePath::new("catalog-page-cache");
+    let store = initialized_store(&path, database_id(0xb5));
+    let write = store.shared.database.begin_write().unwrap();
+    for bundle in [&first, &second] {
+        let stored = bundle.to_stored().unwrap();
+        write
+            .open_table(CONTRACT_BUNDLES)
+            .unwrap()
+            .insert(
+                keys::encode_contract_bundle_key(stored.lineage(), stored.contract_version())
+                    .unwrap()
+                    .as_slice(),
+                codec::encode_contract_bundle_v1(&stored)
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let pin = store.shared.database.begin_read().unwrap();
+    let mut cache = crate::command_prefix::CatalogImageCache::default();
+    let first_command = command(plan(&first, false));
+    for _ in 0..64 {
+        crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut cache)
+            .unwrap();
+    }
+    assert_eq!(
+        cache.loads(),
+        1,
+        "one direct bundle decode serves all physical groups on the same structural page"
+    );
+    let invalid = command(plan(&first, true));
+    assert!(crate::command_prefix::validate_catalog_images(&pin, [&invalid]).is_err());
+    assert!(
+        crate::command_prefix::validate_catalog_images_cached(&pin, [&invalid], &mut cache)
+            .is_err(),
+        "a cached schema must never cache success for a different command plan"
+    );
+    assert_eq!(cache.loads(), 1);
+    let second_command = command(plan(&second, false));
+    crate::command_prefix::validate_catalog_images_cached(&pin, [&second_command], &mut cache)
+        .unwrap();
+    assert_eq!(
+        cache.loads(),
+        2,
+        "a changed version/hash requires full schema validation"
+    );
+    crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut cache)
+        .unwrap();
+    assert_eq!(cache.loads(), 3, "the cache retains only one direct bundle");
+    let mut next_page = crate::command_prefix::CatalogImageCache::default();
+    crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut next_page)
+        .unwrap();
+    assert_eq!(
+        next_page.loads(),
+        1,
+        "even the same pin starts each new page with no retained schema"
+    );
 }

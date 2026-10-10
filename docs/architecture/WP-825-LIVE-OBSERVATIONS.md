@@ -3253,3 +3253,29 @@ claim or the whole public restore action: fresh backup creation, publication,
 restart and public reconciliation still belong inside the unchanged 60-second
 fault deadline. That deadline remains unproved, alongside post-outage latency,
 final clean-source full CI and the complete short rehearsal.
+
+### One decoded direct schema per complete structural page
+
+Each complete structural page owns one bounded direct-bundle cache over its
+unchanged snapshot. Physical command groups on that page still validate every
+command plan, image, vector, predecessor and inventory. Version or hash changes
+reload and fully validate the new schema; only one direct bundle is retained.
+Migration resolution and independent mutation overlays remain fresh per physical
+group. The cache is discarded before the page returns, including on failure.
+Checkpoint sampling and received-write validation retain their fresh reference
+paths. There is no cross-snapshot or process-global schema reuse.
+
+The semantic test warms a real compiled contract, requires one schema load over
+64 groups, rejects a different command plan against the warmed schema, and
+proves exact-binding eviction and fresh-page loading. Complete native corruption
+coverage and populated materialization timing remain separate validation gates.
+No full-campaign or sixty-second restore qualification is claimed.
+
+The populated materialization diagnostic on the same preserved 100-artifact
+backup completes in 154.8 seconds, compared with the preceding 165.6-second
+observation. Every original artifact checksum remains unchanged. These are
+single observations, not a statistical result or the whole public restore
+action. Backup creation, publication, restart and public reconciliation remain
+inside the unchanged 60-second fault deadline, which is still unproved. Final
+clean-source full CI, normal-window latency and the complete short rehearsal
+remain required.

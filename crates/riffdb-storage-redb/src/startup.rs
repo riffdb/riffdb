@@ -1485,12 +1485,15 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             }
         }
         let mut findings = Vec::new();
+        // One direct schema per page; continuity above pins every row checked
+        // below. A new page starts empty, including after any failed page.
+        let mut catalog_cache = crate::command_prefix::CatalogImageCache::default();
         for offset in 0..inspected {
             let position = cursor
                 .position()
                 .checked_add(offset)
                 .ok_or_else(limit_exceeded)?;
-            if let Some(finding) = self.inspect_structural_forward(position)? {
+            if let Some(finding) = self.inspect_structural_forward(position, &mut catalog_cache)? {
                 if finding.scope() == StructuralFindingScope::Authoritative {
                     self.authoritative_finding_seen = true;
                 }
@@ -2398,6 +2401,7 @@ fn run_checkpoint_sample_windows(
                         embedded: &embedded_command_authority,
                     },
                     binding_bundles,
+                    None,
                     seq,
                     key.value(),
                     value.value(),
@@ -2524,6 +2528,7 @@ impl RedbStructuralEvidenceSession {
     fn inspect_structural_forward(
         &mut self,
         position: u64,
+        catalog_cache: &mut crate::command_prefix::CatalogImageCache,
     ) -> Result<Option<StructuralFinding>, StorageError> {
         // Positions are always requested in strictly ascending order by the page loop.
         if position == 0 {
@@ -2668,6 +2673,7 @@ impl RedbStructuralEvidenceSession {
                 transaction,
                 &self.command_history,
                 &self.binding_bundles,
+                Some(catalog_cache),
                 expected,
                 &key,
                 &value,
@@ -4535,6 +4541,7 @@ fn inspect_commit_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
+    catalog_cache: Option<&mut crate::command_prefix::CatalogImageCache>,
     expected_first: CommitSequence,
     key: &[u8],
     value: &[u8],
@@ -4550,7 +4557,14 @@ fn inspect_commit_row(
         value,
         &events,
         sequence,
-        |commands| crate::command_prefix::validate_catalog_images(transaction, commands.iter()),
+        |commands| match catalog_cache {
+            Some(cache) => crate::command_prefix::validate_catalog_images_cached(
+                transaction,
+                commands.iter(),
+                cache,
+            ),
+            None => crate::command_prefix::validate_catalog_images(transaction, commands.iter()),
+        },
     ) {
         Ok(records) => records,
         Err(error) => {
