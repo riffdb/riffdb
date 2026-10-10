@@ -3361,3 +3361,15 @@ occurs. The original full-server TransportUnavailable failure remains preserved;
 these comparisons do not establish its cause or erase it. Ordinary full-server
 validation and scoped acceptance are pending for this candidate. Populated
 public restore, final-source CI and the real all-seven campaign remain required.
+
+### Independent closed owner inventory
+
+Bind every declared server and sampler incarnation, both original workload
+owners and each serialized operator to its private immutable launch proof and
+Linux wait4 exit record. Preserve the killed server's signed exit status and
+unknown exit allocator measurement; finite inherited hard limits supply only
+conservative upper bounds. Reconcile dense operator order, expected exits and
+original-clock durations against the terminal roster. Missing, extra, changed
+or unbounded input refuses qualification. This component does not qualify a
+resource model or campaign by itself; actual source, native history, host and
+interference evidence remain required. C3D validation is pending.
