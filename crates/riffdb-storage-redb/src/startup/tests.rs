@@ -6051,6 +6051,41 @@ fn service_link_checks_decode_a_shared_command_segment_once() {
     assert_eq!(shared.decodes(), 1, "one segment, decoded once");
 }
 
+// req: REC-007, REC-006, STO-031
+#[test]
+fn offline_parallel_link_checks_share_one_segment_memo() {
+    let (_path, ports, commands) = install_one_segment("parallel-segment-memo", 16);
+    let read = ports.shared.database.begin_read().expect("begin read");
+    let memo = SegmentMemo::default();
+    let start = std::sync::Barrier::new(4);
+    let results = offline_parallel::inspect_rows(commands.len(), |index| {
+        // The dispatcher partitions sixteen rows into four chunks. Release
+        // their first checks together rather than relying on scheduler timing.
+        if index % 4 == 0 {
+            start.wait();
+        }
+        let command = &commands[index];
+        let other = &commands[(index + 1) % commands.len()];
+        let relinked = relinked_terminal(command, other.base().provenance().provenance_id());
+        assert!(service_link_is_valid(
+            &read,
+            &memo,
+            command.base().terminal_audit()
+        )?);
+        assert!(!service_link_is_valid(&read, &memo, &relinked)?);
+        Ok(command.commit_sequence())
+    })
+    .expect("join parallel inspectors");
+    for (result, command) in results.into_iter().zip(&commands) {
+        assert_eq!(result.expect("validated links"), command.commit_sequence());
+    }
+    assert_eq!(
+        memo.decodes(),
+        1,
+        "all workers reuse the session's one segment"
+    );
+}
+
 // req: REC-007
 #[test]
 fn segment_reuse_follows_the_row_bytes_and_never_remembers_a_refusal() {

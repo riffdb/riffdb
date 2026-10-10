@@ -9,27 +9,30 @@ campaign has not run, and no 24-hour qualification has started. Final combined
 source CI, four-language conformance, three measured physical retirements in the
 final incarnation and the final six quiet hours remain required.
 
-The latest ordinary preparation refuses resource qualification after its three
-bounded attempts cannot obtain a stable server task census. Its two complete
-latency windows cannot establish the missing final window. A subsequent
-instrumented diagnostic completes 150,000 commands and 600,000 reads with zero
-retries or post-duration operations, but fails latency. Its additional process
-inspection makes it unsuitable as ordinary performance qualification. Neither
-run resolves the earlier genuine normal-window p95 failure of 101.766 ms, whose
-sink recovery ended before second 600. Preserve the failed populations, the
-original workload, and the original resource and latency thresholds.
+The latest ordinary preparation completes 150,000 commands and 600,000 reads,
+with zero retries or post-duration operations and all 65,536 tickets reconciled.
+Its final normal window fails at 102.658 ms p95 against the unchanged 100-ms
+limit. A subsequent instrumented diagnostic observes 95.199 ms in that window,
+but cannot qualify performance; its wrapper also refuses an artifact hardlink
+introduced by the diagnostic profiler. Preserve both failed receipts and the
+ordinary population. The profiler's extra link was removed after identity and
+hash verification; the original binary bytes remain unchanged.
 
-The latest populated native component measurement takes 100.1 seconds on the
-hydration repair-refusal source. The preceding representation-sequencing change
-measured 100.0 seconds, compared with 121.5 seconds before it. These are single
-component observations, not a whole-action comparison. The hydration correction
-passes all seven scoped acceptance checks in 1,773.8 seconds, including 1,366
-native tests with two existing skips, 59 architecture checks and Clippy. Tested
-source and all 100 original backup artifacts remain unchanged. Materialization
-alone still exceeds the unchanged 60-second limit for the **whole** public
-backup, restore, publication, restart and reconciliation sequence. Normal-window
-latency, final combined-source CI and the complete measured campaign remain
-unqualified.
+Native thread attribution proves repeated append-worker creation across direct
+checkpoints. The physical-worker correction passes all six scoped acceptance
+checks and 1,378 native tests with two existing skips. Those component results
+establish correctness and ownership reuse, not latency causality. Local main's
+startup and transport improvements are now merged, with the approved identifier
+reconciliation. Combined-source compilation identifies a missing segment-memo
+initializer in the parallel offline validator; its correction shares the walk's
+single bounded memo across those workers. Combined-source full CI, fresh ordinary
+preparation and the unchanged whole-action restore measurement remain required.
+No preparation or restore ran after the combined-source compile refusal.
+
+The preceding populated native materialization component measures 100.1 seconds.
+That measurement is neither the whole backup/restore/restart/reconciliation
+sequence nor evidence that the merged source meets its unchanged 60-second gate.
+The complete measured campaign remains unqualified.
 
 ## Private hydration repair refusal
 
@@ -3698,8 +3701,9 @@ The unchanged-extent regression fails on the original code and passes with the
 candidate. Four focused regressions pass on the required host: complete history
 and old-snapshot equivalence across 32 direct checkpoints, no writes to a
 replaced inode, a deterministic pending-fence/direct-checkpoint schedule, and
-retired-worker refusal. Broader native acceptance is still running. These are
-component results; the candidate has no full-CI or campaign qualification yet.
+retired-worker refusal. All six scoped acceptance checks and 1,378 native tests
+pass with two existing skips. These are component results; the candidate has
+no combined-source full-CI or campaign qualification yet.
 
 ### Integrate the maintainer's newer local main
 
@@ -3715,8 +3719,8 @@ reconciled as ADR-0287 and ADR-0286, respectively. See the
 Package: WP-825. Tier: guarantee. Behavior: bounded physical append-worker
 ownership under existing validation and checkpoint semantics; integrate accepted
 main improvements. Checks: original ownership regression fails; all four
-candidate regressions pass on C3D; broader and combined-source acceptance remain
-pending. Compatibility: no public interface, durable format or fixture changes
+candidate regressions and scoped native acceptance pass on C3D; combined-source
+acceptance remains pending. Compatibility: no public interface, durable format or fixture changes
 from the worker candidate. Handbook behavior remains unchanged by that internal
 ownership change; main's startup and performance handbook changes are retained.
 Hazards and follow-ups: normal-window latency, whole public recovery within

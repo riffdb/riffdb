@@ -21,10 +21,21 @@ The maintainer approved this identifier and reference reconciliation in session
 on 2026-10-10: "Approve the identifier-only reconciliation";
 no new decision, format, ordering boundary or public guarantee is introduced.
 The startup test conflict retains both WP-825's shared-evidence module and
-main's segment-reuse regressions. The ADR index will be regenerated on C3D.
+main's segment-reuse regressions. The ADR index was regenerated on C3D and record checks passed.
 
-The separate journal append-worker candidate is still undergoing scoped
-acceptance on C3D against its original base. That result cannot qualify the
-combined source. The candidate is now integrated separately; run combined-source acceptance
-and full CI on C3D before another ordinary
-preparation. Earlier failures remain failures.
+The separate journal append-worker candidate passes scoped acceptance on C3D
+against its original base: all six planned checks and 1,378 native tests, with
+two existing skips. That result cannot qualify the combined source. The worker
+change is integrated separately at `c53f19712`.
+
+Combined-source compilation exposes an additional initializer in WP-825's
+parallel offline validator that must adopt main's segment memo. The correction
+shares the session's single memo across its bounded inspectors and serializes
+exact-byte lookup, decoding and successful replacement under one mutex. It
+retains one cache entry per walk; refused decodes remain uncached. A barrier
+regression checks concurrent intact and incorrect-provenance links against one
+segment and requires exactly one successful segment decode. Validation runs
+only on C3D. The concurrent cache test, unchanged byte/refusal and service-link
+regressions, all four append-worker tests, formatting and storage Clippy pass.
+Combined-source full CI and fresh ordinary preparation remain
+required. Earlier failures remain failures.

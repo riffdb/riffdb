@@ -167,6 +167,7 @@ impl RedbStructuralEvidenceSession {
         let read = self.validation_read.as_ref().ok_or_else(invariant)?;
         let context = StructuralInspectContext {
             inputs: &self.inputs,
+            segments: &self.segments,
             binding_bundles: &self.binding_bundles,
             publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
             database_id: self.database_id,
