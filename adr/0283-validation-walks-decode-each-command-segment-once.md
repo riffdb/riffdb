@@ -1,11 +1,11 @@
 ---
 adr: "0283"
 title: Validation Walks Decode Each Command Segment Once
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-10
-accepted: null
-acceptance: null
+accepted: '2026-10-10'
+acceptance: 'maintainer, in session, 2026-10-10: "i accept", in response to the exact-text acceptance request for ADR-0283 as committed at 990243098'
 requires: [ADR-0182, ADR-0203, ADR-0263]
 amends: []
 supersedes: []
