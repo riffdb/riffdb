@@ -3310,3 +3310,30 @@ The truncated-census regression reproduces on the previous implementation. All
 355 lifecycle harness tests and scoped acceptance pass on the required host.
 Measured latency, complete native diagnostics from a real run and full campaign
 qualification remain separate evidence.
+
+### One owned offline history-validation pin
+
+The offline source scrub completely validates retained V3 history once and
+keeps that exact immutable read snapshot through every journal inspection and
+the complete structural/catalog walk. Its move-only private owner carries no
+serialized certificate, mutation permission or public bypass. Each original
+journal frame, frontier, incomplete-tail check, physical engine check, full
+structural row and catalog predicate still runs. Legacy and follower paths keep
+their existing independent admission. Original-copy checksum checks and all
+cleanup/cancellation boundaries remain in force. No proof crosses snapshots.
+
+Differential journal tests compare the fresh reference path with the owned pin
+for valid, absent, future-frontier and damaged artifacts. A corrupt later
+snapshot cannot acquire a proof from the still-valid older pin. Populated
+materialization timing remains a separate diagnostic; no whole restore fault
+or campaign qualification is claimed.
+
+The populated materialization diagnostic on the same preserved 100-artifact
+backup completes in 139.6 seconds, compared with the preceding 154.8-second
+observation. All original artifact checksums remain unchanged. All 1,358 native
+tests pass, with two existing skips, and scoped acceptance passes on the required
+host. These are component results and single timing observations. The whole
+public backup, restore, publication, restart and reconciliation action must still
+meet the unchanged 60-second deadline. Normal-window latency, final clean-source
+full CI and the complete measured short rehearsal remain required. WP-825 stays
+open.

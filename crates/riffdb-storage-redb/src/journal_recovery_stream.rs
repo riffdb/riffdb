@@ -17,6 +17,7 @@ pub(super) fn inspect(
     if !recover {
         crate::changelog_v3_roots::validate_retained_history(&snapshot)
             .map_err(|_| JournalIoError::Corrupt)?;
+        return inspect_materialized_snapshot(media, &snapshot, path, database_id);
     }
     let mut walk = crate::changelog_v3_journal::RecoveryWalk::new(
         &snapshot,
@@ -44,13 +45,6 @@ pub(super) fn inspect(
     }
     if frames == 0 && (checkpoint.0 > frontier.0 || checkpoint.1 > frontier.1) {
         return Err(JournalIoError::Corrupt);
-    }
-    if !recover {
-        return if plan.replay_from == frames && !tail.incomplete_tail {
-            Ok(())
-        } else {
-            Err(JournalIoError::Io)
-        };
     }
     if plan.replay_from < frames {
         replay(
@@ -125,5 +119,48 @@ fn recovery_error(error: StorageError) -> JournalIoError {
     match error.kind() {
         StorageErrorKind::LimitExceeded => JournalIoError::Capacity,
         _ => JournalIoError::Corrupt,
+    }
+}
+
+/// Read-only journal planning over the already completely validated V3 pin.
+/// Called only immediately after complete validation or by its move-only owner.
+/// Every original frame, root, frontier and incomplete-tail predicate remains.
+pub(super) fn inspect_materialized_snapshot(
+    media: &dyn JournalMedia,
+    snapshot: &ReadTransaction,
+    path: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    let frontier = read_redb_frontier_from_snapshot(snapshot)?;
+    let mut walk = crate::changelog_v3_journal::RecoveryWalk::new(
+        snapshot,
+        riffdb_types::DualFrontier::new(frontier.0, frontier.1),
+    )
+    .map_err(recovery_error)?;
+    let mut frames = 0_usize;
+    let Some((header, tail)) =
+        scan_located_journal_with_media(media, path, database_id, |frame, _| {
+            walk.observe(frame).map_err(recovery_error)?;
+            frames = frames.checked_add(1).ok_or(JournalIoError::Corrupt)?;
+            Ok(())
+        })?
+    else {
+        return Ok(());
+    };
+    let plan = walk.finish();
+    let checkpoint = (
+        header.checkpoint_sequence(),
+        header.checkpoint_administration_sequence(),
+    );
+    if frames == 0 && !tail.incomplete_tail && frontier == checkpoint {
+        return Ok(());
+    }
+    if frames == 0 && (checkpoint.0 > frontier.0 || checkpoint.1 > frontier.1) {
+        return Err(JournalIoError::Corrupt);
+    }
+    if plan.replay_from == frames && !tail.incomplete_tail {
+        Ok(())
+    } else {
+        Err(JournalIoError::Io)
     }
 }

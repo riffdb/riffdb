@@ -981,6 +981,19 @@ impl RedbStore {
         inputs: StartupValidationInputs,
         purpose: EvidenceOpenPurpose,
     ) -> Result<RedbStructuralEvidenceSession, StorageError> {
+        self.begin_structural_evidence_for_history(inputs, purpose, None)
+    }
+
+    fn begin_structural_evidence_for_history(
+        self,
+        inputs: StartupValidationInputs,
+        purpose: EvidenceOpenPurpose,
+        history: Option<crate::journal::VerifiedMaterializedHistory>,
+    ) -> Result<RedbStructuralEvidenceSession, StorageError> {
+        if history.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
+            return Err(invariant());
+        }
+        let history_verified = history.is_some();
         let private = self.shared.private_restore_binding();
         if private.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
             return Err(invariant());
@@ -993,11 +1006,14 @@ impl RedbStore {
             _ => Some(self.acquire_mutation_lease()?),
         };
         let durable_commit_epoch = self.shared.durable_commit_epoch();
-        let transaction = self
-            .shared
-            .database
-            .begin_read()
-            .map_err(transaction_error)?;
+        let transaction = match history {
+            Some(history) => history.into_read(),
+            None => self
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?,
+        };
         let snapshot = collect_startup_snapshot(&transaction, private)?;
         let v3_history = if private.is_some() {
             None
@@ -1258,7 +1274,11 @@ impl RedbStore {
         // (RedbBackgroundScrubSession::validate_retained_history), so a
         // retained-history failure, which puts a V2 source's authority in
         // doubt, is distinguishable from its other findings (ADR-0260).
-        if v3_active && private.is_none() && purpose != EvidenceOpenPurpose::BackgroundScrub {
+        if v3_active
+            && private.is_none()
+            && purpose != EvidenceOpenPurpose::BackgroundScrub
+            && !history_verified
+        {
             crate::changelog_v3_roots::validate_retained_history(&transaction)?
                 .ok_or_else(corrupt)?;
         }

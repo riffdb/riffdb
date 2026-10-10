@@ -196,9 +196,6 @@ impl RedbStore {
             store.recover_durability_journal()?;
             store.upgrade_registry_completion_pending()?;
         }
-        if open_mode == OpenMode::OfflineSource {
-            store.verify_materialized_journals()?;
-        }
         store.cache_verified_retention_watermark()?;
         Ok(store)
     }

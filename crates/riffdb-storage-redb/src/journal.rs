@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{
+    Database, Durability, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition,
+};
 
 use riffdb_storage_api::{
     DURABILITY_JOURNAL_EXTENT_VERSION as EXTENT_FORMAT_VERSION,
@@ -4317,6 +4319,39 @@ pub(crate) fn recover_journal_path_with_media(
 }
 
 /// The same complete recovery plan, without replay or journal mutation.
+/// Complete V3 history validation attached to the exact owned read snapshot.
+/// This has no serialized representation, mutation authority or public selector.
+pub(crate) struct VerifiedMaterializedHistory {
+    read: ReadTransaction,
+}
+
+impl VerifiedMaterializedHistory {
+    pub(crate) fn capture(read: ReadTransaction) -> Result<Option<Self>, JournalIoError> {
+        if !crate::changelog_v3_journal::has_recovery_roots(&read)
+            .map_err(|_| JournalIoError::Corrupt)?
+        {
+            return Ok(None);
+        }
+        crate::changelog_v3_roots::validate_retained_history(&read)
+            .map_err(|_| JournalIoError::Corrupt)?
+            .ok_or(JournalIoError::Corrupt)?;
+        Ok(Some(Self { read }))
+    }
+
+    pub(crate) fn verify_journal(
+        &self,
+        media: &dyn JournalMedia,
+        path: &Path,
+        database_id: DatabaseId,
+    ) -> Result<(), JournalIoError> {
+        recovery_stream::inspect_materialized_snapshot(media, &self.read, path, database_id)
+    }
+
+    pub(crate) fn into_read(self) -> ReadTransaction {
+        self.read
+    }
+}
+
 pub(crate) fn verify_materialized_journal_with_media(
     media: &dyn JournalMedia,
     database: &Database,
@@ -4330,6 +4365,12 @@ fn read_redb_frontier(
     database: &Database,
 ) -> Result<(Option<CommitSequence>, Option<AdministrationSequence>), JournalIoError> {
     let transaction = database.begin_read().map_err(|_| JournalIoError::Io)?;
+    read_redb_frontier_from_snapshot(&transaction)
+}
+
+fn read_redb_frontier_from_snapshot(
+    transaction: &ReadTransaction,
+) -> Result<(Option<CommitSequence>, Option<AdministrationSequence>), JournalIoError> {
     let commit = transaction
         .open_table(COMMITS)
         .map_err(|_| JournalIoError::Corrupt)?;
@@ -4364,7 +4405,7 @@ fn read_redb_frontier(
             }
         };
     if commit_sequence.is_none() {
-        commit_sequence = crate::retention::load_watermark(&transaction)
+        commit_sequence = crate::retention::load_watermark(transaction)
             .map_err(|_| JournalIoError::Corrupt)?
             .and_then(|watermark| CommitSequence::new(watermark.watermark_sequence()));
     }

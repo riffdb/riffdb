@@ -994,3 +994,127 @@ fn scrub_refuses_retained_history(shared: &Arc<crate::store::SharedRedb>) -> boo
         .and_then(|mut scrub| scrub.validate_retained_history())
         .is_err()
 }
+
+#[test]
+fn verified_materialized_history_journal_checks_match_fresh_validation_and_detect_damage() {
+    let path = TestDatabasePath::new("verified-offline-history-journals");
+    let id = database_id(0xe1);
+    let store = v3_store(&path, id);
+    let verified = crate::journal::VerifiedMaterializedHistory::capture(
+        store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let normal = crate::journal::journal_path(&path.0);
+    // Activation creates retained V3 roots in redb, not a journal file.
+    // Make the valid artifact distinct from the deliberate missing case.
+    crate::journal::reset_journal(
+        &normal,
+        &crate::journal::JournalFileHeader::with_frontiers(id, None, None, [0; 32]),
+    )
+    .unwrap();
+    let absent = path.0.with_extension("absent-journal");
+    let future = path.0.with_extension("future-journal");
+    crate::journal::reset_journal(
+        &future,
+        &crate::journal::JournalFileHeader::with_frontiers(
+            id,
+            None,
+            Some(riffdb_types::AdministrationSequence::new(1).unwrap()),
+            [0; 32],
+        ),
+    )
+    .unwrap();
+    let damaged = path.0.with_extension("damaged-journal");
+    std::fs::write(&damaged, b"damaged journal").unwrap();
+    let before = std::fs::read(&normal).unwrap();
+    for (journal, succeeds) in [
+        (&normal, true),
+        (&absent, true),
+        (&future, false),
+        (&damaged, false),
+    ] {
+        let reference = crate::journal::verify_materialized_journal_with_media(
+            &crate::media::RealJournalMedia,
+            &store.shared.database,
+            journal,
+            id,
+        );
+        let result = verified.verify_journal(&crate::media::RealJournalMedia, journal, id);
+        assert_eq!(result, reference);
+        assert_eq!(result.is_ok(), succeeds);
+    }
+    assert_eq!(std::fs::read(&normal).unwrap(), before);
+    assert_eq!(std::fs::read(&damaged).unwrap(), b"damaged journal");
+    assert!(!absent.exists());
+    // Pin release is explicit and cannot leave an extra snapshot alive.
+    drop(verified.into_read());
+    drop(store);
+    for journal in [future, damaged] {
+        std::fs::remove_file(journal).unwrap();
+    }
+}
+
+#[test]
+fn verified_materialized_history_does_not_validate_a_later_corrupt_snapshot() {
+    let path = TestDatabasePath::new("verified-offline-history-snapshot");
+    let id = database_id(0xe2);
+    let store = v3_store(&path, id);
+    let verified = crate::journal::VerifiedMaterializedHistory::capture(
+        store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let journal = crate::journal::journal_path(&path.0);
+    assert!(
+        verified
+            .verify_journal(&crate::media::RealJournalMedia, &journal, id)
+            .is_ok()
+    );
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut history = write
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap();
+        assert!(
+            history
+                .remove(1_u64.to_be_bytes().as_slice())
+                .unwrap()
+                .is_some()
+        );
+    }
+    write.commit().unwrap();
+    assert!(
+        crate::journal::VerifiedMaterializedHistory::capture(
+            store.shared.database.begin_read().unwrap(),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::journal::verify_materialized_journal_with_media(
+            &crate::media::RealJournalMedia,
+            &store.shared.database,
+            &journal,
+            id,
+        )
+        .is_err()
+    );
+    // Only the exact immutable old pin retains its original valid history.
+    assert!(
+        verified
+            .verify_journal(&crate::media::RealJournalMedia, &journal, id)
+            .is_ok()
+    );
+    let old = verified.into_read();
+    assert!(
+        crate::changelog_v3_roots::validate_retained_history(&old)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &store.shared.database.begin_read().unwrap(),
+        )
+        .is_err()
+    );
+}
