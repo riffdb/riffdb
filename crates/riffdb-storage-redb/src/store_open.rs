@@ -183,6 +183,7 @@ impl RedbStore {
                 publication_queue: Mutex::new(PublicationQueue::default()),
                 next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
+                idle_journal_lane: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
                 journal_spare: Arc::new(Mutex::new(())),
                 journal_sealer: Mutex::new(None),

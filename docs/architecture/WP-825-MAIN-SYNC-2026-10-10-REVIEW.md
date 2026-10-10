@@ -1,6 +1,6 @@
 # WP-825 local main reconciliation, 2026-10-10
 
-The integration takes local main `8c1b6678f`, including WP-830's derived-sidecar
+Merge `96db3a219` integrates local main `8c1b6678f`, including WP-830's derived-sidecar
 absence observation and WP-831's per-walk segment reuse. Remote main had not
 received these commits when integration began. Both accepted main decisions
 retain their identifiers and exact text.
@@ -25,6 +25,6 @@ main's segment-reuse regressions. The ADR index will be regenerated on C3D.
 
 The separate journal append-worker candidate is still undergoing scoped
 acceptance on C3D against its original base. That result cannot qualify the
-combined source. After reconciliation, integrate the candidate and run
-combined-source acceptance and full CI on C3D before another ordinary
+combined source. The candidate is now integrated separately; run combined-source acceptance
+and full CI on C3D before another ordinary
 preparation. Earlier failures remain failures.

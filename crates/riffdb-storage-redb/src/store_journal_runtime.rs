@@ -115,16 +115,43 @@ impl SharedRedb {
                 tail.last_administration_sequence,
                 tail.last_hash,
             );
-            let lane = Arc::new(
-                crate::journal::JournalLane::open_with_media(
-                    self.journal_media.as_ref(),
-                    &path,
-                    &header,
-                    #[cfg(feature = "test-fixtures")]
-                    self.test_controller.clone(),
-                )
-                .map_err(journal_io_error)?,
-            );
+            let idle = self
+                .idle_journal_lane
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .take();
+            let physical_bytes = crate::journal::extent_used_bytes(tail.complete_bytes);
+            let lane = match idle {
+                Some(idle)
+                    if idle.database_id == database_id
+                        && idle.physical_bytes == physical_bytes
+                        && Arc::strong_count(&idle.lane) == 1
+                        && idle
+                            .lane
+                            .can_reuse_cursor(
+                                self.journal_media.as_ref(),
+                                &path,
+                                &header,
+                                physical_bytes,
+                            )
+                            .map_err(journal_io_error)? =>
+                {
+                    idle.lane
+                }
+                other => {
+                    drop(other);
+                    Arc::new(
+                        crate::journal::JournalLane::open_with_media(
+                            self.journal_media.as_ref(),
+                            &path,
+                            &header,
+                            #[cfg(feature = "test-fixtures")]
+                            self.test_controller.clone(),
+                        )
+                        .map_err(journal_io_error)?,
+                    )
+                }
+            };
             // Refresh an existing spare's generation now; a missing one (the
             // last install consumed it) is zero-filled off the writer's path.
             let spare_path = crate::journal::spare_journal_path(&self.path);

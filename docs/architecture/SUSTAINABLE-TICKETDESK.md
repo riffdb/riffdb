@@ -3687,8 +3687,8 @@ final combined-source full CI and complete measured rehearsal remain required.
 
 ### Current main reconciliation and journal-worker candidate
 
-The maintainer's local main `8c1b6678f` is being integrated before further
-qualification. Main's accepted ADR-0282 and ADR-0283 keep their identities.
+The maintainer's local main `8c1b6678f` is integrated at `96db3a219` before
+further qualification. Main's accepted ADR-0282 and ADR-0283 keep their identities.
 Historical references in this page use the identifiers current at the time:
 the branch's unaccepted finite-handoff proposal is now ADR-0287, and its accepted
 follower acknowledgement decision is proposed for identifier-only reconciliation

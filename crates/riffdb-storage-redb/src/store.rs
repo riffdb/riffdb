@@ -516,6 +516,9 @@ pub(crate) struct SharedRedb {
     publication_queue: Mutex<PublicationQueue>,
     next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
+    /// At most one idle physical append owner. It retains no read root,
+    /// semantic history, frame proof, mutation lease or publication authority.
+    idle_journal_lane: Mutex<Option<IdleJournalLane>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
     /// Serializes every move of the spare extent name: the background spare
     /// preparation, checkpoint start, and runtime open.
@@ -1733,6 +1736,12 @@ pub struct RedbDurabilityEpoch {
     composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
     composite_stage: Option<crate::composite_view::RedbCompositeMutationStage>,
     completed: bool,
+}
+
+struct IdleJournalLane {
+    lane: Arc<crate::journal::JournalLane>,
+    database_id: DatabaseId,
+    physical_bytes: usize,
 }
 
 struct JournalRuntime {
@@ -8302,7 +8311,6 @@ impl SharedRedb {
     }
 
     fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
-        drop(runtime.lane);
         let checkpoint = self.capture_checkpoint_root()?;
         let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
         let checkpoint_sequence = read_commit_tail(&checkpoint)?;
@@ -8340,7 +8348,34 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         *frontier = Some(checkpoint);
+        drop(frontier);
         self.clear_composite_publication()?;
+        // The direct writer published every submitted fence before taking
+        // this runtime. Its complete anchor update leaves the physical cursor
+        // unchanged. Keep only that cursor's owner; semantic state is discarded
+        // and must be reconstructed by the ordinary fully checked open path.
+        if Arc::strong_count(&runtime.lane) == 1
+            && runtime
+                .lane
+                .owns_current_file(
+                    self.journal_media.as_ref(),
+                    &crate::journal::journal_path(&self.path),
+                )
+                .map_err(journal_io_error)?
+        {
+            let mut idle = self
+                .idle_journal_lane
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if idle.is_some() {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            *idle = Some(IdleJournalLane {
+                lane: runtime.lane,
+                database_id: runtime.database_id,
+                physical_bytes: runtime.suffix_physical_bytes,
+            });
+        }
         self.note_journal_checkpoint_finished();
         Ok(())
     }
@@ -9489,6 +9524,12 @@ fn frame_changelog_binding(
 
 impl Drop for SharedRedb {
     fn drop(&mut self) {
+        drop(
+            self.idle_journal_lane
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
         // The sealer holds only the media port and paths, but a store that
         // outlived its sealing work would leave the next open to finish it.
         self.join_journal_sealer();

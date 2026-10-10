@@ -28668,6 +28668,27 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-022 retain at most one idle physical journal append worker after a
+      direct checkpoint of an unchanged active extent. Ordinary preparation
+      at f2e0aead fails the final normal window at 102,658 microseconds p95
+      against the unchanged 100,000-microsecond limit. Diagnostic attribution
+      observes 277 new riffdb-journal threads in 10.13 seconds. The existing
+      direct-checkpoint path drops and recreates its worker for the same extent.
+      Preserve that failure; profiling does not prove latency causality.
+      A new unchanged-extent ownership regression fails on the original code.
+      Keep only one physical owner, database identity and cursor byte count;
+      discard all semantic runtime state and reconstruct it through the complete
+      existing root, journal, anchor and tail validators. Reuse requires the
+      same live worker, device/inode, generation, database and physical cursor,
+      with exclusive lane ownership. Replacement, retirement, simulated media
+      and unidentifiable files use the original fresh-open path. Preserve the
+      original fences, extent rotation, checkpoint anchors, spare preparation,
+      formats, stack sizes and acknowledgement boundaries. Four focused native
+      regressions pass on C3D, covering unchanged ownership and snapshot/history
+      semantics, inode replacement, deterministic pending-fence/checkpoint
+      ordering, and retired-worker refusal. Scoped acceptance is running;
+      combined-source full CI and ordinary measured qualification remain required.
+    - >-
       D-021 bounded complete command-segment decoding: exact failed-CI binaries
       reproduce concurrent promotion transport loss and capture a fresh ordinary
       primary core. The matching native backtrace proves a columnar-worker stack

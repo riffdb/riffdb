@@ -480,6 +480,234 @@ fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
     }
 }
 
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(unix)]
+#[test]
+fn direct_checkpoints_retain_one_append_owner_for_an_unchanged_extent() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut append_owner = None;
+    for ordinal in 1..=32 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the audit must retain its journal acknowledgement fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+        let (owner, generation) = {
+            let runtime = ports.shared.journal_runtime.lock().unwrap();
+            let runtime = runtime.as_ref().unwrap();
+            (Arc::downgrade(&runtime.lane), runtime.lane.generation())
+        };
+        if let Some(previous) = &append_owner {
+            assert!(std::sync::Weak::ptr_eq(previous, &owner));
+        }
+        let before = ports.begin_composite_read().unwrap();
+        let history = crate::changelog_v3_cursor::history(&before).unwrap();
+        let audits = before
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap();
+        let lease = ports.shared.mutation_gate.acquire().unwrap();
+        ports
+            .shared
+            .materialize_published_suffix_for_barrier(false)
+            .unwrap();
+        let checkpoint = ports.shared.capture_checkpoint_root().unwrap();
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(&checkpoint).unwrap(),
+            Some(history)
+        );
+        assert_eq!(
+            crate::changelog_v3_cursor::history(&before).unwrap(),
+            history
+        );
+        assert_eq!(
+            before
+                .read_range_to(JournalTable::Audit, &[], None, 64)
+                .unwrap(),
+            audits,
+            "materialization must preserve the already captured read"
+        );
+        assert_eq!(
+            crate::journal::extent_generation_with_media(
+                ports.shared.journal_media.as_ref(),
+                &crate::journal::journal_path(&ports.shared.path),
+            )
+            .unwrap(),
+            Some(generation)
+        );
+        let epoch = ports.shared.durable_commit_epoch();
+        ports
+            .shared
+            .materialize_published_suffix_for_barrier(false)
+            .unwrap();
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        drop(lease);
+        assert!(
+            owner.upgrade().is_some(),
+            "an unchanged active extent must keep its bounded append owner"
+        );
+        append_owner = Some(owner);
+    }
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap()
+            .len(),
+        32
+    );
+    let last_owner = append_owner.unwrap();
+    drop(ports);
+    assert!(last_owner.upgrade().is_none());
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(unix)]
+#[test]
+fn idle_append_owner_cannot_write_an_unlinked_copy_of_the_active_extent() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 1);
+    let old_owner = Arc::downgrade(
+        &ports
+            .shared
+            .journal_runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lane,
+    );
+    let path = crate::journal::journal_path(&ports.shared.path);
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .materialize_published_suffix_for_barrier(false)
+        .unwrap();
+    let replacement = path.with_extension("replacement");
+    std::fs::copy(&path, &replacement).unwrap();
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    crate::journal::sync_parent_directory_with_media(ports.shared.journal_media.as_ref(), &path)
+        .unwrap();
+    drop(lease);
+
+    let ServiceAuditGroupAppend::Submitted(fence) = ports
+        .submit_service_audit_group(&[source_audit_intent(2)])
+        .unwrap()
+    else {
+        panic!("the replacement must retain its ordinary durable fence");
+    };
+    assert_eq!(fence.wait().unwrap().len(), 1);
+    assert!(old_owner.upgrade().is_none());
+    let database =
+        read_identity_from_read_transaction(&ports.shared.database.begin_read().unwrap()).unwrap();
+    let (_, tail) = crate::journal::scan_journal_with_media(
+        ports.shared.journal_media.as_ref(),
+        &path,
+        database,
+        |_| Ok(()),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(tail.last_administration_sequence.unwrap().get(), 2);
+    assert_eq!(tail.audit_count, 1);
+    assert!(!tail.incomplete_tail);
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(all(unix, feature = "test-fixtures"))]
+#[test]
+fn reused_append_owner_keeps_pending_fences_ahead_of_a_direct_checkpoint() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 1);
+    let owner = Arc::downgrade(
+        &ports
+            .shared
+            .journal_runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lane,
+    );
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .materialize_published_suffix_for_barrier(false)
+        .unwrap();
+    drop(lease);
+    let before = ports.begin_composite_read().unwrap();
+    schedule.arm(Point::BeforeJournalSync);
+    let ServiceAuditGroupAppend::Submitted(fence) = ports
+        .submit_service_audit_group(&[source_audit_intent(2)])
+        .unwrap()
+    else {
+        panic!("the reused worker must retain its original receipt");
+    };
+    schedule.wait(Point::BeforeJournalSync);
+    let shared = Arc::clone(&ports.shared);
+    let (entered, entering) = std::sync::mpsc::channel();
+    let checkpoint = std::thread::spawn(move || {
+        let lease = shared.mutation_gate.acquire()?;
+        let _ = entered.send(());
+        let result = shared
+            .publish_pending_journal_prefix()
+            .and_then(|()| shared.materialize_published_suffix_for_barrier(false));
+        drop(lease);
+        result
+    });
+    // Channel arrival is synchronization; timeout only detects a deadlock.
+    let entered = entering.recv_timeout(Duration::from_secs(10));
+    let prior_rows = before.read_range_to(JournalTable::Audit, &[], None, 64);
+    let idle_while_pending = ports
+        .shared
+        .idle_journal_lane
+        .lock()
+        .map(|idle| idle.is_none());
+    let same_owner = ports.shared.journal_runtime.lock().map(|runtime| {
+        runtime
+            .as_ref()
+            .is_some_and(|runtime| std::sync::Weak::ptr_eq(&owner, &Arc::downgrade(&runtime.lane)))
+    });
+    // Unpause before assertions so failures cannot strand the native worker.
+    schedule.release(Point::BeforeJournalSync);
+    let acknowledged = fence.wait();
+    let checkpointed = checkpoint.join();
+    entered.unwrap();
+    assert_eq!(prior_rows.unwrap().len(), 1);
+    assert!(idle_while_pending.unwrap());
+    assert!(same_owner.unwrap());
+    assert_eq!(acknowledged.unwrap().len(), 1);
+    checkpointed.unwrap().unwrap();
+    assert!(owner.upgrade().is_some());
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
 // req: OUT-001, REC-001, END-008
 #[cfg(feature = "test-fixtures")]
 #[test]

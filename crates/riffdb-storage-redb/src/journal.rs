@@ -2489,6 +2489,27 @@ pub(crate) struct JournalLane {
     durable_flushes: Arc<AtomicU64>,
     /// Generation of the extent this lane appends to; a history stub names it.
     generation: u64,
+    file_identity: Option<JournalFileIdentity>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct JournalFileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn journal_file_identity(file: &MediaFile) -> Result<Option<JournalFileIdentity>, JournalIoError> {
+    #[cfg(unix)]
+    if let MediaFile::Fs(file) = file {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata().map_err(|_| JournalIoError::Io)?;
+        return Ok(Some(JournalFileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }));
+    }
+    let _ = file;
+    Ok(None)
 }
 
 impl JournalLane {
@@ -2516,6 +2537,7 @@ impl JournalLane {
         let file = media
             .open_read_write(path)
             .map_err(|_| JournalIoError::Io)?;
+        let file_identity = journal_file_identity(&file)?;
         let (sender, receiver) = mpsc::sync_channel(MAX_JOURNAL_COMMANDS);
         let durable_flushes = Arc::new(AtomicU64::new(0));
         let worker_flushes = Arc::clone(&durable_flushes);
@@ -2538,7 +2560,43 @@ impl JournalLane {
             worker: Some(worker),
             durable_flushes,
             generation,
+            file_identity,
         })
+    }
+
+    /// Only the same owned native file can retain an idle append cursor.
+    /// Simulated or otherwise unidentifiable handles keep the fresh-open path.
+    pub(crate) fn owns_current_file(
+        &self,
+        media: &dyn JournalMedia,
+        path: &Path,
+    ) -> Result<bool, JournalIoError> {
+        let Some(identity) = self.file_identity else {
+            return Ok(false);
+        };
+        let file = media.open_read(path).map_err(|_| JournalIoError::Io)?;
+        Ok(journal_file_identity(&file)? == Some(identity))
+    }
+
+    /// Runs the ordinary complete open checks before reusing physical ownership.
+    pub(crate) fn can_reuse_cursor(
+        &self,
+        media: &dyn JournalMedia,
+        path: &Path,
+        header: &JournalFileHeader,
+        physical_bytes: usize,
+    ) -> Result<bool, JournalIoError> {
+        if self
+            .worker
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+        {
+            return Ok(false);
+        }
+        let state = initialize_or_validate_file_with_media(media, path, header)?;
+        Ok(state.header.generation == self.generation
+            && extent_used_bytes(state.next_position) == physical_bytes
+            && self.owns_current_file(media, path)?)
     }
 
     /// Generation of the extent this lane appends to.
@@ -5544,6 +5602,28 @@ mod tests {
 
     fn sequence(value: u64) -> CommitSequence {
         CommitSequence::new(value).expect("nonzero sequence")
+    }
+
+    // req: STO-030, REC-001, END-008
+    #[cfg(unix)]
+    #[test]
+    fn retired_append_owner_cannot_reacquire_physical_write_ownership() {
+        let path = TestPath::new("retired-append-owner");
+        let header = JournalFileHeader::new(database_id(92), None, [0; HASH_BYTES]);
+        let mut lane = JournalLane::open(&path.0, &header).unwrap();
+        let state = inspect_extent_with_media(&RealJournalMedia, &path.0).unwrap();
+        let physical = extent_used_bytes(state.next_position);
+        assert!(
+            lane.can_reuse_cursor(&RealJournalMedia, &path.0, &header, physical)
+                .unwrap()
+        );
+        drop(lane.sender.take());
+        lane.worker.take().unwrap().join().unwrap();
+        assert!(
+            !lane
+                .can_reuse_cursor(&RealJournalMedia, &path.0, &header, physical)
+                .unwrap()
+        );
     }
 
     fn sample_frame() -> JournalFrame {
