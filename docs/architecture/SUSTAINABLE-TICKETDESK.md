@@ -3683,3 +3683,23 @@ C3D scoped acceptance, native regressions, architecture checks and Clippy pass.
 Compatibility: public interfaces, durable formats and frozen fixtures unchanged.
 Hazards and follow-ups: normal-window latency, the whole 60-second recovery gate,
 final combined-source full CI and complete measured rehearsal remain required.
+
+
+### Current main reconciliation and journal-worker candidate
+
+The maintainer's local main `8c1b6678f` is being integrated before further
+qualification. Main's accepted ADR-0282 and ADR-0283 keep their identities.
+Historical references in this page use the identifiers current at the time:
+the branch's unaccepted finite-handoff proposal is now ADR-0287, and its accepted
+follower acknowledgement decision is proposed for identifier-only reconciliation
+to ADR-0286. See the [review note](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
+The finite-handoff and private-restore proposals remain unimplemented.
+
+Ordinary preparation of the previous full-CI-qualified source completes its
+specified operations and state reconciliation but fails the final normal-window
+latency gate at 102.658 ms p95. A bounded physical append-worker reuse candidate
+has four passing focused regressions on the required host; broader acceptance
+is pending and it has no measured qualification. The
+[live observations](WP-825-LIVE-OBSERVATIONS.md) record the failure and ownership
+invariants. Combined-source full CI, ordinary preparation, whole public recovery
+within 60 seconds and the complete eight-hour rehearsal still gate WP-826.

@@ -22,3 +22,8 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
+  - adr: "0285"
+    status: in-flight
+    note: >-
+      Owned private restore validation custody is proposed on an unmerged
+      WP-825 branch. It is neither accepted nor implemented here.

@@ -124,6 +124,13 @@ commands without page-query or projection-catch-up work.
 | ADR-0146 unary | 1,000 operations | 20 same-operation calls after RiffDB restart | 5 process generations |
 
 - Load duration **&lt; 60 s** is marked `non_evidentiary_window` in the report.
+- A RiffDB measured process generation starts its warmup only after
+  authenticated health reports the background scrub `complete`; the harness
+  logs the wait as `app-baseline-background-scrub-wait-v1 waited_ms=…` and
+  refuses the run if the scrub fails, is cancelled, or runs past one hour. The
+  scrub is one CPU-bound pass after every start (ADR-0182), so a window that
+  began at readiness measured it, not the steady state. Results taken before
+  this rule overlap it.
 - Dual-backend load reps execute as isolated, counterbalanced phases
   (`PG1, R1, R2, PG2, …`). PostgreSQL and its proxy are stopped before a
   RiffDB phase; odd repetitions reverse the order to decorrelate device/cache

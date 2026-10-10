@@ -58,7 +58,7 @@ use riffdb_types::{
 
 use crate::codec::{self, IdempotencyRecordV1};
 use crate::command_authority::{
-    command_authority_head, command_member_at, commit_at, commits_in_physical_row,
+    SegmentMemo, command_authority_head, command_member_at, commit_at, commits_in_physical_row,
     physical_scan_start,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error, transaction_error};
@@ -908,6 +908,9 @@ pub struct RedbStructuralEvidenceSession {
     /// checkpoint's materialized-StoredOutcome-only `idempotency_count` be
     /// derived from redb's IDEMPOTENCY row count instead of a full pass.
     terminal_execution_failure_rows: u64,
+    /// The last command segment the structural walk decoded, reused by the
+    /// service-audit link checks that resolve the same row again.
+    segments: SegmentMemo,
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -1120,6 +1123,7 @@ impl RedbStore {
                 walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 terminal_execution_failure_rows: 0,
+                segments: SegmentMemo::default(),
             });
         }
         // ADR-0182 Decision 1: a startup without a valid clean-close
@@ -1266,6 +1270,7 @@ impl RedbStore {
                 walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 terminal_execution_failure_rows: 0,
+                segments: SegmentMemo::default(),
             });
         }
         // The CLEAN branch above checks bounded terminal roots only. A full
@@ -1442,6 +1447,7 @@ impl RedbStore {
             walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
             walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
             terminal_execution_failure_rows: 0,
+            segments: SegmentMemo::default(),
         })
     }
 }
@@ -2476,6 +2482,7 @@ fn run_checkpoint_sample_windows(
         }
     }
     if audit_bound > 0 {
+        let segments = SegmentMemo::default();
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, audit_bound);
         for start in starts {
             if start == 0 || start > audit_bound {
@@ -2505,6 +2512,7 @@ fn run_checkpoint_sample_windows(
                 let finding = inspect_audit_row(
                     transaction,
                     publication_audits,
+                    &segments,
                     index,
                     key.value(),
                     value.value(),
@@ -2778,6 +2786,7 @@ impl RedbStructuralEvidenceSession {
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         let context = StructuralInspectContext {
             inputs: &self.inputs,
+            segments: &self.segments,
             binding_bundles: &self.binding_bundles,
             publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
             database_id: self.database_id,
@@ -3264,6 +3273,7 @@ fn copy_structural_row(key: &[u8], value: &[u8]) -> Result<(Vec<u8>, Vec<u8>), S
 
 struct StructuralInspectContext<'a> {
     inputs: &'a StartupValidationInputs,
+    segments: &'a SegmentMemo,
     binding_bundles: &'a BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     publication_audits: &'a PublicationAuditCache,
     database_id: DatabaseId,
@@ -3299,8 +3309,15 @@ fn inspect_table_row_from_bytes(
         18 => inspect_projection_apply_row(transaction, key, value),
         19 => inspect_capability_row(transaction, context.inputs, context.database_id, key, value),
         20 => inspect_capability_lookup_row(transaction, key, value),
-        21 => inspect_audit_row(transaction, context.publication_audits, index, key, value),
-        22 => inspect_audit_by_request_row(transaction, key, value),
+        21 => inspect_audit_row(
+            transaction,
+            context.publication_audits,
+            context.segments,
+            index,
+            key,
+            value,
+        ),
+        22 => inspect_audit_by_request_row(transaction, context.segments, key, value),
         23 => inspect_contract_migration_journal_row(key, value),
         24 => inspect_contract_migration_record_row(key, value),
         25 => inspect_contract_write_retirement_row(key, value),
@@ -5194,6 +5211,7 @@ fn inspect_cached_command_audit_row(
 fn inspect_audit_row(
     transaction: &ReadTransaction,
     publication_audits: &PublicationAuditCache,
+    segments: &SegmentMemo,
     index: u64,
     key: &[u8],
     value: &[u8],
@@ -5201,7 +5219,11 @@ fn inspect_audit_row(
     let Ok(sequence) = keys::decode_audit_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let record = match decoded(decode_administration_audit_in_read(transaction, value)) {
+    let record = match decoded(decode_administration_audit_remembering(
+        transaction,
+        segments,
+        value,
+    )) {
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };
@@ -5273,7 +5295,7 @@ fn inspect_audit_row(
             // (k ≤ 2 under the fused-audit write gate) instead of a full AUDIT scan.
             if !service_audit_request_index_exists(transaction, record.request_id(), sequence)? {
                 Some(authoritative(StructuralFindingCode::MissingCrossLink))
-            } else if !service_lifecycle_is_reciprocal(transaction, record)? {
+            } else if !service_lifecycle_is_reciprocal(transaction, segments, record)? {
                 Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
             } else {
                 None
@@ -5329,6 +5351,7 @@ fn service_audit_request_index_exists(
 
 fn inspect_audit_by_request_row(
     transaction: &ReadTransaction,
+    segments: &SegmentMemo,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -5344,7 +5367,7 @@ fn inspect_audit_by_request_row(
             StructuralFindingCode::CrossLinkMismatch,
         )));
     }
-    let audit = audit_record_at(transaction, sequence)?;
+    let audit = audit_record_at_remembering(transaction, segments, sequence)?;
     let record = match audit {
         Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record)))
             if record.request_id() == request_id
@@ -5366,7 +5389,7 @@ fn inspect_audit_by_request_row(
     // index phase proves the row's own target and the target's authoritative
     // command/control-plane link without rebuilding a whole-history command
     // cache. Prefix lifecycle evidence is already bound by the checkpoint.
-    Ok((!service_link_is_valid(transaction, &record)?)
+    Ok((!service_link_is_valid(transaction, segments, &record)?)
         .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
@@ -6448,6 +6471,23 @@ fn decode_administration_audit_in_read(
     codec::decode_administration_audit_with_command_tables(encoded, &commits, &events)
 }
 
+/// [`decode_administration_audit_in_read`] reusing a segment already decoded
+/// from the same row.
+fn decode_administration_audit_remembering(
+    transaction: &ReadTransaction,
+    segments: &SegmentMemo,
+    encoded: &[u8],
+) -> Result<
+    riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredAdministrationAuditRecordV1>,
+    StorageError,
+> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    codec::decode_administration_audit_with_segment_decoder(encoded, &commits, &events, |row| {
+        segments.decode(row)
+    })
+}
+
 /// Decode an administration-owned audit row without resolving command-owned
 /// audit locators through `COMMITS`.
 ///
@@ -6897,6 +6937,21 @@ fn get_commit(
     }
 }
 
+/// [`get_commit`] reusing a segment already decoded from the same row.
+fn get_commit_remembering(
+    transaction: &ReadTransaction,
+    segments: &SegmentMemo,
+    sequence: CommitSequence,
+) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    match crate::command_authority::commit_at_remembering(&commits, &events, sequence, segments) {
+        Ok(value) => Ok(value),
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn get_commit_cached(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
@@ -6921,9 +6976,52 @@ fn get_command_capsule(
     }
 }
 
+/// [`get_command_capsule`] reusing a segment already decoded from the same row.
+fn get_command_capsule_remembering(
+    transaction: &ReadTransaction,
+    segments: &SegmentMemo,
+    sequence: CommitSequence,
+) -> Result<Option<riffdb_storage_api::StoredCommandCapsuleV1>, StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    match crate::command_authority::command_member_at_remembering(
+        &commits, &events, sequence, segments,
+    ) {
+        Ok(member) => Ok(member.map(|value| value.into_base())),
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn get_provenance(
     transaction: &ReadTransaction,
     id: riffdb_types::ProvenanceId,
+) -> Result<Option<riffdb_storage_api::StoredProvenanceRecordV1>, StorageError> {
+    get_provenance_with(transaction, id, |sequence| {
+        get_command_capsule(transaction, sequence)
+    })
+}
+
+/// [`get_provenance`] reusing a segment already decoded from the same row.
+fn get_provenance_remembering(
+    transaction: &ReadTransaction,
+    segments: &SegmentMemo,
+    id: riffdb_types::ProvenanceId,
+) -> Result<Option<riffdb_storage_api::StoredProvenanceRecordV1>, StorageError> {
+    get_provenance_with(transaction, id, |sequence| {
+        get_command_capsule_remembering(transaction, segments, sequence)
+    })
+}
+
+fn get_provenance_with(
+    transaction: &ReadTransaction,
+    id: riffdb_types::ProvenanceId,
+    command_capsule: impl FnOnce(
+        CommitSequence,
+    ) -> Result<
+        Option<riffdb_storage_api::StoredCommandCapsuleV1>,
+        StorageError,
+    >,
 ) -> Result<Option<riffdb_storage_api::StoredProvenanceRecordV1>, StorageError> {
     let key = keys::encode_provenance_key(id);
     match get_decoded(
@@ -6942,7 +7040,7 @@ fn get_provenance(
                 Ok(locator) => locator,
                 Err(_) => return Ok(None),
             };
-            Ok(get_command_capsule(transaction, locator.commit_sequence())?
+            Ok(command_capsule(locator.commit_sequence())?
                 .map(|capsule| capsule.provenance().clone())
                 .filter(|record| record.provenance_id() == id))
         }
@@ -8036,6 +8134,28 @@ fn audit_record_at(
     .map(Some))
 }
 
+/// [`audit_record_at`] reusing a segment already decoded from the same row.
+fn audit_record_at_remembering(
+    transaction: &ReadTransaction,
+    segments: &SegmentMemo,
+    sequence: riffdb_types::AdministrationSequence,
+) -> Result<
+    Result<Option<riffdb_storage_api::StoredAdministrationAuditRecordV1>, StructuralFindingCode>,
+    StorageError,
+> {
+    let key = keys::encode_audit_key(sequence);
+    let table = transaction.open_table(AUDIT).map_err(table_error)?;
+    let Some(value) = table.get(key.as_slice()).map_err(precommit_storage_error)? else {
+        return Ok(Ok(None));
+    };
+    Ok(decoded(decode_administration_audit_remembering(
+        transaction,
+        segments,
+        value.value(),
+    ))
+    .map(Some))
+}
+
 fn capability_record_at(
     transaction: &ReadTransaction,
     capability_id: riffdb_types::CapabilityId,
@@ -8233,7 +8353,7 @@ fn bootstrap_is_consistent(
             .contains(&riffdb_types::ServiceAuditTargetV1::Capability(
                 marker.capability_id(),
             ))
-        && service_lifecycle_is_reciprocal(transaction, &started)?)
+        && service_lifecycle_is_reciprocal(transaction, &SegmentMemo::default(), &started)?)
 }
 
 enum ObservedServiceLifecycle {
@@ -8246,6 +8366,7 @@ enum ObservedServiceLifecycle {
 
 fn service_lifecycle_is_reciprocal(
     transaction: &ReadTransaction,
+    segments: &SegmentMemo,
     target: &riffdb_storage_api::StoredServiceAuditRecordV1,
 ) -> Result<bool, StorageError> {
     // Linear in the number of service-audit rows for this request_id (bounded by
@@ -8289,8 +8410,9 @@ fn service_lifecycle_is_reciprocal(
         else {
             return Ok(false);
         };
-        let Ok(record) = decoded(decode_administration_audit_in_read(
+        let Ok(record) = decoded(decode_administration_audit_remembering(
             transaction,
+            segments,
             audit_value.value(),
         )) else {
             return Ok(false);
@@ -8307,7 +8429,7 @@ fn service_lifecycle_is_reciprocal(
         }
         target_seen |= record.administration_sequence() == target.administration_sequence()
             && record == *target;
-        if !service_link_is_valid(transaction, &record)? {
+        if !service_link_is_valid(transaction, segments, &record)? {
             return Ok(false);
         }
         lifecycle = Some(match lifecycle {
@@ -8383,6 +8505,7 @@ fn service_audit_common_matches(
 
 fn service_link_is_valid(
     transaction: &ReadTransaction,
+    segments: &SegmentMemo,
     record: &riffdb_storage_api::StoredServiceAuditRecordV1,
 ) -> Result<bool, StorageError> {
     match record.link() {
@@ -8419,7 +8542,8 @@ fn service_link_is_valid(
             {
                 return Ok(false);
             }
-            let commit_side = match get_commit(transaction, commit_sequence)? {
+            let commit_side = match get_commit_remembering(transaction, segments, commit_sequence)?
+            {
                 Some(commit) => commit.provenance_id() == provenance_id,
                 None => {
                     // Audit history is retained across prune; the linked commit
@@ -8433,20 +8557,24 @@ fn service_link_is_valid(
                     )
                 }
             };
-            let provenance_side = match get_provenance(transaction, provenance_id)? {
-                Some(provenance) => provenance.commit_sequence() == commit_sequence,
-                // ADR-0102: a segmented command owns no independent provenance
-                // row -- provenance identity is a rebuildable index and the
-                // authoritative record lives inside the canonical segment
-                // member. Reciprocate against that member instead of reading a
-                // row the segmented writer never emits.
-                // `known_command_and_control_plane_replays_keep_the_exact_succeeded_link`
-                // goes red if this arm is removed.
-                None => get_command_capsule(transaction, commit_sequence)?.is_some_and(|capsule| {
-                    capsule.provenance().provenance_id() == provenance_id
-                        && capsule.provenance().commit_sequence() == commit_sequence
-                }),
-            };
+            let provenance_side =
+                match get_provenance_remembering(transaction, segments, provenance_id)? {
+                    Some(provenance) => provenance.commit_sequence() == commit_sequence,
+                    // ADR-0102: a segmented command owns no independent provenance
+                    // row -- provenance identity is a rebuildable index and the
+                    // authoritative record lives inside the canonical segment
+                    // member. Reciprocate against that member instead of reading a
+                    // row the segmented writer never emits.
+                    // `known_command_and_control_plane_replays_keep_the_exact_succeeded_link`
+                    // goes red if this arm is removed.
+                    None => {
+                        get_command_capsule_remembering(transaction, segments, commit_sequence)?
+                            .is_some_and(|capsule| {
+                                capsule.provenance().provenance_id() == provenance_id
+                                    && capsule.provenance().commit_sequence() == commit_sequence
+                            })
+                    }
+                };
             Ok(commit_side && provenance_side)
         }
         riffdb_types::ServiceAuditLinkV1::ControlPlane {

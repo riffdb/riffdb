@@ -172,8 +172,11 @@ impl BackgroundScrubStatus {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::time::Instant::now());
     }
 
-    fn note_rows(&self, rows: u64) {
-        let _ = self.rows_walked.fetch_add(rows, Ordering::AcqRel);
+    /// Records the session's cumulative structural row count after a page.
+    /// The session reports a running total, so this replaces the observation
+    /// rather than adding to it; adding counted every row once per later page.
+    fn record_rows_walked(&self, total: u64) {
+        self.rows_walked.store(total, Ordering::Release);
     }
 
     /// The closed scrub state.
@@ -503,7 +506,7 @@ fn run_scrub(
                     record_failure(status, sinks, ScrubFailure::StructuralFinding, false);
                     return;
                 }
-                status.note_rows(session.rows_walked());
+                status.record_rows_walked(session.rows_walked());
                 // Yield so the writer and workers keep their share of the core.
                 thread::yield_now();
             }
@@ -753,6 +756,18 @@ mod tests {
             ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
             ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
         )
+    }
+
+    // req: REC-007, REC-008
+    /// The reported row count is the session's running total, not a sum of
+    /// running totals: three pages of 64 rows report 192, never 384.
+    #[test]
+    fn scrub_row_observation_is_the_running_total_not_a_sum_of_totals() {
+        let status = BackgroundScrubStatus::new();
+        for total in [64, 128, 192] {
+            status.record_rows_walked(total);
+        }
+        assert_eq!(status.rows_walked(), 192);
     }
 
     // req: REC-001, REC-002, REC-007

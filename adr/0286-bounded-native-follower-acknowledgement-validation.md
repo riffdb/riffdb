@@ -1,13 +1,15 @@
 ---
-# Renumbered from ADR-0280 during main integration; the acceptance reference
-# below retains the identifier used when the maintainer accepted the exact text.
-adr: "0283"
+# Originally ADR-0280, then ADR-0283. Local main now owns ADR-0283.
+# This identifier-only reconciliation preserves the exact accepted decision
+# and original acceptance references; identifier reconciliation approved
+# by the maintainer in session, 2026-10-10.
+adr: "0286"
 title: Bounded Native Follower Acknowledgement Validation
 status: accepted
 tier: guarantee
 date: 2026-10-07
 accepted: '2026-10-07'
-acceptance: 'maintainer, in session, 2026-10-07: i accept, in response to the exact-text acceptance request for ADR-0280; renumbering to ADR-0283 and reference updates approved by maintainer, in session, 2026-10-09: "i approve"'
+acceptance: 'maintainer, in session, 2026-10-07: i accept, in response to the exact-text acceptance request for ADR-0280; renumbering to ADR-0283 and reference updates approved by maintainer, in session, 2026-10-09: "i approve"; identifier-only ADR-0283 to ADR-0286 reconciliation approved by maintainer, in session, 2026-10-10: "Approve the identifier-only reconciliation"'
 requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279]
 amends: [ADR-0240, ADR-0268, ADR-0271]
 supersedes: []
@@ -20,7 +22,7 @@ review_triggers:
   - Registration, retirement, bootstrap attachment, promotion, startup, ordering, durability, public protocols or existing workload bounds change.
   - Validation runs as a full-history walk while holding the writer, or proof storage exceeds the existing bounded owner capacity.
 ---
-# ADR-0283: Bounded Native Follower Acknowledgement Validation
+# ADR-0286: Bounded Native Follower Acknowledgement Validation
 
 ## Context
 

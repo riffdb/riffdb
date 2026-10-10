@@ -6,8 +6,8 @@ tier: guarantee
 date: 2026-10-07
 accepted: '2026-10-07'
 acceptance: 'maintainer, in session, 2026-10-07: Accepted, in response to the exact-text acceptance and WP-825 scope request for ADR-0281; maintainer, in session, 2026-10-09: Approve the identifier-only reconciliation, in response to the ADR-0281 to ADR-0284 metadata and reference reconciliation request'
-requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279, ADR-0283]
-amends: [ADR-0268, ADR-0283]
+requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279, ADR-0286]
+amends: [ADR-0268, ADR-0286]
 supersedes: []
 requirements: [REP-003, REP-006, REC-001, END-008, LOG-001]
 packages: [WP-825]
@@ -38,7 +38,7 @@ Originally accepted as ADR-0281 on 2026-10-07. Main independently assigned
 ADR-0281 to changelog replay root validation; this record is renumbered
 ADR-0284 to preserve both decisions and their original acceptance history.
 
-After ADR-0283's acknowledgement and shutdown repairs, the unchanged required-host
+After ADR-0286's acknowledgement and shutdown repairs, the unchanged required-host
 replication suite passes 25 cases and fails initial bootstrap held attachment at
 its original 60-second deadline. A separate diagnostic build on the 8-vCPU,
 32-GiB Linux SSD host preserves the same workload and deadlines. Bootstrap source
@@ -52,7 +52,7 @@ work, not its exclusive responsibility for the timeout or release throughput.
 
 Every manifest/page custody check calls the complete retained-history validator.
 An exact held artifact still requires fresh source authority before releasing
-bytes; retaining old authorization is unsafe. ADR-0283 explicitly excludes
+bytes; retaining old authorization is unsafe. ADR-0286 explicitly excludes
 bootstrap validation. Replacing repeated source walks with a complete continuing
 proof therefore needs exact human acceptance. Receiver construction, startup,
 projection rebuild and publication validators remain outside this proposal.

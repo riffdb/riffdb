@@ -234,6 +234,13 @@ pub(crate) fn discard_replaced_derived_sidecar(database: &Path) -> Result<(), St
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Filesystem probes for the derived sidecar on this thread, so tests can
+    /// hold how often reads stat it.
+    pub(crate) static DERIVED_PATH_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn empty_derived_read() -> Result<redb::ReadTransaction, StorageError> {
     static EMPTY: std::sync::OnceLock<Database> = std::sync::OnceLock::new();
     if EMPTY.get().is_none() {
@@ -438,6 +445,13 @@ pub(crate) struct SharedRedb {
     /// holder of this opens; everyone else waits and then reads the `OnceLock`.
     derived_open: std::sync::Mutex<()>,
     derived_in_memory: bool,
+    /// Set once a derived read has observed that the sidecar file does not
+    /// exist. While this handle is open nothing else creates it: this handle
+    /// creates it only through `derived_database`, which publishes `derived`
+    /// before it returns and is checked first by every read, and each offline
+    /// creator requires the stopped database. The absence therefore stays true
+    /// until `derived` is set, and a read need not stat the file again.
+    derived_absent: AtomicBool,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
     /// The journal media port serving every side-file operation of this
@@ -5644,8 +5658,16 @@ impl RedbOperationalPorts {
         if let Some(database) = self.shared.derived.get() {
             return database.begin_read().map_err(transaction_error);
         }
-        if !self.shared.derived_in_memory && !derived_store_path(&self.shared.path).exists() {
-            return empty_derived_read();
+        if !self.shared.derived_in_memory {
+            if self.shared.derived_absent.load(Ordering::Acquire) {
+                return empty_derived_read();
+            }
+            #[cfg(test)]
+            DERIVED_PATH_PROBES.with(|probes| probes.set(probes.get() + 1));
+            if !derived_store_path(&self.shared.path).exists() {
+                self.shared.derived_absent.store(true, Ordering::Release);
+                return empty_derived_read();
+            }
         }
         self.shared
             .derived_database()?

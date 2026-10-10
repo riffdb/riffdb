@@ -1871,7 +1871,7 @@ or a smaller workload. ADR-0283 was accepted exactly in session on 2026-10-07 fo
 extension. Its acceptance and commit-layer scope are recorded separately
 before native implementation. Development validation is in progress; no
 final-source runtime qualification is established. The
-[follower acknowledgement review](WP-825-ADR-0283-IMPLEMENTATION-REVIEW.md)
+[follower acknowledgement review](WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
 records the concrete boundary and remaining proofs. Other earlier intermittent
 failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
 
@@ -3661,3 +3661,64 @@ C3D scoped acceptance, native regressions, architecture checks and Clippy pass.
 Compatibility: public interfaces, durable formats and frozen fixtures unchanged.
 Hazards and follow-ups: normal-window latency, the whole 60-second recovery gate,
 final combined-source full CI and complete measured rehearsal remain required.
+
+
+### Ordinary preparation fails the unchanged normal-window latency gate
+
+The combined native fixes at `f2e0aead` pass full CI, including four-language
+remote conformance and the complete acceptance battery, on the required host.
+An ordinary 1,500-second preparation then completes all 150,000 commands and
+600,000 reads at the unchanged offered rates, with no post-duration completions,
+and independently reconciles all 65,536 tickets. Its final normal five-minute
+window has p95 102.658 ms against the unchanged limit below 100 ms. This is a
+genuine preparation failure. Archive reconciliation does not run after that
+failure. No whole restore, eight-hour campaign or 24-hour run follows it.
+
+A separate profiling run observes 277 new `riffdb-journal` threads in 10.13
+seconds. Native direct checkpoints retire the append worker even when its
+physical active extent has not changed. Current provider charge remains below
+9 MiB against the 1-GiB aggregate budget; the original final window has no
+projection backlog. These observations identify native work to examine; they do
+not establish that thread churn caused the latency failure.
+
+### Reuse physical append ownership without retaining semantic authority
+
+The candidate retains at most one idle append worker after the original complete
+direct-checkpoint anchor and publication steps. It stores the physical owner,
+database identity and byte cursor only. Every semantic runtime field, pinned
+read root and history proof is discarded and rebuilt through the original
+complete open path. Reuse requires exclusive ownership, a live worker, identical
+device/inode, generation, database and physical cursor, and the original complete
+file validation. A replaced file or retired worker cannot acquire this path;
+simulated and unidentifiable media retain fresh opening. Existing fences,
+checkpoint materialization, rotation, spare preparation, formats and durability
+boundaries remain unchanged. Closing the store releases the idle worker.
+
+The unchanged-extent regression fails on the original code and passes with the
+candidate. Four focused regressions pass on the required host: complete history
+and old-snapshot equivalence across 32 direct checkpoints, no writes to a
+replaced inode, a deterministic pending-fence/direct-checkpoint schedule, and
+retired-worker refusal. Broader native acceptance is still running. These are
+component results; the candidate has no full-CI or campaign qualification yet.
+
+### Integrate the maintainer's newer local main
+
+Local main `8c1b6678f` adds per-walk command-segment reuse, corrected scrub row
+observations, derived-sidecar absence observation, a pinned transport write
+improvement and benchmark scrub completion handling. The integration retains
+both shared-evidence and segment-reuse tests. The WP-825 workload and fault
+clocks are unchanged. Historical ADR-0282/0283 references above name their
+identities at the time; the branch proposals and follower record are being
+reconciled as ADR-0287 and ADR-0286, respectively. See the
+[identifier review](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
+
+Package: WP-825. Tier: guarantee. Behavior: bounded physical append-worker
+ownership under existing validation and checkpoint semantics; integrate accepted
+main improvements. Checks: original ownership regression fails; all four
+candidate regressions pass on C3D; broader and combined-source acceptance remain
+pending. Compatibility: no public interface, durable format or fixture changes
+from the worker candidate. Handbook behavior remains unchanged by that internal
+ownership change; main's startup and performance handbook changes are retained.
+Hazards and follow-ups: normal-window latency, whole public recovery within
+60 seconds, final combined-source full CI and the complete measured rehearsal
+remain required. WP-825 stays open.
