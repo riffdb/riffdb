@@ -465,7 +465,12 @@ writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
 clean eligibility.
 
-Private staged-history hydration and final sealing refuse engine repair requests.
+Private staged-history hydration, the ordinary staged-authentication startup
+open, and final sealing refuse engine repair requests. The authentication open
+still completes the existing storage, catalog, retained-metadata, bootstrap and
+allocator startup checks before checking the retained bearer and policy.
+Healthy startup preparation remains supported; ordinary primary crash recovery
+retains its existing recovery behavior.
 A repaired private stage cannot gain publication authority from a subsequent
 successful integrity check. Before incarnation stamping, the sealed owner also
 rechecks its primary, journal, and format marker checksums; intended metadata

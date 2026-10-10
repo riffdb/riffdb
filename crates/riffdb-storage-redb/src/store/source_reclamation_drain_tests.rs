@@ -1264,3 +1264,248 @@ fn unknown_pending_tail_never_requests_publication_or_checkpoint() {
 
 #[path = "source_reclamation_license_tests.rs"]
 mod license_tests;
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn missing_spare_requests_reuse_inflight_preparation_without_inventing_publication() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    // The physical-history fixture bypasses ordinary startup preparation.
+    // Enter and abort its ordinary write path before opening journal runtimes.
+    ports
+        .begin_deferred_service_audit_write()
+        .unwrap()
+        .abort()
+        .unwrap();
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    schedule.arm(Point::BeforeSparePreparation);
+    ports
+        .shared
+        .start_journal_sealer(JournalFileHeader::new(
+            states[0].lineage().database_id(),
+            None,
+            [0; 32],
+        ))
+        .unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_completion = Arc::clone(
+        &ports
+            .shared
+            .journal_sealer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .finished,
+    );
+    let first_published = ports
+        .shared
+        .source_checkpoint_publication_pending()
+        .unwrap();
+    let observations = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut invented_publication = false;
+        let mut replaced_preparation = false;
+        for _ in 0..32 {
+            let runtime = {
+                let mut runtime = ports.shared.journal_runtime().unwrap();
+                assert_eq!(runtime.as_ref().unwrap().suffix_transitions, 0);
+                assert_eq!(runtime.as_ref().unwrap().unpublished_transitions, 0);
+                runtime.take().unwrap()
+            };
+            drop(runtime);
+            invented_publication |= ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap();
+            replaced_preparation |= !Arc::ptr_eq(
+                &first_completion,
+                &ports
+                    .shared
+                    .journal_sealer
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .finished,
+            );
+        }
+        (invented_publication, replaced_preparation)
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    let (invented_publication, replaced_preparation) = observations.unwrap();
+    assert!(
+        !first_published,
+        "first extent publication completed before spare preparation"
+    );
+    assert!(spare.is_file(), "the original preparation must finish");
+    assert!(
+        !invented_publication && !replaced_preparation,
+        "missing spare demand must reuse in-flight preparation without inventing publication",
+    );
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn concurrent_spare_demand_reuses_the_active_job_without_waiting_for_preparation() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_completion = Arc::clone(
+        &ports
+            .shared
+            .journal_sealer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .finished,
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let (send, receive) = std::sync::mpsc::channel();
+    let mut producers = Vec::new();
+    for _ in 0..2 {
+        let shared = Arc::clone(&ports.shared);
+        let barrier = Arc::clone(&barrier);
+        let send = send.clone();
+        let header = header.clone();
+        producers.push(std::thread::spawn(move || {
+            barrier.wait();
+            let _ = send.send(shared.ensure_journal_spare(header));
+        }));
+    }
+    drop(send);
+    barrier.wait();
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for _ in 0..2 {
+            receive
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("preparation demand must return while the worker is paused")
+                .expect("existing preparation owns the demand");
+        }
+        let same_completion = Arc::ptr_eq(
+            &first_completion,
+            &ports
+                .shared
+                .journal_sealer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .finished,
+        );
+        let pending = ports
+            .shared
+            .source_checkpoint_publication_pending()
+            .unwrap();
+        (same_completion, pending)
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    for producer in producers {
+        producer.join().unwrap();
+    }
+    ports.shared.join_journal_sealer();
+    let (same_completion, pending) = observed.unwrap();
+    assert!(
+        same_completion,
+        "concurrent demand must retain one preparation capability"
+    );
+    assert!(
+        !pending,
+        "spare demand cannot invalidate completed extent publication"
+    );
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn spare_demand_keeps_failed_extent_publication_pending() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let sealing = crate::journal::sealing_journal_path(&ports.shared.path);
+    std::fs::write(&sealing, b"invalid-sealing-header").unwrap();
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ports.shared.ensure_journal_spare(header).unwrap();
+        let pending = ports
+            .shared
+            .source_checkpoint_publication_pending()
+            .unwrap();
+        let mut control = ports.replication_source_control();
+        let reclaimed = control.reclaim_history_online().unwrap();
+        (pending, reclaimed.0, control.receipt_validation_pending())
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    let (pending, reclaimed, validating) = observed.unwrap();
+    assert!(
+        pending,
+        "preparation demand cannot certify failed publication"
+    );
+    assert_eq!(reclaimed, 0);
+    assert!(!validating);
+    assert_eq!(std::fs::read(&sealing).unwrap(), b"invalid-sealing-header");
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[test]
+fn completed_failed_spare_preparation_can_retry_without_replacing_source_history() {
+    let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let preparing = crate::journal::preparing_spare_journal_path(&ports.shared.path);
+    std::fs::create_dir(&preparing).unwrap();
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    ports.shared.ensure_journal_spare(header.clone()).unwrap();
+    ports.shared.join_journal_sealer();
+    assert!(
+        !spare.exists(),
+        "the injected preparation failure must occur"
+    );
+    std::fs::remove_dir(&preparing).unwrap();
+    ports.shared.ensure_journal_spare(header).unwrap();
+    ports.shared.join_journal_sealer();
+    assert!(
+        spare.is_file(),
+        "a completed failed preparation must allow a fresh attempt"
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &ports.shared.database.begin_read().unwrap(),
+        )
+        .unwrap()
+        .unwrap(),
+        *states.last().unwrap(),
+    );
+}

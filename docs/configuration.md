@@ -154,6 +154,11 @@ older pinned snapshots, and an active background scrub keep the file alive. The
 lane never creates a source acknowledgement or discards a receipt to free space.
 One retired file can supply the next preallocated journal spare; excess eligible
 files are deleted. File work runs outside the ordered writer gate.
+Repeated requests for a missing spare share the unfinished preparation job and
+its completion signal. They do not queue additional waiting sealer threads or
+create new extent-publication obligations. Each actual extent publication keeps
+its own completion tracking. A completed failed preparation permits a fresh
+attempt; it does not certify a failed extent publication.
 The lane holds no exclusive lease and opens no second writer. A writer waits
 behind at most the one step in progress. After each attempt that took the writer gate, the lane rests
 nineteen times the time it held the gate, so it holds the writer at most about

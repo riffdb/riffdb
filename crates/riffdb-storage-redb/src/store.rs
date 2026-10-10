@@ -2530,6 +2530,39 @@ impl RedbStore {
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
         media: Option<RedbStorageMedia>,
     ) -> Result<Self, StorageError> {
+        Self::open_inner_with_repair_policy(
+            path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            media,
+            engine_open::EngineRepairPolicy::Recover,
+        )
+    }
+
+    pub(crate) fn open_private_stage_authorization(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner_with_repair_policy(
+            path,
+            application_commit_profile,
+            None,
+            changelog_port,
+            None,
+            engine_open::EngineRepairPolicy::Refuse,
+        )
+    }
+
+    fn open_inner_with_repair_policy(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        media: Option<RedbStorageMedia>,
+        repair_policy: engine_open::EngineRepairPolicy,
+    ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
         let (engine_backend, journal_media) = match media {
             Some(media) => (Some(media.engine), media.journal),
@@ -2544,7 +2577,7 @@ impl RedbStore {
         ) {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
-        Self::open_after_format_preflight(
+        Self::open_after_format_preflight_with_repair_policy(
             OpenMode::Source,
             &path,
             application_commit_profile,
@@ -2554,6 +2587,7 @@ impl RedbStore {
                 .then_some(format_preflight),
             engine_backend,
             journal_media,
+            repair_policy,
         )
     }
 
@@ -7912,16 +7946,42 @@ impl SharedRedb {
         &self,
         spare_header: crate::journal::JournalFileHeader,
     ) -> Result<(), StorageError> {
+        let sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.start_journal_sealer_locked(spare_header, sealer)
+    }
+
+    /// Preparation demand creates no new extent-publication obligation. Reuse
+    /// an unfinished job instead of growing a chain of threads waiting for it.
+    /// Rotation resets a completed spare to its actual successor header before
+    /// consuming it, so repeated demand need not queue intermediate headers.
+    pub(super) fn ensure_journal_spare(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        let sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if sealer.as_ref().is_some_and(|job| !job.handle.is_finished()) {
+            return Ok(());
+        }
+        self.start_journal_sealer_locked(spare_header, sealer)
+    }
+
+    fn start_journal_sealer_locked(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+        mut sealer: std::sync::MutexGuard<'_, Option<JournalSealer>>,
+    ) -> Result<(), StorageError> {
         let media = Arc::clone(&self.journal_media);
         let path = self.path.clone();
         let spare_lock = Arc::clone(&self.journal_spare);
         let database_id = spare_header.database_id();
         #[cfg(feature = "test-fixtures")]
         let controller = self.test_controller.clone();
-        let mut sealer = self
-            .journal_sealer
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let previous = sealer.take();
         let publication_complete = Arc::new(AtomicBool::new(false));
         let published = Arc::clone(&publication_complete);

@@ -147,7 +147,7 @@ impl SharedRedb {
                 drop(spare_guard);
             } else {
                 drop(spare_guard);
-                self.start_journal_sealer(spare_header)?;
+                self.ensure_journal_spare(spare_header)?;
             }
             *runtime = Some(JournalRuntime {
                 changelog_history,

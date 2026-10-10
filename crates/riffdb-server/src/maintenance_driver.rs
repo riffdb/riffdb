@@ -1404,8 +1404,8 @@ fn validate_and_authorize_stage(
     // `stage_restore` and its recovery counterpart return only after the
     // storage-owned complete exact-end scrub, so no copied CLEAN certificate
     // can stand in for ADR-0050's pre-authorization validation.
-    let staged_startup = open_redb_startup_with_commit_profile(
-        stage.staged_database_file(),
+    let staged_startup = crate::startup::open_staged_redb_startup_with_commit_profile(
+        &stage,
         dependencies.startup_inputs.clone(),
         &dependencies.database_ids,
         dependencies.application_commit_profile,
@@ -2477,6 +2477,84 @@ mod tests {
             receipt.current_phase(),
             OfflineMaintenanceReceiptPhaseV1::Succeeded
         );
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn staged_driver_refuses_engine_repair_before_bearer_authentication() {
+        for (needs_repair, seed) in [(false, 0xc1), (true, 0xc2)] {
+            let StagedRestoreFixture {
+                root,
+                database,
+                storage,
+                receipt,
+                prepared,
+                lifecycle: _lifecycle,
+            } = staged_restore_fixture("auth-repair-boundary", seed, 1);
+            drop(prepared);
+            let backup_primary = root
+                .path()
+                .join("backups")
+                .join("driver-restore-fixture")
+                .join("database.redb");
+            let backup_before = std::fs::read(&backup_primary).expect("backup primary");
+            let target_before = std::fs::read(&database).expect("configured target");
+            assert!(backup_before.len() <= 64 * 1024 * 1024);
+            assert!(target_before.len() <= 64 * 1024 * 1024);
+            let stage = storage
+                .stage_restore(
+                    receipt.operation_id(),
+                    receipt.backup_name(),
+                    fixture_startup_inputs(),
+                )
+                .expect("completely validated private stage");
+            if needs_repair {
+                let path = stage.staged_database_file();
+                let mut primary = std::fs::read(path).expect("staged primary");
+                assert_eq!(
+                    &primary[..9],
+                    &[b'r', b'e', b'd', b'b', 26, 10, 169, 13, 10]
+                );
+                assert_eq!(primary[9] & 2, 0, "clean engine flag before fixture damage");
+                primary[9] = (primary[9] | 2) & !4;
+                std::fs::write(path, primary).expect("require complete allocator repair");
+            }
+            let clocks = ProductionWallClocks::new();
+            let recovery = MaintenanceRecoveryController::disabled();
+            let dependencies = fixture_dependencies(&clocks, &recovery, None);
+            let result = validate_and_authorize_stage(
+                stage,
+                RetainedOpaqueCredential::new(b"deliberately-invalid-staged-credential")
+                    .expect("bounded invalid credential"),
+                receipt.operation_id(),
+                receipt.input_hash(),
+                &dependencies,
+            );
+            assert_eq!(
+                std::fs::read(&backup_primary).expect("unchanged backup"),
+                backup_before
+            );
+            assert_eq!(
+                std::fs::read(&database).expect("unchanged target"),
+                target_before
+            );
+            eprintln!(
+                "staged_driver_repair_boundary needs_repair={needs_repair} result={result:?}"
+            );
+            if needs_repair {
+                assert!(
+                    matches!(result, Err(DriverFault::Validation))
+                        || matches!(result, Err(DriverFault::ArtifactStorage(ref e))
+                            if e.kind() == StorageErrorKind::CorruptData),
+                    "repair-needed stage must be refused before bearer authentication",
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(DriverFault::StagedAuthorization)),
+                    "healthy stage must reach the fresh invalid-bearer check"
+                );
+            }
+        }
     }
 }
 

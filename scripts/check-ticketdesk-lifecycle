@@ -270,9 +270,13 @@ def main():
         require(not any((args.manifest, args.receipt, args.manifest_sha256,
                          args.short_rehearsal)), "arguments")
         root = Path(__file__).resolve().parent.parent
+        # The discovery child does not inherit this script's sys.path. Supply
+        # the first-party module root before any test module is imported;
+        # discovery order and an ambient PYTHONPATH must not select coverage.
+        environment = dict(os.environ, PYTHONPATH=str(root / "scripts"))
         return subprocess.run([sys.executable, "-m", "unittest", "discover", "-s",
                                str(root / "tests/ticketdesk_lifecycle"), "-p", "test_*.py"],
-                              cwd=root, check=False).returncode
+                              cwd=root, env=environment, check=False).returncode
     require(all((args.manifest, args.receipt, args.manifest_sha256)), "arguments")
     manifest, observed = read_object(args.manifest)
     require(observed == digest(args.manifest_sha256), "manifest_identity")

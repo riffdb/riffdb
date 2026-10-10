@@ -17,23 +17,47 @@ campaign has not run, and no 24-hour qualification has started. Final combined
 source CI, four-language conformance, three measured physical retirements in the
 final incarnation and the final six quiet hours remain required.
 
-The latest 1,500-second ordinary preparation completes 150,000 commands and
-600,000 reads with zero retries or post-duration operations. Its two normal
-windows pass, with p95 values of 69.348 and 97.107 ms. Actual sink recovery ends
-at second 607.720, so the 600–900-second window overlaps that fault. This result
-does not resolve the earlier genuine normal-window p95 failure of 101.766 ms,
-whose sink recovery ended before second 600. Preserve both observations and the
-original workload and latency thresholds.
+The latest ordinary preparation refuses resource qualification after three
+bounded attempts cannot obtain a stable server task census. A subsequent
+instrumented diagnostic completes 150,000 commands and 600,000 reads without
+retries, but fails latency and does not qualify ordinary performance. The
+earlier genuine normal-window p95 failure of 101.766 ms also remains open.
+Preserve the failed populations, original workload and qualification thresholds.
 
-The committed native implementation takes 100.0 seconds to materialize the
-populated staged copy, compared with 121.5 seconds before sequencing its existing
-private history normalization ahead of complete fencing validation. Scoped
-acceptance passes: 1,364 native tests, two existing skips, 59 architecture checks
-and Clippy. Tested source and all 100 original backup artifacts remain unchanged.
-This component still exceeds the unchanged 60-second limit for the **whole**
-public backup, restore and reconciliation sequence. A profile of the combined
-implementation is running. Neither a component timing nor a passing diagnostic
-replaces the complete campaign gate.
+The latest populated native component measurement, before the two current
+native fixes, takes 100.1 seconds. This exceeds the unchanged 60-second limit for the **whole** public backup,
+restore, restart and reconciliation sequence. A private-stage custody redesign
+is proposed separately and remains unaccepted; no such redesign is implemented.
+The narrower repair-refusal and spare-demand fixes preserve the existing native
+ownership and complete validation boundaries.
+
+Combined-source workspace tests pass, but that full CI attempt then fails the
+checker launcher because eight test modules cannot import its first-party
+library. The corrected launcher passes all 355 self-tests, the previously
+blocked CI checks and four-language remote conformance. The next full CI attempt
+passes 609 server unit tests and fails the concurrent promotion fixture with
+transport unavailability. Later whole-fixture passes on unchanged source,
+including the original test executable, do not explain or dismiss that failure.
+The next complete CI attempt reproduces the failure: all eight workers lose
+transport in the first standard-profile, caught-up case, and the daemon stdout
+channel closes. Bounded
+failure reporting preserves every fencing assertion and request deadline;
+follow-up natural-exit evidence uses the same failure-only diagnostic budget.
+A later untraced fixture run passes promotion but fails exact-prefix follower
+catch-up at sequence 391 of 408 within the existing 60-second deadline. That
+result is preserved separately. Exact failed-CI executables subsequently
+reproduce promotion transport loss and capture an ordinary primary core. The
+matching backtrace confirms a columnar-worker stack overflow during complete
+journal command-segment decoding. The native correction decodes members
+directly and separates base decoding from later semantic reconstruction,
+preserving every validator and the existing production stack reservation.
+Its bounded-stack regression fails before repair and passes afterward with
+572 storage API tests and doctests, Clippy, formatting and all 26 rebuilt native
+replication fixtures. Final-source full CI still must confirm the correction;
+the separate follower-prefix failure is retained rather than dismissed by a pass.
+Final-source CI, ordinary resource and latency qualification, whole-action
+recovery and the complete campaign remain open. See the
+[latest native findings](WP-825-LIVE-OBSERVATIONS.md).
 
 ## Earlier preparation observations
 

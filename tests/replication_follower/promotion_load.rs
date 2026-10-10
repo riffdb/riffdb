@@ -20,6 +20,7 @@ async fn promotion_mints_incarnation_and_refuses_old_lineage_tokens() {
 }
 
 async fn drill(profile: &str, lagging: bool) {
+    let hardened = profile == "hardened";
     let fixture = Fixture::new();
     set_profile(&fixture, "primary", profile);
     let mut primary = fixture.start("primary", None);
@@ -135,12 +136,14 @@ async fn drill(profile: &str, lagging: bool) {
                             let error = client.create_organization(input).await.unwrap_err();
                             assert_eq!(
                                 error.semantic_error().map(|e| e.code()),
-                                Some(ApplicationErrorCode::PrimaryFenced)
+                                Some(ApplicationErrorCode::PrimaryFenced),
+                                "post-fence refusal: hardened={hardened} lagging={lagging} worker={worker} sequence={sequence} error={error:?}"
                             );
                         } else {
                             assert_eq!(
                                 error.semantic_error().map(|e| e.code()),
-                                Some(ApplicationErrorCode::PrimaryFenced)
+                                Some(ApplicationErrorCode::PrimaryFenced),
+                                "concurrent refusal: hardened={hardened} lagging={lagging} worker={worker} sequence={sequence} error={error:?}"
                             );
                         }
                         return (committed, true);
@@ -178,7 +181,22 @@ async fn drill(profile: &str, lagging: bool) {
             &CallMetadata::authenticated(BearerCredential::new(&fence_token).unwrap()),
         )
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            // Read only the existing closed failure protocol after the request
+            // has already failed. This adds no retry or successful-path wait.
+            let began = std::time::Instant::now();
+            let evidence = closed_failure_evidence(&primary);
+            let exit = matches!(
+                &evidence,
+                Err(riffdb_testkit_server::process::ChildProcessError::ReadinessDisconnected)
+            )
+            .then(|| {
+                primary.wait_for_exit(Duration::from_millis(100).saturating_sub(began.elapsed()))
+            });
+            panic!(
+                "source fence failed: profile={profile} lagging={lagging} error={error:?} closed_evidence={evidence:?} natural_exit={exit:?}"
+            );
+        });
     let Some(v1::fence_replication_primary_response::Result::Receipt(fence)) = fence.result else {
         panic!("fence receipt")
     };

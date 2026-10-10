@@ -339,6 +339,33 @@ pub(crate) fn open_redb_startup_with_commit_profile(
         preflight_redb_startup_format(path)?;
         open_redb_store(path, application_commit_profile, publication.clone())
     })?;
+    complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
+}
+
+/// Preserves the ordinary startup proof joins while refusing private-stage repair.
+pub(crate) fn open_staged_redb_startup_with_commit_profile(
+    stage: &riffdb_storage_redb::RedbStagedRestore,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
+    let (publication, reader) = crate::replication_publication::ReplicationPublication::channel();
+    let store = timed(StartupStage::StoreOpen, || {
+        preflight_redb_startup_format(stage.staged_database_file())?;
+        stage
+            .open_authorization_store(application_commit_profile, publication.clone())
+            .map_err(RedbStartupError::from)
+    })?;
+    complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
+}
+
+fn complete_redb_startup_with_publication(
+    store: RedbStore,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    publication: std::sync::Arc<crate::replication_publication::ReplicationPublication>,
+    reader: crate::replication_publication::ReplicationPublishedSnapshots,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
     let mut checked = complete_redb_startup(store, inputs, || database_ids.next_database_id())?;
     // Seed after the unchanged startup proof join and V3 activation. Restart
     // serves retained history immediately even if no new command arrives.

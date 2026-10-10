@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_storage_api::*;
 use riffdb_types::{DigestKeyId, Timestamp};
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, atomic::AtomicBool};
 
 fn inputs() -> StartupValidationInputs {
     let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
@@ -506,6 +506,69 @@ fn force_staged_allocator_repair(path: &Path) {
     assert_eq!(bytes[9] & 2, 0, "fixture must begin clean");
     bytes[9] = (bytes[9] | 2) & !4;
     std::fs::write(path, bytes).unwrap();
+}
+
+// req: REC-001, REC-002, REC-006, END-001
+#[test]
+fn staged_authorization_open_refuses_engine_repair_without_changing_private_bytes() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-auth-repair-refusal");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "auth-stage");
+    force_staged_allocator_repair(stage.staged_database_file());
+    let damaged = std::fs::read(stage.staged_database_file()).unwrap();
+    let error = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect_err("private authorization open must refuse engine repair");
+    assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+    assert_eq!(
+        std::fs::read(stage.staged_database_file()).unwrap(),
+        damaged
+    );
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_authorization_open_preserves_native_exclusion_and_healthy_reopen() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-auth-native-exclusion");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "auth-stage");
+    let owner = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect("healthy private authorization open");
+    assert!(
+        stage
+            .open_authorization_store(
+                crate::RedbCommitProfile::Standard,
+                Arc::new(NoChangelogPublicationPort),
+            )
+            .is_err()
+    );
+    drop(owner);
+    let reopened = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect("healthy stage reopens after the prior owner releases");
+    drop(reopened);
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
 }
 
 // req: REC-001, REC-002, REC-006, REC-008

@@ -28667,6 +28667,80 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-021 bounded complete command-segment decoding: exact failed-CI binaries
+      reproduce concurrent promotion transport loss and capture a fresh ordinary
+      primary core. The matching native backtrace proves a columnar-worker stack
+      overflow during complete journal segment decoding for command-audit counts.
+      The unwound stack spans 417,216 bytes against its unchanged 393,216-byte
+      reservation. A complete semantic decoder regression aborts on unchanged
+      production code with a 160-KiB test stack, leaving 224 KiB for native callers
+      and allocation. Replace iterator Result collection with a direct member
+      loop across the same six segment revisions, retaining every decoder,
+      canonicality, digest, manifest and semantic check. That first candidate
+      still overflows in the bounded regression. Finish flat-capsule semantic
+      reconstruction after base decoding returns, so both stages' large
+      temporaries no longer reserve stack together. Preserve original
+      failures, private crash evidence, stack reservations and qualification
+      gates. The corrected regression, all 572 storage API tests and doctests,
+      storage API Clippy, formatting, brief and scope checks pass on C3D.
+      The workspace-feature native rebuild passes all 26 replication fixtures,
+      including promotion, without a fresh ordinary-daemon crash report.
+      Final-source CI remains required; the distinct follower-prefix deadline
+      failure is preserved rather than dismissed by this pass.
+    - >-
+      D-020 preserve concurrent promotion transport failures: full CI first
+      reports unexpected command-worker refusals and an unavailable primary
+      fence request. A second full-CI failure proves all eight workers lose
+      transport availability in the first standard-profile caught-up case,
+      followed by a disconnected daemon stdout channel. Retain that failed source and result; isolated and later
+      whole-fixture passes do not establish a cause or dismiss the failure.
+      Add bounded failure context to the existing native promotion regression:
+      its static profile, lagging case, worker ordinal and already-checked
+      client error; after a failed fence request, consume only the existing
+      closed daemon failure protocol within its unchanged diagnostic bound.
+      When stdout is disconnected, observe the existing controller's natural
+      exit and output counts using only the remainder of that same 100-ms
+      diagnostic budget; do not send shutdown input or kill the daemon.
+      Preserve every assertion, command, retry rule, success path and deadline.
+      The standing necessary-native-fix scope covers this test consequence.
+      This improves failure evidence and does not repair or qualify availability.
+    - >-
+      D-019 deterministic checker self-test discovery: combined-source full CI
+      passes workspace tests but the TicketDesk checker child cannot import
+      eight campaign-test modules without an ambient scripts import path.
+      Supply the repository's first-party scripts root explicitly to that
+      existing discovery subprocess, independent of import order and caller
+      PYTHONPATH. Preserve every test, assertion, checker predicate, native
+      implementation and workload gate. Keep the failed full-CI result and
+      require corrected self-tests plus final full acceptance before closure.
+    - >-
+      D-018 bounded missing-spare preparation demand: an unchanged-source
+      regression proves that repeated ordinary journal-runtime construction
+      while spare preparation is paused replaces the active worker capability
+      and invents pending extent publication. Under the existing sealer mutex,
+      reuse an unfinished job for preparation demand; allow a fresh attempt
+      after a completed preparation failure. Keep distinct publication jobs
+      for actual extent rotation, their per-job publication tracking, full
+      joins, fail-closed sealing errors, ordinary writer ownership and exact
+      source validation. This adds no queue, actor, application selector,
+      durable format, dependency, durability change or qualification exemption.
+      Preserve the original resource and latency failures without claiming
+      this defect is their sole cause. Combined validation remains required.
+    - >-
+      D-017 ordinary staged-authorization repair refusal: a server regression
+      reaches the invalid-bearer check even after its ordinary startup open
+      repairs a damaged private stage. Refuse repair at that fresh engine open
+      while sharing every existing startup proof join and activation step with
+      ordinary startup. Select this stricter construction only through the
+      existing staged owner; expose no application repair selector. Preserve
+      native exclusive ownership, ordinary primary recovery, healthy startup
+      preparation, digest inventories, authorization, exact validation and
+      final sealing. This introduces no retained validation proof or changed
+      file-lock ownership; any separate custody redesign still requires
+      accepted authority. Keep the immutable backup and configured target
+      unchanged on refusal. Validation and campaign qualification remain
+      required before closure.
+    - >-
       D-016 private final sealing and sealed stamping refusal: two native
       regressions expose repair during final sealing and replacement of a
       changed primary seal during incarnation stamping. Share the hydration

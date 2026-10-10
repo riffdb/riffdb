@@ -9,13 +9,15 @@ campaign has not run, and no 24-hour qualification has started. Final combined
 source CI, four-language conformance, three measured physical retirements in the
 final incarnation and the final six quiet hours remain required.
 
-The latest 1,500-second ordinary preparation completes 150,000 commands and
-600,000 reads with zero retries or post-duration operations. Its two normal
-windows pass, with p95 values of 69.348 and 97.107 ms. Actual sink recovery ends
-at second 607.720, so the 600–900-second window overlaps that fault. This result
-does not resolve the earlier genuine normal-window p95 failure of 101.766 ms,
-whose sink recovery ended before second 600. Preserve both observations and the
-original workload and latency thresholds.
+The latest ordinary preparation refuses resource qualification after its three
+bounded attempts cannot obtain a stable server task census. Its two complete
+latency windows cannot establish the missing final window. A subsequent
+instrumented diagnostic completes 150,000 commands and 600,000 reads with zero
+retries or post-duration operations, but fails latency. Its additional process
+inspection makes it unsuitable as ordinary performance qualification. Neither
+run resolves the earlier genuine normal-window p95 failure of 101.766 ms, whose
+sink recovery ended before second 600. Preserve the failed populations, the
+original workload, and the original resource and latency thresholds.
 
 The latest populated native component measurement takes 100.1 seconds on the
 hydration repair-refusal source. The preceding representation-sequencing change
@@ -82,7 +84,7 @@ tests, 28 staged-maintenance tests, physical refusal/custody coverage, 59
 architecture checks and Clippy pass. This is correctness evidence, not proof of
 the whole recovery deadline or the complete campaign.
 
-## Remaining ordinary staged-open repair gap
+## Ordinary staged-open repair refusal under validation
 
 A separate native regression on the sealing-corrected source confirms an earlier
 repair boundary remains. The server's ordinary staged authorization path opens
@@ -95,12 +97,182 @@ or an actual target replacement.
 
 A healthy source-open control also changes the stage bytes and passes the same
 complete scrub and seal. Refusing every ordinary-open byte change would therefore
-reject a valid case. The late repair guards cannot prove that an earlier open
-never repaired the stage. Closing this gap requires retaining validation custody
-and preserving the existing startup proof joins before staged authorization;
-ADR-0269 requires review of a changed file-lock ownership boundary. No new
-custody model is implemented or qualified by this observation. The whole-action
-recovery deadline and genuine normal-window latency failure remain open.
+reject a valid case. A later server regression exercises the actual staged
+maintenance driver with an invalid bearer: the preceding implementation repairs
+the stage before reaching bearer refusal. This establishes the earlier engine
+open as a repair boundary without claiming successful target publication.
+
+The correction refuses engine repair at that fresh private authorization open.
+It shares every existing startup proof join and activation step with ordinary
+startup, preserves healthy startup preparation, and leaves ordinary primary
+crash recovery unchanged. The existing staged owner selects this construction;
+there is no application repair selector, retained validation proof, or change
+to native file-lock ownership. Retaining custody across validation and
+authorization is a separate proposed design requiring exact human acceptance;
+it is unnecessary merely to reject repair at this open.
+
+The actual driver regression, two native authorization tests, all 26 staged
+driver tests, and 59 architecture checks pass on the required host. The broader
+run passes all 2,046 native tests with ten existing skips. Scoped acceptance
+finishes with 12 checks passed and one failed: a Clippy assertion-style error
+in a new test. The next candidate corrects that assertion. Full acceptance is
+therefore not yet established for this correction. The whole-action recovery
+deadline, genuine normal-window latency failure, final-source CI and complete
+campaign remain open.
+
+## Repeated missing-spare demand and native worker bounds
+
+Source-runtime construction requests background preparation when the journal
+spare is absent. The preceding factory creates a new sealer thread on each
+request; each thread waits for its predecessor before doing file work. Frequent
+runtime turnover during spare zero-fill can therefore retain a growing chain
+of waiting workers and replace an already-successful publication capability
+with a new pending capability even though no new extent was published.
+
+The instrumented diagnostic observes repeated sealer births and overlapping
+workers. Its recoverable task-census changes name ordinary journal-lane workers;
+it does not reproduce the earlier exhausted three-attempt census. The sealer
+chain is a concrete resource-bound defect, without an established sole-cause
+relationship to either the census refusal or latency failure. Native regression
+on unchanged production code then confirms that 32 ordinary runtime reopenings
+during paused preparation replace the original completion capability and invent
+pending publication. An earlier diagnostic fixture fails before reaching that
+assertion because it bypasses ordinary startup preparation; that fixture error
+is retained separately and supplies no defect proof.
+
+The correction reuses the unfinished job for missing-spare demand under the
+existing sealer mutex. It retains separate jobs and publication tracking for
+actual extent rotation, joins, native sealing errors, writer ownership, and
+complete source validation. Additional tests exercise concurrent demand,
+failed publication and retry after completed failed preparation. Combined
+validation remains required. Resource sampling, workload, durability and
+original qualification gates remain unchanged.
+
+The combined candidate passes all four new regressions, all 31 source-drain
+tests, all 26 staged-driver tests, 59 architecture checks and native Clippy.
+Its full CI passes the workspace tests, including 609 server unit tests,
+1,049 storage unit tests, 24 maintenance integration tests and 219 storage
+recovery-matrix tests. Existing skips remain. Rust documentation and dependency
+checks also pass. CI then fails the checker self-test launcher: eight campaign
+modules cannot import the first-party `lib` package in its discovery child.
+The source remains unchanged, and the failed result is retained.
+
+The launcher correction supplies the repository's scripts import root to its
+existing subprocess before discovery. It changes no test, assertion, checker
+predicate, native implementation, workload or qualification threshold. The
+corrected self-tests, previously blocked CI checks and final full acceptance
+remain required; successful workspace tests alone do not qualify full CI.
+
+## Concurrent promotion availability remains unresolved
+
+The corrected launcher passes all 355 self-tests. The previously blocked CI
+suffix and the shared Rust, Go, TypeScript and Python remote driver corpus also
+pass. The following full acceptance attempt finishes with 12 checks passed and
+one failed: full CI. It passes 609 server unit tests with one existing skip,
+then the concurrent promotion fixture loses transport availability. Worker
+assertions observe no semantic failure code where `PrimaryFenced` is required,
+and the primary-fence call returns `TransportUnavailable`. The fixture finishes
+with 25 other tests passed. Tested source remains unchanged.
+
+The original client error does not establish whether the daemon terminated or
+a local transport deadline elapsed. An isolated diagnostic passes in 24 seconds;
+all 26 tests also pass with native stderr tracing. That diagnostic's package
+feature unification differs from full workspace CI. A later untraced diagnostic
+uses the original CI test executable byte-for-byte and passes all 26 tests in
+137.9 seconds. Neither passing run dismisses the original CI failure. An audit
+runtime stop in the trace belongs to the fixture's existing negative audit test,
+not an established cause of the failed promotion scenario.
+
+A second complete acceptance attempt again passes 12 checks and fails full CI.
+It passes 609 server unit tests with one existing skip, then the same promotion
+fixture fails with 25 other tests passed. The new failure context identifies
+all eight command workers returning `TransportUnavailable`, at command ordinal
+two or three, in the first standard-profile, caught-up case. The primary-fence
+request also returns `TransportUnavailable`; the closed failure reader reports
+`ReadinessDisconnected`. This establishes closure of the daemon's stdout
+channel, but does not yet identify its exit status or native termination cause.
+The kernel log contains no OOM or fault event in the checked interval. All tested
+source remains unchanged, and release freezing and qualification are blocked.
+
+The existing promotion test retains its static profile, lagging case, worker
+ordinal and checked client failure when an assertion fails. After an unsuccessful
+fence request it reads the existing closed daemon failure protocol, with the
+helper's original 100-ms, 32-line diagnostic bound. If stdout is disconnected,
+a follow-up observes natural exit status and output counts through the existing
+controller, using only the remainder of the same 100-ms budget. It sends no
+lifecycle input. Successful paths gain no wait, and every assertion, command,
+retry rule and deadline remains unchanged. This supplies failure evidence; it
+does not fix or qualify native availability. The follow-up needs required-host
+validation. A separate diagnostic preserves default captured output and the
+package working directory used by CI while tracing owned-child stderr. All 26
+cases pass in 218.3 seconds; this does not dismiss either failed CI run. The
+untraced follow-up compiles and runs all 26 cases, with 25 passed and a different
+failure: the exact-prefix follower remains at sequence 391 of 408 when its
+existing 60-second deadline expires. Promotion passes in that run, so its new
+natural-exit context is not exercised. Both failures remain open.
+
+System crash records also identify a SIGABRT from an ordinary primary daemon
+during the second failed full-CI interval. Its exact fixture association and
+native cause still need confirmation. Older unseen crash reports suppress new
+reports; preserve them with byte hashes, then make fresh capture possible.
+Freeze the matching debug executables separately from release qualification.
+The unchanged workspace-test diagnostic passes, including all 26 replication
+cases. A subsequent fixture run uses the failed CI executables byte-for-byte
+and also passes. Neither clears the failures. A bounded focused reproduction
+then passes once and fails on its second trial, losing all eight command-worker
+transports in the standard-profile lagging case. It stops immediately and
+captures a fresh ordinary-primary crash report.
+
+The matching executable and core confirm a Rust stack overflow on the columnar
+worker. Its operational write first replays a published journal suffix; frame
+validation completely decodes command segments to derive command-owned audit
+counts. The stack continues through V6 segment and V7/V6/V5 capsule reconstruction
+into audit-target allocation. The measured unwound stack span is 417,216 bytes
+against the worker's existing 393,216-byte reservation. This is a native defect,
+not a permitted transport refusal or campaign workaround. Preserve the original
+report, core, executable hashes and failures privately.
+
+A standalone complete semantic decoder check passes with a 192-KiB test stack
+but aborts with a 160-KiB stack on unchanged production code. The latter reserves
+224 KiB of the production worker's stack for journal replay, operational
+admission and the allocator. Its subprocess contains the overflow and asserts
+complete semantic equality, canonical re-encoding and corruption refusal. The
+first candidate decodes each segment member directly into its result vector,
+avoiding the iterator collection chain's simultaneous large capsule temporaries.
+It still overflows in complete decoding. The revised candidate also finishes
+flat-capsule reconstruction after base decoding returns, so its large semantic
+temporaries no longer reserve stack throughout the deeper base decoder. It
+retains the same member decoders, order and validators. The revised decoder
+passes the formerly failing 160-KiB regression, all 572 storage API tests and
+doctests, all-target/all-feature storage API Clippy, formatting, brief and scope
+checks. A workspace-feature native rebuild then passes all 26 replication
+fixtures in 140.1 seconds, including promotion and exact-prefix catch-up, with
+no fresh ordinary-daemon report. These checks establish targeted repair evidence;
+final-source full CI remains required. No deadline, assertion, fault clock, workload or production
+stack reservation is changed; the separate follower-prefix failure remains open.
+
+PR note: Package WP-825 (open); Tier guarantee within the accepted native
+reclamation and recovery decisions. Behavior: refuse repair at fresh private
+staged authorization, coalesce redundant spare-preparation demand, make checker
+discovery deterministic, retain bounded promotion failure context and reduce
+simultaneous decoder stack reservations. Checks:
+the guard's 2,046-test native run passes with ten existing skips; its scoped
+acceptance retains a test-only Clippy failure corrected in the combined
+candidate. The unchanged-source sealer regression reaches its intended failure;
+combined full acceptance and CI are pending. The combined workspace run passes
+but full CI retains the checker-discovery failure described above. Its correction
+passes 355 self-tests and remote conformance; subsequent full CI retains the
+concurrent promotion availability failure, reproduced by the next full run.
+The bounded decoder regression fails before repair and passes afterward with
+572 storage API tests and doctests, Clippy, formatting and all 26 rebuilt native
+replication fixtures. Final-source full CI remains pending.
+Handbook pages: backup/restore, configuration, contributing, sustainable
+TicketDesk milestone and live observations. Compatibility: no
+application interface, durable encoding,
+dependency, transaction order, or file-lock ownership change. Hazards and
+follow-ups: unresolved promotion transport failure, whole-action restore timing,
+ordinary latency and resource
+qualification, final-source CI and the complete campaign remain open.
 
 ## Bounded same-pin offline audit inspection
 
