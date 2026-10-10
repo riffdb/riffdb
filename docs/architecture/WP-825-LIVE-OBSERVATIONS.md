@@ -3208,3 +3208,19 @@ Missing coverage, future completion, unclosed command debt or changed frozen
 binaries refuse reconciliation. Source, host, durability, full CI and language
 conformance remain separate required observations. C3D validation is pending;
 this component does not claim complete campaign qualification.
+
+### Fixed eight-hour measured controller entrypoint candidate
+
+`scripts/ticketdesk-lifecycle-campaign --root <fresh-private-root> --artifacts
+<frozen-binary-directory>` prepares fresh controls, binds the exact four
+binaries before and after preparation, and executes the original workload and
+seven scheduled actions over eight actual hours. Its controller inherits the
+frozen 8-GiB address-space ceiling before any child starts. It independently
+reconciles closed observations and checks post-validation controller peaks,
+whole files and original archive custody without crediting post-period progress.
+
+This entrypoint emits explicitly unqualified component observations. Required
+clean-source full CI, four-language conformance, target-host and durable-storage
+verification remain independent prerequisites. It does not start a 24-hour run
+or publish a milestone receipt. Semantic fixtures are not a measured campaign.
+C3D validation is pending.

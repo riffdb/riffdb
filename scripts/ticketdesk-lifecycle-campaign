@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+# req: END-003, END-007, END-008, END-009, END-010
+"""Run the fixed eight-hour measured TicketDesk controller on the reserved host."""
+import sys
+from lib.ticketdesk_lifecycle_campaign_entrypoint import main,CampaignEntrypointError
+
+if __name__=='__main__':
+    try:raise SystemExit(main())
+    except CampaignEntrypointError as error:
+        print('ticketdesk-lifecycle-campaign: '+str(error),file=sys.stderr)
+        raise SystemExit(1)
