@@ -104,19 +104,35 @@ def invoke(root, name, arguments, *, environment=None, timeout=60):
     require(status == 0, name)
 
 
-def pump_ready(server, root, ready):
+MAX_SERVER_OUTPUT_BYTES = 16 * 1024**2
+MAX_WRITER_CENSUS_LINE_BYTES = 128 * 1024
+WRITER_CENSUS_PREFIX = b"riffdb-writer-batch-stages-v1\t"
+
+
+def pump_ready(server, root, ready, failed=None):
+    """Retain bounded shutdown diagnostics and report every incomplete capture."""
+    failed = threading.Event() if failed is None else failed
     sent = False
-    with (root / "server.stdout").open("xb") as output:
-        while line := server.stdout.readline(4097):
-            output.write(line)
-            output.flush()
-            if not sent and line.startswith(b"riffdbd-ready-v1"):
-                ready.put_nowait(True)
-                sent = True
-            if len(line) > 4096:
-                if not sent:
-                    ready.put_nowait(False)
-                return
+    total = 0
+    try:
+        with (root / "server.stdout").open("xb") as output:
+            while line := server.stdout.readline(4097):
+                if len(line) > 4096:
+                    require(sent and line.startswith(WRITER_CENSUS_PREFIX), "server_output_line")
+                    if not line.endswith(b"\n"):
+                        line += server.stdout.readline(MAX_WRITER_CENSUS_LINE_BYTES + 1 - len(line))
+                    require(len(line) <= MAX_WRITER_CENSUS_LINE_BYTES, "server_output_line")
+                require(line.endswith(b"\n"), "server_output_incomplete")
+                total += len(line)
+                require(total <= MAX_SERVER_OUTPUT_BYTES, "server_output_bound")
+                output.write(line)
+                output.flush()
+                if not sent and line.startswith(b"riffdbd-ready-v1"):
+                    ready.put_nowait(True)
+                    sent = True
+            require(sent, "server_output_readiness")
+    except (OSError, ValueError, SmokeError):
+        failed.set()
         if not sent:
             ready.put_nowait(False)
 
@@ -148,7 +164,7 @@ def pump_observer(observer, root, ready, latest):
             ready.put_nowait(False)
 
 
-def interrupted_update(root, kind, worker, environment, server, pump, server_binary, config):
+def interrupted_update(root, kind, worker, environment, server, pump, server_binary, config, server_output_failed):
     """Interrupt an admitted generated client and resolve its original update."""
     write(root, "load.recover", kind + " 1\n")
     environment = dict(environment, RIFFDB_LIFECYCLE_LOAD_CONTROL=str(root))
@@ -170,7 +186,8 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
             server.wait(timeout=30)
             server.stdin.close()
             pump.join(timeout=5)
-            require(not pump.is_alive() and server.returncode == (-9 if kind == "process_kill" else 0),
+            require(not pump.is_alive() and not server_output_failed.is_set()
+                    and server.returncode == (-9 if kind == "process_kill" else 0),
                     "recovery_shutdown")
             write(root, "recovery.start", "start\n")
             failed = messages.get(timeout=15)
@@ -183,7 +200,7 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
                 server = ObservedProcess([server_binary, "--config", str(config)],
                     observation=restarted / "server.process-usage.json",
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
-            pump = threading.Thread(target=pump_ready, args=(server, restarted, ready), daemon=True)
+            pump = threading.Thread(target=pump_ready, args=(server, restarted, ready, server_output_failed), daemon=True)
             pump.start()
             require(ready.get(timeout=30) is True, "recovery_readiness")
             # The native initializing route is Health-only. Resume the same
@@ -986,6 +1003,7 @@ tls_server_name = "127.0.0.1"
                   "field_visibility": [], "max_scan_rows": 50, "approval_required": []},
     }))
     ready = queue.Queue(maxsize=1)
+    server_output_failed = threading.Event()
     observer = None
     observer_pump = None
     latest = queue.Queue(maxsize=1)
@@ -994,7 +1012,7 @@ tls_server_name = "127.0.0.1"
         server = ObservedProcess([server_binary, "--config", str(config)],
                                   observation=root / "server.process-usage.json",
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
-        pump = threading.Thread(target=pump_ready, args=(server, root, ready), daemon=True)
+        pump = threading.Thread(target=pump_ready, args=(server, root, ready, server_output_failed), daemon=True)
         pump.start()
         try:
             require(ready.get(timeout=30) is True, "startup")
@@ -1191,7 +1209,7 @@ tls_server_name = "127.0.0.1"
                         break
             if args.restart_recovery:
                 server, pump = interrupted_update(root, args.restart_recovery, worker, environment,
-                    server, pump, server_binary, config)
+                    server, pump, server_binary, config, server_output_failed)
             if args.capability_rotation:
                 original = read_json(root / "bind-application.stdout")
                 capability = original["result"]["transition"]["identity"]["capability_id"]
@@ -1349,6 +1367,8 @@ tls_server_name = "127.0.0.1"
             pump.join(timeout=5)
             if pump.is_alive() or server.returncode != 0:
                 cleanup_failures.append("shutdown")
+            if server_output_failed.is_set():
+                cleanup_failures.append("server_output")
             if observer_failed:
                 cleanup_failures.append("observer_shutdown")
             if inventory_failed:

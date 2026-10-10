@@ -671,3 +671,78 @@ class PhysicalInventory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerOutputCapture(unittest.TestCase):
+    def capture(self, data, *, explicit_failure=True, total_bound=None):
+        import io
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        ready = preparation.queue.Queue(maxsize=2)
+        failed = threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arguments = (SimpleNamespace(stdout=io.BytesIO(data)), root, ready)
+            bound = patch.object(preparation, "MAX_SERVER_OUTPUT_BYTES", total_bound) if total_bound else nullcontext()
+            with bound:
+                preparation.pump_ready(*arguments, failed) if explicit_failure else preparation.pump_ready(*arguments)
+            retained = (root / "server.stdout").read_bytes()
+        return retained, list(ready.queue), failed.is_set()
+
+    def test_complete_writer_census_is_retained_after_ready(self):
+        ready = b"riffdbd-ready-v1\tready=true\n"
+        census = b"riffdb-writer-batch-stages-v1\t" + b"1," * 6000 + b"1\n"
+        data = ready + census + b"riffdb-shutdown-v1\tclosed=true\n"
+        retained, values, failed = self.capture(data, explicit_failure=False)
+        self.assertEqual(retained, data, "the complete census and following records must survive capture")
+        self.assertEqual(values, [True])
+        self.assertFalse(failed)
+
+    def test_post_ready_unknown_large_record_reports_capture_failure(self):
+        retained, values, failed = self.capture(b"riffdbd-ready-v1\n" + b"unknown\t" + b"1" * 5000 + b"\n")
+        self.assertEqual(retained, b"riffdbd-ready-v1\n")
+        self.assertEqual(values, [True])
+        self.assertTrue(failed)
+
+    def test_known_census_cannot_exceed_its_own_bound_or_end_in_partial_record(self):
+        for tail in (b"1" * (128 * 1024) + b"\n", b"1" * 5000):
+            with self.subTest(size=len(tail)):
+                retained, values, failed = self.capture(b"riffdbd-ready-v1\n" + b"riffdb-writer-batch-stages-v1\t" + tail)
+                self.assertEqual(retained, b"riffdbd-ready-v1\n")
+                self.assertEqual(values, [True])
+                self.assertTrue(failed)
+
+    def test_large_or_partial_readiness_never_reports_ready(self):
+        for data in (b"riffdbd-ready-v1\t" + b"1" * 5000 + b"\n", b"riffdbd-ready-v1", b""):
+            with self.subTest(size=len(data)):
+                retained, values, failed = self.capture(data)
+                self.assertEqual(retained, b"")
+                self.assertEqual(values, [False])
+                self.assertTrue(failed)
+
+    def test_total_output_is_bounded_independently_of_line_sizes(self):
+        first = b"riffdbd-ready-v1\n"
+        retained, values, failed = self.capture(first + b"1" * 20 + b"\n" + b"2" * 20 + b"\n", total_bound=40)
+        self.assertLessEqual(len(retained), 40)
+        self.assertEqual(values, [True])
+        self.assertTrue(failed)
+
+
+    def test_exact_writer_census_bound_is_retained_without_truncation(self):
+        prefix = b"riffdb-writer-batch-stages-v1\t"
+        census = prefix + b"1" * (128 * 1024 - len(prefix) - 1) + b"\n"
+        data = b"riffdbd-ready-v1\n" + census
+        retained, values, failed = self.capture(data)
+        self.assertEqual(retained, data)
+        self.assertEqual(values, [True])
+        self.assertFalse(failed)
+
+
+    def test_census_at_first_read_boundary_does_not_consume_following_line(self):
+        prefix = b"riffdb-writer-batch-stages-v1\t"
+        census = prefix + b"1" * (4097 - len(prefix) - 1) + b"\n"
+        data = b"riffdbd-ready-v1\n" + census + b"2" * 4097 + b"\n"
+        retained, values, failed = self.capture(data)
+        self.assertEqual(retained, b"riffdbd-ready-v1\n" + census)
+        self.assertEqual(values, [True])
+        self.assertTrue(failed, "the following oversized ordinary line retains its own refusal")

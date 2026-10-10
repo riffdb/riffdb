@@ -3558,3 +3558,20 @@ fault deadlines or qualification prerequisites. No completed campaign is claimed
 All 348 lifecycle harness tests and scoped acceptance pass on the required host.
 This is component correctness evidence; a complete measured campaign and its
 independent qualification prerequisites remain required.
+
+### Preserve complete bounded native shutdown diagnostics
+
+The public smoke captures ordinary server lines within 4 KiB and admits only
+the existing writer-census family up to 128 KiB after readiness. Complete census
+lines and following shutdown observations survive capture. The entire stdout
+stream is capped at 16 MiB. An oversized, incomplete or unreadable record
+sets an explicit failure checked after the original owner exits and before
+any recovery replacement is accepted. Diagnostic truncation cannot masquerade
+as complete evidence. These limits do not change database behavior, workload
+rates, fault timing or qualification checks. Actual captured diagnostics remain
+private; no measured campaign qualification is claimed.
+
+The truncated-census regression reproduces on the previous implementation. All
+355 lifecycle harness tests and scoped acceptance pass on the required host.
+Measured latency, complete native diagnostics from a real run and full campaign
+qualification remain separate evidence.
