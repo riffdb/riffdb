@@ -3224,3 +3224,32 @@ clean-source full CI, four-language conformance, target-host and durable-storage
 verification remain independent prerequisites. It does not start a 24-hour run
 or publish a milestone receipt. Semantic fixtures are not a measured campaign.
 C3D validation is pending.
+
+### Reuse exact pinned evidence in complete validation
+
+The complete validator reuses the existing bounded set of canonical bundle
+bindings for retained outcome and provenance cross-links. The set is built
+from the same sole immutable read snapshot and admits only agreement between
+physical key, decoded identity and canonical-byte hash. Every physical bundle,
+outcome and provenance row still receives the complete structural walk.
+Outbox-status validation uses the existing bounded recent-command lookup for
+embedded event membership and falls back to the original physical-row check
+when a command is outside the checkpoint lookup domain. Detached V1 command
+authority cannot satisfy embedded event membership. This changes no public
+interface, persistent format, validation predicate or readiness admission.
+
+Differential tests compare exact bundle predicates over malformed, missing,
+miskeyed and hash-mismatched rows, prove snapshot isolation across a catalog
+delete, and compare event membership across legacy commits, V1/V2 capsules,
+segments, absent events and checkpoint-excluded commands. Populated restore
+timing remains a separate diagnostic; this change does not claim the restore
+fault deadline, complete campaign or 24-hour readiness.
+
+The required-host populated diagnostic on the same preserved 100-artifact
+backup completes materialization in 165.6 seconds, compared with the earlier
+211.5-second uninstrumented reference. Every original artifact checksum remains
+unchanged. This is one observed diagnostic per revision, not a statistical
+claim or the whole public restore action: fresh backup creation, publication,
+restart and public reconciliation still belong inside the unchanged 60-second
+fault deadline. That deadline remains unproved, alongside post-outage latency,
+final clean-source full CI and the complete short rehearsal.

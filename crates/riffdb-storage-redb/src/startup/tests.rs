@@ -5961,3 +5961,6 @@ fn write_scale_terminal_and_audit_rows(
         written = end;
     }
 }
+
+#[path = "../startup_shared_evidence_tests.rs"]
+mod shared_evidence;

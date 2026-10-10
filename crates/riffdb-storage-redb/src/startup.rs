@@ -2680,7 +2680,13 @@ impl RedbStructuralEvidenceSession {
         }
         if phase == 11 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_provenance_row(transaction, &self.command_history, &key, &value);
+            return inspect_provenance_row(
+                transaction,
+                &self.command_history,
+                &self.binding_bundles,
+                &key,
+                &value,
+            );
         }
         if phase == 12 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
@@ -2693,6 +2699,14 @@ impl RedbStructuralEvidenceSession {
         if phase == 14 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             return inspect_outbox_row(transaction, &self.command_history, &key, &value);
+        }
+        if phase == 15 {
+            return inspect_outbox_status_row(
+                self.validation_read.as_ref().ok_or_else(invariant)?,
+                &self.command_history,
+                &key,
+                &value,
+            );
         }
         if phase == 21 {
             self.ensure_command_cache()?;
@@ -2901,6 +2915,7 @@ impl RedbStructuralEvidenceSession {
         let finding = inspect_terminal_row(
             transaction,
             &self.command_history,
+            &self.binding_bundles,
             &self.inputs,
             self.database_id,
             key,
@@ -3230,7 +3245,7 @@ fn inspect_table_row_from_bytes(
         10 => Err(invariant()),
         11 => Err(invariant()),
         12..=14 => Err(invariant()),
-        15 => inspect_outbox_status_row(transaction, key, value),
+        15 => Err(invariant()),
         16 => inspect_projection_state_row(transaction, key, value),
         17 => inspect_projection_control_row(transaction, key, value),
         18 => inspect_projection_apply_row(transaction, key, value),
@@ -4408,6 +4423,7 @@ fn inspect_epoch_row(
 fn inspect_terminal_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
+    binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     inputs: &StartupValidationInputs,
     database_id: DatabaseId,
     key: &[u8],
@@ -4460,7 +4476,7 @@ fn inspect_terminal_row(
             StructuralFindingCode::DigestUnavailable,
         )));
     }
-    let terminal_plan_exists = plan_bundle_exists(transaction, &plan)?;
+    let terminal_plan_exists = plan_bundle_is_bound(binding_bundles, &plan);
     let pending_exists = raw_exists(transaction, IDEMPOTENCY_PENDING, key)?;
     if !terminal_plan_exists || pending_exists {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
@@ -4588,6 +4604,7 @@ fn inspect_commit_row(
 fn inspect_provenance_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
+    binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4621,7 +4638,7 @@ fn inspect_provenance_row(
         None => provenance_graph_is_reciprocal(transaction, &record)?,
     };
     Ok((record.provenance_id() != id
-        || !plan_bundle_exists(transaction, record.plan())?
+        || !plan_bundle_is_bound(binding_bundles, record.plan())
         || !reciprocal)
         .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
@@ -4723,6 +4740,7 @@ fn inspect_outbox_row(
 
 fn inspect_outbox_status_row(
     transaction: &ReadTransaction,
+    commands: &dyn CommandLookup,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -4733,10 +4751,31 @@ fn inspect_outbox_status_row(
         Ok(value) => value,
         Err(code) => return Ok(Some(derived_outbox(code))),
     };
-    let intent_exists =
-        raw_exists(transaction, OUTBOX, key)? || command_segment_event_exists(transaction, id)?;
+    let intent_exists = raw_exists(transaction, OUTBOX, key)?
+        || command_segment_event_exists_cached(transaction, commands, id)?;
     Ok((status.event_id() != id || !intent_exists)
         .then(|| derived_outbox(StructuralFindingCode::OrphanedOutboxStatus)))
+}
+
+/// Reuse a command decoded from this session's pinned snapshot. A checkpoint
+/// can exclude an otherwise retained command from the lookup domain, so a miss
+/// uses the original physical-row check. V1 detached authority never supplies
+/// an embedded outbox event, even if its commit contains the same event ID.
+fn command_segment_event_exists_cached(
+    transaction: &ReadTransaction,
+    commands: &dyn CommandLookup,
+    event_id: riffdb_types::EventId,
+) -> Result<bool, StorageError> {
+    match commands.command(transaction, event_id.commit_sequence())? {
+        Some(loaded) => Ok(loaded.embedded
+            && loaded
+                .capsule
+                .commit()
+                .events()
+                .iter()
+                .any(|event| event.event_id() == event_id)),
+        None => command_segment_event_exists(transaction, event_id),
+    }
 }
 
 fn command_segment_event_exists(
@@ -6409,6 +6448,18 @@ fn raw_exists(
     let table = transaction.open_table(definition).map_err(table_error)?;
     let found = table.get(key).map_err(precommit_storage_error)?.is_some();
     Ok(found)
+}
+
+/// These exact bindings already proved physical key, decoded identity and
+/// canonical-byte hash against the session's sole immutable snapshot. Reusing
+/// the set preserves the original predicate without decoding the same bundle
+/// for every retained outcome and provenance row. Malformed bundles never enter
+/// the set and their physical rows are still inspected by the complete walk.
+fn plan_bundle_is_bound(
+    bindings: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
+    plan: &riffdb_storage_api::ExecutablePlanRef,
+) -> bool {
+    bindings.iter().any(|binding| binding.matches_plan(plan))
 }
 
 fn plan_bundle_exists(
