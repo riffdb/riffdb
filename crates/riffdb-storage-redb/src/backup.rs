@@ -815,8 +815,23 @@ fn hydrate_staged_history(
         std::sync::Arc::new(crate::media::RealJournalMedia),
     );
     {
-        let database = redb::Database::open(&database_file)
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        // This unpublished stage was copied from a verified immutable backup.
+        // Repair here could otherwise be hidden by the later successful scrub.
+        // A stopped materialization is rebuilt from that original backup; it
+        // cannot turn a repaired private stage into publication authority.
+        let repair_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = std::sync::Arc::clone(&repair_observed);
+        let mut builder = redb::Builder::new();
+        builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
+        builder.set_repair_callback(move |session| {
+            observed.store(true, std::sync::atomic::Ordering::Release);
+            session.abort();
+        });
+        let opened = builder.open(&database_file);
+        if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(corrupt());
+        }
+        let database = opened.map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         crate::history_stub::hydrate_history_stubs(&database)?;
     }
     crate::backup::remove_sealed_extents_beside(&database_file)?;
@@ -3139,5 +3154,41 @@ mod tests {
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
         stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+    }
+    // req: REC-001, REC-002, REC-006, REC-008
+    #[test]
+    fn staged_history_hydration_refuses_engine_repair_before_scrub() {
+        let root = TestRoot::new("staged-hydration-repair-refusal");
+        let (_source, backup, _) = create_backup(&root);
+        let stage = root.join("stage");
+        RedbOfflineRestore::bind(&backup, &stage)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+            .unwrap();
+        let artifact = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        // A healthy private stage remains hydratable; an existing native
+        // engine owner is still excluded before the repair-only refusal.
+        hydrate_staged_history(&stage, database_id(), &root.join("configured.redb")).unwrap();
+        let held = Database::open(&artifact).unwrap();
+        let locked = hydrate_staged_history(&stage, database_id(), &root.join("configured.redb"));
+        assert!(matches!(locked, Err(ref error) if error.kind() == StorageErrorKind::Unavailable));
+        drop(held);
+        let mut primary = fs::read(&artifact).unwrap();
+        assert_eq!(&primary[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+        assert_eq!(primary[9] & 2, 0, "clean engine recovery flag");
+        // Pinned redb fixture: require full allocator repair, rather than
+        // loading an intact two-phase allocator after a normal dirty close.
+        primary[9] = (primary[9] | 2) & !4;
+        fs::write(&artifact, &primary).unwrap();
+        let original_backup = fs::read(backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+        let result = hydrate_staged_history(&stage, database_id(), &root.join("configured.redb"));
+        assert_eq!(
+            fs::read(backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+            original_backup
+        );
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == StorageErrorKind::CorruptData),
+            "private stage must refuse engine repair before a later clean scrub: {result:?}",
+        );
+        assert_eq!(fs::read(&artifact).unwrap(), primary);
     }
 }

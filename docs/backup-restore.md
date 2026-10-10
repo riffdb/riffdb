@@ -465,6 +465,11 @@ writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
 clean eligibility.
 
+Private staged-history hydration refuses an engine repair request before any
+later scrub can authorize that stage. A repaired private stage cannot gain
+publication authority from a subsequent successful integrity check; materialization
+fails closed and a retry rebuilds from the preserved immutable backup.
+
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete
 structural and catalog-semantic streams through exact end before staged
