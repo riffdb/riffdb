@@ -14,6 +14,7 @@ import tomllib
 from .ticketdesk_lifecycle_campaign_native_epochs import CampaignNativeEpochs
 from .ticketdesk_lifecycle_campaign_disk import CampaignDiskSamples
 from .ticketdesk_lifecycle_campaign_extents import MeasuredExtents
+from .ticketdesk_lifecycle_campaign_observer_samples import CampaignObserverSamples
 from .ticketdesk_lifecycle_campaign_operator import CampaignOperator
 from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
 from .ticketdesk_lifecycle_load_stream import CampaignLoadStream, unique_object, parse_integer, reject_number
@@ -156,6 +157,7 @@ class CampaignRuntime:
         self.roster = self.native = self.epochs = self.memory = self.operator = None
         self.disk, self.active_archive_outage = None, None
         self.origin = None
+        self.observer_samples = None
         self.server_number = self.sampler_number = 0
         self.server_log = None
         self.extent_incarnations = []
@@ -357,6 +359,8 @@ class CampaignRuntime:
         output.wait_ready(30)
         self.origin = time.monotonic_ns()
         self.roster = CampaignProcessRoster(os.getpid(),dict(self.children),LIMITS)
+        self.observer_samples = self.stack.enter_context(CampaignObserverSamples(
+            self.root,duration_s=self.duration,origin_ns=self.origin))
         self.epochs = self.stack.enter_context(CampaignNativeEpochs(self.root,self.roster,self.duration,self.identity))
         self.memory = self.stack.enter_context(CampaignMemorySamples.from_roster(self.root,self.roster,self.duration))
         self.operator = self.stack.enter_context(CampaignOperator(self.root,self.roster,self.base))
@@ -367,13 +371,18 @@ class CampaignRuntime:
 
     def observer(self):
         owner = self.outputs["observer"]
+        now = time.monotonic_ns()
         require(owner.failure is None and owner.latest is not None
-                and time.monotonic_ns()-owner.latest[0] <= 5*SECOND, "campaign_observer_gap")
-        return dict(owner.latest[1])
+                and 0 <= now-owner.latest[0] <= 5*SECOND, "campaign_observer_gap")
+        value = dict(owner.latest[1])
+        if self.observer_samples is not None:
+            self.observer_samples.observe(now,owner.latest[0],value)
+        return value
 
     def tick(self, *, force_native=False, native=True, logs=True):
         require(self.outputs["load"].failure is None and self.outputs["observer"].failure is None,
                 "campaign_worker_output")
+        self.observer()
         elapsed = self.elapsed()
         if self.current_extents is not None: self.current_extents.poll(elapsed)
         self.memory.poll(elapsed)

@@ -3108,3 +3108,27 @@ original-clock durations against the terminal roster. Missing, extra, changed
 or unbounded input refuses qualification. This component does not qualify a
 resource model or campaign by itself; actual source, native history, host and
 interference evidence remain required. C3D validation is pending.
+
+### Original-clock observer observations
+
+Retain each distinct message from the original observer with its actual age
+and the controller's original monotonic elapsed time. Repeated polling adds no
+message, stale or rewound input refuses, and post-period observations cannot
+supply measured progress. The same original owner survives all faults. These
+bounded private observations require independent comparison with native state,
+actions and terminal reconciliation; they grant no campaign qualification.
+Preserve the original failure if outage cleanup also refuses. C3D validation is
+pending; the public populated restore and complete rehearsal remain required.
+
+### Independent native and original-observer progress reconciliation
+
+Check bounded closed observer and native inputs on the original offered clock,
+including every five-minute window, finite sample gaps and exact final drain.
+Keep owner-local sampler indices separate across declared replacements and
+permit derived projection reconstruction only at the new history incarnation.
+Preserve monotonic authoritative heads. Organization-zero event delivery can
+legitimately be sparse between its matching updates; reconcile the exact final
+event count, acknowledgements and actual live-query renewals independently.
+These arithmetic fixtures grant no actual campaign qualification. Source,
+owner/action custody, interference and artifact observations remain mandatory.
+C3D validation is pending.

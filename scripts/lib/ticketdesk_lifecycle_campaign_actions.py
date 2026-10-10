@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import threading
 
 from .ticketdesk_lifecycle_campaign_maintenance import CampaignMaintenance
@@ -32,6 +33,7 @@ class CampaignActions:
             if active:
                 runtime.tick(native=scheduled_at is None or runtime.elapsed() + 7 * SECOND < scheduled_at)
             else:
+                runtime.observer()
                 runtime.memory.poll(runtime.elapsed())
                 runtime.disk.poll(runtime.elapsed(), archive_outage=runtime.active_archive_outage)
                 runtime.epochs.check_gaps(runtime.elapsed())
@@ -321,7 +323,12 @@ class CampaignActions:
                 "finished_ns": finished, "paused_samples": paused_samples,
                 "original_workers_retained": True, "live_and_write_progress": True})
         finally:
-            if custody:
-                custody.__exit__(None, None, None)
-                runtime.active_archive_outage = None
-            else: (runtime.root / "consumer.pause").unlink(missing_ok=True)
+            primary = sys.exception()
+            try:
+                if custody:
+                    custody.__exit__(None, None, None)
+                    runtime.active_archive_outage = None
+                else: (runtime.root / "consumer.pause").unlink(missing_ok=True)
+            except BaseException:
+                if primary is None: raise
+                primary.add_note("campaign_outage_cleanup")
