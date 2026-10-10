@@ -16,7 +16,7 @@ packages: [WP-831]
 # definition once the owning package is complete.
 obligations: []
 review_triggers:
-  - A segment decode depends on anything other than the exact row bytes it is given, such as the reading transaction, the clock or a mutable resolver.
+  - A segment decode can succeed with a segment other than the one its row bytes name, through the reading transaction, the clock or a resolver.
   - A remembered segment is served for a lookup whose row bytes differ from the bytes it was decoded from.
   - A refused decode is remembered, or a lookup reports a different finding, error or member than a lookup without reuse.
 ---
@@ -42,13 +42,15 @@ number of pages.
    from, and reuse it for a later lookup whose row bytes are byte-for-byte equal. Any other row is decoded from its own bytes and replaces
    the remembered segment. A remembered segment is never served for different bytes.
 2. Only a successful decode is remembered. A row that is refused is decoded again, and refused again, on every lookup, so every finding,
-   error and member a walk reports is the one it reports without reuse.
+   error and member a walk reports is the one it reports without reuse, except that a read failure of a history stub's journal extent on
+   a second resolution of a frame the walk has already read and verified is not observed.
 3. Reuse is held by one walk session and by the bounded sampled checkpoint pass, holds one segment, and is dropped with them. Ordinary
    reads, writers and recovery replay keep decoding the row they read.
 4. The scrub's row observation is the session's running total, recorded after each page, not a sum of running totals.
 
-Equal bytes imply an equal decode: an inline segment is decoded from its bytes alone, and a history stub names its frame by hash, so
-resolving it again yields the same segment or the same refusal (ADR-0263 Amendment 3). Nothing that a walk validates is skipped.
+Equal bytes imply an equal decode: an inline segment is decoded from its bytes alone, and a history stub names its frame by hash, so a
+successful resolution can only yield that frame's segment (ADR-0263 Amendment 3). The walk's extent pin keeps the frame from being reclaimed
+while it runs. Every row and frame is still read and verified at least once; what reuse skips is re-reading bytes already verified.
 
 ## Options considered
 

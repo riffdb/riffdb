@@ -279,16 +279,20 @@ where
     })
 }
 
+/// A decoded segment and the exact row bytes it was decoded from.
+type RememberedSegment = (Box<[u8]>, std::sync::Arc<StoredCommandSegmentV1>);
+
 /// The last command segment decoded by a lookup, remembered by the exact
 /// `COMMITS` row bytes it was decoded from.
 ///
-/// Decoding a segment row is a pure function of those bytes: an inline
-/// segment is decoded from them, and a history stub names its frame by hash,
-/// so resolving the same stub again yields the same segment or the same
-/// refusal. A lookup whose row bytes equal the remembered row therefore reuses
-/// the decoded segment instead of decoding it again; any other row is decoded
-/// and replaces it. Only successful decodes are remembered, so a refusal is
-/// re-derived and reported on every lookup exactly as without the memo.
+/// A successful decode of a segment row is determined by those bytes: an
+/// inline segment is decoded from them, and a history stub names its frame by
+/// hash, so resolving it can only yield that frame's segment (ADR-0283). A
+/// lookup whose row bytes equal the remembered row therefore reuses the
+/// decoded segment instead of reading and decoding it again; any other row is
+/// decoded and replaces it. Only successful decodes are remembered, so a
+/// refusal is re-derived and reported on every lookup exactly as without the
+/// memo.
 ///
 /// The validation walks resolve several commands of one segment, and each
 /// command several times, in a row; without this each lookup decoded the
@@ -296,7 +300,7 @@ where
 /// segment, so its memory is bounded by the largest segment.
 #[derive(Default)]
 pub(crate) struct SegmentMemo {
-    last: std::cell::RefCell<Option<(Box<[u8]>, std::sync::Arc<StoredCommandSegmentV1>)>>,
+    last: std::cell::RefCell<Option<RememberedSegment>>,
     #[cfg(test)]
     decodes: std::cell::Cell<usize>,
 }
