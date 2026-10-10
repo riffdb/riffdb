@@ -134,7 +134,11 @@ class CampaignTimeline:
         _, released = self._active
         require(released is not None, "timeline_release_required")
         require(reconciled is True, "timeline_unreconciled")
-        recovery = (elapsed_ns - released + SECOND - 1) // SECOND
+        # Cover the actual completion on the original offered clock. Rounding
+        # only time after release can omit dispatch and release quantization,
+        # incorrectly classifying the next five-minute window as normal.
+        recovery = ((elapsed_ns + SECOND - 1) // SECOND
+                    - plan["start_s"] - plan["duration_s"])
         require(recovery <= (600 if kind in contract.OUTAGES else 60 - plan["duration_s"]),
                 "timeline_recovery_overrun")
         self._actions.append(dict(plan, recovery_s=recovery, reconciled=True))

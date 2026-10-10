@@ -3446,3 +3446,12 @@ preparation retains its closed V1 ready shape. This adds no native database
 semantic, durable format, authorization bypass or dependency version. The time
 feature is limited to Linux TicketDesk rehearsal code; first-party unsafe Rust
 remains forbidden. C3D component validation is pending; this is not run credit.
+
+### Original-clock fault interval closure candidate
+
+Round the actual action completion up on the original offered clock when
+recording its fault interval, including dispatch and release quantization.
+This prevents an actual completion just after a window boundary from leaving
+that window incorrectly marked normal. Preserve the existing published
+60-second whole-action and 600-second outage-recovery limits; refuse if the
+complete integer interval cannot fit. C3D validation remains pending.
