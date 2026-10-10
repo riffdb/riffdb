@@ -99,6 +99,17 @@ pub fn stamp_history_incarnation(
     stamp_incarnation(database, incarnation, None)
 }
 
+/// Stamps only a closed, sealed private stage; ordinary recovery is separate.
+pub(crate) fn stamp_sealed_history_incarnation(
+    path: &Path,
+    incarnation: u64,
+) -> Result<(), StorageError> {
+    if incarnation < HISTORY_INCARNATION_INITIAL {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    stamp_incarnation(open_unrepaired_private_database(path)?, incarnation, None)
+}
+
 pub(crate) fn stamp_private_archive_incarnation(
     file: &File,
     binding: crate::maintenance::PrivateArchiveValidationBinding,
@@ -798,6 +809,25 @@ impl RedbOfflineRestore {
     }
 }
 
+/// A repaired unpublished stage must never acquire publication authority.
+/// Observe refusal before mapping the engine's RepairAborted error, since a
+/// later clean open cannot prove that an earlier open did not repair the file.
+fn open_unrepaired_private_database(path: &Path) -> Result<Database, StorageError> {
+    let repair_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = std::sync::Arc::clone(&repair_observed);
+    let mut builder = redb::Builder::new();
+    builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
+    builder.set_repair_callback(move |session| {
+        observed.store(true, std::sync::atomic::Ordering::Release);
+        session.abort();
+    });
+    let opened = builder.open(path);
+    if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(corrupt());
+    }
+    opened.map_err(database_error)
+}
+
 /// Expands the staged copy's history stubs into full rows, resolving them from
 /// the sealed extents the restore placed beside it, then removes those extents:
 /// the published restore carries only its database, journal, and marker
@@ -815,23 +845,7 @@ fn hydrate_staged_history(
         std::sync::Arc::new(crate::media::RealJournalMedia),
     );
     {
-        // This unpublished stage was copied from a verified immutable backup.
-        // Repair here could otherwise be hidden by the later successful scrub.
-        // A stopped materialization is rebuilt from that original backup; it
-        // cannot turn a repaired private stage into publication authority.
-        let repair_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = std::sync::Arc::clone(&repair_observed);
-        let mut builder = redb::Builder::new();
-        builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
-        builder.set_repair_callback(move |session| {
-            observed.store(true, std::sync::atomic::Ordering::Release);
-            session.abort();
-        });
-        let opened = builder.open(&database_file);
-        if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(corrupt());
-        }
-        let database = opened.map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let database = open_unrepaired_private_database(&database_file)?;
         crate::history_stub::hydrate_history_stubs(&database)?;
     }
     crate::backup::remove_sealed_extents_beside(&database_file)?;
@@ -1245,6 +1259,17 @@ pub(crate) fn create_compatible_backup_fixture(
     write_new_and_sync(&backup_directory.join(MANIFEST_FILE_NAME), &encoded)?;
     sync_directory(backup_directory)?;
     Ok(manifest)
+}
+
+/// Final semantic reread may not repair the already validated private stage.
+pub(crate) fn validate_sealed_database_semantics(
+    artifact: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Database, StorageError> {
+    let _ = manifest_checksum(manifest)?;
+    let database = open_unrepaired_private_database(artifact)?;
+    validate_readable_database_semantics(&database, manifest)?;
+    Ok(database)
 }
 
 pub(crate) fn validate_database_semantics(
@@ -3189,6 +3214,11 @@ mod tests {
             matches!(result, Err(ref error) if error.kind() == StorageErrorKind::CorruptData),
             "private stage must refuse engine repair before a later clean scrub: {result:?}",
         );
+        assert_eq!(fs::read(&artifact).unwrap(), primary);
+        // The incarnation helper must independently reject repair too, even
+        // when reached without the sealed owner's prior checksum check.
+        let stamp = stamp_sealed_history_incarnation(&artifact, 2);
+        assert!(matches!(stamp, Err(ref error) if error.kind() == StorageErrorKind::CorruptData));
         assert_eq!(fs::read(&artifact).unwrap(), primary);
     }
 }

@@ -465,10 +465,13 @@ writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
 clean eligibility.
 
-Private staged-history hydration refuses an engine repair request before any
-later scrub can authorize that stage. A repaired private stage cannot gain
-publication authority from a subsequent successful integrity check; materialization
-fails closed and a retry rebuilds from the preserved immutable backup.
+Private staged-history hydration and final sealing refuse engine repair requests.
+A repaired private stage cannot gain publication authority from a subsequent
+successful integrity check. Before incarnation stamping, the sealed owner also
+rechecks its primary, journal, and format marker checksums; intended metadata
+writes cannot replace the seal of a changed artifact. Stamping independently
+refuses engine repair. Refusal leaves the immutable backup intact, and a retry
+rebuilds the unpublished stage from that backup.
 
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete

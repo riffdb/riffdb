@@ -14,7 +14,7 @@ use super::failpoint::{RedbMaintenanceFailpoint, RedbMaintenanceTestController};
 use super::path_guard::PinnedDirectory;
 use crate::backup::{
     DATABASE_ARTIFACT_FILE_NAME, RedbOfflineRestore, sha256_file, sha256_reader, sync_parent,
-    validate_backup_journal, validate_database_semantics, validate_immutable_backup,
+    validate_backup_journal, validate_immutable_backup, validate_sealed_database_semantics,
 };
 use crate::error::storage_error;
 
@@ -178,7 +178,8 @@ impl RedbStagedRestore {
         if validated_database_id != self.manifest.database_id() {
             return Err(corrupt());
         }
-        let database = validate_database_semantics(&self.staged_database_file, &self.manifest)?;
+        let database =
+            validate_sealed_database_semantics(&self.staged_database_file, &self.manifest)?;
         drop(database);
         let staged_history_incarnation =
             crate::backup::read_history_incarnation(&self.staged_database_file)?.unwrap_or(0);
@@ -295,11 +296,39 @@ impl RedbSealedStagedRestore {
             RedbMaintenanceFailpoint::BetweenReceiptWriteAndStagedStamp,
             true,
         )?;
-        crate::backup::stamp_history_incarnation(&self.staged_database_file, incarnation)?;
+        // A new checksum may describe only the intended incarnation write;
+        // it cannot launder changed primary, journal, or marker bytes.
+        self.verify_sealed_artifacts()?;
+        crate::backup::stamp_sealed_history_incarnation(&self.staged_database_file, incarnation)?;
         self.staged_history_incarnation = incarnation;
         self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
         self.verify_paths()?;
         Ok(())
+    }
+
+    fn verify_sealed_artifacts(&self) -> Result<(), StorageError> {
+        self.verify_paths()?;
+        let staged_file = self
+            .stage_cleanup
+            .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
+        if sha256_reader(staged_file)? != self.sealed_artifact_checksum {
+            return Err(corrupt());
+        }
+        let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
+        let staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
+        if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
+            return Err(corrupt());
+        }
+        let staged_format_marker_name = self
+            .staged_format_marker_file
+            .file_name()
+            .ok_or_else(invariant)?;
+        let staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
+        if sha256_reader(staged_format_marker)? != self.sealed_format_marker_checksum {
+            return Err(corrupt());
+        }
+        self.stage_cleanup.verify()?;
+        self.verify_paths()
     }
 
     pub(super) const fn operation_id(&self) -> OfflineMaintenanceOperationId {
@@ -335,26 +364,12 @@ impl RedbSealedStagedRestore {
             return Err(corrupt());
         }
         self.backup_directory_guard.verify()?;
-        let staged_file = self
-            .stage_cleanup
-            .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
-        if sha256_reader(staged_file)? != self.sealed_artifact_checksum {
-            return Err(corrupt());
-        }
+        self.verify_sealed_artifacts()?;
         let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
-        let staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
-        if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
-            return Err(corrupt());
-        }
         let staged_format_marker_name = self
             .staged_format_marker_file
             .file_name()
             .ok_or_else(invariant)?;
-        let staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
-        if sha256_reader(staged_format_marker)? != self.sealed_format_marker_checksum {
-            return Err(corrupt());
-        }
-        self.stage_cleanup.verify()?;
 
         let target_lock = lock_existing_target(&self.configured_parent_guard, target_name)?;
         let configured_journal = crate::journal::journal_path(&self.configured_database_file);
