@@ -19,6 +19,76 @@ const QUEUE: usize = 32_768;
 const LATENCY_CEILING: usize = 250_000;
 const MAX_WINDOW_SAMPLES: u64 = 200_000;
 
+// A campaign publishes the host CLOCK_MONOTONIC origin once. Both owners then
+// use that exact epoch; process replacement cannot move the offered timeline.
+struct OfferedClock {
+    legacy: Instant,
+    shared_origin_ns: Option<u64>,
+}
+
+fn shared_clock_requested(value: Option<&str>) -> Result<bool> {
+    match value {
+        None => Ok(false),
+        Some("1") => Ok(true),
+        _ => Err("offered_clock_configuration"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn monotonic_ns() -> Result<u64> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    monotonic_parts(now.tv_sec, now.tv_nsec)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn monotonic_ns() -> Result<u64> {
+    Err("offered_clock_platform")
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn monotonic_parts(seconds: i64, nanos: i64) -> Result<u64> {
+    let seconds = u64::try_from(seconds).map_err(|_| "offered_clock_value")?;
+    let nanos = u64::try_from(nanos).map_err(|_| "offered_clock_value")?;
+    if nanos >= 1_000_000_000 {
+        return Err("offered_clock_value");
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanos))
+        .filter(|value| *value > 0)
+        .ok_or("offered_clock_value")
+}
+
+impl OfferedClock {
+    fn start(shared: bool) -> Result<Self> {
+        Ok(Self {
+            legacy: Instant::now(),
+            shared_origin_ns: if shared { Some(monotonic_ns()?) } else { None },
+        })
+    }
+
+    fn elapsed(&self) -> Result<Duration> {
+        match self.shared_origin_ns {
+            Some(origin) => monotonic_ns()?
+                .checked_sub(origin)
+                .map(Duration::from_nanos)
+                .ok_or("offered_clock_rewind"),
+            None => Ok(self.legacy.elapsed()),
+        }
+    }
+
+    async fn wait_for(&self, second: u64) -> Result<()> {
+        let deadline = Duration::from_secs(second);
+        loop {
+            let remaining = deadline.saturating_sub(self.elapsed()?);
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            tokio::time::sleep(remaining).await;
+        }
+    }
+}
+
 struct Active {
     current: Arc<AtomicU32>,
 }
@@ -404,6 +474,12 @@ pub(super) async fn run() -> Result<()> {
     if !(1..=86_400).contains(&duration) {
         return Err("duration_bound");
     }
+    let clock_configuration = match env::var("RIFFDB_LIFECYCLE_SHARED_CLOCK") {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("offered_clock_configuration"),
+    };
+    let shared_clock = shared_clock_requested(clock_configuration.as_deref())?;
     let (sender, receiver) = mpsc::channel::<Job>(QUEUE);
     let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
     let ready = Arc::new(Barrier::new(WORKERS as usize + 1));
@@ -563,20 +639,26 @@ pub(super) async fn run() -> Result<()> {
             return result.ok_or("worker")?.map_err(|_| "worker")?.and(Err("worker_startup"));
         }
     }
-    println!(
-        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\",\"workers\":28,\"queue_slots\":32768}}"
-    );
+    let clock = OfferedClock::start(shared_clock)?;
+    if let Some(origin) = clock.shared_origin_ns {
+        println!(
+            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v2\",\"workers\":28,\"queue_slots\":32768,\"origin_monotonic_ns\":{origin}}}"
+        );
+    } else {
+        println!(
+            "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\",\"workers\":28,\"queue_slots\":32768}}"
+        );
+    }
     io::stdout().flush().map_err(|_| "observation_output")?;
-    let started = Instant::now();
-    let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     let mut control_tick = tokio::time::interval(Duration::from_millis(100));
     control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut window_start = 0;
     for second in 0..duration {
+        let tick = clock.wait_for(second);
+        tokio::pin!(tick);
         loop {
             tokio::select! {
-                _ = ticker.tick() => break,
+                result = &mut tick => { result?; break; },
                 _ = control_tick.tick(), if control.is_some() => {
                     admission.poll(control.as_ref().ok_or("load_control_root")?, &metrics)?;
                 }
@@ -585,7 +667,7 @@ pub(super) async fn run() -> Result<()> {
                 }
             }
         }
-        if started.elapsed().as_millis() > u128::from(second) * 1000 + 500 {
+        if clock.elapsed()?.as_millis() > u128::from(second) * 1000 + 500 {
             return Err("offered_clock_gap");
         }
         if second > 0 && second.is_multiple_of(300) {
@@ -618,7 +700,7 @@ pub(super) async fn run() -> Result<()> {
     }
     // Close the last observed window at its deadline. Later drain completions
     // are disclosed separately and never added to a normal-window rate.
-    ticker.tick().await;
+    clock.wait_for(duration).await?;
     metrics.lock().map_err(|_| "observation_state")?.publish(
         window_start,
         duration,
@@ -669,6 +751,40 @@ pub(super) async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: END-007, END-008, END-010
+    #[test]
+    fn shared_clock_configuration_and_monotonic_values_are_closed() {
+        assert_eq!(shared_clock_requested(None), Ok(false));
+        assert_eq!(shared_clock_requested(Some("1")), Ok(true));
+        for value in ["", "0", "true", " 1", "2"] {
+            assert_eq!(
+                shared_clock_requested(Some(value)),
+                Err("offered_clock_configuration")
+            );
+        }
+        assert_eq!(monotonic_parts(2, 3), Ok(2_000_000_003));
+        for (seconds, nanos) in [(-1, 0), (0, -1), (1, 1_000_000_000), (0, 0), (i64::MAX, 0)] {
+            assert_eq!(monotonic_parts(seconds, nanos), Err("offered_clock_value"));
+        }
+    }
+
+    // req: END-007, END-008, END-010
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shared_clock_publishes_the_same_native_epoch_and_rejects_rewind() {
+        let before = monotonic_ns().unwrap();
+        let mut clock = OfferedClock::start(true).unwrap();
+        let origin = clock.shared_origin_ns.unwrap();
+        let after = monotonic_ns().unwrap();
+        assert!(before <= origin && origin <= after);
+        assert!(
+            clock.elapsed().unwrap().as_nanos() <= u128::from(monotonic_ns().unwrap() - origin)
+        );
+        clock.wait_for(0).await.unwrap();
+        clock.shared_origin_ns = Some(u64::MAX);
+        assert_eq!(clock.elapsed(), Err("offered_clock_rewind"));
+    }
 
     // req: END-003, END-007, END-008, END-010
     #[test]

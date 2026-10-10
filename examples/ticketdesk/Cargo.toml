@@ -20,5 +20,10 @@ riffdb-proto = { version = "0.1.0", path = "../../crates/riffdb-proto", default-
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel"] }
 
+# The Linux rehearsal shares CLOCK_MONOTONIC with its bounded Python controller.
+# Reuse the pinned safe OS wrapper already used by storage; no new version.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.4", default-features = false, features = ["time", "std"] }
+
 [lints]
 workspace = true

@@ -49,9 +49,10 @@ class WorkerOutput:
         self.ready = threading.Event()
         self.ready_seen = False
         self.latest = self.terminal = self.failure = None
+        self.origin_ns = None
         self.windows = []
         self.prior_observation = None
-        self.parser = CampaignLoadStream(duration_s=duration) if kind == "load" else None
+        self.parser = CampaignLoadStream(duration_s=duration, require_shared_clock=True) if kind == "load" else None
         self.path = Path(root)/(kind+".stdout")
         self.thread = threading.Thread(target=self._read, daemon=True)
         self.thread.start()
@@ -112,7 +113,8 @@ class WorkerOutput:
                             self.ready_seen = True; self.ready.set()
                     elif self.kind == "load":
                         schema = value["schema"]
-                        if schema == "riffdb.ticketdesk-lifecycle-load-ready/v1":
+                        if schema == "riffdb.ticketdesk-lifecycle-load-ready/v2":
+                            self.origin_ns = self.parser.origin_ns
                             self.ready_seen = True; self.ready.set()
                         elif schema == "riffdb.ticketdesk-lifecycle-load-probe/v1": self.windows.append(value)
                         else: self.terminal = value
@@ -354,10 +356,13 @@ class CampaignRuntime:
         private_write(self.root,"live.start",b"start\n")
         directory = self.root/"original-load"
         child = self.launch("load", [str(self.artifacts/"lifecycle"),"probe"],directory,
-                            environment=self.worker_environment())
+                            environment=self.worker_environment(RIFFDB_LIFECYCLE_SHARED_CLOCK="1"))
         output = WorkerOutput(child,directory,"load",self.duration); self.outputs["load"] = output
         output.wait_ready(30)
-        self.origin = time.monotonic_ns()
+        now = time.monotonic_ns()
+        require(type(output.origin_ns) is int and 0 < output.origin_ns <= now
+                and now-output.origin_ns <= SECOND, "campaign_load_clock")
+        self.origin = output.origin_ns
         self.roster = CampaignProcessRoster(os.getpid(),dict(self.children),LIMITS)
         self.interference = self.stack.enter_context(CampaignInterferenceSamples(
             self.root,self.roster,duration_s=self.duration))

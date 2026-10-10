@@ -3168,3 +3168,16 @@ control accounting includes them. Preserve frozen worker hard limits, the
 budget. Capture the observer's latest tuple once before reading its clock and
 payload, preventing a new reader publication from mixing the two messages.
 C3D validation is pending; this model admits inputs, never qualifies a result.
+
+### One original offered clock candidate
+
+The Linux Rust load worker publishes its CLOCK_MONOTONIC origin once using
+the pinned safe rustix time wrapper already present in the dependency graph.
+The campaign reader requires the closed V2 ready record, rejects absent, stale
+or future origins, and adopts that exact epoch for fault actions and samples.
+The workload schedules each offered second and the terminal boundary against
+that same epoch. Replacement servers and observers cannot restart it. Legacy
+preparation retains its closed V1 ready shape. This adds no native database
+semantic, durable format, authorization bypass or dependency version. The time
+feature is limited to Linux TicketDesk rehearsal code; first-party unsafe Rust
+remains forbidden. C3D component validation is pending; this is not run credit.

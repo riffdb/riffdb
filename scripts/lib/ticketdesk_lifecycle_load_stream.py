@@ -6,6 +6,7 @@ MAX_LINE = 4096
 MAX_U64 = 2**64 - 1
 MAX_WINDOW_COMPLETIONS = 200000
 READY = frozenset({'schema','workers','queue_slots'})
+SHARED_READY = READY | {'origin_monotonic_ns'}
 WINDOW = frozenset({'schema','start_s','end_s','offered_commands','offered_reads',
     'completed_commands','completed_reads','settled_submission_attempts','transport_attempts',
     'retries','p95_us','p99_us','load_peak_in_flight','reserved_auxiliary_slots','latency_overflow'})
@@ -43,7 +44,10 @@ def unique_object(pairs):
 
 
 class CampaignLoadStream:
-    def __init__(self, *, duration_s):
+    def __init__(self, *, duration_s, require_shared_clock=False):
+        require(type(require_shared_clock) is bool,'load_stream_clock')
+        self.require_shared_clock=require_shared_clock
+        self.origin_ns=None
         number(duration_s)
         require(duration_s % 300 == 0 and 73 <= duration_s//300 <= 288,'load_stream_duration')
         self.windows=duration_s//300
@@ -77,8 +81,15 @@ class CampaignLoadStream:
             for key,item in value.items():
                 if key!='schema': number(item)
             if not self._ready:
-                require(value.keys()==READY and value['schema']=='riffdb.ticketdesk-lifecycle-load-ready/v1'
-                        and value['workers']==28 and value['queue_slots']==32768,'load_stream_ready')
+                if self.require_shared_clock:
+                    require(value.keys()==SHARED_READY
+                            and value['schema']=='riffdb.ticketdesk-lifecycle-load-ready/v2'
+                            and value['origin_monotonic_ns']>0,'load_stream_clock')
+                    self.origin_ns=value['origin_monotonic_ns']
+                else:
+                    require(value.keys()==READY
+                            and value['schema']=='riffdb.ticketdesk-lifecycle-load-ready/v1','load_stream_ready')
+                require(value['workers']==28 and value['queue_slots']==32768,'load_stream_ready')
                 self._ready=True
             elif self._cursor < self.windows:
                 require(value.keys()==WINDOW and value['schema']=='riffdb.ticketdesk-lifecycle-load-probe/v1',
