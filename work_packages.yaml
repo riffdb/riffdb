@@ -28667,6 +28667,22 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-016 private final sealing and sealed stamping refusal: two native
+      regressions expose repair during final sealing and replacement of a
+      changed primary seal during incarnation stamping. Share the hydration
+      repair-aborting construction with these private opens and verify all
+      three existing artifact seals before the unchanged controlled stamp
+      transaction. Preserve healthy repeated stamping, native corruption
+      classification, original backup and configured target, ordinary primary
+      recovery, transaction boundaries, durability and formats. All seven
+      scoped acceptance checks pass on the required host, including 1,368
+      native tests with two existing skips. A separate native ordinary-source
+      open still repairs a stage before a later full scrub and sealing accept
+      it; healthy ordinary opens also change bytes. Preserve that failing
+      oracle and require review of any changed custody boundary. No complete
+      staged authorization, target publication, whole-action deadline,
+      normal-window latency or complete campaign qualification follows.
+    - >-
       D-015 private hydration repair refusal: a native allocator-repair fixture
       proves that the preceding hydration silently repairs a private stage and
       a later complete physical, structural and catalog scrub accepts it. Abort

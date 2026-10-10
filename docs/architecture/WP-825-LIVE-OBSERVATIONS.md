@@ -60,6 +60,48 @@ now records four fixed backup artifacts plus the manifest-declared sealed extent
 family, rather than a fixed four-file inventory. No encoding or validation
 predicate changes.
 
+## Private final sealing and incarnation stamping
+
+Two further native regressions expose integrity failures after materialization.
+A stage requiring allocator repair can pass final sealing, and incarnation
+stamping can replace a previously established seal after the staged file changes.
+Both regressions fail on the preceding implementation.
+
+The committed correction uses the same repair-aborting engine construction for
+private hydration, final semantic sealing and sealed-stage incarnation stamping.
+Before stamping, it verifies the existing primary, journal and format-marker
+seals using the publication checksum checks. Only the existing controlled
+incarnation transaction may then replace the primary seal. Healthy repeated
+stamping remains idempotent; damaged stages refuse success without changing the
+original backup or configured target. Ordinary primary crash recovery, native
+transaction boundaries, durability, formats and public interfaces are unchanged.
+
+All seven scoped acceptance checks pass on the required host in 1,799.1 seconds,
+including 1,368 native tests with two existing skips. The 25 backup/watermark
+tests, 28 staged-maintenance tests, physical refusal/custody coverage, 59
+architecture checks and Clippy pass. This is correctness evidence, not proof of
+the whole recovery deadline or the complete campaign.
+
+## Remaining ordinary staged-open repair gap
+
+A separate native regression on the sealing-corrected source confirms an earlier
+repair boundary remains. The server's ordinary staged authorization path opens
+its stage through ordinary source construction. In the native test, that open
+repairs a stage requiring allocator repair; a subsequent complete physical,
+structural and catalog scrub succeeds, and final sealing succeeds. The original
+backup primary remains unchanged and the configured target remains absent.
+This proves a native construction gap, not a complete bearer-authorization result
+or an actual target replacement.
+
+A healthy source-open control also changes the stage bytes and passes the same
+complete scrub and seal. Refusing every ordinary-open byte change would therefore
+reject a valid case. The late repair guards cannot prove that an earlier open
+never repaired the stage. Closing this gap requires retaining validation custody
+and preserving the existing startup proof joins before staged authorization;
+ADR-0269 requires review of a changed file-lock ownership boundary. No new
+custody model is implemented or qualified by this observation. The whole-action
+recovery deadline and genuine normal-window latency failure remain open.
+
 ## Bounded same-pin offline audit inspection
 
 The complete offline validator now dispatches at most 64 audit or reverse-index
