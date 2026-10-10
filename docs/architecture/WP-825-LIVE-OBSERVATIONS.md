@@ -17,15 +17,48 @@ does not resolve the earlier genuine normal-window p95 failure of 101.766 ms,
 whose sink recovery ended before second 600. Preserve both observations and the
 original workload and latency thresholds.
 
-The committed native implementation takes 100.0 seconds to materialize the
-populated staged copy, compared with 121.5 seconds before sequencing its existing
-private history normalization ahead of complete fencing validation. Scoped
-acceptance passes: 1,364 native tests, two existing skips, 59 architecture checks
-and Clippy. Tested source and all 100 original backup artifacts remain unchanged.
-This component still exceeds the unchanged 60-second limit for the **whole**
-public backup, restore and reconciliation sequence. A profile of the combined
-implementation is running. Neither a component timing nor a passing diagnostic
-replaces the complete campaign gate.
+The latest populated native component measurement takes 100.1 seconds on the
+hydration repair-refusal source. The preceding representation-sequencing change
+measured 100.0 seconds, compared with 121.5 seconds before it. These are single
+component observations, not a whole-action comparison. The hydration correction
+passes all seven scoped acceptance checks in 1,773.8 seconds, including 1,366
+native tests with two existing skips, 59 architecture checks and Clippy. Tested
+source and all 100 original backup artifacts remain unchanged. Materialization
+alone still exceeds the unchanged 60-second limit for the **whole** public
+backup, restore, publication, restart and reconciliation sequence. Normal-window
+latency, final combined-source CI and the complete measured campaign remain
+unqualified.
+
+## Private hydration repair refusal
+
+A generated native allocator-repair fixture exposes a correctness failure in
+private history hydration: the engine silently repairs the staged file and a
+later complete physical, structural and catalog scrub succeeds. The original
+immutable backup remains intact, but the repaired stage could acquire publication
+authority. A successful later scrub cannot prove that no earlier repair occurred.
+
+The committed correction aborts an engine repair request at the hydration open
+and checks that observation before classifying the engine's refusal. It uses the
+existing bounded primary engine cache. A healthy stage remains hydratable; a
+concurrent native engine owner is excluded; a repair request returns the existing
+typed corruption class with the damaged stage and immutable backup unchanged.
+Ordinary primary crash recovery, complete validators, transactions, durability,
+formats and public interfaces remain unchanged.
+
+The intended regression fails on the preceding implementation and passes on the
+correction. All 25 backup/watermark tests, 26 staged-maintenance tests, physical
+refusal/custody coverage and the complete scoped acceptance plan pass on the
+required host. The populated native diagnostic then measures 100.1 seconds with
+all original backup artifact hashes unchanged. This fixes an integrity defect;
+it does not clear the whole-action recovery deadline or the earlier genuine
+normal-window latency failure.
+
+The complete sealed-extent reader also now uses the existing index-reader footer
+allocation bound before reading a footer. Its original regression fails before
+the correction; all seven scoped acceptance checks pass afterward. The handbook
+now records four fixed backup artifacts plus the manifest-declared sealed extent
+family, rather than a fixed four-file inventory. No encoding or validation
+predicate changes.
 
 ## Bounded same-pin offline audit inspection
 

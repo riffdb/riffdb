@@ -28667,6 +28667,32 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-015 private hydration repair refusal: a native allocator-repair fixture
+      proves that the preceding hydration silently repairs a private stage and
+      a later complete physical, structural and catalog scrub accepts it. Abort
+      repair at the hydration open and classify the observed refusal before
+      mapping the engine error. Preserve healthy hydration, native exclusion,
+      original backup and refused-stage bytes, ordinary primary recovery,
+      complete validators, transaction boundaries, durability and formats. All
+      25 backup/watermark tests, 26 staged-maintenance tests, physical custody
+      checks, 59 architecture checks, Clippy and seven scoped acceptance checks
+      pass on the required host; 1,366 native tests pass with two existing skips.
+      The corrected populated component still takes 100.1 seconds and preserves
+      all 100 original artifacts. Whole-action recovery, genuine normal-window
+      latency, final combined-source CI and the real short campaign remain
+      unqualified. WP-825 remains open.
+    - >-
+      D-014 complete footer allocation admission: share the existing bounded
+      index-reader footer ceiling with the complete sealed-extent reader before
+      allocation, preserving full frame/footer validation and compatibility.
+      The preceding native regression fails; the correction and all seven
+      scoped acceptance checks pass, including 1,365 native tests with two
+      existing skips. Document four fixed backup artifacts plus the declared
+      sealed extent family. Retain no artifact-copy parallelism, decoded-frame
+      cache, alternate engine cache or repeated audit-table-handle experiment:
+      the diagnostic observations do not justify those production changes.
+      Existing resource limits, formats, ordering and all rehearsal gates remain.
+    - >-
       D-013 bounded protected-event prefix evaluation: use the maintainer's
       existing authorization for necessary database fixes to include query-
       executor sources. Inspection finds that protected replay authorizes
