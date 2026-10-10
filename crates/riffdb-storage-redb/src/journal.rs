@@ -3200,15 +3200,7 @@ pub(crate) fn read_sealed_index_with_media(
     }
     let length = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
-    let bytes = length
-        .checked_sub(extent.anchor_position)
-        .ok_or(JournalIoError::Corrupt)?;
-    let maximum = SealedExtentFooter::encoded_len(MAX_JOURNAL_SUFFIX_TRANSITIONS)
-        .and_then(|bytes| align_up(bytes, EXTENT_FRAME_ALIGNMENT))
-        .ok_or(JournalIoError::Corrupt)?;
-    if bytes < SEALED_FOOTER_HEADER_BYTES + HASH_BYTES || bytes > maximum {
-        return Err(JournalIoError::Corrupt);
-    }
+    let bytes = bounded_sealed_footer_bytes(length, extent.anchor_position)?;
     let mut encoded = vec![0; bytes];
     file.read_exact_at(&mut encoded, extent.anchor_position)
         .map_err(|_| JournalIoError::Corrupt)?;
@@ -3217,6 +3209,19 @@ pub(crate) fn read_sealed_index_with_media(
         return Err(JournalIoError::Corrupt);
     }
     Ok(footer)
+}
+
+/// The index preflight and complete reader share one allocation ceiling.
+/// Validate the footer tail before either reader allocates its contents.
+fn bounded_sealed_footer_bytes(length: usize, anchor: usize) -> Result<usize, JournalIoError> {
+    let bytes = length.checked_sub(anchor).ok_or(JournalIoError::Corrupt)?;
+    let maximum = SealedExtentFooter::encoded_len(MAX_JOURNAL_SUFFIX_TRANSITIONS)
+        .and_then(|bytes| align_up(bytes, EXTENT_FRAME_ALIGNMENT))
+        .ok_or(JournalIoError::Corrupt)?;
+    if bytes < SEALED_FOOTER_HEADER_BYTES + HASH_BYTES || bytes > maximum {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(bytes)
 }
 
 /// Reads a sealed extent's footer, verifying it against the frames it indexes.
@@ -3232,6 +3237,7 @@ pub(crate) fn read_sealed_extent_with_media(
     }
     let file_len = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
+    let footer_bytes = bounded_sealed_footer_bytes(file_len, extent.anchor_position)?;
     let mut entries = Vec::new();
     let walk = walk_extent_frames(
         &mut file,
@@ -3247,7 +3253,7 @@ pub(crate) fn read_sealed_extent_with_media(
     if !walk.footer || extent.anchor_position != tail {
         return Err(JournalIoError::Corrupt);
     }
-    let mut bytes = vec![0_u8; file_len - tail];
+    let mut bytes = vec![0_u8; footer_bytes];
     file.read_exact_at(&mut bytes, tail)
         .map_err(|_| JournalIoError::Corrupt)?;
     let footer = SealedExtentFooter::decode(&bytes)?;
@@ -5745,6 +5751,52 @@ mod tests {
         };
         write_all_at(&mut file, bytes, physical.position).expect("write physical frame");
         file.sync_data().expect("sync recovery journal");
+    }
+
+    // req: REC-006, STO-031
+    #[test]
+    fn sealed_full_reader_refuses_footer_tail_beyond_index_limit() {
+        let database_path = TestPath::new("sealed-footer-allocation-bound");
+        let database_id = database_id(87);
+        let active = journal_path(&database_path.0);
+        reset_journal(
+            &active,
+            &JournalFileHeader::new(database_id, None, [0; HASH_BYTES]),
+        )
+        .expect("empty journal");
+        std::fs::rename(&active, sealing_journal_path(&database_path.0)).expect("sealing journal");
+        let sealed = seal_extent_with_media(&RealJournalMedia, &database_path.0, database_id)
+            .expect("seal empty journal")
+            .expect("sealed path");
+        assert!(read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id).is_ok());
+        assert!(read_sealed_index_with_media(&RealJournalMedia, &sealed, database_id).is_ok());
+        let maximum = SealedExtentFooter::encoded_len(MAX_JOURNAL_SUFFIX_TRANSITIONS)
+            .and_then(|bytes| align_up(bytes, EXTENT_FRAME_ALIGNMENT))
+            .expect("bounded footer ceiling");
+        let oversized = EXTENT_DATA_OFFSET + maximum + EXTENT_FRAME_ALIGNMENT;
+        assert!(oversized < extent_file_bytes(LEGACY_EXTENT_DATA_BYTES));
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&sealed)
+            .expect("owned sealed file");
+        file.set_len(oversized as u64)
+            .expect("append bounded zero padding");
+        file.sync_all().expect("sync test corruption");
+        assert!(matches!(
+            read_sealed_index_with_media(&RealJournalMedia, &sealed, database_id),
+            Err(JournalIoError::Corrupt)
+        ));
+        assert!(
+            matches!(
+                read_sealed_extent_with_media(&RealJournalMedia, &sealed, database_id),
+                Err(JournalIoError::Corrupt)
+            ),
+            "full reader must refuse an oversized footer before allocation"
+        );
+        assert_eq!(
+            std::fs::metadata(&sealed).expect("preserved source").len(),
+            oversized as u64
+        );
     }
 
     #[test]

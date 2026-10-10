@@ -194,7 +194,7 @@ then performs a fresh validation of the published target before readiness.
 
 ### Closed backup inventory
 
-New backups contain exactly four regular files:
+New backups contain four fixed regular files:
 
 ```text
 database.redb
@@ -203,6 +203,11 @@ format.riffdb
 manifest.riffdb
 ```
 
+Retained journal history adds one regular file per sealed extent, named
+`journal.sealed.<20-digit-generation>.riffextent`. The manifest bounds this
+inventory and authenticates every sealed file in generation order. The four
+fixed files remain required even when there are no sealed extents.
+
 The manifest authenticates the redb checkpoint, the complete fixed-size
 durability-journal extent, and the exact pre-open format marker as one unit. It
 also declares the inclusive binary format range allowed to restore the
@@ -210,8 +215,10 @@ physical artifacts. Restore checks that range before discovering, creating,
 locking, staging, or replacing the target. It then checks every artifact
 checksum, the journal database identity and selected generation, an empty
 suffix at the manifest checkpoint, and the marker identity/fixture binding.
-The marker is published last, so startup cannot mistake a partially published
-restore for current data.
+Each retained sealed extent must also pass complete frame and footer validation.
+An oversized footer is corruption: restore rejects it before allocating the
+footer contents or publishing the target. The marker is published last, so
+startup cannot mistake a partially published restore for current data.
 
 Unknown files, an absent current artifact, a legacy manifest without a physical
 range, stale or mixed identities, and checksum damage fail closed. Historical
