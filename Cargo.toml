@@ -89,6 +89,17 @@ tempfile = { version = "=3.24.0", default-features = false }
 # swap that changed the polynomial would fail rather than silently rewrite
 # every envelope checksum. Pinned exact per house style.
 crc32c = { version = "=0.6.8", default-features = false }
+
+# h2 v0.4.20 plus one commit, proposed upstream as hyperium/h2#980 (issue #979):
+# trailers queued behind a chained DATA frame are written in the same vectored
+# write instead of a second one. Every gRPC unary response with a body of 256
+# bytes or more has that shape, so this halves `writev` per response and cut
+# tokio worker CPU per read 12% at 32 clients on the E2 benchmark host. Pinned
+# by commit; the source is allowed in deny.toml for this repository only.
+# Remove this entry, and the deny.toml allowance, once an h2 release contains
+# the change.
+[patch.crates-io]
+h2 = { git = "https://github.com/koshea/h2", rev = "96b62ae6179422368ae292008e25925bfd5b4ebf" }
 # Build configuration, not code: ADR-0183's freeze governs PERF work-package
 # registrations, and this programme registers none, so check-performance-freeze
 # is satisfied and the freeze remains in force. The hot paths are

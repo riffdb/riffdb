@@ -40,4 +40,6 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# The pinned h2 patch in the workspace Cargo.toml (hyperium/h2#980). Remove
+# with that entry once an h2 release contains the change.
+allow-git = ["https://github.com/koshea/h2"]
