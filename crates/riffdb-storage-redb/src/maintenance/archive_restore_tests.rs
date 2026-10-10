@@ -434,3 +434,68 @@ mod publication;
 
 #[path = "archive_preparation_tests.rs"]
 mod preparation;
+
+// req: REC-001, REC-005, REC-006, REC-007, STO-032
+#[test]
+fn staged_normalization_preserves_backup_authority_and_configured_source() {
+    let scope = crate::test_path::ScopedDirectory::new("staged-normalization-authority");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let configured = scope.join("configured.redb");
+    fs::write(&configured, b"configured source remains untouched").unwrap();
+    let raw = scope.join("raw");
+    let normalized = scope.join("normalized");
+    let ordinary = crate::RedbOfflineRestore::bind(&backup, &raw)
+        .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+        .unwrap();
+    let staged = crate::RedbOfflineRestore::bind(&backup, &normalized)
+        .restore_staged_backup(&configured)
+        .unwrap();
+    assert_eq!(ordinary, staged);
+    let OfflineRestoreResultV1::Restored { manifest } = staged else {
+        panic!("empty target must restore");
+    };
+    assert_eq!(*manifest, original.0);
+    assert_eq!(
+        authority(&raw.join(DATABASE_ARTIFACT_FILE_NAME), false),
+        authority(&normalized.join(DATABASE_ARTIFACT_FILE_NAME), false)
+    );
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read(&configured).unwrap(),
+        b"configured source remains untouched"
+    );
+    // The public staged owner must still perform its complete physical,
+    // structural and catalog validation after the same private normalization.
+    let validated = materialize(&scope, &backup, "validated");
+    assert_eq!(
+        authority(validated.staged_database_file(), false),
+        authority(&normalized.join(DATABASE_ARTIFACT_FILE_NAME), false)
+    );
+    validated.discard().unwrap();
+}
+
+// req: REC-001, REC-007, STO-032
+#[test]
+fn staged_normalization_refuses_a_nonempty_private_target_without_overwrite() {
+    let scope = crate::test_path::ScopedDirectory::new("staged-normalization-no-overwrite");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let target = scope.join("occupied");
+    fs::create_dir(&target).unwrap();
+    let sentinel = target.join("sentinel");
+    fs::write(&sentinel, b"existing private target").unwrap();
+    let result = crate::RedbOfflineRestore::bind(&backup, &target)
+        .restore_staged_backup(&scope.join("configured.redb"))
+        .unwrap();
+    assert_eq!(result, OfflineRestoreResultV1::TargetNotEmpty);
+    assert_eq!(fs::read(&sentinel).unwrap(), b"existing private target");
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+}

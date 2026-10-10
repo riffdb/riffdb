@@ -610,6 +610,36 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         &mut self,
         overwrite_policy: OfflineRestoreOverwritePolicyV1,
     ) -> Result<OfflineRestoreResultV1, StorageError> {
+        self.restore_offline_backup_with_layout(overwrite_policy, RestoredHistoryLayout::Retained)
+    }
+}
+
+/// Backend-private representation choice. Ordinary offline restore retains its
+/// reviewed extents and mutation order. Only the unpublished staged owner uses
+/// the self-contained representation it already requires before validation.
+enum RestoredHistoryLayout<'a> {
+    Retained,
+    SelfContained { configured_database_file: &'a Path },
+}
+
+impl RedbOfflineRestore {
+    pub(crate) fn restore_staged_backup(
+        &mut self,
+        configured_database_file: &Path,
+    ) -> Result<OfflineRestoreResultV1, StorageError> {
+        self.restore_offline_backup_with_layout(
+            OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+            RestoredHistoryLayout::SelfContained {
+                configured_database_file,
+            },
+        )
+    }
+
+    fn restore_offline_backup_with_layout(
+        &mut self,
+        overwrite_policy: OfflineRestoreOverwritePolicyV1,
+        layout: RestoredHistoryLayout<'_>,
+    ) -> Result<OfflineRestoreResultV1, StorageError> {
         validate_backup_inventory(&self.backup_directory)?;
         let manifest_bytes = read_bounded_file(
             &self.backup_directory.join(MANIFEST_FILE_NAME),
@@ -733,6 +763,21 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
+        if let RestoredHistoryLayout::SelfContained {
+            configured_database_file,
+        } = layout
+        {
+            // All source artifact checks have completed. Expand only this
+            // unpublished copy through the existing bounded durable hydrator.
+            // C3 makes each replacement canonically identical; every watermark
+            // validator below still runs completely against its own transaction.
+            // No old snapshot or representation certificate authorizes a read.
+            hydrate_staged_history(
+                &self.target_directory,
+                manifest.database_id(),
+                configured_database_file,
+            )?;
+        }
         // Watermark validation reads the retained V3 receipt chain. The source
         // is offline and may have no live resolver; retain this restored copy's
         // own verified extents through every stamp and fencing read.
@@ -751,6 +796,38 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
             manifest: Box::new(manifest),
         })
     }
+}
+
+/// Expands the staged copy's history stubs into full rows, resolving them from
+/// the sealed extents the restore placed beside it, then removes those extents:
+/// the published restore carries only its database, journal, and marker
+/// (ADR-0263 Amendment 1). Its journal is re-issued above every extent beside
+/// the configured database, which it replaces, so no later seal collides.
+fn hydrate_staged_history(
+    staged_directory: &Path,
+    database_id: DatabaseId,
+    configured_database_file: &Path,
+) -> Result<(), StorageError> {
+    let database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        database_id,
+        &database_file,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    );
+    {
+        let database = redb::Database::open(&database_file)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        crate::history_stub::hydrate_history_stubs(&database)?;
+    }
+    crate::backup::remove_sealed_extents_beside(&database_file)?;
+    let floor = crate::backup::highest_extent_generation_beside(configured_database_file)?;
+    crate::journal::renew_extent_above_with_media(
+        &crate::media::RealJournalMedia,
+        &crate::journal::journal_path(&database_file),
+        floor,
+    )
+    .map_err(crate::backup::backup_journal_error)?;
+    crate::backup::sync_parent(&database_file)
 }
 
 fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), StorageError> {

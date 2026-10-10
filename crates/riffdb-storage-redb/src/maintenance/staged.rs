@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use riffdb_storage_api::{
     BackupIntegrityChecksumV1, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
-    OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
-    StartupValidationInputs, StorageError, StorageErrorKind,
+    OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1, StartupValidationInputs, StorageError,
+    StorageErrorKind,
 };
 use riffdb_types::{BackupNameV1, DatabaseId, OfflineMaintenanceOperationId};
 
@@ -91,18 +91,13 @@ impl RedbStagedRestore {
 
         let materialized = (|| {
             let result = RedbOfflineRestore::bind(&backup_directory, &staged_directory)
-                .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)?;
+                .restore_staged_backup(&configured_database_file)?;
             let OfflineRestoreResultV1::Restored { manifest } = result else {
                 return Err(invariant());
             };
             if *manifest != source_manifest {
                 return Err(corrupt());
             }
-            hydrate_staged_history(
-                &staged_directory,
-                manifest.database_id(),
-                &configured_database_file,
-            )?;
             backup_directory_guard.verify()?;
             configured_parent_guard.verify()?;
             stage_cleanup.verify()?;
@@ -872,36 +867,4 @@ mod tests {
             b""
         );
     }
-}
-
-/// Expands the staged copy's history stubs into full rows, resolving them from
-/// the sealed extents the restore placed beside it, then removes those extents:
-/// the published restore carries only its database, journal, and marker
-/// (ADR-0263 Amendment 1). Its journal is re-issued above every extent beside
-/// the configured database, which it replaces, so no later seal collides.
-fn hydrate_staged_history(
-    staged_directory: &Path,
-    database_id: DatabaseId,
-    configured_database_file: &Path,
-) -> Result<(), StorageError> {
-    let database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
-    let _resolver = crate::history_stub::HistoryResolver::register(
-        database_id,
-        &database_file,
-        std::sync::Arc::new(crate::media::RealJournalMedia),
-    );
-    {
-        let database = redb::Database::open(&database_file)
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        crate::history_stub::hydrate_history_stubs(&database)?;
-    }
-    crate::backup::remove_sealed_extents_beside(&database_file)?;
-    let floor = crate::backup::highest_extent_generation_beside(configured_database_file)?;
-    crate::journal::renew_extent_above_with_media(
-        &crate::media::RealJournalMedia,
-        &crate::journal::journal_path(&database_file),
-        floor,
-    )
-    .map_err(crate::backup::backup_journal_error)?;
-    crate::backup::sync_parent(&database_file)
 }
