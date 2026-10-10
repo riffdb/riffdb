@@ -1909,11 +1909,15 @@ const fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
+/// The multi-command segment fixture, shared with the startup walk tests.
+#[cfg(test)]
+pub(crate) use tests::{TestDatabasePath, follower_indexes, operational};
+
 #[cfg(test)]
 mod tests {
     mod adr0240;
     mod bootstrap_projection;
-    mod follower_indexes;
+    pub(crate) mod follower_indexes;
     mod follower_projection;
     mod outbox_completion;
     #[cfg(target_os = "linux")]
@@ -1951,7 +1955,7 @@ mod tests {
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
     /// fail, or panic.
-    struct TestDatabasePath(
+    pub(crate) struct TestDatabasePath(
         PathBuf,
         // Held only so `Drop` removes the whole scope.
         #[allow(dead_code)] crate::test_path::ScopedDirectory,
@@ -1976,7 +1980,7 @@ mod tests {
             .expect("database ID")
     }
 
-    fn operational(label: &str) -> (TestDatabasePath, RedbOperationalPorts) {
+    pub(crate) fn operational(label: &str) -> (TestDatabasePath, RedbOperationalPorts) {
         operational_fixture(label, false)
     }
 

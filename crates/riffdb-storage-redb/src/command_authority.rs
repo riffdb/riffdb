@@ -279,12 +279,109 @@ where
     })
 }
 
+/// The last command segment decoded by a lookup, remembered by the exact
+/// `COMMITS` row bytes it was decoded from.
+///
+/// Decoding a segment row is a pure function of those bytes: an inline
+/// segment is decoded from them, and a history stub names its frame by hash,
+/// so resolving the same stub again yields the same segment or the same
+/// refusal. A lookup whose row bytes equal the remembered row therefore reuses
+/// the decoded segment instead of decoding it again; any other row is decoded
+/// and replaces it. Only successful decodes are remembered, so a refusal is
+/// re-derived and reported on every lookup exactly as without the memo.
+///
+/// The validation walks resolve several commands of one segment, and each
+/// command several times, in a row; without this each lookup decoded the
+/// whole segment (resolving its stub from the journal) again. It holds one
+/// segment, so its memory is bounded by the largest segment.
+#[derive(Default)]
+pub(crate) struct SegmentMemo {
+    last: std::cell::RefCell<Option<(Box<[u8]>, std::sync::Arc<StoredCommandSegmentV1>)>>,
+    #[cfg(test)]
+    decodes: std::cell::Cell<usize>,
+}
+
+impl SegmentMemo {
+    /// The segment in `row`, decoded by
+    /// [`crate::history_stub::decode_segment_value`] unless it was the last
+    /// one decoded.
+    pub(crate) fn decode(
+        &self,
+        row: &[u8],
+    ) -> Result<std::sync::Arc<StoredCommandSegmentV1>, riffdb_storage_api::DurableCodecError> {
+        if let Some((bytes, segment)) = self.last.borrow().as_ref()
+            && **bytes == *row
+        {
+            return Ok(std::sync::Arc::clone(segment));
+        }
+        #[cfg(test)]
+        self.decodes.set(self.decodes.get() + 1);
+        let segment = std::sync::Arc::new(
+            crate::history_stub::decode_segment_value(row)?
+                .into_parts()
+                .0,
+        );
+        *self.last.borrow_mut() = Some((row.into(), std::sync::Arc::clone(&segment)));
+        Ok(segment)
+    }
+
+    /// Segment decodes this memo has performed.
+    #[cfg(test)]
+    pub(crate) fn decodes(&self) -> usize {
+        self.decodes.get()
+    }
+}
+
+/// Decodes the segment in `row`, through `segments` when given, and applies
+/// `inspect` to it. Without a memo this is exactly
+/// [`crate::history_stub::decode_segment_value`].
+pub(crate) fn with_segment<R>(
+    row: &[u8],
+    segments: Option<&SegmentMemo>,
+    inspect: impl FnOnce(&StoredCommandSegmentV1) -> R,
+) -> Result<R, riffdb_storage_api::DurableCodecError> {
+    match segments {
+        Some(segments) => segments.decode(row).map(|segment| inspect(&segment)),
+        None => {
+            crate::history_stub::decode_segment_value(row).map(|segment| inspect(segment.value()))
+        }
+    }
+}
+
 /// Resolves a command by logical sequence. Segments use one predecessor range
 /// lookup; historical per-command rows still resolve through the same path.
 pub(crate) fn command_member_at<C, E>(
     commits: &C,
     events: &E,
     sequence: CommitSequence,
+) -> Result<Option<CommandAuthorityMember>, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    command_member_at_inner(commits, events, sequence, None)
+}
+
+/// [`command_member_at`], reusing a segment `segments` already decoded from
+/// the same row bytes. The result, including every refusal, is identical.
+pub(crate) fn command_member_at_remembering<C, E>(
+    commits: &C,
+    events: &E,
+    sequence: CommitSequence,
+    segments: &SegmentMemo,
+) -> Result<Option<CommandAuthorityMember>, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    command_member_at_inner(commits, events, sequence, Some(segments))
+}
+
+fn command_member_at_inner<C, E>(
+    commits: &C,
+    events: &E,
+    sequence: CommitSequence,
+    segments: Option<&SegmentMemo>,
 ) -> Result<Option<CommandAuthorityMember>, StorageError>
 where
     C: ReadableTable<&'static [u8], &'static [u8]>,
@@ -300,11 +397,11 @@ where
     let (key, row) = entry.map_err(precommit_storage_error)?;
     let physical_sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
 
-    match crate::history_stub::decode_segment_value(row.value()) {
-        Ok(segment) => {
-            let segment = segment.into_parts().0;
-            segment_member(segment, physical_sequence, sequence)
-        }
+    let decoded = with_segment(row.value(), segments, |segment| {
+        segment_member(segment, physical_sequence, sequence)
+    });
+    match decoded {
+        Ok(member) => member,
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
         {
@@ -361,7 +458,7 @@ pub(crate) fn command_member_at_access(
     let physical_sequence =
         decode_application_sequence_key(&physical_key).map_err(|_| corrupt())?;
     match crate::history_stub::decode_segment_value(&encoded) {
-        Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence),
+        Ok(segment) => segment_member(&segment.into_parts().0, physical_sequence, sequence),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
         {
@@ -405,7 +502,41 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    if let Some(member) = command_member_at(commits, events, sequence)? {
+    commit_after_member(
+        commits,
+        events,
+        sequence,
+        command_member_at(commits, events, sequence)?,
+    )
+}
+
+/// [`commit_at`] reusing a segment `segments` already decoded from the same
+/// row bytes. The result, including every refusal, is identical.
+pub(crate) fn commit_at_remembering<C, E>(
+    commits: &C,
+    events: &E,
+    sequence: CommitSequence,
+    segments: &SegmentMemo,
+) -> Result<Option<StoredCommitRecordV1>, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let member = command_member_at_remembering(commits, events, sequence, segments)?;
+    commit_after_member(commits, events, sequence, member)
+}
+
+fn commit_after_member<C, E>(
+    commits: &C,
+    events: &E,
+    sequence: CommitSequence,
+    member: Option<CommandAuthorityMember>,
+) -> Result<Option<StoredCommitRecordV1>, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    if let Some(member) = member {
         return Ok(Some(member.base().commit().clone()));
     }
     let key = encode_application_sequence_key(sequence);
@@ -491,7 +622,7 @@ pub(crate) fn command_member_at_write_access(
         // carries its own physical outcome and needs none. So a non-segment row
         // does not own the sequence, and the caller fails closed if none does.
         let member = match crate::history_stub::decode_segment_value(&encoded) {
-            Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence)?,
+            Ok(segment) => segment_member(&segment.into_parts().0, physical_sequence, sequence)?,
             Err(error)
                 if error.kind()
                     == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
@@ -508,7 +639,7 @@ pub(crate) fn command_member_at_write_access(
 }
 
 fn segment_member(
-    segment: StoredCommandSegmentV1,
+    segment: &StoredCommandSegmentV1,
     physical_sequence: CommitSequence,
     requested: CommitSequence,
 ) -> Result<Option<CommandAuthorityMember>, StorageError> {

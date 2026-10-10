@@ -11,7 +11,7 @@ use riffdb_types::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn capsule(sequence: CommitSequence) -> StoredCommandCapsuleV2 {
+pub(crate) fn capsule(sequence: CommitSequence) -> StoredCommandCapsuleV2 {
     let (commit, _) = command_graph_at(sequence, 1);
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
     partition.push_u64(1).unwrap();
@@ -100,7 +100,7 @@ fn capsule(sequence: CommitSequence) -> StoredCommandCapsuleV2 {
     .unwrap()
 }
 
-fn segment(
+pub(crate) fn segment(
     commands: Vec<StoredCommandCapsuleV2>,
     prior: Option<CommandSegmentDigestV1>,
 ) -> (StoredCommandSegmentV1, CanonicalStoredEnvelopeV1) {

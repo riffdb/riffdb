@@ -786,6 +786,33 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    decode_administration_audit_with_segment_decoder(encoded, commits, events, |row| {
+        super::history_stub::decode_segment_value(row)
+            .map(|segment| std::sync::Arc::new(segment.into_parts().0))
+    })
+}
+
+/// [`decode_administration_audit_with_command_tables`] with the segment of a
+/// command audit locator decoded by `decode_segment`, which must return exactly
+/// what [`super::history_stub::decode_segment_value`] would for the same row.
+pub(crate) fn decode_administration_audit_with_segment_decoder<C, E>(
+    encoded: &[u8],
+    commits: &C,
+    events: &E,
+    decode_segment: impl FnOnce(
+        &[u8],
+    ) -> Result<
+        std::sync::Arc<storage::StoredCommandSegmentV1>,
+        storage::DurableCodecError,
+    >,
+) -> Result<
+    storage::EncodedPageItem<storage::StoredAdministrationAuditRecordV1>,
+    storage::StorageError,
+>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
     if let Ok(locator) = storage::decode_command_audit_locator_v1(encoded) {
         let (locator, charge) = locator.into_parts();
         let key = super::keys::encode_application_sequence_key(locator.commit_sequence());
@@ -801,29 +828,29 @@ where
             .map_err(precommit_storage_error)?;
         let physical_sequence = super::keys::decode_application_sequence_key(physical_key.value())
             .map_err(|_| storage_error(storage::StorageErrorKind::CorruptData))?;
-        let capsule = match super::history_stub::decode_segment_value(row.value()) {
-            Ok(segment) => {
-                let segment = segment.into_parts().0;
-                if segment.first_commit_sequence() != physical_sequence
-                    || locator.commit_sequence() < physical_sequence
-                    || locator.commit_sequence() > segment.last_commit_sequence()
-                {
-                    return Err(storage_error(storage::StorageErrorKind::CorruptData));
-                }
-                let ordinal = locator
-                    .commit_sequence()
-                    .get()
-                    .checked_sub(physical_sequence.get())
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
-                segment
-                    .commands()
-                    .get(ordinal)
-                    .filter(|command| command.commit_sequence() == locator.commit_sequence())
-                    .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?
-                    .base()
-                    .clone()
+        let member = decode_segment(row.value()).map(|segment| {
+            if segment.first_commit_sequence() != physical_sequence
+                || locator.commit_sequence() < physical_sequence
+                || locator.commit_sequence() > segment.last_commit_sequence()
+            {
+                return Err(storage_error(storage::StorageErrorKind::CorruptData));
             }
+            let ordinal = locator
+                .commit_sequence()
+                .get()
+                .checked_sub(physical_sequence.get())
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?;
+            Ok(segment
+                .commands()
+                .get(ordinal)
+                .filter(|command| command.commit_sequence() == locator.commit_sequence())
+                .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?
+                .base()
+                .clone())
+        });
+        let capsule = match member {
+            Ok(capsule) => capsule?,
             Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
                 if physical_sequence != locator.commit_sequence() {
                     return Err(storage_error(storage::StorageErrorKind::CorruptData));

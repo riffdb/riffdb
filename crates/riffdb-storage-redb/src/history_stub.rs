@@ -437,6 +437,13 @@ fn codec_corrupt() -> riffdb_storage_api::DurableCodecError {
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Segment decodes of `COMMITS` rows on this thread, so a test can hold
+    /// how often a walk decodes the same segment.
+    pub(crate) static SEGMENT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Decodes a COMMITS row's segment, resolving a stub first. A stub that cannot
 /// be resolved is corrupt data, never an unexpected (legacy) record type, so
 /// no caller skips it as a non-segment row.
@@ -446,6 +453,8 @@ pub(crate) fn decode_segment_value(
     riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredCommandSegmentV1>,
     riffdb_storage_api::DurableCodecError,
 > {
+    #[cfg(test)]
+    SEGMENT_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
     let resolved = resolve_commits_value(value).map_err(|_| codec_corrupt())?;
     riffdb_storage_api::decode_command_segment_v1(&resolved)
 }

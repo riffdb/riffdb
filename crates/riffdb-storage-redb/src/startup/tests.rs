@@ -5961,3 +5961,168 @@ fn write_scale_terminal_and_audit_rows(
         written = end;
     }
 }
+
+// ==== Segment reuse in the service-audit link checks ====
+
+/// One multi-command segment installed as the only `COMMITS` row.
+fn install_one_segment(
+    label: &str,
+    count: u64,
+) -> (
+    crate::derived::TestDatabasePath,
+    crate::store::RedbOperationalPorts,
+    Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
+) {
+    use crate::derived::follower_indexes::{capsule, segment};
+    let (path, ports) = crate::derived::operational(label);
+    let commands = (1..=count)
+        .map(|sequence| capsule(CommitSequence::new(sequence).expect("sequence")))
+        .collect::<Vec<_>>();
+    let (_, encoded) = segment(commands.clone(), None);
+    let write = ports.shared.database.begin_write().expect("begin write");
+    {
+        let mut commits = write.open_table(COMMITS).expect("commits");
+        commits
+            .insert(
+                keys::encode_application_sequence_key(CommitSequence::first()).as_slice(),
+                encoded.as_bytes(),
+            )
+            .expect("install segment");
+    }
+    write.commit().expect("commit segment");
+    (path, ports, commands)
+}
+
+/// The terminal audit of `command` linked to `provenance_id` instead of its own.
+fn relinked_terminal(
+    command: &riffdb_storage_api::StoredCommandCapsuleV2,
+    provenance_id: riffdb_types::ProvenanceId,
+) -> riffdb_storage_api::StoredServiceAuditRecordV1 {
+    let terminal = command.base().terminal_audit();
+    riffdb_storage_api::StoredServiceAuditRecordV1::from_stored_parts(
+        terminal.administration_sequence(),
+        terminal.request_id(),
+        terminal.timestamp(),
+        terminal.operation(),
+        terminal.phase(),
+        terminal.principal().cloned(),
+        terminal.ingress(),
+        terminal.targets().clone(),
+        terminal.approval_id().cloned(),
+        riffdb_types::ServiceAuditLinkV1::Command {
+            commit_sequence: command.commit_sequence(),
+            provenance_id,
+        },
+    )
+    .expect("relinked terminal")
+}
+
+// req: REC-007
+#[test]
+fn service_link_checks_decode_a_shared_command_segment_once() {
+    let (_path, ports, commands) = install_one_segment("segment-memo-service-links", 16);
+    let read = ports.shared.database.begin_read().expect("begin read");
+    let shared = SegmentMemo::default();
+    let decodes = || crate::history_stub::SEGMENT_DECODES.with(std::cell::Cell::get);
+    let before = decodes();
+    for (index, command) in commands.iter().enumerate() {
+        let terminal = command.base().terminal_audit();
+        assert!(service_link_is_valid(&read, &shared, terminal).expect("shared check"));
+        // A link naming another command's provenance stays refused with reuse.
+        let other = &commands[(index + 1) % commands.len()];
+        let relinked = relinked_terminal(command, other.base().provenance().provenance_id());
+        assert!(!service_link_is_valid(&read, &shared, &relinked).expect("relinked check"));
+        assert!(
+            !service_link_is_valid(&read, &SegmentMemo::default(), &relinked)
+                .expect("relinked unshared check")
+        );
+        assert!(
+            service_link_is_valid(&read, &SegmentMemo::default(), terminal)
+                .expect("unshared check")
+        );
+    }
+    // Two unshared checks per command decode it once each; the 32 shared checks
+    // decode the one segment once in total. Before segment reuse every check
+    // decoded it for its commit side and again for its provenance side: 128.
+    let total = decodes() - before;
+    assert_eq!(total, 1 + 2 * commands.len(), "{total} segment decodes");
+    assert_eq!(shared.decodes(), 1, "one segment, decoded once");
+}
+
+// req: REC-007
+#[test]
+fn segment_reuse_follows_the_row_bytes_and_never_remembers_a_refusal() {
+    let (_path, ports, commands) = install_one_segment("segment-memo-row-bytes", 4);
+    let memo = SegmentMemo::default();
+    let commits_events = |read: &redb::ReadTransaction| {
+        (
+            read.open_table(COMMITS).expect("commits"),
+            read.open_table(EVENTS).expect("events"),
+        )
+    };
+    let intact = ports.shared.database.begin_read().expect("intact read");
+    let (commits, events) = commits_events(&intact);
+    for command in &commands {
+        let remembered = crate::command_authority::command_member_at_remembering(
+            &commits,
+            &events,
+            command.commit_sequence(),
+            &memo,
+        )
+        .expect("remembered lookup")
+        .expect("member");
+        let direct = command_member_at(&commits, &events, command.commit_sequence())
+            .expect("direct lookup")
+            .expect("member");
+        assert!(remembered.base() == direct.base());
+    }
+    assert_eq!(memo.decodes(), 1);
+
+    // A later snapshot whose row bytes differ is decoded from its own bytes,
+    // and its refusal is re-derived on every lookup rather than remembered.
+    let write = ports.shared.database.begin_write().expect("begin write");
+    {
+        let mut table = write.open_table(COMMITS).expect("commits");
+        table
+            .insert(
+                keys::encode_application_sequence_key(CommitSequence::first()).as_slice(),
+                b"corrupt segment".as_slice(),
+            )
+            .expect("corrupt segment");
+    }
+    write.commit().expect("commit corruption");
+    let damaged = ports.shared.database.begin_read().expect("damaged read");
+    let (commits, events) = commits_events(&damaged);
+    for _ in 0..3 {
+        let remembered = crate::command_authority::command_member_at_remembering(
+            &commits,
+            &events,
+            CommitSequence::first(),
+            &memo,
+        )
+        .map(|member| member.is_some())
+        .map_err(|error| error.kind());
+        let direct = command_member_at(&commits, &events, CommitSequence::first())
+            .map(|member| member.is_some())
+            .map_err(|error| error.kind());
+        assert_eq!(remembered, direct);
+    }
+    assert_eq!(
+        memo.decodes(),
+        4,
+        "each damaged lookup decoded its own bytes"
+    );
+
+    // The intact snapshot is still read from its own bytes.
+    let (commits, events) = commits_events(&intact);
+    assert!(
+        crate::command_authority::command_member_at_remembering(
+            &commits,
+            &events,
+            commands[0].commit_sequence(),
+            &memo,
+        )
+        .expect("intact lookup after damage")
+        .is_some()
+    );
+}
