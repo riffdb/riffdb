@@ -1,11 +1,11 @@
 ---
 adr: "0282"
 title: Derived Sidecar Absence Observed Once Per Handle
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-09
-accepted: null
-acceptance: null
+accepted: '2026-10-09'
+acceptance: 'maintainer, in session, 2026-10-09: "approved to both", in response to the exact-text acceptance request for ADR-0282 as committed at cfbcc83e6'
 requires: [ADR-0240, ADR-0246]
 amends: []
 supersedes: []

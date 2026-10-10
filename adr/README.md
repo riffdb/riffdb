@@ -314,7 +314,7 @@ record with no front matter.
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
 | [0280](0280-paced-journal-extent-zero-fill-and-writer-hash-deduplication.md) | Paced Journal Extent Zero Fill And Writer Hash Deduplication | Accepted | guarantee |
 | [0281](0281-changelog-root-validation-once-per-replay-transaction.md) | Changelog Root Validation Once Per Replay Transaction | Accepted | guarantee |
-| [0282](0282-derived-sidecar-absence-observed-once-per-handle.md) | Derived Sidecar Absence Observed Once Per Handle | Proposed | guarantee |
+| [0282](0282-derived-sidecar-absence-observed-once-per-handle.md) | Derived Sidecar Absence Observed Once Per Handle | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
