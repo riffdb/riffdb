@@ -121,7 +121,10 @@ health reports `degraded` while service continues and the damaged rows keep
 failing closed when accessed. On a V2 database a retained-history failure, such
 as a stray fence row, instead withdraws authoritative readiness. Health carries
 no diagnostic text, row, key, count, path, or hash. The scrub has no rate,
-schedule, scope, or suppression setting.
+schedule, scope, or suppression setting. It is one pass over the whole
+database that keeps one core busy until it completes, so throughput just after
+a start is lower until `storage_scrub` reports `complete`; benchmark windows
+start only after that (see [Benchmark Integrity](../performance/benchmark-integrity.md)).
 
 `riffdb storage scrub` requests the complete exact-end validation on demand. It
 uses the same global `AdministerCapabilities` authorization and offline

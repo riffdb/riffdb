@@ -826,6 +826,18 @@ impl RiffDbServerSession {
         };
         let endpoint = format!("http://{address}");
         let backend = self.backend.reconnect_endpoint(&endpoint).await?;
+        // The measured window must not overlap the ADR-0182 background scrub:
+        // it is one CPU-bound pass over the whole database after every start,
+        // so a window that began at readiness measured the scrub for its first
+        // tens of seconds rather than the steady state.
+        let bootstrap =
+            load_bootstrap_credential_file(&self._temporary.path().join("bootstrap.credential"))
+                .map_err(|_| RiffDbError::Bootstrap)?;
+        let waited = wait_for_background_scrub(&endpoint, &bootstrap).await?;
+        eprintln!(
+            "app-baseline-background-scrub-wait-v1\twaited_ms={}",
+            waited.as_millis()
+        );
         self.process = process;
         self.backend = backend;
         self.table_inventory_before_measurement = Some(table_inventory_before_measurement);
@@ -1820,6 +1832,65 @@ where
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(RiffDbError::Rpc(format!("{step}: {error}"))),
         Err(_) => Err(RiffDbError::Rpc(format!("{step}: timeout"))),
+    }
+}
+
+/// Upper bound on waiting for the post-start background scrub. A production
+/// scale database scrubs for minutes; anything past this is a stuck scrub.
+const BACKGROUND_SCRUB_WAIT_LIMIT: Duration = Duration::from_secs(60 * 60);
+const BACKGROUND_SCRUB_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Polls authenticated health until the background scrub reports `complete`
+/// and returns how long that took. A failed or cancelled scrub, or one still
+/// running at the limit, refuses the measurement: its window would not be the
+/// steady state the report claims.
+async fn wait_for_background_scrub(
+    endpoint: &str,
+    credential: &RetainedBootstrapCredential,
+) -> Result<Duration, RiffDbError> {
+    let token = std::str::from_utf8(credential.token().expose_secret())
+        .map_err(|_| RiffDbError::Bootstrap)?;
+    let authenticated = CallMetadata::authenticated(
+        BearerCredential::new(token).map_err(|_| RiffDbError::Bootstrap)?,
+    );
+    let mut client = connect(endpoint).await?;
+    let started = Instant::now();
+    loop {
+        let response = bounded_rpc(
+            "health",
+            client.health(
+                v1::HealthRequest {
+                    request_id: Some(fresh_request_id_bytes()?),
+                },
+                &authenticated,
+            ),
+        )
+        .await?;
+        let Some(v1::health_response::Result::Authenticated(health)) = response.result else {
+            return Err(RiffDbError::Rpc(
+                "health was not authenticated after readiness".into(),
+            ));
+        };
+        let state = health
+            .storage_scrub
+            .map(|scrub| v1::StorageScrubHealthState::try_from(scrub.state));
+        match state {
+            Some(Ok(v1::StorageScrubHealthState::Complete)) => return Ok(started.elapsed()),
+            Some(Ok(
+                v1::StorageScrubHealthState::Pending | v1::StorageScrubHealthState::Running,
+            )) => {}
+            other => {
+                return Err(RiffDbError::Rpc(format!(
+                    "background scrub did not complete before measurement: {other:?}"
+                )));
+            }
+        }
+        if started.elapsed() >= BACKGROUND_SCRUB_WAIT_LIMIT {
+            return Err(RiffDbError::Rpc(
+                "background scrub still running at the wait limit".into(),
+            ));
+        }
+        tokio::time::sleep(BACKGROUND_SCRUB_POLL_INTERVAL).await;
     }
 }
 
