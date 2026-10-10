@@ -66,7 +66,7 @@ class CampaignRuntimeTests(unittest.TestCase):
                     runtime.active_archive_outage = None
                     class Memory:
                         def poll(self, *_arguments, **_options): pass
-                    runtime.memory = runtime.disk = Memory()
+                    runtime.memory = runtime.disk = runtime.interference = Memory()
                     if stale:
                         runtime.server_log = root / "stale.stderr"
                         runtime.server_log.write_bytes(b"riffdb-recovery-admission-v1\tready=1\n")

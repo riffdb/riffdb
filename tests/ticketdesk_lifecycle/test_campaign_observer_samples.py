@@ -27,7 +27,7 @@ class CampaignObserverSamplesTests(unittest.TestCase):
             root=Path(directory)
             with CampaignObserverSamples(root,duration_s=21900,origin_ns=10*SECOND) as samples:
                 runtime=SimpleNamespace(outputs={"observer":SimpleNamespace(failure=None,
-                    latest=(10*SECOND+100,observation()))},observer_samples=samples)
+                    latest=(10*SECOND+100,observation()))},observer_samples=samples,interference=None)
                 with patch("lib.ticketdesk_lifecycle_campaign_runtime.time.monotonic_ns",return_value=10*SECOND+120):
                     self.assertEqual(CampaignRuntime.observer(runtime),observation())
                 rows=(root/"campaign-observer-observations.jsonl").read_text().splitlines()

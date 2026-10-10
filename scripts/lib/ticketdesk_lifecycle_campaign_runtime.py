@@ -14,6 +14,8 @@ import tomllib
 from .ticketdesk_lifecycle_campaign_native_epochs import CampaignNativeEpochs
 from .ticketdesk_lifecycle_campaign_disk import CampaignDiskSamples
 from .ticketdesk_lifecycle_campaign_extents import MeasuredExtents
+from .ticketdesk_lifecycle_campaign_resource_model import DISK_LIMITS, PROCESS_LIMITS as LIMITS, admit as admit_resources
+from .ticketdesk_lifecycle_campaign_interference import CampaignInterferenceSamples
 from .ticketdesk_lifecycle_campaign_observer_samples import CampaignObserverSamples
 from .ticketdesk_lifecycle_campaign_operator import CampaignOperator
 from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
@@ -23,11 +25,7 @@ from .ticketdesk_lifecycle_persistent_usage import ObservedProcess
 from .ticketdesk_lifecycle_resources import CampaignMemorySamples
 
 SECOND = 10**9
-DISK_LIMITS = dict(database_bytes=16*1024**3, journal_bytes=16*1024**3,
-    sink_archive_bytes=8*1024**3, backup_bytes=32*1024**3, derived_bytes=8*1024**3,
-    control_and_evidence_bytes=1024**3)
-LIMITS = dict(controller=8*1024**3, server=8*1024**3,
-              load=1024**3, observer=1024**3, native_sampler=1024**3, operator=1024**3)
+
 
 
 class CampaignError(ValueError):
@@ -147,6 +145,7 @@ class CampaignRuntime:
     def __init__(self, root, artifacts, descriptor, *, duration_s, faults):
         self.root, self.artifacts = Path(root), Path(artifacts)
         self.duration = duration_s
+        self.resource_model = admit_resources(self.root,self.artifacts,duration_s=duration_s)
         self.identity = {"projection_id":descriptor["projection_id"],
                          "projection_plan_hash":descriptor["projection_plan_hash"]}
         self.descriptor = descriptor
@@ -157,7 +156,7 @@ class CampaignRuntime:
         self.roster = self.native = self.epochs = self.memory = self.operator = None
         self.disk, self.active_archive_outage = None, None
         self.origin = None
-        self.observer_samples = None
+        self.observer_samples = self.interference = None
         self.server_number = self.sampler_number = 0
         self.server_log = None
         self.extent_incarnations = []
@@ -259,6 +258,7 @@ class CampaignRuntime:
                             self.remaining(deadline_ns)
                             return
                     require(len(pending) <= 4096, "campaign_recovery_log_bound")
+                self.interference.poll(self.elapsed())
                 self.memory.poll(self.elapsed())
                 self.disk.poll(self.elapsed(), archive_outage=self.active_archive_outage)
                 threading.Event().wait(min(.02,self.remaining(deadline_ns)))
@@ -359,6 +359,8 @@ class CampaignRuntime:
         output.wait_ready(30)
         self.origin = time.monotonic_ns()
         self.roster = CampaignProcessRoster(os.getpid(),dict(self.children),LIMITS)
+        self.interference = self.stack.enter_context(CampaignInterferenceSamples(
+            self.root,self.roster,duration_s=self.duration))
         self.observer_samples = self.stack.enter_context(CampaignObserverSamples(
             self.root,duration_s=self.duration,origin_ns=self.origin))
         self.epochs = self.stack.enter_context(CampaignNativeEpochs(self.root,self.roster,self.duration,self.identity))
@@ -371,12 +373,14 @@ class CampaignRuntime:
 
     def observer(self):
         owner = self.outputs["observer"]
+        latest = owner.latest
         now = time.monotonic_ns()
-        require(owner.failure is None and owner.latest is not None
-                and 0 <= now-owner.latest[0] <= 5*SECOND, "campaign_observer_gap")
-        value = dict(owner.latest[1])
+        require(owner.failure is None and latest is not None
+                and 0 <= now-latest[0] <= 5*SECOND, "campaign_observer_gap")
+        value = dict(latest[1])
+        if self.interference is not None:self.interference.poll(now-self.origin)
         if self.observer_samples is not None:
-            self.observer_samples.observe(now,owner.latest[0],value)
+            self.observer_samples.observe(now,latest[0],value)
         return value
 
     def tick(self, *, force_native=False, native=True, logs=True):

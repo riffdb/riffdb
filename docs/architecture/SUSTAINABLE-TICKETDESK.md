@@ -3397,3 +3397,39 @@ event count, acknowledgements and actual live-query renewals independently.
 These arithmetic fixtures grant no actual campaign qualification. Source,
 owner/action custody, interference and artifact observations remain mandatory.
 C3D validation is pending.
+
+### Reserved-host interference sampling policy
+
+Census known competing database, compiler and benchmark processes every five
+seconds on the original offered clock. Account the exact roster owners first;
+foreign matching programs are recorded and refuse the run. Bound all process
+entries and input reads, preserve the kernel boot identity, and independently
+require every window with at most 75 seconds between samples. Disclose the
+frozen matching policy and exclusive host reservation with the result. This
+observes honest process identities; it is not an adversarial execution monitor.
+No absence flag is fabricated from an unobserved period. Component fixtures
+qualify no actual campaign. C3D validation is pending.
+
+### Pre-offer resource admission candidate
+
+Replace provisional preparation limits before any measured campaign. Whole-file
+ceilings are 64 GiB primary data, 16 GiB journal, 8 GiB archive, 32 GiB backups,
+4 GiB derived state and 2 GiB harness/control evidence. Reserve another 8 GiB;
+require at least 134 GiB available before population and refuse otherwise.
+These include intentionally retained outcomes/provenance and free pages; they
+cannot substitute for separate native history trends or physical retirements.
+The observed 215,536-command preparation uses about 1.11 GiB apparent primary
+storage; a simple linear projection to the full day's fixed offered workload
+is below 48 GiB, not a guarantee of future behavior. The 64-GiB primary cap
+leaves margin while the actual shorter rehearsal measures subsequent growth.
+The observed derived footprint is below 65 MiB; 4 GiB includes rebuilds. Keep
+32 GiB for the early fixed backup fault and retained predecessor copies, 8 GiB
+for durable archive growth, and 2 GiB for bounded witnesses/logs and four frozen
+binary copies. No ceiling may increase during a run; an exceedance fails it.
+
+Require those immutable private binaries inside the campaign root so whole-file
+control accounting includes them. Preserve frozen worker hard limits, the
+27-GiB conservative allocator bound and the separate 1-GiB native provider
+budget. Capture the observer's latest tuple once before reading its clock and
+payload, preventing a new reader publication from mixing the two messages.
+C3D validation is pending; this model admits inputs, never qualifies a result.
