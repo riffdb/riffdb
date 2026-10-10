@@ -28930,3 +28930,27 @@ work_packages:
   human_review_triggers:
   - Anything other than the handle's derived_database can create the sidecar while it is open.
   - A derived read can return the empty view after the handle opened the sidecar.
+  closure:
+    status: complete
+    completed_at: '2026-10-09'
+    requirements_satisfied: [STO-030]
+    evidence: A fail-before test (sixteen sidecar path probes on the base, one
+      with the change, and a sidecar the handle later creates is read), the
+      riffdb-storage-redb all-feature suite, package acceptance, the ci-all
+      battery with its workspace tests passing, and a read-only A/B on the
+      second development machine (statx per read 1.0 to 0.000 at c32 and c1).
+    decision: Retain the per-handle absence observation. No durable byte,
+      encoding, ordering, atomicity, acknowledgement, recovery outcome or public
+      interface change.
+    decisions_taken:
+    - The observation is an AtomicBool on the shared handle, read before the probe; the opened sidecar is checked first, so an absence recorded concurrently with this handle creating the sidecar never hides it.
+    known_limitations: Read throughput and CPU per read moved within the
+      measurement host's spread; the gain claimed is the removed syscall only.
+      Under full-suite load on the development workstation,
+      bootstrap_publication_repeated_crashes_keep_a_recoverable_candidate_and_gate_partial_replacements
+      can exceed the nextest ci-profile 120 s limit (it timed out twice on this
+      branch and took 119.9 s on main in the same comparison); it passes alone
+      in about 19 s and under cargo test. ci-all steps that need the TypeScript toolchain
+      and check-adr-obligations (ADR-0275 to ADR-0277) fail identically on main
+      on the development workstation.
+    follow_ups: []
