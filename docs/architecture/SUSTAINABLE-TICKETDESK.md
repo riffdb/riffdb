@@ -3455,3 +3455,21 @@ This prevents an actual completion just after a window boundary from leaving
 that window incorrectly marked normal. Preserve the existing published
 60-second whole-action and 600-second outage-recovery limits; refuse if the
 complete integer interval cannot fit. C3D validation remains pending.
+
+### Independent closed campaign reconciliation candidate
+
+After the actual original owners exit, independently reread bounded immutable
+load, owner, memory, whole-file, native, observer, interference and history
+inputs. Bind the Rust-published origin, exact load completion and final native
+endpoint; retain actual provider counters across sampler-only deployment and
+permit reset only at the declared server replacement. Recheck measured
+extent disappearances against complete original native records.
+
+Report one logical eligible-history basis in the main window field while
+independently preserving all three history checks. Consumer backlog is a
+conservative organization-zero offered-match bound minus actual observed
+acknowledgements, never database-wide head minus its scoped checkpoint.
+Missing coverage, future completion, unclosed command debt or changed frozen
+binaries refuse reconciliation. Source, host, durability, full CI and language
+conformance remain separate required observations. C3D validation is pending;
+this component does not claim complete campaign qualification.
