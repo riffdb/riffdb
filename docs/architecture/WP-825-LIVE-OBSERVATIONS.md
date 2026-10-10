@@ -1,6 +1,55 @@
-# WP-825 native blockers and bounded live observation proposal
+# WP-825 native lifecycle investigation and observations
 
-## Maintenance drain repair: scoped validation passes
+## Current status (2026-10-10)
+
+WP-825 remains open. The public campaign entry point implements the fixed
+8-hour protocol, all seven fault handlers, bounded process ownership, shared
+workload epochs and independent resource reconciliation. The complete real
+campaign has not run, and no 24-hour qualification has started. Final combined
+source CI, four-language conformance, three measured physical retirements in the
+final incarnation and the final six quiet hours remain required.
+
+The latest 1,500-second ordinary preparation completes 150,000 commands and
+600,000 reads with zero retries or post-duration operations. Its two normal
+windows pass, with p95 values of 69.348 and 97.107 ms. Actual sink recovery ends
+at second 607.720, so the 600–900-second window overlaps that fault. This result
+does not resolve the earlier genuine normal-window p95 failure of 101.766 ms,
+whose sink recovery ended before second 600. Preserve both observations and the
+original workload and latency thresholds.
+
+The committed native implementation takes 100.0 seconds to materialize the
+populated staged copy, compared with 121.5 seconds before sequencing its existing
+private history normalization ahead of complete fencing validation. Scoped
+acceptance passes: 1,364 native tests, two existing skips, 59 architecture checks
+and Clippy. Tested source and all 100 original backup artifacts remain unchanged.
+This component still exceeds the unchanged 60-second limit for the **whole**
+public backup, restore and reconciliation sequence. A profile of the combined
+implementation is running. Neither a component timing nor a passing diagnostic
+replaces the complete campaign gate.
+
+## Bounded same-pin offline audit inspection
+
+The complete offline validator now dispatches at most 64 audit or reverse-index
+rows to four scoped workers. Raw input is admitted before copying, with a
+64-MiB page ceiling and the existing absolute durable-envelope bound per key
+and value. Workers borrow the original immutable engine transaction and
+publication facts. The stateful command cache and forward cursor remain on the
+owner thread. No worker can outlive the original snapshot or source custody;
+every started worker is joined, including after a spawn failure or panic.
+Findings retain physical row order, and the original census and exact-end
+checks remain. Startup, background, checkpoint and clean-close paths keep their
+existing behavior.
+
+The earlier serial baseline fails the join-all regression. Deterministic worker
+completion ordering and oversize refusal checks pass. A native differential
+oracle compares the serial and parallel complete walks for healthy records,
+malformed audits, absent indexes, mismatched indexes and duplicate lifecycle
+records. All findings and exact-end positions agree. The 59 architecture checks,
+Clippy and full scoped acceptance pass on the required host; acceptance takes
+1,864.8 seconds. The unchanged populated component takes 121.5 seconds. These
+results do not certify the whole public restore deadline or endurance readiness.
+
+## Earlier maintenance drain evidence: scoped validation passes
 
 A public backup with native retention and a durable-local archive reaches the
 maintenance drain boundary without explicitly joining those owners or the
@@ -3337,3 +3386,31 @@ public backup, restore, publication, restart and reconciliation action must stil
 meet the unchanged 60-second deadline. Normal-window latency, final clean-source
 full CI and the complete measured short rehearsal remain required. WP-825 stays
 open.
+
+
+### Normalize the private restore representation before complete fencing checks
+
+The staged restore now performs its existing bounded durable history hydration
+after all original artifact checks and private-copy publication, before watermark
+stamping and follower fencing. Canonically equivalent history rows replace
+private stubs under ADR-0263 Amendment 1 and C3. Every original complete history
+validator still runs against its own transaction; complete physical, structural
+and catalog validation still follow. Ordinary offline restore keeps its retained
+layout. No old snapshot certificate authorizes a later read, and no public
+selector, durable identity or authoritative application ordering changes.
+
+Eleven watermark crash/refusal tests and 21 staged-restore tests pass on the
+required host. Full scoped acceptance takes 1,815.0 seconds and passes 1,364 native
+tests with two existing skips, 59 architecture checks and Clippy. The focused
+promotion filter matched zero tests and supplies no coverage; the full suite
+includes the actual promotion-recovery module. New tests preserve backup
+authority, configured-source bytes and nonempty-target refusal. Tested source
+and all 100 original backup artifacts remain unchanged. The populated component
+takes 100.0 seconds; the whole public recovery deadline remains unproved.
+
+Package: WP-825. Tier: guarantee. Behavior: existing private representation is
+normalized earlier under D-003, with unchanged validation predicates. Checks:
+C3D scoped acceptance, native regressions, architecture checks and Clippy pass.
+Compatibility: public interfaces, durable formats and frozen fixtures unchanged.
+Hazards and follow-ups: normal-window latency, the whole 60-second recovery gate,
+final combined-source full CI and complete measured rehearsal remain required.
