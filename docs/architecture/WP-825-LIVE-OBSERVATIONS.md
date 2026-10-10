@@ -3279,3 +3279,17 @@ action. Backup creation, publication, restart and public reconciliation remain
 inside the unchanged 60-second fault deadline, which is still unproved. Final
 clean-source full CI, normal-window latency and the complete short rehearsal
 remain required.
+
+### Bind closed samples to actual native owners
+
+Closed reconciliation reads the actual twelve-record transition and log-custody
+stream. It checks every native index reset, contract version, history incarnation,
+transport prefix and native history prefix against the five recorded owner epochs.
+Provider peak charges must equal the observed prefix at each cut. Original log
+bindings and retired tails remain bounded and cannot be silently discarded. This
+closes collector/reconciler inconsistencies without changing database predicates,
+fault deadlines or qualification prerequisites. No completed campaign is claimed.
+
+All 348 lifecycle harness tests and scoped acceptance pass on the required host.
+This is component correctness evidence; a complete measured campaign and its
+independent qualification prerequisites remain required.

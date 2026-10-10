@@ -1,15 +1,18 @@
 # req: END-003, END-007, END-008, END-010
 """Closed observations cannot erase owner epochs, offered debt or separate bases."""
 import unittest
+from copy import deepcopy
 
 from lib.ticketdesk_lifecycle_campaign_reconciliation import (
     CampaignReconciliationError, provider_epochs, window_observations,
+    epoch_transitions, native_epoch_cuts,
 )
 from lib.ticketdesk_lifecycle_provider_budget import parse_sample
 from test_provider_budget import line
 from test_load_stream import window
 from test_history_components import records, DURATION
 from lib.ticketdesk_lifecycle_campaign_resource_model import PUBLIC_LIMITS
+from test_campaign_progress_reconciliation import native
 
 SECOND=10**9
 
@@ -44,7 +47,86 @@ def observations():
     return workers,progress,resources,records()['logical']
 
 
+def epoch_observations():
+    provider,epochs=providers();history=records();samples=[]
+    for index,second in enumerate(range(0,DURATION,60)):
+        epoch=min(index//10,4)
+        value=native(second)
+        value.update(index=index-epochs[epoch]['native_samples'],
+            contract_version=epochs[epoch]['contract_version'],
+            history_incarnation=epochs[epoch]['history_incarnation'])
+        samples.append(value)
+        for rows in history.values():rows[index]['incarnation']=epochs[epoch]['history_incarnation']
+    for row in history['source']:
+        row.update(schema='riffdb.ticketdesk-lifecycle-source-byte-sample/v2',
+            basis='qualified_canonical_source_receipts_and_keys',
+            reused_rows=1,checked_rows=0,subtracted_rows=0,pages=0,
+            publication_kind=1,publication_hash_a=7,publication_hash_b=0,
+            publication_hash_c=0,publication_hash_d=0)
+    stream=[]
+    def log(kind,epoch,**values):
+        base={key:epochs[epoch][key] for key in ('schema','epoch','elapsed_ns',
+            'server_incarnation','sampler_incarnation','qualifies_complete_resource_model')}
+        return dict(base,kind=kind,**values)
+    for epoch,row in enumerate(epochs):
+        if epoch>=2:
+            retired=log('retired_log',epoch-1,bytes=100,terminal_partial_bytes=1 if epoch==3 else 0)
+            retired['elapsed_ns']=row['elapsed_ns']-1;stream.append(retired)
+        stream.append(deepcopy(row))
+        if epoch!=1:stream.append(log('bound_log',epoch,excluded_initial_bytes=10 if epoch==0 else 0))
+    return provider,epochs,samples,history,stream
+
+
 class ClosedReconciliationTests(unittest.TestCase):
+    def test_actual_mixed_epoch_stream_binds_every_native_and_history_prefix(self):
+        provider,epochs,samples,history,stream=epoch_observations()
+        self.assertEqual(len(stream),12)
+        self.assertEqual(epoch_transitions(stream),epochs)
+        provider_epochs(provider,epochs,duration_s=DURATION,native_count=len(samples))
+        native_epoch_cuts(samples,history,epochs,duration_s=DURATION)
+
+    def test_unrecorded_sampler_reset_or_inexact_epoch_prefix_refuses(self):
+        for fault in ('reset','cut','attempts','version','incarnation','time','history_cut',
+                      'history_incarnation','history_root','source_version'):
+            with self.subTest(fault=fault):
+                _,epochs,samples,history,_=epoch_observations()
+                if fault=='reset':samples[5]['index']=0
+                if fault=='cut':epochs[1]['native_samples']+=1
+                if fault=='attempts':epochs[1]['native_transport_attempts']+=1
+                if fault=='version':samples[5]['contract_version']=2
+                if fault=='incarnation':samples[5]['history_incarnation']=2
+                if fault=='time':samples[10]['elapsed_ns']-=1
+                if fault=='history_cut':epochs[1]['samples']['source']+=2
+                if fault=='history_incarnation':history['physical'][5]['incarnation']=2
+                if fault=='history_root':history['logical'][11]['root']=2
+                if fault=='source_version':history['source'][5]=records()['source'][5]
+                with self.assertRaises(CampaignReconciliationError):
+                    native_epoch_cuts(samples,history,epochs,duration_s=DURATION)
+
+    def test_missing_duplicate_reordered_or_inconsistent_log_custody_refuses(self):
+        for fault in ('missing','duplicate','order','owner','exclude','partial','bytes','shape','clock'):
+            with self.subTest(fault=fault):
+                *_,stream=epoch_observations()
+                if fault=='missing':stream.pop(1)
+                if fault=='duplicate':stream.insert(2,deepcopy(stream[1]))
+                if fault=='order':stream[3],stream[4]=stream[4],stream[3]
+                if fault=='owner':stream[3]['server_incarnation']=2
+                if fault=='exclude':stream[-1]['excluded_initial_bytes']=1
+                if fault=='partial':stream[3]['terminal_partial_bytes']=1
+                if fault=='bytes':stream[3]['bytes']=0
+                if fault=='shape':stream[1]['extra']=0
+                if fault=='clock':stream[3]['elapsed_ns']=0
+                with self.assertRaises(CampaignReconciliationError):epoch_transitions(stream)
+
+    def test_epoch_provider_peak_is_the_exact_observed_prefix(self):
+        for fault in ('initial','under','over'):
+            with self.subTest(fault=fault):
+                rows,epochs=providers()
+                if fault=='initial':epochs[0]['provider_peak_charged_bytes']=1
+                else:epochs[1]['provider_peak_charged_bytes']+=-1 if fault=='under' else 1
+                with self.assertRaises(CampaignReconciliationError):
+                    provider_epochs(rows,epochs,duration_s=DURATION,native_count=len(rows))
+
     def test_only_actual_server_replacement_permits_provider_counter_reset(self):
         rows,epochs=providers()
         value=provider_epochs(rows,epochs,duration_s=DURATION,native_count=len(rows))
