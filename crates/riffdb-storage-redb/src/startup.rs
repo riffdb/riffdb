@@ -1,6 +1,7 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
 mod offline_integrity;
+mod offline_parallel;
 pub use offline_integrity::RedbOfflineIntegrityScrub;
 
 mod archive_private;
@@ -1508,16 +1509,30 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         // One direct schema per page; continuity above pins every row checked
         // below. A new page starts empty, including after any failed page.
         let mut catalog_cache = crate::command_prefix::CatalogImageCache::default();
-        for offset in 0..inspected {
-            let position = cursor
-                .position()
-                .checked_add(offset)
-                .ok_or_else(limit_exceeded)?;
-            if let Some(finding) = self.inspect_structural_forward(position, &mut catalog_cache)? {
-                if finding.scope() == StructuralFindingScope::Authoritative {
-                    self.authoritative_finding_seen = true;
+        if let Some(results) = self.inspect_offline_audit_page(cursor.position(), inspected)? {
+            inspected = u64::try_from(results.len()).map_err(|_| limit_exceeded())?;
+            for result in results {
+                if let Some(finding) = result? {
+                    if finding.scope() == StructuralFindingScope::Authoritative {
+                        self.authoritative_finding_seen = true;
+                    }
+                    findings.push(finding);
                 }
-                findings.push(finding);
+            }
+        } else {
+            for offset in 0..inspected {
+                let position = cursor
+                    .position()
+                    .checked_add(offset)
+                    .ok_or_else(limit_exceeded)?;
+                if let Some(finding) =
+                    self.inspect_structural_forward(position, &mut catalog_cache)?
+                {
+                    if finding.scope() == StructuralFindingScope::Authoritative {
+                        self.authoritative_finding_seen = true;
+                    }
+                    findings.push(finding);
+                }
             }
         }
         let next = cursor.advanced(inspected).map_err(value_error_as_storage)?;
@@ -3087,12 +3102,8 @@ impl RedbStructuralEvidenceSession {
                         .consumed_in_phase
                         .checked_add(1)
                         .ok_or_else(limit_exceeded)?;
-                    return Ok((
-                        0,
-                        index,
-                        key.value().as_bytes().to_vec(),
-                        value.value().to_vec(),
-                    ));
+                    let (key, value) = copy_structural_row(key.value().as_bytes(), value.value())?;
+                    return Ok((0, index, key, value));
                 }
                 let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
                 cursors.meta = None;
@@ -3224,7 +3235,8 @@ impl RedbStructuralEvidenceSession {
                     .consumed_in_phase
                     .checked_add(1)
                     .ok_or_else(limit_exceeded)?;
-                return Ok((phase, index, key.value().to_vec(), value.value().to_vec()));
+                let (key, value) = copy_structural_row(key.value(), value.value())?;
+                return Ok((phase, index, key, value));
             }
             let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
             cursors.bytes = None;
@@ -3238,6 +3250,16 @@ impl RedbStructuralEvidenceSession {
             }
         }
     }
+}
+
+/// Apply the existing absolute envelope ceiling before retaining raw startup
+/// input. The bounded offline dispatcher also uses this maximum to admit pages.
+fn copy_structural_row(key: &[u8], value: &[u8]) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
+    let maximum = riffdb_storage_api::MAX_DURABLE_ENCODED_CONTENT_BYTES;
+    if key.len() > maximum || value.len() > maximum {
+        return Err(limit_exceeded());
+    }
+    Ok((key.to_vec(), value.to_vec()))
 }
 
 struct StructuralInspectContext<'a> {

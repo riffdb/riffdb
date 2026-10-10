@@ -419,3 +419,119 @@ fn page_catalog_reuse_keeps_every_command_plan_validation_and_evicts_exact_bindi
         "even the same pin starts each new page with no retained schema"
     );
 }
+
+// req: REC-001, REC-006, REC-007, STO-031
+#[test]
+fn offline_parallel_audit_pages_match_complete_serial_findings_and_exact_end() {
+    for corruption in 0..5 {
+        let path = TestDatabasePath::new("offline-parallel-audit-oracle");
+        let store = initialized_store(&path, database_id(0xb7));
+        let write = store.shared.database.begin_write().unwrap();
+        {
+            let mut audit = write.open_table(AUDIT).unwrap();
+            let mut indexes = write.open_table(AUDIT_BY_REQUEST).unwrap();
+            for ordinal in 1..=96_u8 {
+                let sequence = AdministrationSequence::new(u64::from(ordinal)).unwrap();
+                let request = request_id(if corruption == 4 && ordinal == 16 {
+                    15
+                } else {
+                    ordinal
+                });
+                let record = StoredServiceAuditRecordV1::from_stored_parts(
+                    sequence,
+                    request,
+                    Timestamp::new(1, 0).unwrap(),
+                    ServiceOperationV1::GetHealth,
+                    ServiceAuditPhaseV1::Denied,
+                    Some(audit_principal(0x72)),
+                    ServiceIngressKindV1::Grpc,
+                    ServiceAuditTargetsV1::empty(),
+                    None,
+                    ServiceAuditLinkV1::None,
+                )
+                .unwrap();
+                let encoded = codec::encode_administration_audit_record_v1(
+                    &StoredAdministrationAuditRecordV1::Service(record),
+                )
+                .unwrap();
+                let key = keys::encode_audit_key(sequence);
+                if corruption == 1 && ordinal == 19 {
+                    audit.insert(key.as_slice(), &[0xff_u8][..]).unwrap();
+                } else {
+                    audit.insert(key.as_slice(), encoded.as_bytes()).unwrap();
+                }
+                if corruption == 2 && ordinal == 23 {
+                    continue;
+                }
+                let indexed_request = if corruption == 3 && ordinal == 27 {
+                    request_id(28)
+                } else {
+                    request
+                };
+                let index = codec::encode_service_audit_request_index_v1(
+                    riffdb_storage_api::StoredServiceAuditRequestIndexV1::new(
+                        indexed_request,
+                        sequence,
+                    ),
+                )
+                .unwrap();
+                indexes
+                    .insert(
+                        keys::encode_audit_by_request_key(request, sequence).as_slice(),
+                        index.as_bytes(),
+                    )
+                    .unwrap();
+            }
+            let allocator = codec::encode_administration_sequence_allocator_v1(
+                AdministrationSequenceAllocator::next(AdministrationSequence::new(97).unwrap()),
+            )
+            .unwrap();
+            write
+                .open_table(META)
+                .unwrap()
+                .insert(META_ADMINISTRATION_SEQUENCE, allocator.as_bytes())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        let shared = Arc::clone(&store.shared);
+        drop(store);
+        let inspect = |purpose| {
+            // Retain the fixture's original engine owner. Reopening a
+            // deliberately corrupt fixture can refuse before either walker.
+            let store = RedbStore {
+                shared: Arc::clone(&shared),
+            };
+            let mut session = store
+                .begin_structural_evidence_for(inputs(), purpose)
+                .unwrap();
+            let mut cursor =
+                StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+            let mut findings = Vec::new();
+            loop {
+                match session
+                    .read_structural_evidence(cursor, EvidencePageLimit::new(64).unwrap())
+                    .unwrap()
+                {
+                    StructuralEvidencePage::Page {
+                        start,
+                        next,
+                        findings: page,
+                    } => {
+                        assert_eq!(start, cursor);
+                        assert!(next.position() > cursor.position());
+                        findings.extend(page);
+                        cursor = next;
+                    }
+                    StructuralEvidencePage::ExactEnd(end) => {
+                        assert_eq!(end.cursor(), cursor);
+                        return (cursor.position(), findings);
+                    }
+                }
+            }
+        };
+        let serial = inspect(EvidenceOpenPurpose::BackgroundScrub);
+        let parallel = inspect(EvidenceOpenPurpose::OfflineIntegrityScrub);
+        assert_eq!(parallel, serial, "corruption case {corruption}");
+        assert_eq!(parallel.1.is_empty(), corruption == 0);
+    }
+}
