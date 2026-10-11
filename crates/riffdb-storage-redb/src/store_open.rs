@@ -96,15 +96,6 @@ impl OwnedEngineOpen {
         &self.database
     }
 
-    pub(crate) fn check_integrity(&mut self) -> Result<(), StorageError> {
-        if !self.database.check_integrity().map_err(database_error)?
-            || self.repair_observed.load(Ordering::Acquire)
-        {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(crate) fn checkpoint_observer(&self) -> Arc<crate::checkpoint_rewrite::CheckpointRewrite> {
         Arc::clone(&self.checkpoint_rewrite)
@@ -128,6 +119,32 @@ impl RedbStore {
             Arc::new(RealJournalMedia),
             engine,
         )
+    }
+
+    /// The existing source preparation order, without operational admission.
+    /// Called before the first validation pin exists; unique native ownership
+    /// permits a complete physical pass after all preparation writes finish.
+    pub(crate) fn prepare_owned_restore_before_validation(&mut self) -> Result<(), StorageError> {
+        if self.shared.open_mode != OpenMode::OfflineSource
+            || !self.shared.write_fenced.load(Ordering::Acquire)
+            || Arc::get_mut(&mut self.shared).is_none()
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        self.ensure_current_storage_format()?;
+        self.install_command_locator_tables()?;
+        self.recover_durability_journal()?;
+        // This routine takes its own mutation lease. No completed proof lease
+        // is held here, including when the registry transition is a no-op.
+        self.upgrade_registry_completion_pending()?;
+        let shared = Arc::get_mut(&mut self.shared)
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        if !shared.database.check_integrity().map_err(database_error)?
+            || shared.engine_repaired_at_open
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.cache_verified_retention_watermark()
     }
 
     #[allow(clippy::too_many_arguments)]

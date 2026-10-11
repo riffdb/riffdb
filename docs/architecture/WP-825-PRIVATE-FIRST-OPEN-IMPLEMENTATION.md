@@ -94,3 +94,13 @@ The owned backend and existing ordinary opens converge on the same redb builder;
 the fixed cache and repair callback remain centralized. The complete logical
 proof is crate-private to permit the native backup adapter to retain it, and is
 still absent from the public crate exports and operational-port interfaces.
+
+The preparation experiment invokes the existing format, locator, journal-recovery
+and pending-registry routines in their original order before admitting the
+complete validation pin. Unique ownership permits the physical integrity pass
+after these writes on the same engine; the complete journal, structural and
+catalog checks then observe the prepared frontier. A test removes the actual
+three derived locator tables before producing an immutable backup and requires
+the native owner to restore them without changing that backup. Post-validation
+registry completion and legacy journal identity transitions still need their
+native handoffs before production integration is complete.

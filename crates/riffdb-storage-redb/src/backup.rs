@@ -762,16 +762,17 @@ impl OwnedMaterialization {
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let engine = std::sync::Arc::try_unwrap(engine)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        let MaterializationDatabase::Owned(mut engine) = engine else {
+        let MaterializationDatabase::Owned(engine) = engine else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
         // No read or savepoint survives preparation admission. The engine is
         // unique here; its original observer and repair latch travel with it.
-        engine.check_integrity()?;
         self.verify()?;
         #[cfg(test)]
         let observer = engine.checkpoint_observer();
-        let store = crate::RedbStore::from_owned_restore_engine(self.primary.path(), engine)?;
+        let mut store = crate::RedbStore::from_owned_restore_engine(self.primary.path(), engine)?;
+        store.prepare_owned_restore_before_validation()?;
+        self.verify()?;
         #[cfg(test)]
         assert!(
             std::sync::Arc::ptr_eq(&observer, &store.shared.checkpoint_rewrite),
@@ -3480,6 +3481,84 @@ mod tests {
         };
         assert_eq!(opened.database_id(), database_id);
         database_id
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_preserves_required_native_locator_preparation() {
+        let root = TestRoot::new("owned-native-required-locators");
+        let source = root.join("source.redb");
+        {
+            let mut store = RedbStore::open(&source).unwrap();
+            store.initialize_legacy_fixture(database_id()).unwrap();
+        }
+        {
+            let database = Database::open(&source).unwrap();
+            let write = database.begin_write().unwrap();
+            assert!(
+                write
+                    .delete_table(crate::layout::IDEMPOTENCY_LOCATORS)
+                    .unwrap()
+            );
+            assert!(
+                write
+                    .delete_table(crate::layout::PROVENANCE_LOCATORS)
+                    .unwrap()
+            );
+            assert!(
+                write
+                    .delete_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
+                    .unwrap()
+            );
+            write.commit().unwrap();
+        }
+        let backup = root.join("backup");
+        let expected = RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        let before = validate_immutable_backup(&backup).unwrap();
+        let control = root.join("ordinary-control");
+        RedbOfflineRestore::bind(&backup, &control)
+            .restore_staged_backup(&root.join("configured.redb"))
+            .unwrap();
+        let control_database = control.join(DATABASE_ARTIFACT_FILE_NAME);
+        // The very same immutable backup remains supported by ordinary native
+        // preparation. The owned lifecycle must not narrow that behavior.
+        assert_eq!(
+            complete_structural_scan(RedbStore::open(&control_database).unwrap()),
+            expected.database_id()
+        );
+        let stage = root.join("stage");
+        let (manifest, owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(manifest, expected);
+        let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        let validated = owned
+            .validate_complete(owned_validation_inputs())
+            .expect("owned restore must perform native preparation before complete validation");
+        crate::maintenance::probe_restore_custody(&path, true);
+        drop(validated);
+        crate::maintenance::probe_restore_custody(&path, false);
+        let database = Database::open(&path).unwrap();
+        let read = database.begin_read().unwrap();
+        // The actual derived tables must exist, as they do after ordinary
+        // source startup. Complete scrub alone cannot replace preparation.
+        assert!(
+            read.open_table(crate::layout::IDEMPOTENCY_LOCATORS).is_ok(),
+            "owned restore must perform native preparation before complete validation"
+        );
+        assert!(read.open_table(crate::layout::PROVENANCE_LOCATORS).is_ok());
+        assert!(
+            read.open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
+                .is_ok()
+        );
+        validate_copied_database_facts(read_database_facts(&database).unwrap(), &manifest).unwrap();
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
     }
 
     fn owned_validation_inputs() -> StartupValidationInputs {
