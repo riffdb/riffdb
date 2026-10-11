@@ -3775,3 +3775,29 @@ measured-evidence checks pass. The 24-hour mode is executable support for
 WP-826, not evidence that its run has happened. WP-825 remains open pending
 final-source CI, ordinary preparation, whole public recovery within 60 seconds
 and the actual eight-hour rehearsal.
+
+### Integrate the main fix for fragmented gRPC response ordering
+
+Combined-source CI at `085ac0a4` passes the workspace Rust tests but fails
+the unchanged adapter acceptance during MCP discovery. Independent authenticated
+HTTP/2 requests advertise a 56,263-byte discovery response but receive only
+16,384 bytes including the gRPC envelope, followed by success trailers. A small
+8,047-byte response is complete. A first-party authenticated unary regression
+also fails on the original h2 pin when its payload crosses the frame boundary.
+
+The custom transport fast path can queue trailers before the unsent suffix of
+an in-flight DATA buffer is reclaimed. An isolated restoration of the previous
+registry dependency passes all four regression sizes and the unchanged adapter
+acceptance, but that proposal is not integrated. The maintainer instead fixes
+the fast path in main `cde025902`: h2 `e9554c2` permits trailer coalescing only
+when the in-flight frame carries the entire remaining buffer. Main includes the
+exact authenticated regression for 256, 16,384, 56,263 and 131,072-byte values.
+The branch now integrates this reviewed main fix without changing request limits,
+discovery pages, authorization, retries or campaign gates.
+
+The two governance paths from the previously approved identifier reconciliation
+are registered in a separate scope predecessor. ADR-0287 remains proposed and
+unimplemented. No accepted Decision text changes. Fresh combined-source checks,
+ordinary preparation, whole public recovery within 60 seconds and the measured
+eight-hour rehearsal remain required. The earlier native startup refusal remains
+unexplained. Neither an eight-hour nor a 24-hour campaign has started.
