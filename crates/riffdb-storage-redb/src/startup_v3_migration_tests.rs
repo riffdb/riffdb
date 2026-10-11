@@ -456,3 +456,109 @@ fn actual_v3_index_migration_crashes_keep_original_or_complete_receipted_batch()
         drop(open_cleanly(store));
     }
 }
+
+// req: REC-001, REC-006, END-001, STO-012
+#[test]
+fn owned_materialization_preserves_required_catalog_index_migration() {
+    use riffdb_storage_api::{BackupBuildMetadataV1, OfflineBackupPersistencePort};
+    let source = TestDatabasePath::new("owned-native-index-migration-source");
+    let (store, before_rows) = migration_store(&source);
+    drop(store);
+    let scope = crate::test_path::ScopedDirectory::new("owned-native-index-migration");
+    let backup = scope.join("backup");
+    let manifest = crate::RedbOfflineBackup::bind(&source.0, &backup)
+        .create_offline_backup(
+            &BackupBuildMetadataV1::new("0.1.0", "fixture", "rustc", 1, vec![]).unwrap(),
+        )
+        .unwrap();
+    let before = crate::backup::validate_immutable_backup(&backup).unwrap();
+    // Prove this exact immutable backup is supported by the original native
+    // preparation and catalog-owned migration, before exercising the new owner.
+    let control = scope.join("ordinary-stage");
+    crate::RedbOfflineRestore::bind(&backup, &control)
+        .restore_staged_backup(&scope.join("ordinary-target.redb"))
+        .unwrap();
+    let ordinary =
+        RedbStore::open(control.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let ordinary = run_migration(ordinary, None).unwrap();
+    let expected = {
+        let read = ordinary.shared.database.begin_read().unwrap();
+        let indexes = read.open_table(SECONDARY_INDEXES).unwrap();
+        (1..=2)
+            .map(|n| {
+                indexes
+                    .get(compiled_migration_legacy_row(n).key().as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .value()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
+    drop(ordinary);
+    let stage = scope.join("owned-stage");
+    let (restored, owned) = crate::RedbOfflineRestore::bind(&backup, &stage)
+        .restore_owned_staged_backup(
+            &scope.join("configured.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    assert_eq!(restored, manifest);
+    let validated = owned
+        .validate_complete(inputs())
+        .expect("owned restore must preserve required native catalog index migration");
+    let (owner, (database, session, retained, catalog, reader)) =
+        validated.into_authorization().unwrap();
+    assert_eq!(database, manifest.database_id());
+    assert!(catalog.matches(database, session));
+    assert_eq!(retained.database_id(), database);
+    reader.verify_complete_logical_read().unwrap();
+    drop(reader);
+    let closed = owner.close().unwrap();
+    closed.verify().unwrap();
+    let primary = stage.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+    crate::maintenance::probe_restore_custody(&primary, true);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        before
+    );
+    assert!(!scope.join("configured.redb").exists());
+    drop(closed);
+    let store = RedbStore::open(&primary).unwrap();
+    let read = store.shared.database.begin_read().unwrap();
+    let indexes = read.open_table(SECONDARY_INDEXES).unwrap();
+    for (offset, old) in before_rows.iter().enumerate() {
+        let row = compiled_migration_legacy_row(u64::try_from(offset + 1).unwrap());
+        let current = indexes.get(row.key().as_bytes()).unwrap().unwrap();
+        assert_eq!(current.value(), expected[offset]);
+        assert_ne!(current.value(), old);
+        assert!(riffdb_storage_api::decode_index_entry_v2(current.value()).is_ok());
+    }
+    let history = crate::changelog_v3_roots::validate_retained_history(&read)
+        .unwrap()
+        .unwrap();
+    assert!(history.tail().sequence().get() >= 2);
+    let rows = read
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .unwrap();
+    let migration_receipts = rows
+        .iter()
+        .unwrap()
+        .map(|entry| {
+            let (_, value) = entry.unwrap();
+            AuthoritativeTransactionV3::decode(value.value()).unwrap()
+        })
+        .filter(|receipt| receipt.attribution() == A::IndexMigrationBatch)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        migration_receipts.len(),
+        1,
+        "one original exact migration receipt"
+    );
+    let receipt = &migration_receipts[0];
+    assert_eq!(receipt.mutations().len(), 2);
+    for (mutation, old) in receipt.mutations().iter().zip(&before_rows) {
+        assert_eq!(mutation.namespace(), N::SecondaryIndexes);
+        assert!(mutation.matches_prior(Some(old)));
+    }
+}

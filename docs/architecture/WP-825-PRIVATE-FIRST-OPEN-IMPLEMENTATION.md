@@ -120,3 +120,76 @@ custody before accessing cached rows or allocating provider input. Ordinary
 operational snapshots have no such attached private proof. Native regressions
 exercise the actual frontier, catalog and capability-reader interfaces after
 uncertain primary identity or an untracked engine commit, including cloned reads.
+
+The compatibility handoff consumes the original complete read before the native
+compatibility transaction, uniquely retains its engine, and retires the old
+physical binding before that known write. It reuses the original first V3
+activation transaction or the existing atomic registry/checkpoint/receipt
+transaction as applicable. Ordinary activation retains its checkpoint, DIRTY and
+readiness sequence. The private handoff repeats physical, journal and both
+complete evidence streams with the same value-only startup inputs, without
+operational admission. A second required transition is refused. A clean physical
+recheck cannot reset a binding after an unclassified engine write. The server
+join, final close/seals and production restore integration remain outstanding.
+
+The authorization handoff binds all three artifacts through their original file
+descriptors before handing out the immutable reader. Changed bytes on the same
+inode invalidate the native owner before another seal can be minted. The close
+handoff requires every actual reader clone to have released the first engine,
+checks the old byte binding and native mutation binding, observes actual engine
+close under outer exclusion, and only then binds the closed checksums. Engine
+close may change its own clean header and allocator metadata; the journal and
+marker must retain their prior checksums. This internal seam still requires the
+server's unchanged startup proof join, receipted stamp and production wiring.
+
+The closed owner can apply the existing incarnation stamp through a fresh
+repair-refusing native sublease of the same retained inode. It verifies all old
+seals before retiring them, permits the native allocator's required growth, and
+reuses the original transaction-current history validation, restore-anchor and
+replication reset inside the same Immediate two-phase transaction. Actual engine
+close precedes the new exact-length freeze and checksums. The journal and marker
+retain their old seals, and any transition error permanently invalidates the
+owner. Equal-incarnation retry retains the original no-write behavior. Receipt
+authority, server proof joins and publication still belong to their existing
+composition; this internal seam does not itself authorize target publication.
+
+Promoted backups use their existing private promotion binding, derived from the
+actual owned engine and the verified immutable manifest. This preserves the
+original complete private validation and skips source-only preparation and
+registry writers. The copied promotion record cannot reconcile the configured
+source's external authority, and no source port is created. Physical verification,
+immutable authorization, reader-release checks and closed seals retain the same
+native owner. Ordinary promotion reconciliation and receiver construction remain
+unchanged. Production stage wiring remains required.
+
+The cross-crate evidence bridge has no public constructor. Only the actual native
+materialization proof can construct it; it retains the exact value-only startup
+inputs and immutable reader. The server adapter checks the current configured
+input binding and calls the same `validate_ready_join` used by ordinary startup,
+including catalog/session, retained identity, active catalog, bootstrap lifecycle
+and both allocator-capacity checks. It returns only an immutable authorization
+reader and never invokes port activation, publication seeding or workers. The
+production driver has not yet switched to this internal adapter; its existing
+whole-stage custody regression remains an open integration gate.
+
+The native source-compatible owner consumes an actual catalog migration context
+only after both complete streams reach their exact ends with zero findings.
+It drops every old immutable pin before retiring that proof, and invokes the
+existing catalog-owned bounded index migration driver and native backend with
+their original hardened transaction grouping. Private promotion receives no
+migration writer. Every compatibility write is followed by fresh physical,
+journal, structural and catalog validation. The closed sequence admits at most
+one index migration and one registry transition, hence at most three complete
+passes for the oldest supported input; repeated transitions fail closed. Public
+offline scrub keeps its original refusal behavior and ordinary startup is
+unchanged. Production stage wiring and final combined-source CI remain open.
+
+The equal-incarnation test compares the owned retry to the actual unchanged
+original stamp routine on an exact copy of the first sealed primary. The
+original abort/open/close itself changes native housekeeping bytes; byte
+identity across that known transition is not its idempotence contract. Both
+paths preserve identical database/catalog/frontier facts, retained allocators,
+V3 history and every encoded receipt. The owned path also matches the original
+post-close primary bytes exactly and preserves journal and marker bytes. The
+original failed byte-identical assertion is retained as failure evidence. This
+test correction changes no runtime stamp transaction or retry semantics.

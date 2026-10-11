@@ -9,7 +9,36 @@ pub(crate) struct CompleteLogicalValidation {
     catalog: riffdb_catalog::ValidatedCatalogHistory,
 }
 
+pub(crate) type CompleteAuthorizationParts = (
+    DatabaseId,
+    OpenSessionId,
+    RetainedMetadataV1,
+    riffdb_catalog::ValidatedCatalogHistory,
+    crate::RedbOwnedSnapshot,
+);
+
 impl CompleteLogicalValidation {
+    pub(crate) fn native_authorization_inputs(
+        &self,
+    ) -> Result<StartupValidationInputs, StorageError> {
+        self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_none() {
+            return Err(invariant());
+        }
+        Ok(self.snapshot.inputs.clone())
+    }
+
+    pub(crate) fn retain_native_authorization_owner(
+        &self,
+    ) -> Result<Arc<SharedRedb>, StorageError> {
+        self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_none()
+            || self.native_compatibility_required()?
+        {
+            return Err(invariant());
+        }
+        Ok(Arc::clone(&self.snapshot.shared))
+    }
     #[cfg(test)]
     pub(crate) fn native_owner_for_test(&self) -> Arc<SharedRedb> {
         Arc::clone(&self.snapshot.shared)
@@ -60,6 +89,11 @@ impl CompleteLogicalValidation {
         StorageError,
     > {
         self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_some()
+            && self.native_compatibility_required()?
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
         let Self { snapshot, catalog } = self;
         let CompletedLogicalSnapshot {
             read,
@@ -70,6 +104,10 @@ impl CompleteLogicalValidation {
             open_session_id,
             retained_metadata,
             cancellation,
+            inputs: _,
+            registry_completion: _,
+            v3_activation_required: _,
+            terminal_execution_failure_rows: _,
         } = snapshot;
         let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
         let custody = Arc::new(ValidatedReadCustody {
@@ -89,6 +127,75 @@ impl CompleteLogicalValidation {
             catalog,
             reader,
         ))
+    }
+
+    fn native_compatibility_required(&self) -> Result<bool, StorageError> {
+        self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_none() {
+            return Err(invariant());
+        }
+        Ok(self.snapshot.v3_activation_required
+            || match self.snapshot.registry_completion.as_ref() {
+                Some(proof) => !proof.is_already_completed()?,
+                None => false,
+            })
+    }
+
+    fn complete_required_native_compatibility(
+        self,
+    ) -> Result<(RedbStore, StartupValidationInputs), StorageError> {
+        if !self.native_compatibility_required()? {
+            return Err(invariant());
+        }
+        let CompletedLogicalSnapshot {
+            read,
+            _lease,
+            mut shared,
+            durable_commit_epoch,
+            retained_metadata,
+            cancellation: _,
+            inputs,
+            registry_completion,
+            v3_activation_required,
+            terminal_execution_failure_rows,
+            database_id: _,
+            open_session_id: _,
+        } = self.snapshot;
+        // Consume the old immutable proof before admitting the known write.
+        // The unique SharedRedb owner proves no reader or bearer clone survives.
+        drop(read);
+        Arc::get_mut(&mut shared)
+            .ok_or_else(invariant)?
+            .restore_integrity
+            .as_mut()
+            .ok_or_else(invariant)?
+            .begin_controlled_preparation()?;
+        if v3_activation_required {
+            PendingV3Activation::install_compatible_history(
+                &shared,
+                durable_commit_epoch,
+                &retained_metadata,
+                registry_completion.as_ref(),
+            )?;
+        } else {
+            let proof = registry_completion.ok_or_else(invariant)?;
+            shared.seed_terminal_execution_failure_rows(terminal_execution_failure_rows);
+            shared.set_startup_validation_clean(true);
+            // Keep the existing hardened atomic checkpoint/registry/receipt
+            // transaction together; no source readiness or workers are created.
+            crate::validated_prefix::write_completed_registry_checkpoint(
+                &shared,
+                &retained_metadata,
+                proof,
+            )?;
+            shared.set_startup_validation_clean(false);
+        }
+        // Preparation owns its own gate; release the consumed proof's gate
+        // first while retaining continuous outer native exclusion.
+        drop(_lease);
+        let mut store = RedbStore { shared };
+        store.prepare_owned_restore_before_validation()?;
+        Ok((store, inputs))
     }
 
     fn into_receipt(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
@@ -194,14 +301,54 @@ impl RedbOfflineIntegrityScrub {
         inputs: StartupValidationInputs,
         cancellation: Arc<AtomicBool>,
     ) -> Result<CompleteLogicalValidation, StorageError> {
-        let history = store.verify_materialized_journals()?;
-        let mut session = store.begin_structural_evidence_for_history(
-            inputs,
-            EvidenceOpenPurpose::OfflineIntegrityScrub,
-            history,
-        )?;
-        session.set_cancellation(cancellation);
-        Self::validate_complete_session(session)
+        let mut store = store;
+        let mut inputs = inputs;
+        // At most one catalog-owned index migration and one existing registry
+        // transition. Each consumes its old proof and is followed by a fresh
+        // physical, journal, structural and semantic proof on the same engine.
+        let mut migrated_indexes = false;
+        let mut completed_registry = false;
+        for _ in 0..3 {
+            let history = store.verify_materialized_journals()?;
+            let mut session = store.begin_structural_evidence_for_history(
+                inputs,
+                EvidenceOpenPurpose::OfflineIntegrityScrub,
+                history,
+            )?;
+            session.set_cancellation(Arc::clone(&cancellation));
+            let (outcome, structural_end, historical_end) =
+                Self::walk_complete_session(&mut session)?;
+            match outcome {
+                CatalogHistoryOutcome::MigrationRequired(context) => {
+                    if migrated_indexes || completed_registry {
+                        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                    }
+                    (store, inputs) = session.complete_owned_index_migration(
+                        context,
+                        structural_end,
+                        historical_end,
+                    )?;
+                    migrated_indexes = true;
+                }
+                CatalogHistoryOutcome::Ready(catalog) => {
+                    let proof = Self::finish_complete_session(
+                        session,
+                        catalog,
+                        structural_end,
+                        historical_end,
+                    )?;
+                    if !proof.native_compatibility_required()? {
+                        return Ok(proof);
+                    }
+                    if completed_registry {
+                        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+                    }
+                    (store, inputs) = proof.complete_required_native_compatibility()?;
+                    completed_registry = true;
+                }
+            }
+        }
+        Err(invariant())
     }
 
     pub(super) fn validate_session(
@@ -213,6 +360,23 @@ impl RedbOfflineIntegrityScrub {
     pub(super) fn validate_complete_session(
         mut session: RedbStructuralEvidenceSession,
     ) -> Result<CompleteLogicalValidation, StorageError> {
+        let (catalog, structural_end, historical_end) = Self::walk_complete_session(&mut session)?;
+        let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        };
+        Self::finish_complete_session(session, catalog, structural_end, historical_end)
+    }
+
+    fn walk_complete_session(
+        session: &mut RedbStructuralEvidenceSession,
+    ) -> Result<
+        (
+            CatalogHistoryOutcome,
+            RedbStructuralEvidenceEnd,
+            RedbHistoricalEvidenceEnd,
+        ),
+        StorageError,
+    > {
         let database_id = session.database_id();
         let open_session_id = session.open_session_id();
         let limit = EvidencePageLimit::new(64).ok_or_else(limit_exceeded)?;
@@ -228,18 +392,26 @@ impl RedbOfflineIntegrityScrub {
                 StructuralEvidencePage::ExactEnd(end) => break end,
             }
         };
-        let validation = validate_catalog_history(&mut session).map_err(|error| {
-            storage_error(
-                error
-                    .storage_kind()
-                    .unwrap_or(StorageErrorKind::CorruptData),
-            )
-        })?;
+        let validation = session
+            .validate_startup_catalog_history()
+            .map_err(|error| {
+                storage_error(
+                    error
+                        .storage_kind()
+                        .unwrap_or(StorageErrorKind::CorruptData),
+                )
+            })?;
         let (catalog, historical_end) = validation.into_parts();
-        let CatalogHistoryOutcome::Ready(catalog) = catalog else {
-            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
-        };
-        if !catalog.matches(database_id, open_session_id) {
+        Ok((catalog, structural_end, historical_end))
+    }
+
+    fn finish_complete_session(
+        session: RedbStructuralEvidenceSession,
+        catalog: riffdb_catalog::ValidatedCatalogHistory,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        if !catalog.matches(session.database_id(), session.open_session_id()) {
             return Err(corrupt());
         }
         let snapshot = session.finish_offline_integrity_scrub(structural_end, historical_end)?;

@@ -24,6 +24,8 @@ mod application_export;
 mod application_export_ledger;
 mod application_installation;
 mod backup;
+#[doc(hidden)]
+pub use backup::RedbPrivateRestoreAuthorization;
 #[cfg(feature = "benchmark-support")]
 #[doc(hidden)]
 pub mod benchmark_support;

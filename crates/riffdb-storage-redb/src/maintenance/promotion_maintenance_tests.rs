@@ -705,3 +705,54 @@ fn private_promotion_engine_open_refuses_repair_before_validation() {
         "private promotion validation must never repair the artifact"
     );
 }
+
+// req: REP-005, REC-001, REC-006, END-001
+#[test]
+fn owned_materialization_preserves_promoted_backup_without_source_admission() {
+    use riffdb_storage_api::{BackupBuildMetadataV1, OfflineBackupPersistencePort};
+    let scope = crate::test_path::ScopedDirectory::new("promotion-owned-native-backup");
+    let (path, mut owner, record, _) = fixture(&scope);
+    owner.apply_promotion_cutover(&record).unwrap();
+    drop(reconcile(&mut owner, &record).unwrap());
+    let backup = scope.join("independent-backup");
+    let manifest = crate::RedbOfflineBackup::bind(&path, &backup)
+        .create_offline_backup(
+            &BackupBuildMetadataV1::new("0.1.0", "fixture", "rustc", 1, vec![]).unwrap(),
+        )
+        .unwrap();
+    drop(owner);
+    let before = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let stage = scope.join("owned-stage");
+    let (restored, owned) = crate::RedbOfflineRestore::bind(&backup, &stage)
+        .restore_owned_staged_backup(
+            &scope.join("other-target.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    assert_eq!(restored, manifest);
+    let validated = owned
+        .validate_complete(inputs())
+        .expect("owned restore must preserve promoted backup validation without source admission");
+    let (owner, (database, session, retained, catalog, reader)) =
+        validated.into_authorization().unwrap();
+    assert_eq!(database, manifest.database_id());
+    assert!(catalog.matches(database, session));
+    assert_eq!(retained.database_id(), database);
+    reader.verify_complete_logical_read().unwrap();
+    drop(reader);
+    let closed = owner.close().unwrap();
+    closed.verify().unwrap();
+    let primary = stage.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME);
+    crate::maintenance::probe_restore_custody(&primary, true);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        before
+    );
+    assert!(!scope.join("other-target.redb").exists());
+    drop(closed);
+    crate::maintenance::probe_restore_custody(&primary, false);
+    assert!(
+        crate::RedbStore::open(&primary).is_err(),
+        "a complete private proof cannot reconcile the promoted source's external authority"
+    );
+}

@@ -510,3 +510,44 @@ fn native_backend_close_is_not_a_read_pin_release_witness() {
     drop(owner);
     probe(&path, false);
 }
+
+#[test]
+fn native_physical_recheck_cannot_launder_an_unclassified_engine_commit() {
+    let scope = ScopedDirectory::new("restore-custody-recheck-mutation");
+    let path = healthy(&scope);
+    let definition = redb::TableDefinition::<&[u8], &[u8]>::new("unclassified-proof-test");
+    {
+        let database = redb::Database::open(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(definition)
+            .unwrap()
+            .insert(b"key".as_slice(), b"prior".as_slice())
+            .unwrap();
+        write.commit().unwrap();
+    }
+    // The generation proof must reject even a successful raw write. Permit
+    // normal allocator growth in this test so capacity cannot mask that defect.
+    let owner =
+        RestoreCustody::capture_for_preparation(&path, Arc::new(AtomicBool::new(false))).unwrap();
+    let backend = owner.lease().unwrap();
+    let mut binding = backend.integrity_binding().unwrap();
+    let mut builder = redb::Builder::new();
+    builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
+    builder.set_repair_callback(|session| session.abort());
+    let mut database = builder.create_with_backend(backend).unwrap();
+    binding.check_integrity(&mut database).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(definition)
+        .unwrap()
+        .insert(b"key".as_slice(), b"value".as_slice())
+        .unwrap();
+    write.commit().unwrap();
+    assert!(
+        binding.check_integrity(&mut database).is_err(),
+        "native physical recheck must not launder an unclassified engine commit"
+    );
+    assert!(binding.verify().is_err());
+    assert!(owner.verify_identity().is_err());
+}

@@ -2,8 +2,8 @@
 
 mod offline_integrity;
 mod offline_parallel;
-pub(crate) use offline_integrity::CompleteLogicalValidation;
 pub use offline_integrity::RedbOfflineIntegrityScrub;
+pub(crate) use offline_integrity::{CompleteAuthorizationParts, CompleteLogicalValidation};
 
 mod archive_private;
 mod archive_private_graph;
@@ -135,6 +135,10 @@ struct CompletedLogicalSnapshot {
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
     cancellation: Option<Arc<AtomicBool>>,
+    inputs: StartupValidationInputs,
+    registry_completion: Option<CompleteRegistryValidation>,
+    v3_activation_required: bool,
+    terminal_execution_failure_rows: u64,
 }
 
 /// Retained native ownership for clones of one completed logical read.
@@ -593,6 +597,19 @@ pub(crate) struct CompleteRegistryValidation {
 }
 
 impl CompleteRegistryValidation {
+    fn is_already_completed(&self) -> Result<bool, StorageError> {
+        let completed = riffdb_storage_api::encode_record_registry_v3(
+            riffdb_storage_api::StoredRecordRegistry::completed(
+                riffdb_storage_api::current_record_registry_digest(),
+                self.database_id,
+                self.history_incarnation,
+            )
+            .map_err(crate::error::codec_error)?,
+        )
+        .map_err(crate::error::codec_error)?;
+        Ok(self.prior_registry == completed.as_bytes())
+    }
+
     pub(crate) fn permits_checkpoint_incarnation_reset(
         &self,
         prior: &riffdb_storage_api::StoredValidatedPrefixCheckpointV1,
@@ -1965,7 +1982,11 @@ impl RedbStructuralEvidenceSession {
     fn registry_completion_proof(
         &self,
     ) -> Result<Option<CompleteRegistryValidation>, StorageError> {
-        if self.purpose != EvidenceOpenPurpose::Startup
+        let native_restore = self.purpose == EvidenceOpenPurpose::OfflineIntegrityScrub
+            && self.shared.permits_owned_source_compatibility();
+        if (self.purpose != EvidenceOpenPurpose::Startup && !native_restore)
+            || !self.structural_finished
+            || !self.historical_finished
             || !self.catalog_validation_complete
             || self.clean_close_fast
             || self.bounded_dirty_startup
@@ -2037,6 +2058,72 @@ impl RedbStructuralEvidenceSession {
         Ok(())
     }
 
+    /// Consumes both exact ends and the catalog's actual migration context.
+    /// This grants only the existing migration driver its original bounded
+    /// backend; a complete fresh proof remains required after the known write.
+    fn complete_owned_index_migration(
+        mut self,
+        context: riffdb_catalog::CatalogIndexMigrationContext,
+        structural_end: RedbStructuralEvidenceEnd,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(RedbStore, StartupValidationInputs), StorageError> {
+        self.check_cancellation()?;
+        if self.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
+            || !self.shared.permits_owned_source_compatibility()
+            || self.clean_close_fast
+            || self.bounded_dirty_startup
+            || self.checkpoint_verified
+            || !self.structural_finished
+            || !self.historical_finished
+            || structural_end.cursor != self.next_structural
+            || historical_end.cursor != self.next_historical
+            || self.authoritative_finding_seen
+            || self.any_finding_seen
+            || !self.saw_v1_index
+            || context.database_id() != self.database_id
+            || context.open_session_id() != self.open_session_id
+            || self.shared.durable_commit_epoch() != self.durable_commit_epoch
+        {
+            return Err(corrupt());
+        }
+        self.shared.verify_private_restore_integrity()?;
+        self.verify_structural_continuity(self.validation_read.as_ref().ok_or_else(invariant)?)?;
+        let lease = self.lease.take().ok_or_else(invariant)?;
+        let database = self.database_id;
+        let session = self.open_session_id;
+        let inputs = self.inputs.clone();
+        let cancellation = self.cancellation.clone();
+        let mut shared = Arc::clone(&self.shared);
+        // All old read transactions, tables and cursors are released before
+        // retiring the native generation and invoking the original writer.
+        drop(self);
+        Arc::get_mut(&mut shared)
+            .ok_or_else(invariant)?
+            .restore_integrity
+            .as_mut()
+            .ok_or_else(invariant)?
+            .begin_controlled_preparation()?;
+        let port = RedbStartupIndexMigrationPort::new(shared, lease, database, session);
+        let mut store = riffdb_catalog::CatalogIndexMigrationDriver::new(context, port)
+            .and_then(riffdb_catalog::CatalogIndexMigrationDriver::run)
+            .map_err(|error| match error {
+                riffdb_catalog::CatalogIndexMigrationDriveError::Storage(error) => error,
+                riffdb_catalog::CatalogIndexMigrationDriveError::Catalog(error) => storage_error(
+                    error
+                        .storage_kind()
+                        .unwrap_or(StorageErrorKind::CorruptData),
+                ),
+            })?;
+        if cancellation
+            .as_ref()
+            .is_some_and(|value| value.load(Ordering::Acquire))
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        store.prepare_owned_restore_before_validation()?;
+        Ok((store, inputs))
+    }
+
     fn finish_offline_integrity_scrub(
         mut self,
         structural_end: RedbStructuralEvidenceEnd,
@@ -2057,6 +2144,7 @@ impl RedbStructuralEvidenceSession {
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        let registry_completion = self.registry_completion_proof()?;
         self.historical_tables = None;
         let read = self.validation_read.take().ok_or_else(invariant)?;
         // Complete validation and its handoff retain the SAME immutable read.
@@ -2075,6 +2163,10 @@ impl RedbStructuralEvidenceSession {
             open_session_id: self.open_session_id,
             retained_metadata: self.retained_metadata,
             cancellation: self.cancellation,
+            inputs: self.inputs,
+            registry_completion,
+            v3_activation_required: self.v3_activation_required,
+            terminal_execution_failure_rows: self.terminal_execution_failure_rows,
         })
     }
 

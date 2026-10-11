@@ -101,6 +101,16 @@ impl OwnedEngineOpen {
         &self.database
     }
 
+    pub(crate) fn into_database_for_controlled_stamp(self) -> Result<Database, StorageError> {
+        if !self.refuse_repair
+            || self.restore_integrity.is_none()
+            || self.repair_observed.load(Ordering::Acquire)
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(self.database)
+    }
+
     #[cfg(test)]
     pub(crate) fn checkpoint_observer(&self) -> Arc<crate::checkpoint_rewrite::CheckpointRewrite> {
         Arc::clone(&self.checkpoint_rewrite)
@@ -108,6 +118,10 @@ impl OwnedEngineOpen {
 }
 
 impl SharedRedb {
+    pub(crate) fn permits_owned_source_compatibility(&self) -> bool {
+        self.open_mode == OpenMode::OfflineSource && self.restore_integrity.is_some()
+    }
+
     pub(crate) fn verify_private_restore_integrity(&self) -> Result<(), StorageError> {
         match &self.restore_integrity {
             Some(binding) => binding.verify(),
@@ -122,9 +136,21 @@ impl RedbStore {
     pub(crate) fn from_owned_restore_engine(
         path: &Path,
         engine: OwnedEngineOpen,
+        manifest: &riffdb_storage_api::OfflineBackupManifestV1,
     ) -> Result<Self, StorageError> {
+        // Derive the existing private-promotion binding from the actual owned
+        // engine and immutable manifest, never a supplied authority override.
+        let mode = {
+            let read = engine.database.begin_read().map_err(transaction_error)?;
+            match crate::maintenance::PromotionValidationBinding::for_verified_backup(
+                &read, manifest,
+            )? {
+                Some(binding) => OpenMode::PrivatePromotion(Arc::new(binding)),
+                None => OpenMode::OfflineSource,
+            }
+        };
         Self::finish_owned_engine_open(
-            OpenMode::OfflineSource,
+            mode,
             path,
             RedbCommitProfile::Hardened,
             None,
@@ -139,18 +165,24 @@ impl RedbStore {
     /// Called before the first validation pin exists; unique native ownership
     /// permits a complete physical pass after all preparation writes finish.
     pub(crate) fn prepare_owned_restore_before_validation(&mut self) -> Result<(), StorageError> {
-        if self.shared.open_mode != OpenMode::OfflineSource
-            || !self.shared.write_fenced.load(Ordering::Acquire)
+        if !matches!(
+            self.shared.open_mode,
+            OpenMode::OfflineSource | OpenMode::PrivatePromotion(_)
+        ) || !self.shared.write_fenced.load(Ordering::Acquire)
             || Arc::get_mut(&mut self.shared).is_none()
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        self.ensure_current_storage_format()?;
-        self.install_command_locator_tables()?;
-        self.recover_durability_journal()?;
-        // This routine takes its own mutation lease. No completed proof lease
-        // is held here, including when the registry transition is a no-op.
-        self.upgrade_registry_completion_pending()?;
+        if self.shared.open_mode == OpenMode::OfflineSource {
+            self.ensure_current_storage_format()?;
+            self.install_command_locator_tables()?;
+            self.recover_durability_journal()?;
+            // This routine takes its own mutation lease. No completed proof
+            // lease is held here, including for a no-op registry transition.
+            self.upgrade_registry_completion_pending()?;
+        }
+        // Private promotion retains the existing no-source-preparation path.
+        // Its copied binding cannot authorize operational source machinery.
         let shared = Arc::get_mut(&mut self.shared)
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         shared

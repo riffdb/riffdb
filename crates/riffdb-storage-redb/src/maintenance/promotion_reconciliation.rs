@@ -71,7 +71,7 @@ pub(crate) struct PromotionValidationBinding {
 }
 
 impl PromotionValidationBinding {
-    pub(in crate::maintenance) fn for_verified_backup(
+    pub(crate) fn for_verified_backup(
         read: &redb::ReadTransaction,
         manifest: &OfflineBackupManifestV1,
     ) -> Result<Option<Self>, StorageError> {

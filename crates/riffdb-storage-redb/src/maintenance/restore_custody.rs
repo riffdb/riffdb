@@ -171,6 +171,24 @@ impl RestoreCustody {
         Ok(length)
     }
 
+    /// The closed seal owner alone retires its exact-byte proof before the
+    /// existing receipt-authorized metadata transaction. No engine may remain.
+    pub(crate) fn begin_controlled_closed_mutation(&self) -> Result<(), StorageError> {
+        self.verify_identity()?;
+        let leases = self.shared.leases.write().map_err(|_| unavailable(()))?;
+        self.shared.available().map_err(unavailable)?;
+        if leases.active.is_some()
+            || !leases.ranges.is_empty()
+            || self.shared.maximum_bytes.load(Ordering::Acquire) == 0
+        {
+            return Err(unavailable(()));
+        }
+        // Preserve native allocator growth during the required stamp. The
+        // exact completed length is frozen again only after observed close.
+        self.shared.maximum_bytes.store(0, Ordering::Release);
+        Ok(())
+    }
+
     pub(crate) fn invalidate(&self) {
         self.shared.invalid.store(true, Ordering::Release);
     }
@@ -354,6 +372,11 @@ impl RestoreIntegrityBinding {
         &mut self,
         database: &mut redb::Database,
     ) -> Result<(), StorageError> {
+        // Rechecking bytes cannot erase an earlier unclassified mutation.
+        // Only the closed compatibility transition may retire a clean proof.
+        if self.validated_mutation.is_some() {
+            self.verify()?;
+        }
         self.verify_owner()?;
         match database.check_integrity() {
             Ok(true) => {}
@@ -369,6 +392,14 @@ impl RestoreIntegrityBinding {
         self.verify_owner()?;
         self.validated_mutation = Some(self.shared.mutation_generation.load(Ordering::Acquire));
         self.verify()
+    }
+
+    /// Retire the old clean binding before a known native compatibility write.
+    /// The caller must have consumed all reads and uniquely retained the engine.
+    pub(crate) fn begin_controlled_preparation(&mut self) -> Result<(), StorageError> {
+        self.verify()?;
+        self.validated_mutation = None;
+        Ok(())
     }
 
     pub(crate) fn verify(&self) -> Result<(), StorageError> {

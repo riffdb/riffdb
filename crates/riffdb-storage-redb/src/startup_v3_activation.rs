@@ -33,43 +33,12 @@ impl PendingV3Activation {
     }
 
     pub(crate) fn activate(self, shared: &SharedRedb) -> Result<ExclusiveLease, StorageError> {
-        if shared.durable_commit_epoch() != self.durable_commit_epoch {
-            return Err(corrupt());
-        }
-        let lineage = ChangelogLineageV3::new(
-            self.retained.database_id(),
-            self.retained.history_incarnation(),
-            LeadershipEpochV1::initial(),
-        )
-        .map_err(|_| corrupt())?;
-        let application = match self.retained.application_sequence() {
-            ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
-            ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
-        };
-        let administration = match self.retained.administration_sequence() {
-            AdministrationSequenceAllocator::Next(next) => {
-                AdministrationSequence::new(next.get() - 1)
-            }
-            AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
-        };
-        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
-        if let Some(proof) = self.registry_completion.as_ref() {
-            proof.check_epoch(shared)?;
-            crate::changelog_v3_activation::stage_validated_completed(
-                &mut transaction,
-                lineage,
-                DualFrontier::new(application, administration),
-                proof,
-            )?;
-        } else {
-            crate::changelog_v3_activation::stage_validated(
-                &mut transaction,
-                lineage,
-                DualFrontier::new(application, administration),
-            )?;
-        }
-        shared.commit_durable(transaction)?;
-        crate::changelog_v3_activation::activation_edge("committed");
+        Self::install_compatible_history(
+            shared,
+            self.durable_commit_epoch,
+            &self.retained,
+            self.registry_completion.as_ref(),
+        )?;
 
         // These are the existing post-validation prefix and DIRTY transactions,
         // now after activation so both have their exact V3 receipt. The exclusive
@@ -92,5 +61,52 @@ impl PendingV3Activation {
         )?;
         shared.bounded_clean_startup.store(false, Ordering::Release);
         Ok(self.lease)
+    }
+    /// The existing first transaction only; no operational activation follows.
+    pub(crate) fn install_compatible_history(
+        shared: &SharedRedb,
+        durable_commit_epoch: u64,
+        retained: &RetainedMetadataV1,
+        registry_completion: Option<&CompleteRegistryValidation>,
+    ) -> Result<(), StorageError> {
+        if shared.durable_commit_epoch() != durable_commit_epoch {
+            return Err(corrupt());
+        }
+        let lineage = ChangelogLineageV3::new(
+            retained.database_id(),
+            retained.history_incarnation(),
+            LeadershipEpochV1::initial(),
+        )
+        .map_err(|_| corrupt())?;
+        let application = match retained.application_sequence() {
+            ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
+            ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
+        };
+        let administration = match retained.administration_sequence() {
+            AdministrationSequenceAllocator::Next(next) => {
+                AdministrationSequence::new(next.get() - 1)
+            }
+            AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
+        };
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        if let Some(proof) = registry_completion {
+            proof.check_epoch(shared)?;
+            crate::changelog_v3_activation::stage_validated_completed(
+                &mut transaction,
+                lineage,
+                DualFrontier::new(application, administration),
+                proof,
+            )?;
+        } else {
+            crate::changelog_v3_activation::stage_validated(
+                &mut transaction,
+                lineage,
+                DualFrontier::new(application, administration),
+            )?;
+        }
+        shared.commit_durable(transaction)?;
+        crate::changelog_v3_activation::activation_edge("committed");
+
+        Ok(())
     }
 }

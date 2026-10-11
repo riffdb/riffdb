@@ -172,6 +172,7 @@ pub(crate) enum StartupIntegrityFailure {
     RetainedIdentityMismatch,
     ActiveCatalogMismatch,
     InvalidBootstrapLifecycle,
+    PrivateRestoreInputMismatch,
 }
 
 enum RedbStartupPass {
@@ -634,6 +635,48 @@ fn complete_ready_redb_startup(
         operational_ports,
         replication_publications: None,
         promotion: None,
+    })
+}
+
+/// The ordinary startup joins over native owned restore evidence, releasing
+/// only the immutable staged authorization reader. No source activation occurs.
+pub(crate) struct CheckedPrivateRestoreAuthorization {
+    database_id: DatabaseId,
+    retained_metadata: RetainedMetadataV1,
+    catalog_history: ValidatedCatalogHistory,
+    lifecycle: ValidatedStartupLifecycle,
+    allocator_capacity: ValidatedAllocatorCapacity,
+    reader: riffdb_storage_redb::RedbOwnedSnapshot,
+}
+
+impl CheckedPrivateRestoreAuthorization {
+    pub(crate) fn into_reader(self) -> (DatabaseId, riffdb_storage_redb::RedbOwnedSnapshot) {
+        (self.database_id, self.reader)
+    }
+}
+
+pub(crate) fn complete_owned_staged_authorization_join(
+    evidence: riffdb_storage_redb::RedbPrivateRestoreAuthorization,
+    inputs: &StartupValidationInputs,
+) -> Result<CheckedPrivateRestoreAuthorization, RedbStartupError> {
+    if !evidence.matches_inputs(inputs) {
+        return Err(RedbStartupError::Integrity(
+            StartupIntegrityFailure::PrivateRestoreInputMismatch,
+        ));
+    }
+    let (database_id, session, retained_metadata, catalog_history, reader) =
+        evidence.into_parts()?;
+    // Reuse every ordinary catalog/session, retained identity, active catalog,
+    // bootstrap lifecycle and both allocator-capacity predicate unchanged.
+    let (lifecycle, allocator_capacity) =
+        validate_ready_join(&catalog_history, database_id, session, &retained_metadata)?;
+    Ok(CheckedPrivateRestoreAuthorization {
+        database_id,
+        retained_metadata,
+        catalog_history,
+        lifecycle,
+        allocator_capacity,
+        reader,
     })
 }
 
