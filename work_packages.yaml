@@ -29046,3 +29046,32 @@ work_packages:
   human_review_triggers:
   - Claim group size, FIFO writer policy, journal format or commit profiles change.
   - Connector I/O occurs under the writer lease, or a member is delivered after its lease without renewal.
+  closure:
+    status: complete
+    completed_at: '2026-10-11'
+    requirements_satisfied: [EFF-002, EFF-003, REC-001, END-008]
+    evidence: The three ADR-0284 obligation proofs (claim-group CAS and atomic
+      receipt, run admission, native process crash and redelivery), four
+      dispatcher tests that fail with claim groups disabled, the archive run
+      admission test, the native sixteen-event dispatch at two primary commits,
+      unchanged ADR-0273 proofs, package acceptance, the ci-all battery with its
+      workspace tests passing, and two alternating 300-second lifecycle
+      preparations per build on the second development machine (outbox writes
+      per 30 s 2,184-2,216 to 431-435; p95 213-215 ms to 179-184 ms; p99 from
+      beyond the 250 ms histogram to 241-247 ms).
+    decision: Retain claim groups. No public interface, configuration, durable
+      encoding or receipt format change.
+    decisions_taken:
+    - Delivery runs are recomputed per scan position; the item that ends a run takes the individual path unchanged.
+    - Every member keeps its own lease; each member reached after its deadline renews it individually.
+    known_limitations: Every lifecycle run still fails probe_latency (p95 under
+      100 ms), as before the change. Claimed-but-undelivered members after
+      process loss count one attempt each. Under workstation load averages of 15
+      to 40, crash-process and archive maintenance tests exceed the nextest
+      ci-profile 120 s limit; all pass when rerun with lower parallelism.
+      ci-all steps that need the TypeScript toolchain and check-adr-obligations
+      (ADR-0275 to ADR-0277) fail identically on main on the development
+      workstation.
+    follow_ups:
+    - Journal outbox transitions with commands (ADR-0284 option 3) to remove the per-write suffix drain and Immediate commit.
+    - A committed command-epoch gate-wait census with holder attribution, which needs its own record.
