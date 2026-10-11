@@ -112,6 +112,7 @@
   - [Journaled source reclamation fixture review](architecture/WP-825-ADR-0278-FIXTURE-REVIEW.md)
   - [Follower acknowledgement validation proposal](architecture/WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
   - [Bootstrap source custody validation implementation](architecture/WP-825-ADR-0284-IMPLEMENTATION-REVIEW.md)
+  - [Local main integration review](architecture/WP-825-MAIN-SYNC-2026-10-10-REVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)
