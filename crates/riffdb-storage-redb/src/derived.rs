@@ -1,6 +1,7 @@
 //! Durable outbox and projection ports over the frozen redb layout.
 
 mod batch;
+mod outbox_claim_group;
 mod outbox_success_group;
 
 use std::ops::Bound::{Excluded, Unbounded};
@@ -67,6 +68,17 @@ impl OutboxRepository for RedbOperationalPorts {
         group: &riffdb_storage_api::OutboxSucceedGroupV1,
     ) -> Result<riffdb_storage_api::OutboxSucceedGroupResultV1, StorageError> {
         outbox_success_group::complete(self, group)
+    }
+
+    fn supports_outbox_claim_groups(&self) -> bool {
+        true
+    }
+
+    fn claim_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxClaimGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxClaimGroupResultV1, StorageError> {
+        outbox_claim_group::claim(self, group)
     }
 
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
@@ -1919,6 +1931,7 @@ mod tests {
     mod bootstrap_projection;
     pub(crate) mod follower_indexes;
     mod follower_projection;
+    mod outbox_claim_group;
     mod outbox_completion;
     #[cfg(target_os = "linux")]
     mod outbox_delivery_native;

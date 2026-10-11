@@ -90,6 +90,9 @@ pub(crate) enum TransientIndexDelta {
     /// At most sixteen exact Delivering-to-Delivered transitions committed
     /// together under the sole writer's mutation lease.
     OutboxSucceeded(Vec<EventId>),
+    /// At most sixteen exact pending-to-Delivering claims committed together
+    /// under the sole writer's mutation lease (ADR-0284).
+    OutboxClaimed(Vec<EventId>),
     /// A published command segment, with the exact canonical `COMMITS` row
     /// bytes the writer encoded when it has them. Those bytes seed the
     /// byte-checked payload cache, so the next writer's tail lookup does not
@@ -117,6 +120,7 @@ impl TransientIndexDelta {
             Self::CommandSegmentPublished(segment, _) => Some(segment),
             Self::PendingOutboxInserted(_)
             | Self::OutboxSucceeded(_)
+            | Self::OutboxClaimed(_)
             | Self::PendingOutboxMembership { .. }
             | Self::HistoryPruned { .. } => None,
         }
@@ -502,6 +506,17 @@ impl TransientIndexes {
                         pending: false,
                         was_undelivered: true,
                         undelivered: false,
+                    });
+                }
+            }
+            TransientIndexDelta::OutboxClaimed(events) => {
+                for event_id in events {
+                    self.apply(TransientIndexDelta::PendingOutboxMembership {
+                        event_id,
+                        was_pending: true,
+                        pending: false,
+                        was_undelivered: true,
+                        undelivered: true,
                     });
                 }
             }

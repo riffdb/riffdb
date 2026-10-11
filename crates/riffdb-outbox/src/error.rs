@@ -32,6 +32,8 @@ impl Error for OutboxClockError {}
 pub enum OutboxTransitionPhase {
     /// Pending status was being claimed for delivery.
     Claim,
+    /// A claimed lease past its deadline was being renewed before delivery.
+    Renew,
     /// An accepted external delivery was being made durable.
     Succeed,
     /// A retryable failure was being scheduled.

@@ -3,10 +3,12 @@
 use std::num::NonZeroU32;
 
 use riffdb_storage_api::{
-    MAX_OUTBOX_SUCCESS_GROUP_ENTRIES, OutboxClaimV1, OutboxDeadLetterV1, OutboxDeliveryStateV1,
-    OutboxRetryV1, OutboxSafeErrorV1, OutboxStatusObservationV1, OutboxSucceedGroupCompletionV1,
-    OutboxSucceedGroupResultV1, OutboxSucceedGroupV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PendingOutboxItemV1, PendingOutboxScanV1, StoredOutboxStatusV1,
+    MAX_OUTBOX_CLAIM_GROUP_ENTRIES, MAX_OUTBOX_SUCCESS_GROUP_ENTRIES, OutboxClaimGroupCompletionV1,
+    OutboxClaimGroupResultV1, OutboxClaimGroupV1, OutboxClaimV1, OutboxDeadLetterV1,
+    OutboxDeliveryStateV1, OutboxRenewV1, OutboxRetryV1, OutboxSafeErrorV1,
+    OutboxStatusObservationV1, OutboxSucceedGroupCompletionV1, OutboxSucceedGroupResultV1,
+    OutboxSucceedGroupV1, OutboxSucceedV1, OutboxTransitionResultV1, PendingOutboxItemV1,
+    PendingOutboxScanV1, StoredOutboxStatusV1,
 };
 use riffdb_types::{EventId, Timestamp};
 
@@ -180,24 +182,50 @@ where
         };
         let mut successes = Vec::with_capacity(MAX_OUTBOX_SUCCESS_GROUP_ENTRIES);
 
-        for encoded in items {
-            OutboxDispatchReport::increment(&mut report.scanned)?;
-            let (item, _) = encoded.into_parts();
-            if let Err(error) = self.dispatch_item(&item, &mut report, &mut successes) {
-                // Storage uncertainty, missing authority and abrupt-loss
-                // failpoints retain Delivering and its recovery/retention fence.
-                if matches!(
-                    error,
-                    OutboxWorkerError::Clock(_)
-                        | OutboxWorkerError::InvalidWorkerValue(_)
-                        | OutboxWorkerError::StateChanged { .. }
-                ) {
-                    self.flush_successes(&mut successes, &mut report)?;
+        let items = items
+            .into_iter()
+            .map(|encoded| encoded.into_parts().0)
+            .collect::<Vec<_>>();
+        let mut next = 0;
+        while next < items.len() {
+            // ADR-0284: claim the longest admissible run together; anything
+            // else, including the item that ends a run, takes the individual
+            // path unchanged.
+            let outcome = match self.claimable_run(&items[next..]) {
+                Ok(0) => {
+                    OutboxDispatchReport::increment(&mut report.scanned)?;
+                    self.dispatch_item(&items[next], &mut report, &mut successes)
+                        .map(|()| 1)
                 }
-                return Err(error);
+                Ok(run) => {
+                    for _ in 0..run {
+                        OutboxDispatchReport::increment(&mut report.scanned)?;
+                    }
+                    self.dispatch_run(&items[next..next + run], &mut report, &mut successes)
+                        .map(|()| run)
+                }
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(consumed) => {
+                    next += consumed;
+                    // An interrupted item and the rest of its page remain reachable.
+                    self.scan_after = Some(items[next - 1].event_id());
+                }
+                Err(error) => {
+                    // Storage uncertainty, missing authority and abrupt-loss
+                    // failpoints retain Delivering and its recovery/retention fence.
+                    if matches!(
+                        error,
+                        OutboxWorkerError::Clock(_)
+                            | OutboxWorkerError::InvalidWorkerValue(_)
+                            | OutboxWorkerError::StateChanged { .. }
+                    ) {
+                        self.flush_successes(&mut successes, &mut report)?;
+                    }
+                    return Err(error);
+                }
             }
-            // An interrupted item and the rest of its page remain reachable.
-            self.scan_after = Some(item.event_id());
         }
         self.flush_successes(&mut successes, &mut report)?;
         self.scan_after = next_after;
@@ -248,6 +276,105 @@ where
             }
             Err(error) => return self.storage_failure(error),
         };
+        self.deliver_claimed(item, delivering, report, successes)
+    }
+
+    /// The leading items of `items`, at most sixteen, that can be claimed
+    /// together: each eligible and within its attempt limit, and the run
+    /// admitted by the destination together (ADR-0284 decision 2). Zero when
+    /// the repository has no atomic claim groups or the first item cannot
+    /// start a run; that item then takes the individual path.
+    fn claimable_run(&mut self, items: &[PendingOutboxItemV1]) -> Result<usize, OutboxWorkerError> {
+        if !self.repository.supports_outbox_claim_groups() {
+            return Ok(0);
+        }
+        let now = self.clock.now()?;
+        let candidates = items
+            .iter()
+            .take(MAX_OUTBOX_CLAIM_GROUP_ENTRIES)
+            .take_while(|item| {
+                is_eligible(item.status(), now)
+                    && self.policy.permits_attempt_after(item.status().attempts())
+            })
+            .map(PendingOutboxItemV1::event)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        Ok(self
+            .connector
+            .admissible_run(&candidates)
+            .min(candidates.len()))
+    }
+
+    /// Claims `run` in one transaction and delivers each applied member in
+    /// event order. A member whose state changed is skipped as an individual
+    /// claim's would be.
+    fn dispatch_run(
+        &mut self,
+        run: &[PendingOutboxItemV1],
+        report: &mut OutboxDispatchReport,
+        successes: &mut Vec<OutboxSucceedV1>,
+    ) -> Result<(), OutboxWorkerError> {
+        let started_at = self.clock.now()?;
+        let lease_deadline = self.policy.lease_deadline(started_at)?;
+        let claims = run
+            .iter()
+            .map(|item| {
+                OutboxClaimV1::new(
+                    item.event_id(),
+                    item.status().clone(),
+                    self.policy.destination_id().clone(),
+                    started_at,
+                    lease_deadline,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let group = OutboxClaimGroupV1::new(claims)?;
+        let completion = match self.repository.claim_outbox_group(&group) {
+            Ok(OutboxClaimGroupResultV1::Complete(completion)) => completion,
+            Ok(OutboxClaimGroupResultV1::AuthoritativeIntentMissing) => {
+                return Err(OutboxWorkerError::AuthoritativeIntentMissing);
+            }
+            Err(error) => return self.storage_failure(error),
+        };
+        // Bind the result to this request before acting on any member.
+        if OutboxClaimGroupCompletionV1::new(&group, completion.results().to_vec()).is_err() {
+            return self.storage_failure(riffdb_storage_api::StorageError::new(
+                riffdb_storage_api::StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        for (item, result) in run.iter().zip(completion.results()) {
+            match result {
+                OutboxTransitionResultV1::Applied(delivering) => {
+                    self.deliver_claimed(item, delivering.clone(), report, successes)?;
+                }
+                OutboxTransitionResultV1::StateChanged(_) => {
+                    self.flush_successes(successes, report)?;
+                    self.telemetry.record(OutboxTelemetryEvent::StateChanged {
+                        event_id: item.event_id(),
+                    });
+                    OutboxDispatchReport::increment(&mut report.state_changes)?;
+                }
+                OutboxTransitionResultV1::AuthoritativeIntentMissing => {
+                    return Err(OutboxWorkerError::AuthoritativeIntentMissing);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delivers one durably claimed item and records its outcome. A lease
+    /// whose deadline has passed is renewed first (ADR-0284 decision 4).
+    fn deliver_claimed(
+        &mut self,
+        item: &PendingOutboxItemV1,
+        delivering: StoredOutboxStatusV1,
+        report: &mut OutboxDispatchReport,
+        successes: &mut Vec<OutboxSucceedV1>,
+    ) -> Result<(), OutboxWorkerError> {
+        let event_id = item.event_id();
         let attempt = delivering_attempt(&delivering)?;
         OutboxDispatchReport::increment(&mut report.claims)?;
         self.telemetry
@@ -256,6 +383,7 @@ where
                 attempt: attempt.get(),
             });
         self.stop_at(OutboxFailpoint::DeliveryAfterClaimBeforeConnector, event_id)?;
+        let delivering = self.renew_if_expired(delivering, successes, report)?;
 
         let disposition = self.connector.deliver(DeliveryAttempt::new(
             item.event(),
@@ -293,6 +421,43 @@ where
                 )?;
                 self.complete_dead_letter(delivering, attempt, safe_error, report)
             }
+        }
+    }
+
+    /// Renews a claimed lease whose deadline has passed before connector I/O.
+    /// A renewal that does not apply ends the dispatch with a state change.
+    fn renew_if_expired(
+        &mut self,
+        delivering: StoredOutboxStatusV1,
+        successes: &mut Vec<OutboxSucceedV1>,
+        report: &mut OutboxDispatchReport,
+    ) -> Result<StoredOutboxStatusV1, OutboxWorkerError> {
+        let OutboxDeliveryStateV1::Delivering { lease_deadline, .. } = delivering.state() else {
+            return Err(OutboxWorkerError::InvalidWorkerValue(
+                riffdb_storage_api::StorageValueError::InvalidShape,
+            ));
+        };
+        let now = self.clock.now()?;
+        if now <= *lease_deadline {
+            return Ok(delivering);
+        }
+        let event_id = delivering.event_id();
+        let renewal = OutboxRenewV1::new(delivering, self.policy.lease_deadline(now)?)?;
+        match self.repository.renew_outbox(&renewal) {
+            Ok(OutboxTransitionResultV1::Applied(renewed)) => Ok(renewed),
+            Ok(OutboxTransitionResultV1::StateChanged(_)) => {
+                self.flush_successes(successes, report)?;
+                self.telemetry
+                    .record(OutboxTelemetryEvent::StateChanged { event_id });
+                OutboxDispatchReport::increment(&mut report.state_changes)?;
+                Err(OutboxWorkerError::StateChanged {
+                    phase: OutboxTransitionPhase::Renew,
+                })
+            }
+            Ok(OutboxTransitionResultV1::AuthoritativeIntentMissing) => {
+                Err(OutboxWorkerError::AuthoritativeIntentMissing)
+            }
+            Err(error) => self.storage_failure(error),
         }
     }
 

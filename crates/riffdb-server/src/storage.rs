@@ -1943,6 +1943,18 @@ impl OutboxRepository for SharedRedbOperationalPorts {
             .with_mut(|ports| OutboxRepository::succeed_outbox_group(ports, group))
     }
 
+    fn supports_outbox_claim_groups(&self) -> bool {
+        true
+    }
+
+    fn claim_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxClaimGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxClaimGroupResultV1, StorageError> {
+        self.cell
+            .with_mut(|ports| OutboxRepository::claim_outbox_group(ports, group))
+    }
+
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
         OutboxRepository::has_undelivered_outbox(&self.shared)
     }

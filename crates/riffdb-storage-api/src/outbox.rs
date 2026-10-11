@@ -1048,6 +1048,24 @@ pub trait OutboxRepository {
         ))
     }
 
+    /// Declares real atomic claim-group support (ADR-0284). A repository that
+    /// retains individual claim commits must keep this false.
+    fn supports_outbox_claim_groups(&self) -> bool {
+        false
+    }
+
+    /// Claims matching pending rows in one durable transaction. The default
+    /// refuses; it never disguises separate commits as an atomic group.
+    fn claim_outbox_group(
+        &mut self,
+        _group: &crate::OutboxClaimGroupV1,
+    ) -> Result<crate::OutboxClaimGroupResultV1, StorageError> {
+        Err(StorageError::new(
+            crate::StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
     /// Returns whether any reciprocal authoritative intent remains undelivered.
     ///
     /// The default uses the bounded status scan. Stores with an exact

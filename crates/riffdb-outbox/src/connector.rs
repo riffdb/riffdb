@@ -207,6 +207,21 @@ pub trait OutboxConnector {
         true
     }
 
+    /// ADR-0284: how many leading events of a proposed claim run the
+    /// destination can accept together. A connector with aggregate state
+    /// (such as a quota) must count the earlier events against it; one
+    /// without reports the leading events that each pass `ready_to_deliver`.
+    fn admissible_run(&mut self, events: &[&StoredDurableEventV1]) -> usize {
+        let mut admitted = 0;
+        for event in events {
+            if !self.ready_to_deliver(event) {
+                break;
+            }
+            admitted += 1;
+        }
+        admitted
+    }
+
     /// Attempts one delivery and returns an already classified, scrubbed result.
     ///
     /// A connector panic or process crash leaves the durable status

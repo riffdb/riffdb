@@ -38,6 +38,11 @@ struct FakeState {
     success_group_sizes: Vec<usize>,
     groups_seen_by_retry: Vec<usize>,
     fail_next_group: Option<StorageErrorKind>,
+    atomic_claim_groups: bool,
+    claim_group_sizes: Vec<usize>,
+    individual_claims: usize,
+    renewals: usize,
+    renewal_state_change: bool,
 }
 
 impl FakeRepository {
@@ -153,6 +158,44 @@ impl FakeRepository {
 impl OutboxRepository for FakeRepository {
     fn supports_outbox_succeed_groups(&self) -> bool {
         self.lock().unwrap().atomic_success_groups
+    }
+
+    fn supports_outbox_claim_groups(&self) -> bool {
+        self.lock().unwrap().atomic_claim_groups
+    }
+
+    fn claim_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxClaimGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxClaimGroupResultV1, StorageError> {
+        use riffdb_storage_api::{OutboxClaimGroupCompletionV1, OutboxClaimGroupResultV1};
+        let mut state = self.lock()?;
+        assert!(state.atomic_claim_groups);
+        Self::validate_source(&state)?;
+        state.claim_group_sizes.push(group.claims().len());
+        let mut results = Vec::new();
+        for claim in group.claims() {
+            if !state.authoritative.contains_key(&claim.event_id()) {
+                return Ok(OutboxClaimGroupResultV1::AuthoritativeIntentMissing);
+            }
+            let current = state.statuses.get(&claim.event_id()).cloned().map_or(
+                OutboxStatusObservationV1::AbsentInitialPending,
+                OutboxStatusObservationV1::Present,
+            );
+            results.push(if &current == claim.expected() {
+                OutboxTransitionResultV1::Applied(claim.updated().clone())
+            } else {
+                OutboxTransitionResultV1::StateChanged(current)
+            });
+        }
+        for result in &results {
+            if let OutboxTransitionResultV1::Applied(status) = result {
+                state.statuses.insert(status.event_id(), status.clone());
+            }
+        }
+        Ok(OutboxClaimGroupResultV1::Complete(
+            OutboxClaimGroupCompletionV1::new(group, results).unwrap(),
+        ))
     }
 
     fn succeed_outbox_group(
@@ -312,6 +355,7 @@ impl OutboxRepository for FakeRepository {
         &mut self,
         transition: &OutboxClaimV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
+        self.lock()?.individual_claims += 1;
         self.transition(
             transition.event_id(),
             transition.expected(),
@@ -323,6 +367,17 @@ impl OutboxRepository for FakeRepository {
         &mut self,
         transition: &OutboxRenewV1,
     ) -> Result<OutboxTransitionResultV1, StorageError> {
+        {
+            let mut state = self.lock()?;
+            state.renewals += 1;
+            if state.renewal_state_change {
+                let current = state.statuses.get(&transition.event_id()).cloned().map_or(
+                    OutboxStatusObservationV1::AbsentInitialPending,
+                    OutboxStatusObservationV1::Present,
+                );
+                return Ok(OutboxTransitionResultV1::StateChanged(current));
+            }
+        }
         self.transition(
             transition.event_id(),
             &OutboxStatusObservationV1::Present(transition.expected().clone()),
@@ -410,6 +465,201 @@ fn outbox_completion_group_flushes_at_bounds_and_before_retry() {
             ordinal != 19
         );
     }
+}
+
+fn grouped_dispatcher(
+    repository: &FakeRepository,
+    connector: SharedConnector,
+    clock: SharedClock,
+    policy: DeliveryPolicy,
+) -> OutboxDispatcher<
+    FakeRepository,
+    SharedConnector,
+    SharedClock,
+    NoOutboxFailpoints,
+    NoOutboxTelemetry,
+> {
+    {
+        let mut state = repository.lock().unwrap();
+        state.atomic_success_groups = true;
+        state.atomic_claim_groups = true;
+    }
+    OutboxDispatcher::new(
+        recovered(repository.clone(), &policy, &clock),
+        connector,
+        clock,
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        policy,
+    )
+}
+
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn outbox_claim_groups_take_one_claim_commit_for_a_full_page() {
+    // The same sixteen deliveries with individual claims, then with groups.
+    let individual = FakeRepository::with_events(16);
+    individual.lock().unwrap().atomic_success_groups = true;
+    let clock = SharedClock::new(10);
+    let policy = policy_with_limit(3, 16);
+    let mut dispatcher = OutboxDispatcher::new(
+        recovered(individual.clone(), &policy, &clock),
+        SharedConnector::new(vec![], ConnectorDisposition::Accepted),
+        clock,
+        NoOutboxFailpoints,
+        NoOutboxTelemetry,
+        policy,
+    );
+    let individual_report = dispatcher.dispatch_once().unwrap();
+    assert_eq!(individual.lock().unwrap().individual_claims, 16);
+
+    let grouped = FakeRepository::with_events(16);
+    let connector = SharedConnector::new(vec![], ConnectorDisposition::Accepted);
+    let mut dispatcher = grouped_dispatcher(
+        &grouped,
+        connector.clone(),
+        SharedClock::new(10),
+        policy_with_limit(3, 16),
+    );
+    let grouped_report = dispatcher.dispatch_once().unwrap();
+    let state = grouped.lock().unwrap();
+    assert_eq!(state.individual_claims, 0);
+    assert_eq!(state.claim_group_sizes, [16]);
+    assert_eq!(state.success_group_sizes, [16]);
+    assert_eq!(grouped_report, individual_report);
+    assert_eq!(grouped_report.claims(), 16);
+    assert_eq!(grouped_report.delivered(), 16);
+    // Every event ends in exactly the state individual claims produce.
+    for ordinal in 0..16 {
+        assert_eq!(
+            state.statuses.get(&event_id(ordinal)),
+            individual.status(event_id(ordinal)).as_ref()
+        );
+    }
+    let delivered = connector.observations();
+    assert_eq!(delivered.len(), 16);
+    assert!(
+        delivered
+            .windows(2)
+            .all(|pair| pair[0].event_id < pair[1].event_id)
+    );
+}
+
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn outbox_claim_run_ends_at_the_first_ineligible_or_exhausted_item() {
+    let repository = FakeRepository::with_events(10);
+    let destination =
+        riffdb_storage_api::OutboxDestinationIdV1::new("test/deterministic").expect("destination");
+    // Event 4 waits for a later retry; event 7 has used every attempt.
+    repository.set_status(StoredOutboxStatusV1::pending(
+        event_id(4),
+        OutboxRetryMetadataV1::new(
+            NonZeroU32::new(1).expect("attempt"),
+            timestamp(5),
+            Some(timestamp(100)),
+            destination.clone(),
+            None,
+        ),
+    ));
+    repository.set_status(StoredOutboxStatusV1::pending(
+        event_id(7),
+        OutboxRetryMetadataV1::new(
+            NonZeroU32::new(3).expect("attempt"),
+            timestamp(5),
+            None,
+            destination,
+            None,
+        ),
+    ));
+    let connector = SharedConnector::new(vec![], ConnectorDisposition::Accepted);
+    let mut dispatcher = grouped_dispatcher(
+        &repository,
+        connector.clone(),
+        SharedClock::new(10),
+        policy(3),
+    );
+    let report = dispatcher.dispatch_once().unwrap();
+    let state = repository.lock().unwrap();
+    assert_eq!(state.claim_group_sizes, [4, 2, 2]);
+    assert_eq!(state.individual_claims, 0);
+    assert_eq!(report.deferred(), 1);
+    assert_eq!(report.dead_lettered(), 1);
+    assert_eq!(report.delivered(), 8);
+    assert!(matches!(
+        state.statuses[&event_id(4)].state(),
+        OutboxDeliveryStateV1::Pending(_)
+    ));
+    assert!(matches!(
+        state.statuses[&event_id(7)].state(),
+        OutboxDeliveryStateV1::DeadLetter { .. }
+    ));
+}
+
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn outbox_claim_group_admits_only_what_the_destination_accepts_together() {
+    let repository = FakeRepository::with_events(8);
+    let connector = SharedConnector::new(vec![], ConnectorDisposition::Accepted).with_capacity(3);
+    let mut dispatcher = grouped_dispatcher(
+        &repository,
+        connector.clone(),
+        SharedClock::new(10),
+        policy(3),
+    );
+    let report = dispatcher.dispatch_once().unwrap();
+    let state = repository.lock().unwrap();
+    // Only the three the destination can hold together are claimed; the rest
+    // defer without a claim, so none of them spends an attempt.
+    assert_eq!(state.claim_group_sizes, [3]);
+    assert_eq!(state.individual_claims, 0);
+    assert_eq!(report.delivered(), 3);
+    assert_eq!(report.retries_scheduled(), 0);
+    assert_eq!(report.deferred(), 5);
+    for ordinal in 3..8 {
+        assert!(!state.statuses.contains_key(&event_id(ordinal)));
+    }
+    assert_eq!(connector.observations().len(), 3);
+}
+
+// req: EFF-002, EFF-003, REC-001, END-008
+#[test]
+fn outbox_claimed_lease_past_its_deadline_is_renewed_before_delivery() {
+    // Each delivery takes six seconds of a ten-second lease, so the third
+    // member and later are reached after the group's shared deadline.
+    let repository = FakeRepository::with_events(5);
+    let clock = SharedClock::new(10);
+    let connector =
+        SharedConnector::new(vec![], ConnectorDisposition::Accepted).advancing(&clock, 6);
+    let mut dispatcher = grouped_dispatcher(&repository, connector.clone(), clock, policy(3));
+    let report = dispatcher.dispatch_once().unwrap();
+    let state = repository.lock().unwrap();
+    assert_eq!(state.claim_group_sizes, [5]);
+    assert_eq!(report.delivered(), 5);
+    // Deliveries start at 10, 16, 22, 28 and 34 against the shared deadline
+    // of 20: each of the last three members renews its own lease first.
+    assert_eq!(state.renewals, 3);
+
+    // A renewal that does not apply ends the run before connector I/O.
+    let repository = FakeRepository::with_events(5);
+    repository.lock().unwrap().renewal_state_change = true;
+    let clock = SharedClock::new(10);
+    let connector =
+        SharedConnector::new(vec![], ConnectorDisposition::Accepted).advancing(&clock, 6);
+    let mut dispatcher = grouped_dispatcher(&repository, connector.clone(), clock, policy(3));
+    assert!(matches!(
+        dispatcher.dispatch_once(),
+        Err(OutboxWorkerError::StateChanged {
+            phase: riffdb_outbox::OutboxTransitionPhase::Renew
+        })
+    ));
+    assert_eq!(connector.observations().len(), 2);
+    let state = repository.lock().unwrap();
+    assert_eq!(
+        state.success_group_sizes,
+        [2],
+        "earlier successes flush first"
+    );
 }
 
 // req: EFF-002, EFF-003, REC-001, END-008
@@ -508,6 +758,10 @@ struct SharedConnectorState {
     script: VecDeque<ConnectorDisposition>,
     fallback: ConnectorDisposition,
     observations: Vec<ConnectorObservation>,
+    /// Events the destination can still accept, like a quota; `None` is unbounded.
+    capacity: Option<usize>,
+    /// Seconds each delivery advances this clock by.
+    advances: Option<(SharedClock, i64)>,
 }
 
 impl SharedConnector {
@@ -517,8 +771,20 @@ impl SharedConnector {
                 script: script.into(),
                 fallback,
                 observations: Vec::new(),
+                capacity: None,
+                advances: None,
             })),
         }
+    }
+
+    fn with_capacity(self, capacity: usize) -> Self {
+        self.state.lock().expect("test connector lock").capacity = Some(capacity);
+        self
+    }
+
+    fn advancing(self, clock: &SharedClock, seconds: i64) -> Self {
+        self.state.lock().expect("test connector lock").advances = Some((clock.clone(), seconds));
+        self
     }
 
     fn observations(&self) -> Vec<ConnectorObservation> {
@@ -538,8 +804,29 @@ impl OutboxConnector for SharedConnector {
         )
     }
 
+    fn ready_to_deliver(&mut self, _event: &StoredDurableEventV1) -> bool {
+        self.state
+            .lock()
+            .expect("test connector lock")
+            .capacity
+            .is_none_or(|capacity| capacity > 0)
+    }
+
+    fn admissible_run(&mut self, events: &[&StoredDurableEventV1]) -> usize {
+        let capacity = self.state.lock().expect("test connector lock").capacity;
+        capacity.map_or(events.len(), |capacity| capacity.min(events.len()))
+    }
+
     fn deliver(&mut self, attempt: DeliveryAttempt<'_>) -> ConnectorDisposition {
         let mut state = self.state.lock().expect("test connector lock");
+        if let Some(capacity) = state.capacity.as_mut() {
+            assert!(*capacity > 0, "delivered past the destination's capacity");
+            *capacity -= 1;
+        }
+        if let Some((clock, seconds)) = &state.advances {
+            let now = clock.now.lock().expect("test clock lock").seconds();
+            clock.set(now + seconds);
+        }
         state.observations.push(ConnectorObservation {
             event_id: attempt.event_id(),
             event_hash: attempt.event().event_hash(),

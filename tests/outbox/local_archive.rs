@@ -412,3 +412,71 @@ mod crash {
         }
     }
 }
+
+fn record_at(ordinal: u32) -> LocalOutboxArchiveRecordV1 {
+    let id = EventId::new(CommitSequence::first(), ordinal);
+    let kind = EventTypeId::try_from(1).unwrap();
+    let payload = CanonicalRecord::new(vec![]).unwrap();
+    let hash = derive_event_hash_v1(id, kind, &payload).unwrap();
+    LocalOutboxArchiveRecordV1::new(
+        database(1),
+        NonZeroU64::new(1).unwrap(),
+        StoredDurableEventV1::new(id, kind, payload, hash).unwrap(),
+    )
+}
+
+// req: EFF-002, EFF-003, END-008
+#[test]
+fn archive_run_admission_counts_earlier_new_records_against_the_quota() {
+    let root = private_directory();
+    let mut archive =
+        DurableLocalArchive::open(root.path(), database(1), NonZeroU64::new(4096).unwrap())
+            .unwrap();
+    validated(&mut archive);
+    archive.accept(&record_at(0)).unwrap();
+    let one_row = archive.observation().unwrap().encoded_bytes();
+    drop(archive);
+    // The charge of one more row, measured on a scratch archive.
+    let scratch = private_directory();
+    let mut measure =
+        DurableLocalArchive::open(scratch.path(), database(1), NonZeroU64::new(4096).unwrap())
+            .unwrap();
+    validated(&mut measure);
+    measure.accept(&record_at(0)).unwrap();
+    measure.accept(&record_at(1)).unwrap();
+    let per_row = measure.observation().unwrap().encoded_bytes() - one_row;
+    drop(measure);
+    // Room for exactly three rows: the existing one and two new ones.
+    let mut archive = DurableLocalArchive::open(
+        root.path(),
+        database(1),
+        NonZeroU64::new(one_row + 2 * per_row).unwrap(),
+    )
+    .unwrap();
+    validated(&mut archive);
+    let run = [record_at(0), record_at(1), record_at(2), record_at(3)];
+    // Each new record alone fits beside the existing one...
+    for record in &run {
+        assert!(archive.admits(record).unwrap());
+    }
+    // ...but together only the existing record (charged nothing) and two new
+    // ones do; the fourth would exceed the quota with the earlier two.
+    assert_eq!(archive.admits_run(&run).unwrap(), 3);
+    assert_eq!(archive.admits_run(&run[1..]).unwrap(), 2);
+    assert_eq!(archive.admits_run(&run[..1]).unwrap(), 1);
+    // Preflight never mutates the archive.
+    assert_eq!(archive.observation().unwrap().encoded_bytes(), one_row);
+    // An integrity refusal after the first record ends the run before it;
+    // on the first record it is reported.
+    let conflicting = record(1, 2);
+    assert_eq!(
+        archive
+            .admits_run(&[record_at(1), conflicting.clone()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        archive.admits_run(&[conflicting]),
+        Err(LocalArchiveError::Integrity)
+    );
+}

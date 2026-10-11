@@ -341,28 +341,71 @@ impl DurableLocalArchive {
 
     /// Preflight before a delivery claim. Equal retries fit even at full quota.
     pub fn admits(&self, record: &LocalOutboxArchiveRecordV1) -> Result<bool, LocalArchiveError> {
+        self.admits_run(std::slice::from_ref(record))
+            .map(|admitted| admitted == 1)
+    }
+
+    /// Preflight before a claim group (ADR-0284): how many leading records fit
+    /// the quota together. Each new record charges its row against the bytes
+    /// already used plus the earlier new records of the run; an equal existing
+    /// record charges nothing. An error on the first record is returned; an
+    /// error on a later one ends the run before it, so that record is then
+    /// preflighted, and its error reported, on its own.
+    pub fn admits_run(
+        &self,
+        records: &[LocalOutboxArchiveRecordV1],
+    ) -> Result<usize, LocalArchiveError> {
         let _timing = self.native_census.measure(Stage::Admission);
         self.custody.verify()?;
         if !self.validation.ready {
-            return Ok(false);
+            return Ok(0);
         }
+        let read = self.database.begin_read().map_err(unavailable)?;
+        let rows = read.open_table(RECORDS).map_err(integrity)?;
+        let mut used: Option<u64> = None;
+        for (index, record) in records.iter().enumerate() {
+            match self.record_charge(&rows, record) {
+                Ok(None) => {}
+                Ok(Some(charge)) => {
+                    let current = match used {
+                        Some(current) => current,
+                        None => match self.observation() {
+                            Ok(observation) => observation.encoded_bytes,
+                            Err(error) if index == 0 => return Err(error),
+                            Err(_) => return Ok(index),
+                        },
+                    };
+                    match current.checked_add(charge) {
+                        Some(bytes) if bytes <= self.quota.get() => used = Some(bytes),
+                        _ => return Ok(index),
+                    }
+                }
+                Err(error) if index == 0 => return Err(error),
+                Err(_) => return Ok(index),
+            }
+        }
+        Ok(records.len())
+    }
+
+    /// The quota charge of accepting `record`: `None` for an equal existing
+    /// record, refusing a binding mismatch or a different existing record.
+    fn record_charge(
+        &self,
+        rows: &redb::ReadOnlyTable<&'static [u8], &'static [u8]>,
+        record: &LocalOutboxArchiveRecordV1,
+    ) -> Result<Option<u64>, LocalArchiveError> {
         if record.database_id() != self.binding {
             return Err(LocalArchiveError::Binding);
         }
         let encoded = encode_local_outbox_archive_record_v1(record).map_err(integrity)?;
-        let read = self.database.begin_read().map_err(unavailable)?;
-        let rows = read.open_table(RECORDS).map_err(integrity)?;
         if let Some(existing) = rows.get(record.key().as_slice()).map_err(integrity)? {
             decode_local_outbox_archive_record_v1(existing.value()).map_err(integrity)?;
             if existing.value() != encoded.as_bytes() {
                 return Err(LocalArchiveError::Integrity);
             }
-            return Ok(true);
+            return Ok(None);
         }
-        let used = self.observation()?.encoded_bytes;
-        Ok(used
-            .checked_add(row_charge(encoded.as_bytes().len())?)
-            .is_some_and(|bytes| bytes <= self.quota.get()))
+        row_charge(encoded.as_bytes().len()).map(Some)
     }
 
     /// Acknowledges only after one two-phase Immediate engine commit and
@@ -515,24 +558,35 @@ impl crate::OutboxConnector for DurableLocalConnector {
         )
     }
     fn ready_to_deliver(&mut self, event: &riffdb_storage_api::StoredDurableEventV1) -> bool {
-        let record =
-            LocalOutboxArchiveRecordV1::new(self.archive.binding, self.incarnation, event.clone());
-        match self.archive.admits(&record) {
-            Ok(true) => {
+        self.admissible_run(&[event]) == 1
+    }
+    fn admissible_run(&mut self, events: &[&riffdb_storage_api::StoredDurableEventV1]) -> usize {
+        let records = events
+            .iter()
+            .map(|event| {
+                LocalOutboxArchiveRecordV1::new(
+                    self.archive.binding,
+                    self.incarnation,
+                    (*event).clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        match self.archive.admits_run(&records) {
+            Ok(admitted) if admitted > 0 => {
                 self.last_error = None;
-                true
+                admitted
             }
-            Ok(false) => {
+            Ok(_) => {
                 self.last_error = Some(if self.archive.validated() {
                     LocalArchiveError::Quota
                 } else {
                     LocalArchiveError::Unavailable
                 });
-                false
+                0
             }
             Err(error) => {
                 self.last_error = Some(error);
-                false
+                0
             }
         }
     }

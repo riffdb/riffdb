@@ -37,13 +37,21 @@ transaction storing the exact event and its quota charge atomically. A crash
 between acceptance and source completion can replay the event; equal retries
 preserve one record, and different bytes under the same identity are refused.
 Database identity, history incarnation, and event identity form the key.
-Each event keeps its own durable claim and archive transaction. The worker
-completes up to sixteen already accepted events in one primary transaction,
-flushing at the bound, page end, or before ordinary failure handling. It adds
-no wait to fill a group. Source completion of an earlier event can therefore
-follow a later event's claim; until completion, every such event remains
-undelivered for retention. A crash can replay the whole bounded group using
-the same immutable archive identities and existing recovery rules.
+Each event keeps its own archive transaction. The worker claims up to sixteen
+consecutive pending events of one scan page in one primary transaction: the
+run ends at the first event that is not yet due, has used every attempt, or
+would not fit the archive quota together with the earlier members, and that
+event is handled on its own as before. Quota is checked for the run as a whole,
+so a full archive pauses delivery without spending attempts. Members are then
+delivered one at a time; a member whose lease has passed by the time it is
+reached renews it before delivery. The worker likewise completes up to sixteen
+already accepted events in one primary transaction, flushing at the bound, page
+end, or before ordinary failure handling. It adds no wait to fill a group.
+Source completion of an earlier event can therefore follow a later event's
+claim; until completion, every such event remains undelivered for retention. A
+crash can replay a whole bounded group using the same immutable archive
+identities and existing recovery rules; a member claimed but not yet delivered
+when the process stopped counts that claim as one of its attempts.
 Failures discovered after a claim use the existing bounded retry and dead-letter
 rules. Dead letters remain undelivered and continue to fence source retention.
 
