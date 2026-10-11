@@ -30,7 +30,7 @@ fn engine(owner: &RestoreCustody) -> redb::Database {
         .expect("open healthy private engine without repair")
 }
 
-fn probe(path: &Path, held: bool) {
+pub(crate) fn probe(path: &Path, held: bool) {
     let mut child = Command::new(std::env::current_exe().expect("current test executable"))
         .args(["--exact", PROBE, "--nocapture"])
         .env(PROBE_PATH, path)
@@ -486,6 +486,27 @@ fn native_preparation_growth_freezes_only_after_observed_engine_close() {
     assert!(matches!(owner.freeze_prepared_artifact(),
         Err(error) if error.kind() == StorageErrorKind::InvariantViolation));
     drop(backend);
+    drop(owner);
+    probe(&path, false);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn native_backend_close_is_not_a_read_pin_release_witness() {
+    let scope = ScopedDirectory::new("native-backend-close-read-lifetime");
+    let path = healthy(&scope);
+    let owner =
+        RestoreCustody::capture_for_preparation(&path, Arc::new(AtomicBool::new(false))).unwrap();
+    let database = engine(&owner);
+    let read = database.begin_read().unwrap();
+    drop(database);
+    // The actual pinned engine closes its backend even while this actual read
+    // exists. Stage proofs must retain their Database owner independently.
+    assert_eq!(owner.shared.leases.read().unwrap().active, None);
+    let frozen = owner.freeze_prepared_artifact().unwrap();
+    assert_eq!(frozen, std::fs::metadata(&path).unwrap().len());
+    probe(&path, true);
+    drop(read);
     drop(owner);
     probe(&path, false);
 }

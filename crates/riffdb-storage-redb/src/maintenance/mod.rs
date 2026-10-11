@@ -44,10 +44,12 @@ mod follower_namespace;
 mod path_guard;
 pub(crate) use path_guard::PinnedDirectory;
 mod physical_scrub;
-#[cfg(test)]
 mod restore_custody;
 pub(crate) use follower_namespace::FollowerNamespace;
 pub(crate) use physical_scrub::PhysicalScrubCopy;
+pub(crate) use restore_custody::RestoreCustody;
+#[cfg(test)]
+pub(crate) use restore_custody::tests::probe as probe_restore_custody;
 mod staged;
 mod store;
 

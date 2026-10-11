@@ -641,6 +641,7 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         overwrite_policy: OfflineRestoreOverwritePolicyV1,
     ) -> Result<OfflineRestoreResultV1, StorageError> {
         self.restore_offline_backup_with_layout(overwrite_policy, RestoredHistoryLayout::Retained)
+            .map(|restored| restored.outcome)
     }
 }
 
@@ -649,7 +650,92 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
 /// the self-contained representation it already requires before validation.
 enum RestoredHistoryLayout<'a> {
     Retained,
-    SelfContained { configured_database_file: &'a Path },
+    SelfContained {
+        configured_database_file: &'a Path,
+        private_cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    },
+}
+
+struct NativeRestoreResult {
+    outcome: OfflineRestoreResultV1,
+    owned: Option<OwnedMaterialization>,
+}
+
+/// Native construction only; complete validation and server join are separate.
+/// Release the engine and its three fixed creation pins before outer custody.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "owned restore validation integration is pending")
+)]
+pub(crate) struct OwnedMaterialization {
+    database: Option<std::sync::Arc<Database>>,
+    primary: MaterializationArtifact,
+    journal: MaterializationArtifact,
+    marker: MaterializationArtifact,
+    custody: crate::maintenance::RestoreCustody,
+}
+
+/// A move-only preparation read retains the original Database owner as well
+/// as its actual read transaction. redb backend close alone does not establish
+/// that every ReadTransaction has gone away. Drop the read before its owner.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "owned restore validation integration is pending")
+)]
+struct PreparedMaterializationRead {
+    read: redb::ReadTransaction,
+    _engine: std::sync::Arc<Database>,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "owned restore validation integration is pending")
+)]
+impl OwnedMaterialization {
+    fn verify(&self) -> Result<(), StorageError> {
+        let result = (|| {
+            self.custody.verify_identity()?;
+            self.primary.verify()?;
+            self.journal.verify()?;
+            self.marker.verify()
+        })();
+        if result.is_err() {
+            self.custody.invalidate();
+        }
+        result
+    }
+
+    fn pin_prepared_read(&mut self) -> Result<PreparedMaterializationRead, StorageError> {
+        self.verify()?;
+        let engine = self
+            .database
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if std::sync::Arc::strong_count(engine) != 1 {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let read = engine.begin_read().map_err(transaction_error)?;
+        Ok(PreparedMaterializationRead {
+            read,
+            _engine: std::sync::Arc::clone(engine),
+        })
+    }
+
+    fn close_for_validation(&mut self) -> Result<u64, StorageError> {
+        self.verify()?;
+        if let Some(engine) = self.database.take() {
+            match std::sync::Arc::try_unwrap(engine) {
+                Ok(database) => drop(database),
+                Err(engine) => {
+                    self.database = Some(engine);
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+            }
+        }
+        let length = self.custody.freeze_prepared_artifact()?;
+        self.verify()?;
+        Ok(length)
+    }
 }
 
 #[cfg(test)]
@@ -704,15 +790,43 @@ impl RedbOfflineRestore {
             OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
             RestoredHistoryLayout::SelfContained {
                 configured_database_file,
+                private_cancellation: None,
             },
         )
+        .map(|restored| restored.outcome)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "owned restore validation integration is pending")
+    )]
+    pub(crate) fn restore_owned_staged_backup(
+        &mut self,
+        configured_database_file: &Path,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(OfflineBackupManifestV1, OwnedMaterialization), StorageError> {
+        let restored = self.restore_offline_backup_with_layout(
+            OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+            RestoredHistoryLayout::SelfContained {
+                configured_database_file,
+                private_cancellation: Some(cancellation),
+            },
+        )?;
+        let OfflineRestoreResultV1::Restored { manifest } = restored.outcome else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        let owned = restored
+            .owned
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        owned.verify()?;
+        Ok((*manifest, owned))
     }
 
     fn restore_offline_backup_with_layout(
         &mut self,
         overwrite_policy: OfflineRestoreOverwritePolicyV1,
         layout: RestoredHistoryLayout<'_>,
-    ) -> Result<OfflineRestoreResultV1, StorageError> {
+    ) -> Result<NativeRestoreResult, StorageError> {
         validate_backup_inventory(&self.backup_directory)?;
         let manifest_bytes = read_bounded_file(
             &self.backup_directory.join(MANIFEST_FILE_NAME),
@@ -732,7 +846,10 @@ impl RedbOfflineRestore {
         if target_state == TargetDirectoryState::NonEmpty
             && overwrite_policy == OfflineRestoreOverwritePolicyV1::RefuseNonEmpty
         {
-            return Ok(OfflineRestoreResultV1::TargetNotEmpty);
+            return Ok(NativeRestoreResult {
+                outcome: OfflineRestoreResultV1::TargetNotEmpty,
+                owned: None,
+            });
         }
         if target_state == TargetDirectoryState::Missing {
             fs::create_dir_all(&self.target_directory).map_err(io_unavailable)?;
@@ -810,14 +927,42 @@ impl RedbOfflineRestore {
             &self.target_directory,
             &manifest,
         )?;
+        // Only this native manifest-verified copy path can mint the input to
+        // production custody. It retains the original creation descriptor and
+        // directory capability, rather than discovering them from a pathname.
+        let custody = if let RestoredHistoryLayout::SelfContained {
+            private_cancellation: Some(cancellation),
+            ..
+        } = &layout
+        {
+            staged_artifact.verify()?;
+            staged_journal.verify()?;
+            staged_format_marker.verify()?;
+            let verified = staged_artifact.verified_primary()?;
+            Some(crate::maintenance::RestoreCustody::from_verified_copy(
+                verified,
+                std::sync::Arc::clone(cancellation),
+            )?)
+        } else {
+            None
+        };
         let staged_lock = match staged_lock {
             Some(database) => database,
             None => {
-                let database = open_private_materialization_database(
-                    &staged_artifact,
-                    &staged_journal,
-                    &staged_format_marker,
-                )?;
+                let database = match &custody {
+                    Some(custody) => open_unrepaired_private_backend(
+                        Box::new(custody.lease()?),
+                        Some(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES),
+                    )?,
+                    None => open_private_materialization_database(
+                        &staged_artifact,
+                        &staged_journal,
+                        &staged_format_marker,
+                    )?,
+                };
+                staged_artifact.verify()?;
+                staged_journal.verify()?;
+                staged_format_marker.verify()?;
                 validate_copied_database_facts(read_database_facts(&database)?, &manifest)?;
                 database
             }
@@ -831,7 +976,11 @@ impl RedbOfflineRestore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_unavailable(error)),
         }
-        staged_artifact.rename_to(&target_artifact)?;
+        if let Some(custody) = &custody {
+            staged_artifact.rename_under_custody(&target_artifact, custody)?;
+        } else {
+            staged_artifact.rename_to(&target_artifact)?;
+        }
         staged_journal.rename_to(&target_journal)?;
         // Sealed extents of whatever the target held before never survive, and
         // the backup's own become the restored database's (ADR-0263 A5).
@@ -868,6 +1017,7 @@ impl RedbOfflineRestore {
             (
                 RestoredHistoryLayout::SelfContained {
                     configured_database_file,
+                    ..
                 },
                 Some(database),
             ) => {
@@ -892,9 +1042,9 @@ impl RedbOfflineRestore {
             &target_artifact,
             std::sync::Arc::new(crate::media::RealJournalMedia),
         );
-        match private_database {
+        match private_database.as_ref() {
             Some(database) => apply_restored_retention_watermark_on_database(
-                &database,
+                database,
                 manifest.retention_watermark_sequence(),
             )?,
             None => apply_restored_retention_watermark(
@@ -902,8 +1052,28 @@ impl RedbOfflineRestore {
                 manifest.retention_watermark_sequence(),
             )?,
         }
-        Ok(OfflineRestoreResultV1::Restored {
-            manifest: Box::new(manifest),
+        let owned = match custody {
+            Some(custody) => {
+                let owned = OwnedMaterialization {
+                    database: private_database.map(std::sync::Arc::new),
+                    primary: staged_artifact,
+                    journal: staged_journal,
+                    marker: staged_format_marker,
+                    custody,
+                };
+                owned.verify()?;
+                Some(owned)
+            }
+            None => {
+                drop(private_database);
+                None
+            }
+        };
+        Ok(NativeRestoreResult {
+            outcome: OfflineRestoreResultV1::Restored {
+                manifest: Box::new(manifest),
+            },
+            owned,
         })
     }
 }
@@ -927,9 +1097,17 @@ pub(crate) fn open_unrepaired_private_file(
     open_unrepaired_private_location(PrivateDatabaseLocation::File(file), cache_bytes)
 }
 
+fn open_unrepaired_private_backend(
+    backend: Box<dyn redb::StorageBackend>,
+    cache_bytes: Option<usize>,
+) -> Result<Database, StorageError> {
+    open_unrepaired_private_location(PrivateDatabaseLocation::Backend(backend), cache_bytes)
+}
+
 enum PrivateDatabaseLocation<'a> {
     Path(&'a Path),
     File(&'a File),
+    Backend(Box<dyn redb::StorageBackend>),
 }
 
 fn open_unrepaired_private_location(
@@ -950,6 +1128,9 @@ fn open_unrepaired_private_location(
         PrivateDatabaseLocation::Path(path) => builder.open(path),
         PrivateDatabaseLocation::File(file) => {
             builder.create_file(file.try_clone().map_err(io_unavailable)?)
+        }
+        PrivateDatabaseLocation::Backend(backend) => {
+            builder.create_with_backend(crate::media::DynStorageBackend(backend))
         }
     };
     if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
@@ -2534,17 +2715,39 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Unforgeable outside the native materializer. This grants copied-primary
+/// identity only; it is never a physical, logical or publication certificate.
+pub(crate) struct VerifiedCopiedPrimary {
+    parent: std::sync::Arc<crate::maintenance::PinnedDirectory>,
+    name: OsString,
+    file: File,
+}
+
+impl VerifiedCopiedPrimary {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        std::sync::Arc<crate::maintenance::PinnedDirectory>,
+        OsString,
+        File,
+    ) {
+        (self.parent, self.name, self.file)
+    }
+}
+
 /// Three fixed materialization artifacts retain their creation descriptors.
 /// Sealed extents continue using the bounded, descriptor-free staging vector.
 struct MaterializationArtifact {
     staged: StagedArtifact,
-    identity: Option<(crate::maintenance::PinnedDirectory, File)>,
+    identity: Option<(std::sync::Arc<crate::maintenance::PinnedDirectory>, File)>,
 }
 
 impl MaterializationArtifact {
     fn create(directory: &Path, stem: &OsStr, private: bool) -> Result<Self, StorageError> {
         let parent = if private {
-            Some(crate::maintenance::PinnedDirectory::open(directory)?)
+            Some(std::sync::Arc::new(
+                crate::maintenance::PinnedDirectory::open(directory)?,
+            ))
         } else {
             None
         };
@@ -2603,6 +2806,35 @@ impl MaterializationArtifact {
             return Err(corrupt());
         }
         Ok(file)
+    }
+
+    fn verified_primary(&self) -> Result<VerifiedCopiedPrimary, StorageError> {
+        self.verify()?;
+        let (parent, file) = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let file = file.try_clone().map_err(io_unavailable)?;
+        if file.metadata().map_err(io_unavailable)?.len() == 0 {
+            return Err(corrupt());
+        }
+        Ok(VerifiedCopiedPrimary {
+            parent: std::sync::Arc::clone(parent),
+            name: self.path().file_name().ok_or_else(corrupt)?.to_os_string(),
+            file,
+        })
+    }
+
+    fn rename_under_custody(
+        &mut self,
+        destination: &Path,
+        custody: &crate::maintenance::RestoreCustody,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        custody.rename_created_primary(self.path(), destination)?;
+        self.staged.mark_published();
+        self.staged.path = destination.to_path_buf();
+        self.verify()
     }
 
     fn rename_to(&mut self, destination: &Path) -> Result<(), StorageError> {
@@ -2988,6 +3220,116 @@ mod tests {
             marker.checksum().unwrap(),
             manifest_format_marker_checksum(&manifest).unwrap().unwrap()
         );
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_keeps_native_custody_across_first_engine_close_and_physical_validation()
+     {
+        let root = TestRoot::new("owned-native-materialization-lifetime");
+        let (_, backup, expected) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        let (manifest, mut owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(manifest, expected);
+        let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        crate::maintenance::probe_restore_custody(&path, true);
+        let original_read = owned.pin_prepared_read().unwrap();
+        // Native backend close can precede ReadTransaction release. The RiffDB
+        // pin keeps the SAME Database alive and refuses close while it exists.
+        assert!(matches!(owned.pin_prepared_read(),
+            Err(error) if error.kind() == StorageErrorKind::Unavailable));
+        assert!(matches!(owned.close_for_validation(),
+            Err(error) if error.kind() == StorageErrorKind::Unavailable));
+        crate::maintenance::probe_restore_custody(&path, true);
+        {
+            let meta = original_read.read.open_table(META).unwrap();
+            let identity = meta.get(META_DATABASE_ID).unwrap().unwrap();
+            assert_eq!(
+                *codec::decode_database_identity_v1(identity.value())
+                    .unwrap()
+                    .value(),
+                manifest.database_id(),
+                "the original native read remains usable after refused close"
+            );
+        }
+        drop(original_read);
+        let length = owned.close_for_validation().unwrap();
+        assert_eq!(length, fs::metadata(&path).unwrap().len());
+        crate::maintenance::probe_restore_custody(&path, true);
+        let mut database = open_unrepaired_private_backend(
+            Box::new(owned.custody.lease().unwrap()),
+            Some(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES),
+        )
+        .unwrap();
+        assert!(database.check_integrity().unwrap());
+        validate_copied_database_facts(read_database_facts(&database).unwrap(), &manifest).unwrap();
+        drop(database);
+        owned.verify().unwrap();
+        crate::maintenance::probe_restore_custody(&path, true);
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
+        drop(owned);
+        crate::maintenance::probe_restore_custody(&path, false);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_refuses_primary_replacement_after_known_renames() {
+        let root = TestRoot::new("owned-native-materialization-replacement");
+        let (_, backup, _) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        let (_, mut owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        fs::rename(&path, root.join("original-primary")).unwrap();
+        fs::copy(root.join("original-primary"), &path).unwrap();
+        assert!(matches!(owned.close_for_validation(),
+            Err(error) if error.kind() == StorageErrorKind::CorruptData));
+        assert!(owned.verify().is_err());
+        fs::remove_file(&path).unwrap();
+        fs::rename(root.join("original-primary"), &path).unwrap();
+        assert!(
+            owned.verify().is_err(),
+            "restored identity cannot launder uncertain custody"
+        );
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_cancellation_cannot_restore_authority_after_reset() {
+        let root = TestRoot::new("owned-native-materialization-cancellation");
+        let (_, backup, _) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::clone(&cancellation),
+            )
+            .unwrap();
+        cancellation.store(true, Ordering::Release);
+        assert!(
+            matches!(owned.verify(), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        cancellation.store(false, Ordering::Release);
+        assert!(
+            matches!(owned.verify(), Err(error) if error.kind() == StorageErrorKind::Unavailable)
+        );
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
     }
 
     fn database_id() -> DatabaseId {

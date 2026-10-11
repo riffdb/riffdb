@@ -52,3 +52,30 @@ refusal and immutable originals must remain valid. This boundary remains short
 of the complete ADR-0289 owner: it does not retain outer native custody through
 full validation, authorization, stamping and publication, or remove the second
 verification copy. Final combined CI and unchanged public gates remain open.
+
+
+A pending native factory can consume the actual verified copied-primary
+creation descriptor and directory capability into continuous exclusive custody
+before the first engine open. It keeps that first engine through the existing
+hydration and watermark preparation, performs its known rename under the same
+owner, and retains custody after observed engine close. Raw-path custody
+construction is test-only. Its three fixed artifact pins add no per-extent
+file-descriptor population. Cancellation remains sticky after an observed reset.
+
+This factory is not yet the production stage constructor. Complete owned
+physical/logical validation, compatibility preparation including legacy journal
+identity transitions, the unchanged server proof join, authorization, controlled
+stamp and publication still require integration. The existing full-stage
+custody counterexample remains open. A successful materialization-owner test
+cannot qualify that counterexample or the whole public recovery action.
+
+
+A native counterexample also shows that redb can close its backend while a
+`ReadTransaction` remains alive. Native backend-close observation therefore
+cannot prove that read pins have been released. Preparation reads retain the
+same `Database` owner explicitly; a second pin and a close with an outstanding
+pin refuse without consuming that owner. The original read must remain usable,
+and only its release permits close and the exact-length freeze. The final
+logical authorization reader has the same obligation through its retained
+shared engine owner. This correction changes the native ownership protocol,
+not the harness or the accepted release condition.

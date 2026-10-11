@@ -1,4 +1,4 @@
-//! ADR-0289 custody foundation, exercised before production-stage integration.
+//! Native private materialization custody; full validation integration is pending.
 //!
 //! The outer owner acquires native exclusion independently of engine leases.
 //! Engine range methods acquire bounded subleases of that stronger exclusion;
@@ -23,13 +23,13 @@ use std::{
 type Range = (Bound<u64>, Bound<u64>);
 const MAX_ENGINE_RANGES: usize = 64;
 
-pub(super) struct RestoreCustody {
+pub(crate) struct RestoreCustody {
     shared: Arc<Shared>,
 }
 
 struct Shared {
-    parent: PinnedDirectory,
-    name: OsString,
+    parent: Arc<PinnedDirectory>,
+    name: RwLock<OsString>,
     file: File,
     native_guard: redb::backends::FileBackend,
     // Zero is the private preparation phase, before any validation proof.
@@ -47,7 +47,7 @@ struct Leases {
     ranges: Vec<Range>,
 }
 
-pub(super) struct RestoreEngineBackend {
+pub(crate) struct RestoreEngineBackend {
     file: redb::backends::FileBackend,
     shared: Arc<Shared>,
     generation: u64,
@@ -66,12 +66,34 @@ impl std::fmt::Debug for RestoreCustody {
 }
 
 impl RestoreCustody {
-    // Test-only construction while the native lock protocol is established.
-    // Production construction must consume verified native materialization.
+    // A raw pathname is deliberately unavailable to production construction.
+    #[cfg(test)]
     fn capture(path: &Path, cancellation: Arc<AtomicBool>) -> Result<Self, StorageError> {
-        let parent = PinnedDirectory::open(path.parent().ok_or_else(corrupt)?)?;
+        let parent = Arc::new(PinnedDirectory::open(path.parent().ok_or_else(corrupt)?)?);
         let name = path.file_name().ok_or_else(corrupt)?.to_os_string();
         let file = parent.open_file_read_write(&name)?.into_std();
+        Self::from_created_parts(parent, name, file, cancellation, false)
+    }
+
+    pub(crate) fn from_verified_copy(
+        copy: crate::backup::VerifiedCopiedPrimary,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<Self, StorageError> {
+        let (parent, name, file) = copy.into_parts();
+        Self::from_created_parts(parent, name, file, cancellation, true)
+    }
+
+    fn from_created_parts(
+        parent: Arc<PinnedDirectory>,
+        name: OsString,
+        file: File,
+        cancellation: Arc<AtomicBool>,
+        preparing: bool,
+    ) -> Result<Self, StorageError> {
+        parent.verify()?;
+        if !parent.regular_file_matches(&name, &file)? {
+            return Err(corrupt());
+        }
         file.try_lock().map_err(unavailable)?;
         let native_guard = redb::backends::FileBackend::new(file.try_clone().map_err(unavailable)?)
             .map_err(unavailable)?;
@@ -88,10 +110,10 @@ impl RestoreCustody {
         let owner = Self {
             shared: Arc::new(Shared {
                 parent,
-                name,
+                name: RwLock::new(name),
                 file,
                 native_guard,
-                maximum_bytes: AtomicU64::new(maximum_bytes),
+                maximum_bytes: AtomicU64::new(if preparing { 0 } else { maximum_bytes }),
                 cancellation,
                 invalid: AtomicBool::new(false),
                 leases: RwLock::new(Leases::default()),
@@ -101,10 +123,10 @@ impl RestoreCustody {
         Ok(owner)
     }
 
-    // This module remains test-only. A production preparation constructor must
-    // consume authenticated copied-artifact provenance, never a raw pathname.
+    // Raw-path preparation remains available only to native protocol tests.
     // Preparation preserves the native allocator and caller's existing bounded
     // hydration rules; the verification backend cannot invent growth headroom.
+    #[cfg(test)]
     fn capture_for_preparation(
         path: &Path,
         cancellation: Arc<AtomicBool>,
@@ -114,7 +136,7 @@ impl RestoreCustody {
         Ok(owner)
     }
 
-    fn freeze_prepared_artifact(&self) -> Result<u64, StorageError> {
+    pub(crate) fn freeze_prepared_artifact(&self) -> Result<u64, StorageError> {
         self.verify_identity()?;
         let leases = self.shared.leases.write().map_err(|_| {
             self.shared.invalid.store(true, Ordering::Release);
@@ -143,7 +165,11 @@ impl RestoreCustody {
         Ok(length)
     }
 
-    fn verify_identity(&self) -> Result<(), StorageError> {
+    pub(crate) fn invalidate(&self) {
+        self.shared.invalid.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn verify_identity(&self) -> Result<(), StorageError> {
         let result = (|| {
             self.shared.available().map_err(unavailable)?;
             self.shared.parent.verify()?;
@@ -153,10 +179,11 @@ impl RestoreCustody {
                 .map_err(unavailable)?
                 .len();
             let maximum_bytes = self.shared.maximum_bytes.load(Ordering::Acquire);
+            let name = self.shared.name.read().map_err(|_| unavailable(()))?;
             if !self
                 .shared
                 .parent
-                .regular_file_matches(&self.shared.name, &self.shared.file)?
+                .regular_file_matches(&name, &self.shared.file)?
                 || length == 0
                 || (maximum_bytes != 0 && length != maximum_bytes)
             {
@@ -170,7 +197,43 @@ impl RestoreCustody {
         result
     }
 
-    fn lease(&self) -> Result<RestoreEngineBackend, StorageError> {
+    /// The native factory performs its known primary rename under the same
+    /// owner. No caller may merely replace the identity after a path change.
+    pub(crate) fn rename_created_primary(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), StorageError> {
+        let result = (|| {
+            self.verify_identity()?;
+            if source.parent() != destination.parent() {
+                return Err(corrupt());
+            }
+            let source_name = source.file_name().ok_or_else(corrupt)?;
+            let destination_name = destination.file_name().ok_or_else(corrupt)?;
+            let mut name = self.shared.name.write().map_err(|_| unavailable(()))?;
+            if name.as_os_str() != source_name {
+                return Err(corrupt());
+            }
+            if !self
+                .shared
+                .parent
+                .regular_file_matches(source_name, &self.shared.file)?
+            {
+                return Err(corrupt());
+            }
+            self.shared.parent.rename(source_name, destination_name)?;
+            *name = destination_name.to_os_string();
+            drop(name);
+            self.verify_identity()
+        })();
+        if result.is_err() {
+            self.shared.invalid.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    pub(crate) fn lease(&self) -> Result<RestoreEngineBackend, StorageError> {
         self.verify_identity()?;
         let mut leases = self.shared.leases.write().map_err(|_| {
             self.shared.invalid.store(true, Ordering::Release);
@@ -424,4 +487,4 @@ fn unavailable<T>(_: T) -> StorageError {
 
 #[cfg(test)]
 #[path = "restore_custody_tests.rs"]
-mod tests;
+pub(crate) mod tests;
