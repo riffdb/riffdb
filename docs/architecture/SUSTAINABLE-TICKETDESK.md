@@ -13,6 +13,15 @@ plus 400 named reads/s, at most 32 in flight, and recovery to the first
 successful write within 60 seconds. Qualification uses an inventoried 8-vCPU,
 32-GiB Linux host with durable SSD storage. Normal-window p95 is below 100 ms
 and p99 below 250 ms. Existing stricter applicable gates remain effective.
+Each second's operations arrive at independent, uniformly random offsets within
+that second from a fixed-seed schedule (ADR-0285), and each operation's latency
+counts from its own offer toward the window it was offered in. Earlier results
+offered every second's operations at one instant and are not comparable. On
+the second development machine (8 vCPU, AMD EPYC 7B12), two 300-second observed
+population preparations with online retention on `main` at WP-832 passed every
+check with this schedule: p95 16.5 and 29.2 ms, p99 46.8 and 108.1 ms, with 0
+and 19 of 150,000 operations above 250 ms. These are preparations, not the
+required-host qualification or the 24-hour campaign.
 
 ## Decisions and dependencies
 
