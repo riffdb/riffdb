@@ -121,6 +121,17 @@ impl ExclusiveGate {
     }
 }
 
+#[cfg(test)]
+impl ExclusiveLease {
+    /// Observes the same gate without cloning or retaining its granted lease.
+    /// Tests can prove real refusal and subsequent admission across proof drop.
+    pub(crate) fn gate_for_test(&self) -> ExclusiveGate {
+        ExclusiveGate {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
 impl Drop for ExclusiveLease {
     fn drop(&mut self) {
         let mut state = self

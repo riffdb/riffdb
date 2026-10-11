@@ -643,3 +643,41 @@ fn actual_watermark_process_crashes_preserve_whole_receipts_and_idempotent_retri
         }
     }
 }
+
+// req: REC-001, REP-003, STO-012
+#[test]
+fn borrowed_restore_watermark_preserves_unpruned_absence_and_refuses_fabricated_chain_root() {
+    let scope = crate::test_path::ScopedDirectory::new("borrowed-restore-watermark");
+    let path = scope.join("db.redb");
+    fixture(&path);
+    let database = Database::open(&path).unwrap();
+    let before = image(&database);
+    let previous_tail = read_history(&database).tail().sequence().get();
+    assert!(!before.metadata.contains_key(META_RETENTION_WATERMARK));
+    apply_restored_retention_watermark_on_database(&database, None).unwrap();
+    apply_restored_retention_watermark_on_database(&database, Some(0)).unwrap();
+    assert_eq!(image(&database), before);
+    assert_eq!(
+        apply_restored_retention_watermark_on_database(&database, Some(1))
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(image(&database), before);
+    assert!(matches!(
+        Database::open(&path),
+        Err(redb::DatabaseError::DatabaseAlreadyOpen)
+    ));
+    // Ordinary transaction-current receipt validation remains mandatory even
+    // though a private caller can borrow the already owned native engine.
+    stamp_retention_watermark_on_database(&database, 0).unwrap();
+    let after = image(&database);
+    assert_eq!(after.authority, before.authority);
+    assert_eq!(after.holds, before.holds);
+    assert_eq!(
+        read_history(&database).tail().sequence().get(),
+        previous_tail + 1
+    );
+    stamp_retention_watermark_on_database(&database, 0).unwrap();
+    assert_eq!(image(&database), after);
+}

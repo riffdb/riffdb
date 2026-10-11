@@ -55,7 +55,7 @@ impl RedbStore {
         let repair_observed = Arc::new(AtomicBool::new(false));
         let repair_observed_callback = Arc::clone(&repair_observed);
         let refuse_repair =
-            open_mode.is_offline_scrub() || repair_policy == EngineRepairPolicy::Refuse;
+            open_mode.is_private_validation() || repair_policy == EngineRepairPolicy::Refuse;
         let mut builder = Builder::new();
         builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);
         builder.set_repair_callback(move |session| {

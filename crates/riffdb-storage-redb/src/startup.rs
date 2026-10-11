@@ -121,6 +121,21 @@ pub struct OfflineIntegrityScrubReceiptV1 {
     _private: (),
 }
 
+/// The exact logical-validation pin and native owner, with no activation port.
+/// This is only logical evidence; it cannot authorize publication or replace
+/// physical verification, private artifact custody or the server's proof join.
+struct CompletedLogicalSnapshot {
+    // Release the immutable read and mutation exclusion before the engine owner.
+    read: ReadTransaction,
+    _lease: ExclusiveLease,
+    shared: Arc<SharedRedb>,
+    durable_commit_epoch: u64,
+    database_id: DatabaseId,
+    open_session_id: OpenSessionId,
+    retained_metadata: RetainedMetadataV1,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
 #[allow(dead_code)]
 impl OfflineIntegrityScrubReceiptV1 {
     /// Closed receipt version.
@@ -1990,9 +2005,11 @@ impl RedbStructuralEvidenceSession {
         mut self,
         structural_end: RedbStructuralEvidenceEnd,
         historical_end: RedbHistoricalEvidenceEnd,
-    ) -> Result<(), StorageError> {
+    ) -> Result<CompletedLogicalSnapshot, StorageError> {
         self.check_cancellation()?;
-        if self.clean_close_fast
+        if self.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
+            || self.clean_close_fast
+            || self.bounded_dirty_startup
             || self.checkpoint_verified
             || !self.structural_finished
             || !self.historical_finished
@@ -2005,11 +2022,24 @@ impl RedbStructuralEvidenceSession {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         self.historical_tables = None;
-        self.validation_read = None;
-        drop(self.open_snapshot_read()?);
+        let read = self.validation_read.take().ok_or_else(invariant)?;
+        // Complete validation and its handoff retain the SAME immutable read.
+        // A new read can establish continuity but cannot replace that proof pin.
+        self.verify_structural_continuity(&read)?;
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+            return Err(corrupt());
+        }
         let lease = self.lease.take().ok_or_else(invariant)?;
-        drop(lease);
-        Ok(())
+        Ok(CompletedLogicalSnapshot {
+            read,
+            _lease: lease,
+            shared: self.shared,
+            durable_commit_epoch: self.durable_commit_epoch,
+            database_id: self.database_id,
+            open_session_id: self.open_session_id,
+            retained_metadata: self.retained_metadata,
+            cancellation: self.cancellation,
+        })
     }
 
     /// ADR-0182 background scrub completion: both streams reached their exact

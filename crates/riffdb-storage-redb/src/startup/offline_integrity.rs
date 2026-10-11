@@ -1,6 +1,45 @@
 //! Selector-free physical and exact-end logical offline verification.
 use super::*;
 
+/// Move-only complete logical evidence. Private materialization and physical
+/// verification remain separate requirements; this grants no serving, writer
+/// or publication capability and cannot be reconstructed from a receipt.
+pub(super) struct CompleteLogicalValidation {
+    snapshot: CompletedLogicalSnapshot,
+    catalog: riffdb_catalog::ValidatedCatalogHistory,
+}
+
+impl CompleteLogicalValidation {
+    fn verify(&self) -> Result<(), StorageError> {
+        let snapshot = &self.snapshot;
+        if snapshot
+            .cancellation
+            .as_ref()
+            .is_some_and(|value| value.load(Ordering::Acquire))
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if snapshot.shared.durable_commit_epoch() != snapshot.durable_commit_epoch
+            || !self
+                .catalog
+                .matches(snapshot.database_id, snapshot.open_session_id)
+            || snapshot.retained_metadata.database_id() != snapshot.database_id
+            || read_retained_metadata(&snapshot.read)? != snapshot.retained_metadata
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    fn into_receipt(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
+        self.verify()?;
+        // A public offline receipt carries none of the native evidence. Its
+        // original source/copy owner performs its final checks after this drop.
+        drop(self);
+        Ok(OfflineIntegrityScrubReceiptV1 { _private: () })
+    }
+}
+
 /// Exclusive offline complete-integrity scrub over one database file.
 ///
 /// Binding does no I/O. `run` requires the engine's exclusive file ownership,
@@ -91,8 +130,14 @@ impl RedbOfflineIntegrityScrub {
     }
 
     pub(super) fn validate_session(
-        mut session: RedbStructuralEvidenceSession,
+        session: RedbStructuralEvidenceSession,
     ) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
+        Self::validate_complete_session(session)?.into_receipt()
+    }
+
+    pub(super) fn validate_complete_session(
+        mut session: RedbStructuralEvidenceSession,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
         let database_id = session.database_id();
         let open_session_id = session.open_session_id();
         let limit = EvidencePageLimit::new(64).ok_or_else(limit_exceeded)?;
@@ -116,10 +161,17 @@ impl RedbOfflineIntegrityScrub {
             )
         })?;
         let (catalog, historical_end) = validation.into_parts();
-        if !matches!(catalog, CatalogHistoryOutcome::Ready(_)) {
+        let CatalogHistoryOutcome::Ready(catalog) = catalog else {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        };
+        if !catalog.matches(database_id, open_session_id) {
+            return Err(corrupt());
         }
-        session.finish_offline_integrity_scrub(structural_end, historical_end)?;
-        Ok(OfflineIntegrityScrubReceiptV1 { _private: () })
+        let snapshot = session.finish_offline_integrity_scrub(structural_end, historical_end)?;
+        Ok(CompleteLogicalValidation { snapshot, catalog })
     }
 }
+
+#[cfg(test)]
+#[path = "offline_logical_proof_tests.rs"]
+mod logical_proof_tests;

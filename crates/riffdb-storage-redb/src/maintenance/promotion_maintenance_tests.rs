@@ -669,3 +669,39 @@ fn retain_failed_selection(
     owner.persist_promotion_receipt(&failed).unwrap();
     failed
 }
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn private_promotion_engine_open_refuses_repair_before_validation() {
+    let scope = crate::test_path::ScopedDirectory::new("private-promotion-repair-refusal");
+    let stage = promoted_backup_stage(&scope);
+    let path = stage.staged_database_file();
+    let binding = {
+        let database = redb::ReadOnlyDatabase::open(path).unwrap();
+        let read = database.begin_read().unwrap();
+        crate::maintenance::PromotionValidationBinding::for_verified_backup(&read, stage.manifest())
+            .unwrap()
+            .unwrap()
+    };
+    let mut damaged = std::fs::read(path).unwrap();
+    assert_eq!(&damaged[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+    assert_eq!(damaged[9] & 2, 0);
+    damaged[9] = (damaged[9] | 2) & !4;
+    std::fs::write(path, &damaged).unwrap();
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let result = crate::RedbStore::open_private_promotion(path, &file, Arc::new(binding));
+    let refused = matches!(&result, Err(error) if error.kind() == StorageErrorKind::CorruptData);
+    drop(result);
+    assert!(
+        refused,
+        "private promotion engine open must abort native repair"
+    );
+    assert!(
+        std::fs::read(path).unwrap() == damaged,
+        "private promotion validation must never repair the artifact"
+    );
+}

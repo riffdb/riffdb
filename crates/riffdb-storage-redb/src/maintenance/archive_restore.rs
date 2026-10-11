@@ -152,10 +152,7 @@ impl RedbStagedRestore {
                 return Err(corrupt());
             }
         }
-        let database = redb::Database::builder()
-            .set_cache_size(64 * 1024 * 1024)
-            .create_file(file.try_clone().map_err(unavailable)?)
-            .map_err(unavailable)?;
+        let database = crate::backup::open_unrepaired_private_file(&file, Some(64 * 1024 * 1024))?;
         let mut write = database.begin_write().map_err(unavailable)?;
         write.set_two_phase_commit(true);
         write

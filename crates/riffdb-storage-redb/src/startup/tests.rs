@@ -44,6 +44,9 @@ use riffdb_types::{
 
 use super::*;
 
+#[path = "offline_completion_boundary_tests.rs"]
+mod offline_completion_boundary_tests;
+
 type CompleteAuthoritySnapshot = (Vec<Vec<(Vec<u8>, Vec<u8>)>>, Vec<u8>, Vec<u8>);
 
 const REDB_MIGRATION_CONTRACT: &str = r#"

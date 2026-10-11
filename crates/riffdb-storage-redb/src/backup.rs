@@ -115,12 +115,7 @@ pub(crate) fn stamp_private_archive_incarnation(
     binding: crate::maintenance::PrivateArchiveValidationBinding,
     incarnation: u64,
 ) -> Result<(), StorageError> {
-    let database = Database::builder()
-        .create_file(
-            file.try_clone()
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?,
-        )
-        .map_err(database_error)?;
+    let database = open_unrepaired_private_file(file, None)?;
     stamp_incarnation(database, incarnation, Some(binding))
 }
 
@@ -238,6 +233,13 @@ pub(crate) fn stamp_retention_watermark(
     watermark_sequence: u64,
 ) -> Result<(), StorageError> {
     let database = Database::open(path.as_ref()).map_err(database_error)?;
+    stamp_retention_watermark_on_database(&database, watermark_sequence)
+}
+
+fn stamp_retention_watermark_on_database(
+    database: &Database,
+    watermark_sequence: u64,
+) -> Result<(), StorageError> {
     let mut transaction = database.begin_write().map_err(transaction_error)?;
     transaction.set_two_phase_commit(true);
     transaction
@@ -350,6 +352,29 @@ pub(crate) fn apply_restored_retention_watermark(
     stamp_retention_watermark(path, manifest_watermark)?;
 
     let database = Database::open(path).map_err(database_error)?;
+    let target = restored_retention_watermark_target(&database)?;
+    drop(database);
+    if let Some(target) = target {
+        stamp_retention_watermark(path, target)?;
+    }
+    Ok(())
+}
+
+fn apply_restored_retention_watermark_on_database(
+    database: &Database,
+    manifest_watermark: Option<u64>,
+) -> Result<(), StorageError> {
+    let Some(watermark) = manifest_watermark.filter(|watermark| *watermark != 0) else {
+        return Ok(());
+    };
+    stamp_retention_watermark_on_database(database, watermark)?;
+    if let Some(target) = restored_retention_watermark_target(database)? {
+        stamp_retention_watermark_on_database(database, target)?;
+    }
+    Ok(())
+}
+
+fn restored_retention_watermark_target(database: &Database) -> Result<Option<u64>, StorageError> {
     let transaction = database.begin_read().map_err(transaction_error)?;
     let current = crate::retention::load_watermark(&transaction)?
         .map(|w| w.watermark_sequence())
@@ -373,20 +398,14 @@ pub(crate) fn apply_restored_retention_watermark(
             }
         }
     };
-    drop(transaction);
-    drop(database);
 
-    // Fail-safe: never store a watermark above the fencing min when one exists,
-    // but never lower below the tombstone chain end (pruned history truth).
+    // Preserve the same fencing minimum and tombstone-chain truth.
     let mut target = current;
     if let Some(max_perm) = max_perm {
         target = target.min(max_perm);
     }
     target = target.max(tombstone_end);
-    if target != current {
-        stamp_retention_watermark(path, target)?;
-    }
-    Ok(())
+    Ok((target != current).then_some(target))
 }
 
 /// Source- and destination-bound offline redb backup operation.
@@ -633,6 +652,49 @@ enum RestoredHistoryLayout<'a> {
     SelfContained { configured_database_file: &'a Path },
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaterializationTestBoundary {
+    BeforeHydration,
+    BeforeWatermark,
+}
+
+#[cfg(test)]
+struct MaterializationTestBarrier {
+    reached: std::sync::mpsc::SyncSender<MaterializationTestBoundary>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static MATERIALIZATION_TEST_BARRIER: std::cell::RefCell<Option<MaterializationTestBarrier>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn materialization_test_boundary(
+    boundary: MaterializationTestBoundary,
+) -> Result<(), StorageError> {
+    MATERIALIZATION_TEST_BARRIER.with(|slot| {
+        let barrier = slot.borrow_mut().take();
+        if let Some(barrier) = barrier {
+            barrier
+                .reached
+                .send(boundary)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            barrier
+                .release
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            if boundary == MaterializationTestBoundary::BeforeHydration {
+                *slot.borrow_mut() = Some(barrier);
+            }
+        }
+        Ok(())
+    })
+}
+
 impl RedbOfflineRestore {
     pub(crate) fn restore_staged_backup(
         &mut self,
@@ -693,7 +755,20 @@ impl RedbOfflineRestore {
             &self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME),
             staged_artifact.path(),
         )?;
-        let staged_lock = validate_artifact(staged_artifact.path(), &manifest)?;
+        let staged_lock = match &layout {
+            RestoredHistoryLayout::Retained => {
+                Some(validate_artifact(staged_artifact.path(), &manifest)?)
+            }
+            RestoredHistoryLayout::SelfContained { .. } => {
+                // A native private stage cannot recover/repair its first copy
+                // and then present the repaired bytes as a clean validation.
+                // Authenticate every artifact before its first engine open.
+                if sha256_file(staged_artifact.path())? != manifest_checksum(&manifest)? {
+                    return Err(corrupt());
+                }
+                None
+            }
+        };
         match manifest_journal_checksum(&manifest)? {
             Some(expected) => {
                 copy_and_sync(
@@ -738,6 +813,14 @@ impl RedbOfflineRestore {
             &self.target_directory,
             &manifest,
         )?;
+        let staged_lock = match staged_lock {
+            Some(database) => database,
+            None => {
+                let database = open_unrepaired_private_database(staged_artifact.path())?;
+                validate_copied_database_facts(read_database_facts(&database)?, &manifest)?;
+                database
+            }
+        };
 
         if let Some(controller) = &self.test_controller {
             controller.before_commit(RedbTestOperation::Restore)?;
@@ -770,39 +853,57 @@ impl RedbOfflineRestore {
             return Err(unknown());
         }
         drop(target_lock);
-        drop(staged_lock);
+        // Ordinary offline restore retains its reviewed close/commit boundary.
+        // A private materialization keeps its first native owner until both
+        // hydration and watermark preparation have completed.
+        let private_database = match &layout {
+            RestoredHistoryLayout::Retained => {
+                drop(staged_lock);
+                None
+            }
+            RestoredHistoryLayout::SelfContained { .. } => Some(staged_lock),
+        };
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
-        if let RestoredHistoryLayout::SelfContained {
-            configured_database_file,
-        } = layout
-        {
-            // All source artifact checks have completed. Expand only this
-            // unpublished copy through the existing bounded durable hydrator.
-            // C3 makes each replacement canonically identical; every watermark
-            // validator below still runs completely against its own transaction.
-            // No old snapshot or representation certificate authorizes a read.
-            hydrate_staged_history(
-                &self.target_directory,
-                manifest.database_id(),
-                configured_database_file,
-            )?;
+        match (&layout, private_database.as_ref()) {
+            (
+                RestoredHistoryLayout::SelfContained {
+                    configured_database_file,
+                },
+                Some(database),
+            ) => {
+                #[cfg(test)]
+                materialization_test_boundary(MaterializationTestBoundary::BeforeHydration)?;
+                hydrate_staged_history_on_database(
+                    database,
+                    &self.target_directory,
+                    manifest.database_id(),
+                    configured_database_file,
+                )?;
+                #[cfg(test)]
+                materialization_test_boundary(MaterializationTestBoundary::BeforeWatermark)?;
+            }
+            (RestoredHistoryLayout::Retained, None) => {}
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
-        // Watermark validation reads the retained V3 receipt chain. The source
-        // is offline and may have no live resolver; retain this restored copy's
-        // own verified extents through every stamp and fencing read.
+        // The restored copy's own verified extents remain available through
+        // every retained-history stamp and fencing read.
         let _history_resolver = crate::history_stub::HistoryResolver::register(
             manifest.database_id(),
             &target_artifact,
             std::sync::Arc::new(crate::media::RealJournalMedia),
         );
-        // Stamp/re-derive the retention watermark from the manifest so restore
-        // of pre-stamp artifacts and fencing drift stay fail-safe (ADR-0085 A2).
-        apply_restored_retention_watermark(
-            &target_artifact,
-            manifest.retention_watermark_sequence(),
-        )?;
+        match private_database {
+            Some(database) => apply_restored_retention_watermark_on_database(
+                &database,
+                manifest.retention_watermark_sequence(),
+            )?,
+            None => apply_restored_retention_watermark(
+                &target_artifact,
+                manifest.retention_watermark_sequence(),
+            )?,
+        }
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(manifest),
         })
@@ -813,15 +914,46 @@ impl RedbOfflineRestore {
 /// Observe refusal before mapping the engine's RepairAborted error, since a
 /// later clean open cannot prove that an earlier open did not repair the file.
 fn open_unrepaired_private_database(path: &Path) -> Result<Database, StorageError> {
+    open_unrepaired_private_location(
+        PrivateDatabaseLocation::Path(path),
+        Some(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES),
+    )
+}
+
+/// Native descriptor-bound private opens share the same repair refusal while
+/// preserving each existing caller's cache ceiling and redacted native errors.
+pub(crate) fn open_unrepaired_private_file(
+    file: &File,
+    cache_bytes: Option<usize>,
+) -> Result<Database, StorageError> {
+    open_unrepaired_private_location(PrivateDatabaseLocation::File(file), cache_bytes)
+}
+
+enum PrivateDatabaseLocation<'a> {
+    Path(&'a Path),
+    File(&'a File),
+}
+
+fn open_unrepaired_private_location(
+    location: PrivateDatabaseLocation<'_>,
+    cache_bytes: Option<usize>,
+) -> Result<Database, StorageError> {
     let repair_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = std::sync::Arc::clone(&repair_observed);
     let mut builder = redb::Builder::new();
-    builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
+    if let Some(cache_bytes) = cache_bytes {
+        builder.set_cache_size(cache_bytes);
+    }
     builder.set_repair_callback(move |session| {
         observed.store(true, std::sync::atomic::Ordering::Release);
         session.abort();
     });
-    let opened = builder.open(path);
+    let opened = match location {
+        PrivateDatabaseLocation::Path(path) => builder.open(path),
+        PrivateDatabaseLocation::File(file) => {
+            builder.create_file(file.try_clone().map_err(io_unavailable)?)
+        }
+    };
     if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
         return Err(corrupt());
     }
@@ -833,7 +965,24 @@ fn open_unrepaired_private_database(path: &Path) -> Result<Database, StorageErro
 /// the published restore carries only its database, journal, and marker
 /// (ADR-0263 Amendment 1). Its journal is re-issued above every extent beside
 /// the configured database, which it replaces, so no later seal collides.
+#[cfg(test)]
 fn hydrate_staged_history(
+    staged_directory: &Path,
+    database_id: DatabaseId,
+    configured_database_file: &Path,
+) -> Result<(), StorageError> {
+    let database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+    let database = open_unrepaired_private_database(&database_file)?;
+    hydrate_staged_history_on_database(
+        &database,
+        staged_directory,
+        database_id,
+        configured_database_file,
+    )
+}
+
+fn hydrate_staged_history_on_database(
+    database: &Database,
     staged_directory: &Path,
     database_id: DatabaseId,
     configured_database_file: &Path,
@@ -844,10 +993,7 @@ fn hydrate_staged_history(
         &database_file,
         std::sync::Arc::new(crate::media::RealJournalMedia),
     );
-    {
-        let database = open_unrepaired_private_database(&database_file)?;
-        crate::history_stub::hydrate_history_stubs(&database)?;
-    }
+    crate::history_stub::hydrate_history_stubs(database)?;
     crate::backup::remove_sealed_extents_beside(&database_file)?;
     let floor = crate::backup::highest_extent_generation_beside(configured_database_file)?;
     crate::journal::renew_extent_above_with_media(
@@ -1000,6 +1146,14 @@ fn validate_artifact(
         return Err(corrupt());
     }
     let (database, facts) = open_database_with_facts(artifact_path)?;
+    validate_copied_database_facts(facts, manifest)?;
+    Ok(database)
+}
+
+fn validate_copied_database_facts(
+    facts: DatabaseFacts,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
     // Opening a redb artifact may update engine-owned clean-open metadata. The
     // checksum authenticates the exact immutable backup bytes before that open;
     // semantic metadata is then validated from redb's recovered view.
@@ -1011,7 +1165,7 @@ fn validate_artifact(
     if &reconstructed != manifest {
         return Err(corrupt());
     }
-    Ok(database)
+    Ok(())
 }
 
 fn stage_backup_journal(
@@ -3180,6 +3334,71 @@ mod tests {
         stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
     }
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn staged_materialization_refuses_repair_at_its_first_engine_open() {
+        let root = TestRoot::new("staged-first-open-repair-refusal");
+        let (_source, backup, manifest) = create_backup(&root);
+        let artifact = backup.join(DATABASE_ARTIFACT_FILE_NAME);
+        let database = Database::open(&artifact).unwrap();
+        let facts = read_database_facts(&database).unwrap();
+        drop(database);
+        let mut primary = fs::read(&artifact).unwrap();
+        assert_eq!(&primary[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+        primary[9] = (primary[9] | 2) & !4;
+        fs::write(&artifact, &primary).unwrap();
+        // Authenticate a genuinely repair-requiring artifact. A checksum check
+        // alone cannot authorize repairing an unpublished native restore.
+        let checksums = manifest
+            .checksums()
+            .iter()
+            .map(|entry| {
+                BackupArtifactChecksumV1::new(
+                    entry.artifact_ordinal(),
+                    if entry.artifact_ordinal() == NonZeroU32::MIN {
+                        sha256_file(&artifact).unwrap()
+                    } else {
+                        entry.checksum().clone()
+                    },
+                )
+            })
+            .collect();
+        let manifest = facts
+            .into_manifest_with_format_compatibility(
+                checksums,
+                manifest.build().clone(),
+                manifest.format_compatibility().unwrap(),
+            )
+            .unwrap();
+        fs::write(
+            backup.join(MANIFEST_FILE_NAME),
+            encode_manifest(&manifest).unwrap(),
+        )
+        .unwrap();
+        validate_immutable_backup(&backup).unwrap();
+        let original_inventory: Vec<_> = fs::read_dir(&backup)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let checksum = sha256_file(&path).unwrap();
+                (path, checksum)
+            })
+            .collect();
+        let stage = root.join("stage");
+        let result = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_staged_backup(&root.join("configured.redb"));
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == StorageErrorKind::CorruptData),
+            "first private engine open must abort repair"
+        );
+        assert!(!stage.join(DATABASE_ARTIFACT_FILE_NAME).exists());
+        assert!(!root.join("configured.redb").exists());
+        assert_eq!(fs::read(&artifact).unwrap(), primary);
+        for (path, checksum) in original_inventory {
+            assert_eq!(sha256_file(&path).unwrap(), checksum);
+        }
+    }
+
     // req: REC-001, REC-002, REC-006, REC-008
     #[test]
     fn staged_history_hydration_refuses_engine_repair_before_scrub() {
@@ -3220,5 +3439,78 @@ mod tests {
         let stamp = stamp_sealed_history_incarnation(&artifact, 2);
         assert!(matches!(stamp, Err(ref error) if error.kind() == StorageErrorKind::CorruptData));
         assert_eq!(fs::read(&artifact).unwrap(), primary);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn staged_materialization_keeps_native_exclusion_through_hydration_and_watermark() {
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        use std::time::Duration;
+
+        let root = TestRoot::new("materialization-owned-engine");
+        let (_source, backup, _) = create_backup(&root);
+        let original = sha256_file(&backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+        let stage = root.join("stage");
+        let configured = root.join("configured.redb");
+        let (reached_tx, reached_rx) = sync_channel(1);
+        let (release_tx, release_rx) = sync_channel(1);
+        let restore_backup = backup.clone();
+        let restore_stage = stage.clone();
+        let worker = std::thread::spawn(move || {
+            MATERIALIZATION_TEST_BARRIER.with(|slot| {
+                *slot.borrow_mut() = Some(MaterializationTestBarrier {
+                    reached: reached_tx,
+                    release: release_rx,
+                });
+            });
+            RedbOfflineRestore::bind(restore_backup, restore_stage)
+                .restore_staged_backup(&configured)
+        });
+        let mut observations = Vec::new();
+        for expected in [
+            MaterializationTestBoundary::BeforeHydration,
+            MaterializationTestBoundary::BeforeWatermark,
+        ] {
+            match reached_rx.recv_timeout(Duration::from_secs(120)) {
+                Ok(actual) => {
+                    let excluded = match Database::open(stage.join(DATABASE_ARTIFACT_FILE_NAME)) {
+                        Err(redb::DatabaseError::DatabaseAlreadyOpen) => true,
+                        Ok(competing) => {
+                            drop(competing);
+                            false
+                        }
+                        Err(_) => false,
+                    };
+                    observations.push((actual == expected, excluded));
+                    if release_tx.send(()).is_err() {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        // Always release and join before asserting, including the red baseline.
+        drop(release_tx);
+        drop(reached_rx);
+        let result = worker.join().expect("restore worker");
+        assert_eq!(
+            observations.len(),
+            2,
+            "both native boundaries must be observed"
+        );
+        assert!(
+            observations.iter().all(|(phase, held)| *phase && *held),
+            "private materialization must exclude a competing native engine at both boundaries"
+        );
+        assert!(matches!(
+            result,
+            Ok(OfflineRestoreResultV1::Restored { .. })
+        ));
+        assert_eq!(
+            sha256_file(&backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+            original
+        );
+        // Ownership ends normally once the materialization operation has ended.
+        drop(Database::open(stage.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap());
     }
 }

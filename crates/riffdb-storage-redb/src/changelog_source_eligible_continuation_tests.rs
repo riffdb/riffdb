@@ -667,7 +667,7 @@ fn prefix_refresh(profile: crate::RedbCommitProfile, growing: bool, without_acco
     });
     {
         let mut derived = ports.shared.derived_source_pins.reclamation().unwrap();
-        let (_, observation) = retention::floor(
+        let (_, observation) = retention::floor_on_source(
             &source,
             history,
             license.ceiling(),

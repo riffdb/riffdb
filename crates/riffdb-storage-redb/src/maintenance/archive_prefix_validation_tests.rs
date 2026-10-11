@@ -9,69 +9,80 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{AdministrationSequence, DatabaseId};
 
+fn private_root_fixture(
+    v2: bool,
+) -> (
+    crate::test_path::ScopedDirectory,
+    crate::RedbStore,
+    PrivateArchiveValidationBinding,
+) {
+    let scope = crate::test_path::ScopedDirectory::new("private-archive-catalog-binding");
+    let mut store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
+    let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x79; 10]).unwrap();
+    if v2 {
+        store.initialize_database(id).unwrap();
+    } else {
+        store.initialize_legacy_fixture(id).unwrap();
+        crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),
+            DualFrontier::INITIAL,
+        )
+        .unwrap();
+    }
+    let read = store.shared.database.begin_read().unwrap();
+    let history = crate::changelog_v3_roots::validate_retained_history(&read)
+        .unwrap()
+        .unwrap();
+    drop(read);
+    let binding = PrivateArchiveValidationBinding::new(
+        history,
+        DualFrontier::new(
+            Some(CommitSequence::first()),
+            Some(AdministrationSequence::first()),
+        ),
+    );
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .unwrap()
+        .retain(|_, _| false)
+        .unwrap();
+    {
+        let mut meta = write.open_table(crate::layout::META).unwrap();
+        meta.remove(N::ReplicationFollowerState.metadata_key().unwrap())
+            .unwrap();
+        meta.remove(crate::primary_admission_roots::key().unwrap())
+            .unwrap();
+        meta.insert(
+            crate::layout::META_APPLICATION_SEQUENCE,
+            encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::Next(
+                CommitSequence::new(2).unwrap(),
+            ))
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+        meta.insert(
+            crate::layout::META_ADMINISTRATION_SEQUENCE,
+            encode_administration_sequence_allocator_v1(AdministrationSequenceAllocator::Next(
+                AdministrationSequence::new(2).unwrap(),
+            ))
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+    }
+    write.commit().unwrap();
+    assert_validation(&store, binding, true);
+    (scope, store, binding)
+}
+
 #[test]
 fn private_archive_roots_bind_exact_catalog_and_exclude_primary_admission() {
     for v2 in [false, true] {
-        let scope = crate::test_path::ScopedDirectory::new("private-archive-catalog-binding");
-        let mut store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
-        let id =
-            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x79; 10]).unwrap();
-        if v2 {
-            store.initialize_database(id).unwrap();
-        } else {
-            store.initialize_legacy_fixture(id).unwrap();
-            crate::changelog_v3_activation::activate_validated(
-                store.shared.database.begin_write().unwrap(),
-                ChangelogLineageV3::new(id, 1, LeadershipEpochV1::initial()).unwrap(),
-                DualFrontier::INITIAL,
-            )
-            .unwrap();
-        }
-        let read = store.shared.database.begin_read().unwrap();
-        let history = crate::changelog_v3_roots::validate_retained_history(&read)
-            .unwrap()
-            .unwrap();
-        drop(read);
-        let binding = PrivateArchiveValidationBinding::new(
-            history,
-            DualFrontier::new(
-                Some(CommitSequence::first()),
-                Some(AdministrationSequence::first()),
-            ),
-        );
-        let write = store.shared.database.begin_write().unwrap();
-        write
-            .open_table(crate::changelog_v3_activation::HISTORY)
-            .unwrap()
-            .retain(|_, _| false)
-            .unwrap();
-        {
-            let mut meta = write.open_table(crate::layout::META).unwrap();
-            meta.remove(N::ReplicationFollowerState.metadata_key().unwrap())
-                .unwrap();
-            meta.remove(crate::primary_admission_roots::key().unwrap())
-                .unwrap();
-            meta.insert(
-                crate::layout::META_APPLICATION_SEQUENCE,
-                encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::Next(
-                    CommitSequence::new(2).unwrap(),
-                ))
-                .unwrap()
-                .as_bytes(),
-            )
-            .unwrap();
-            meta.insert(
-                crate::layout::META_ADMINISTRATION_SEQUENCE,
-                encode_administration_sequence_allocator_v1(AdministrationSequenceAllocator::Next(
-                    AdministrationSequence::new(2).unwrap(),
-                ))
-                .unwrap()
-                .as_bytes(),
-            )
-            .unwrap();
-        }
-        write.commit().unwrap();
-        assert_validation(&store, binding, true);
+        let (_scope, store, binding) = private_root_fixture(v2);
+        let id = binding.predecessor().lineage().database_id();
         let write = store.shared.database.begin_write().unwrap();
         let wrong = if v2 {
             encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1).unwrap()
@@ -139,4 +150,61 @@ fn assert_validation(
         "write snapshot"
     );
     write.abort().unwrap();
+}
+
+fn require_native_repair(path: &Path) -> Vec<u8> {
+    let mut bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+    assert_eq!(bytes[9] & 2, 0);
+    bytes[9] = (bytes[9] | 2) & !4;
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn private_archive_engine_open_refuses_repair_before_validation() {
+    let (scope, store, binding) = private_root_fixture(true);
+    drop(store);
+    let path = scope.join("db.redb");
+    let damaged = require_native_repair(&path);
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let result = crate::RedbStore::open_private_restore(&path, &file, binding);
+    let refused = matches!(&result, Err(error) if error.kind() == StorageErrorKind::CorruptData);
+    drop(result);
+    assert!(
+        refused,
+        "private archive engine open must abort native repair"
+    );
+    assert!(
+        std::fs::read(&path).unwrap() == damaged,
+        "private archive validation must never repair the artifact"
+    );
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn private_archive_incarnation_open_refuses_repair_before_stamping() {
+    let (scope, store, binding) = private_root_fixture(true);
+    drop(store);
+    let path = scope.join("db.redb");
+    let damaged = require_native_repair(&path);
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let result = crate::backup::stamp_private_archive_incarnation(&file, binding, 2);
+    assert!(
+        matches!(result, Err(error) if error.kind() == StorageErrorKind::CorruptData),
+        "private archive stamping must abort native repair"
+    );
+    assert!(
+        std::fs::read(&path).unwrap() == damaged,
+        "private archive stamp must not repair the private artifact"
+    );
 }

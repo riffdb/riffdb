@@ -116,7 +116,7 @@ impl ReplicationSourceControl {
             .online_license
             .map_or(previous.history.tail(), |license| license.ceiling());
         let mut derived = self.shared.derived_source_pins.reclamation()?;
-        let (_, observation) = retention::floor(
+        let (_, observation) = retention::floor_on_source(
             &source,
             history,
             accounting_ceiling,
@@ -166,7 +166,7 @@ impl ReplicationSourceControl {
         drop(checkpoint_root);
         let license = self.online_license.ok_or_else(invariant)?;
         let mut derived = self.shared.derived_source_pins.reclamation()?;
-        let (floor, _) = retention::floor(
+        let (floor, _) = retention::floor_on_source(
             &source,
             history,
             license.ceiling(),
@@ -262,7 +262,7 @@ impl ReplicationSourceControl {
             return Ok(());
         }
         let mut derived = self.shared.derived_source_pins.reclamation()?;
-        let (_, observation) = retention::floor(
+        let (_, observation) = retention::floor_on_source(
             &source,
             history,
             license.ceiling(),
@@ -341,7 +341,7 @@ impl ReplicationSourceControl {
             .rebind_checked_prefix(history)
             .map_err(journal_storage_error)?;
         let mut derived = self.shared.derived_source_pins.reclamation()?;
-        let (floor, observation) = retention::floor(
+        let (floor, observation) = retention::floor_on_source(
             &source,
             history,
             prepared.license.ceiling(),

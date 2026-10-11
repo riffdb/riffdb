@@ -212,6 +212,34 @@ fn cancellation_is_sticky_and_close_releases_only_the_engine_lease() {
 }
 
 #[test]
+fn native_io_failure_stays_invalid_after_engine_close_and_file_recovery() {
+    let scope = ScopedDirectory::new("restore-custody-native-io");
+    let path = healthy(&scope);
+    let owner = capture(&path);
+    let backend = owner.lease().unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let length = backend.len().unwrap();
+    // A genuine native FileBackend read fails beyond the admitted artifact.
+    // Matching inode/length and a later successful read cannot erase that I/O
+    // uncertainty from the owner which will retain complete validation proof.
+    assert!(backend.read(length, &mut [0; 1]).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    backend.close().unwrap();
+    assert!(
+        owner.verify_identity().is_err(),
+        "I/O uncertainty must stay invalid after engine close"
+    );
+    assert!(
+        owner.lease().is_err(),
+        "a fresh engine lease cannot launder the failed owner's evidence"
+    );
+    probe(&path, true);
+    drop(backend);
+    drop(owner);
+    probe(&path, false);
+}
+
+#[test]
 fn capacity_and_offset_overflow_refuse_before_changing_the_artifact() {
     let scope = ScopedDirectory::new("restore-custody-capacity");
     let path = healthy(&scope);

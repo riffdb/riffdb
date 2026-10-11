@@ -205,6 +205,12 @@ records `removed` receipts and `gate_us`; that time participates in the lane's
 existing writer-occupancy pacing. Receipt removal does not prove that an extent
 was deleted or reused.
 
+Eligibility planning and checkpoint licensing resolve receipt points on the
+same immutable source view that passed native validation, including its
+acknowledged journal suffix. A newer installed checkpoint does not extend an
+older captured source's readable range. Missing coverage beyond that range
+yields; a missing receipt inside claimed coverage still refuses the lane.
+
 Follower acknowledgement preparation shares this source-proof owner and its
 maintenance rest deadline. Initial validation runs in bounded pages outside the
 writer; the closed acknowledgement enters the existing commit coordinator only

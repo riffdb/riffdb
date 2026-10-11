@@ -135,9 +135,14 @@ impl RestoreCustody {
             .checked_add(1)
             .ok_or_else(|| unavailable(()))?;
         // Construct before granting the lease: descriptor failure leaves no owner.
-        let file =
-            redb::backends::FileBackend::new(self.shared.file.try_clone().map_err(unavailable)?)
-                .map_err(unavailable)?;
+        let descriptor = self
+            .shared
+            .observe_io(self.shared.file.try_clone())
+            .map_err(unavailable)?;
+        let file = self
+            .shared
+            .observe_io(redb::backends::FileBackend::new(descriptor))
+            .map_err(unavailable)?;
         leases.generation = generation;
         leases.active = Some(generation);
         Ok(RestoreEngineBackend {
@@ -149,6 +154,15 @@ impl RestoreCustody {
 }
 
 impl Shared {
+    fn observe_io<T, E>(&self, result: Result<T, E>) -> Result<T, E> {
+        if result.is_err() {
+            // A later successful operation, close or unchanged inode cannot
+            // restore authority to an owner which observed native I/O failure.
+            self.invalid.store(true, Ordering::Release);
+        }
+        result
+    }
+
     fn available(&self) -> io::Result<()> {
         if self.cancellation.load(Ordering::Acquire) {
             self.invalid.store(true, Ordering::Release);
@@ -222,20 +236,20 @@ impl RestoreEngineBackend {
 impl StorageBackend for RestoreEngineBackend {
     fn len(&self) -> io::Result<u64> {
         let _access = self.access()?;
-        self.file.len()
+        self.shared.observe_io(self.file.len())
     }
     fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
         let _access = self.access()?;
-        self.file.read(offset, out)
+        self.shared.observe_io(self.file.read(offset, out))
     }
     fn set_len(&self, length: u64) -> io::Result<()> {
         let _access = self.access()?;
         self.capacity(length)?;
-        self.file.set_len(length)
+        self.shared.observe_io(self.file.set_len(length))
     }
     fn sync_data(&self) -> io::Result<()> {
         let _access = self.access()?;
-        self.file.sync_data()
+        self.shared.observe_io(self.file.sync_data())
     }
     fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
         let _access = self.access()?;
@@ -243,7 +257,7 @@ impl StorageBackend for RestoreEngineBackend {
             .checked_add(u64::try_from(data.len()).map_err(io::Error::other)?)
             .ok_or_else(|| io::Error::other("private restore offset overflow"))?;
         self.capacity(end)?;
-        self.file.write(offset, data)
+        self.shared.observe_io(self.file.write(offset, data))
     }
     fn close(&self) -> io::Result<()> {
         let mut leases = match self.shared.leases.write() {
@@ -259,7 +273,7 @@ impl StorageBackend for RestoreEngineBackend {
         }
         // This backend never takes native locks through engine methods. Its
         // data backend still receives close, preserving redb's close contract.
-        self.file.close()
+        self.shared.observe_io(self.file.close())
     }
     fn try_lock_range(&self, start: Bound<u64>, end: Bound<u64>) -> Result<bool, BackendError> {
         self.lock((start, end))

@@ -635,11 +635,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
 #[test]
 fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let sources = rust_sources();
-    for forbidden in [
-        "riffdb_contract_ir",
-        "riffdb_invariant",
-        "ValidatedCatalogHistory",
-    ] {
+    for forbidden in ["riffdb_contract_ir", "riffdb_invariant"] {
         assert!(
             !sources.contains(forbidden),
             "storage source must not contain {forbidden}"
@@ -651,13 +647,24 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let startup_tests = source.join("startup/tests.rs");
     let migration_backend = source.join("startup/index_migration_backend.rs");
     let prefix_catalog = source.join("command_prefix/catalog.rs");
+    let offline_catalog = source.join("startup/offline_integrity.rs");
     let mut paths = Vec::new();
     collect_rust_sources(&source, &mut paths);
     for path in paths {
+        // ADR-0285 retains the catalog validator's existing proof in this one
+        // closed offline adapter; storage still owns no catalog interpretation.
+        if path != offline_catalog {
+            assert!(
+                !read(&path).contains("ValidatedCatalogHistory"),
+                "only the closed offline adapter may retain the catalog proof: {}",
+                path.display()
+            );
+        }
         if path == startup
             || path == startup_tests
             || path == migration_backend
             || path == prefix_catalog
+            || path == offline_catalog
         {
             continue;
         }
@@ -665,6 +672,27 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
             !production_source(&path).contains("riffdb_catalog"),
             "only startup and prefix catalog adapters may import catalog: {}",
             path.display()
+        );
+    }
+
+    // Retention grants no public proof constructor, operational ports or
+    // migration capability, and the original exact catalog/session join stays.
+    let offline = without_whitespace(&production_source(offline_catalog));
+    assert!(offline.contains("pub(super)structCompleteLogicalValidation"));
+    assert!(offline.contains("catalog:riffdb_catalog::ValidatedCatalogHistory"));
+    assert!(
+        offline.contains("self.catalog.matches(snapshot.database_id,snapshot.open_session_id)")
+    );
+    assert!(offline.contains("Self::validate_complete_session(session)?.into_receipt()"));
+    assert!(!read(crate_root().join("src/lib.rs")).contains("CompleteLogicalValidation"));
+    for forbidden in [
+        "RedbOperationalPorts",
+        "into_operational_after_catalog_validation",
+        "CatalogIndexMigrationDriver",
+    ] {
+        assert!(
+            !offline.contains(forbidden),
+            "offline catalog evidence cannot grant {forbidden}"
         );
     }
 
@@ -2633,7 +2661,9 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         // backup restore or receipt-authorized private archive publication;
         // neither caller can serve operational readers during this transaction.
         ("backup.rs", "stamp_incarnation"),
-        ("backup.rs", "stamp_retention_watermark"),
+        // Same stopped-file watermark transaction; private materialization now
+        // borrows its already owned engine instead of opening another one.
+        ("backup.rs", "stamp_retention_watermark_on_database"),
         // Test-only downgrade fixture, likewise on a stopped database.
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Test-only corruption planting, likewise on a stopped database.

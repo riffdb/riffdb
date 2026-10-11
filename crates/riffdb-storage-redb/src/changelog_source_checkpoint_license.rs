@@ -56,6 +56,7 @@ impl CheckpointLicense {
             || history.anchor() != self.checkpoint.history.anchor()
             || history.minimum_resume() != self.resume
             || self.resume.sequence() >= self.ceiling.sequence()
+            || history.tail().sequence() < self.ceiling.sequence()
             || checkpoint.history.lineage() != history.lineage()
             || checkpoint.history.anchor() != history.anchor()
             || checkpoint.history.tail().sequence() < self.checkpoint.history.tail().sequence()
@@ -64,10 +65,10 @@ impl CheckpointLicense {
         {
             return Ok(false);
         }
-        let root = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(
-            source.checkpoint_pin(),
-        ));
-        let receipt = root
+        // The separately observed installed checkpoint supplies independent
+        // coverage. Resolve its exact licensed point on the validated source,
+        // whose checkpoint component may predate its acknowledged suffix.
+        let receipt = source
             .receipt(self.ceiling.sequence(), None)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
         Ok(Point::from_receipt(&receipt).map_err(value_error)? == self.ceiling)
@@ -134,6 +135,110 @@ mod tests {
             .insert(b"license-fixture".as_slice(), b"independent".as_slice())
             .unwrap();
         write.finish().unwrap().commit(&ports.shared).unwrap();
+    }
+
+    fn observe(
+        source: &crate::source_validation_pin::ValidationSource,
+        ports: &RedbOperationalPorts,
+    ) -> Observation {
+        Observation {
+            publication: source.checkpoint_pin().identity(),
+            durable_epoch: ports.shared.durable_commit_epoch(),
+            history: source.history().unwrap().unwrap(),
+        }
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001, END-008
+    #[test]
+    fn checkpoint_license_yields_when_its_ceiling_is_beyond_the_captured_source_pin() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let source = ports.shared.capture_source_validation_pin().unwrap();
+        let history = source.history().unwrap().unwrap();
+        let epoch = ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        append(&ports);
+        let previous_source = ports.shared.capture_source_validation_pin().unwrap();
+        let previous = observe(&previous_source, &ports);
+        append(&ports);
+        let current_source = ports.shared.capture_source_validation_pin().unwrap();
+        let current = observe(&current_source, &ports);
+        let license = CheckpointLicense::new(previous, current, history, epoch).unwrap();
+        assert!(license.ceiling().sequence() > history.tail().sequence());
+        let result = license.covers(&source, history, current, epoch);
+        assert!(
+            matches!(result, Ok(false)),
+            "an older immutable pin cannot cover a newer licensed receipt; it must yield without alleging corruption"
+        );
+        let current_history = current_source.history().unwrap().unwrap();
+        assert!(
+            license
+                .covers(&current_source, current_history, current, epoch)
+                .unwrap(),
+            "the unchanged finite license remains usable on a genuinely covering pin"
+        );
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001, END-008
+    #[test]
+    fn checkpoint_license_still_refuses_a_missing_receipt_inside_claimed_checkpoint_coverage() {
+        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        append(&ports);
+        let previous_source = ports.shared.capture_source_validation_pin().unwrap();
+        let previous = observe(&previous_source, &ports);
+        append(&ports);
+        let current_source = ports.shared.capture_source_validation_pin().unwrap();
+        let current = observe(&current_source, &ports);
+        let history = current_source.history().unwrap().unwrap();
+        let epoch = ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        let license = CheckpointLicense::new(previous, current, history, epoch).unwrap();
+        let write = ports.shared.database.begin_write().unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap()
+            .remove(license.ceiling().sequence().get().to_be_bytes().as_slice())
+            .unwrap();
+        ports.shared.commit_durable(write).unwrap();
+        let damaged = ports.shared.capture_source_validation_pin().unwrap();
+        // The ordinary source reader independently refuses the damaged chain.
+        assert!(
+            matches!(damaged.history(), Err(error) if error.kind() == StorageErrorKind::CorruptData)
+        );
+        // Exercise the license's own fail-closed receipt check using the exact
+        // still-canonical metadata claim, rather than unwrapping a deliberately
+        // corrupt source history before reaching the assertion under test.
+        let damaged_history = {
+            let meta = damaged.open_table(crate::layout::META).unwrap();
+            let encoded = meta
+                .get(
+                    riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState
+                        .metadata_key()
+                        .unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            *riffdb_storage_api::proto_codec::decode_changelog_history_state_v3(encoded.value())
+                .unwrap()
+                .value()
+        };
+        assert_eq!(
+            damaged_history, history,
+            "the declared coverage itself was not changed"
+        );
+        let damaged_observation = Observation {
+            publication: damaged.checkpoint_pin().identity(),
+            durable_epoch: ports.shared.durable_commit_epoch(),
+            history: damaged_history,
+        };
+        let result = license.covers(&damaged, damaged_history, damaged_observation, epoch);
+        assert!(
+            matches!(result, Err(error) if error.kind() == StorageErrorKind::CorruptData),
+            "a missing receipt within the checkpoint's claimed interval remains corruption"
+        );
     }
 
     // req: STO-030, STO-031, STO-032, REC-001, END-008
