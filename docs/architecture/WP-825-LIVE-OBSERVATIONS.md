@@ -23,11 +23,14 @@ checkpoints. The physical-worker correction passes all six scoped acceptance
 checks and 1,378 native tests with two existing skips. Those component results
 establish correctness and ownership reuse, not latency causality. Local main's
 startup and transport improvements are now merged, with the approved identifier
-reconciliation. Combined-source compilation identifies a missing segment-memo
-initializer in the parallel offline validator; its correction shares the walk's
-single bounded memo across those workers. Combined-source full CI, fresh ordinary
-preparation and the unchanged whole-action restore measurement remain required.
-No preparation or restore ran after the combined-source compile refusal.
+reconciliation. The parallel offline validator now shares the walk's single bounded
+segment memo, and combined-source compilation and four-language remote
+conformance pass. Full CI then refuses one native restricted-promotion startup
+and a missing handbook navigation link. The link is corrected; the original
+startup refusal remains unexplained after bounded diagnostics. Combined-source
+full CI, fresh ordinary preparation and the unchanged whole-action restore
+measurement remain required. No preparation or restore ran after either CI
+refusal.
 
 The preceding populated native materialization component measures 100.1 seconds.
 That measurement is neither the whole backup/restore/restart/reconciliation
@@ -3726,3 +3729,32 @@ ownership change; main's startup and performance handbook changes are retained.
 Hazards and follow-ups: normal-window latency, whole public recovery within
 60 seconds, final combined-source full CI and the complete measured rehearsal
 remain required. WP-825 stays open.
+
+
+### Merged-source native startup refusal remains open
+
+At `24ffeb32`, remote four-language conformance passes in 239.02 seconds, but
+full CI fails `restricted_promotion_shutdown_releases_custody_before_a_fresh_exact_retry`
+with `ReadinessDisconnected` before restricted readiness. The source remains
+unchanged. A separate handbook source check rejects the unlisted main-integration
+review page; that page is now linked from `docs/SUMMARY.md`.
+
+The exact failed binaries pass the isolated case in 35.89 seconds and all 26
+concurrent follower tests in 212.7 seconds under bind/exit tracing. The trace
+records no bind collision or segmentation fault; deliberate crash fixtures
+still execute their expected aborts. With closed startup diagnostics, two
+untraced concurrent suites pass all 26 tests in 136.7 and 135.54 seconds. Eight
+parallel copies of the previously failing case also pass. None of these results
+identifies or clears the original startup failure.
+
+The native test now inspects exactly the first readiness line and can report
+only the existing closed daemon failure kind, native exit status and bounded
+output counts. Its 60-second readiness limit and lifecycle sequence remain
+intact. An explicit test diagnostic flag can preserve failed fixture media using
+the existing scratch-directory custody mechanism; the marker contains no paths
+or stored values. These are test diagnostics and handbook navigation changes;
+product behavior and durable formats do not change. On C3D, formatting, scope,
+handbook source validation and server Clippy pass; the diagnostic-enabled native
+suite passes all 26 tests in 138.42 seconds with unchanged tested source. Final
+source acceptance and CI must still pass before ordinary preparation. WP-825
+remains open.
