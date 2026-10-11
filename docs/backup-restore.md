@@ -492,7 +492,7 @@ Replacing any of these files with an identical copy still refuses the operation;
 matching checksums alone cannot establish continuity. Archive recovery tracks
 its intentional removal of the empty source journal, receipt-authorized creation
 of the new RestoreAnchor journal, and rename of the retained marker explicitly.
-These identity checks do not yet implement ADR-0285's continuous native custody
+These identity checks do not yet implement ADR-0289's continuous native custody
 or eliminate the additional private verification copy.
 
 The immutable backup artifact preserves the source bytes, including a matching

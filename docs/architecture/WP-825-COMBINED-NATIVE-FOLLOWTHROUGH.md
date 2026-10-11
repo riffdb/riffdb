@@ -1,6 +1,6 @@
 # WP-825 combined native follow-through
 
-Package: WP-825 (open). Tier: guarantee, under accepted ADR-0279 and ADR-0285.
+Package: WP-825 (open). Tier: guarantee, under accepted ADR-0279 and ADR-0289.
 
 This candidate combines native source-pin retention corrections, complete
 logical evidence retention, sticky custody I/O refusal, private archive and

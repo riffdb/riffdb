@@ -186,3 +186,11 @@ page. Hazards and follow-ups: continuous production custody, single-artifact
 validation, retained catalog proof and reader-only authorization remain open;
 component checks and earlier combined-source CI do not qualify the final
 source, whole public recovery action or the eight-hour and 24-hour campaigns.
+
+## Identifier reconciliation
+
+The historical review and acceptance above used ADR-0285. The pending main
+synchronization proposes moving the accepted restore record to ADR-0289;
+[the reconciliation review](WP-825-MAIN-SYNC-2026-10-11-ARRIVAL-REVIEW.md)
+preserves its exact Decision text and original acceptance. Main now owns
+ADR-0285 for the separately accepted workload-arrival decision.

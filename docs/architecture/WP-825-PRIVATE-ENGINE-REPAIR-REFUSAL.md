@@ -1,6 +1,6 @@
 # WP-825 private archive and promotion repair refusal
 
-Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0285.
+Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0289.
 
 The common native builder refused repair for offline scrub and explicitly
 guarded ordinary staged authorization. Its private archive and promotion modes

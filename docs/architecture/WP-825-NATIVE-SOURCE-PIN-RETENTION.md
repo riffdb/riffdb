@@ -35,6 +35,6 @@ source cut still requires the existing native proof and sole writer admission.
 Hazards and follow-ups: this candidate is not yet the confirmed cause of the
 failed preparation. The preserved native refusal must be correlated with the
 diagnostic reproduction. Full combined-source CI and unchanged preparation,
-whole-action recovery and actual rehearsal remain mandatory. ADR-0285's owned
+whole-action recovery and actual rehearsal remain mandatory. ADR-0289's owned
 private restore lifecycle is separate unfinished work. No campaign or package
 closure is claimed by these component checks.

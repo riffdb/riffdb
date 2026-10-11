@@ -87,7 +87,7 @@ impl RedbOwnedSnapshot {
         not(test),
         expect(
             dead_code,
-            reason = "ADR-0285 private authorization join integration is pending"
+            reason = "ADR-0289 private authorization join integration is pending"
         )
     )]
     pub(crate) fn verify_complete_logical_read(&self) -> Result<(), StorageError> {

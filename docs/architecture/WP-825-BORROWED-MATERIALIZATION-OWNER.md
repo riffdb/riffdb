@@ -1,6 +1,6 @@
 # WP-825 retained native materialization owner
 
-Package: WP-825 (open). Tier: guarantee, under accepted ADR-0285.
+Package: WP-825 (open). Tier: guarantee, under accepted ADR-0289.
 
 Private restore previously closed its first engine before hydration and then
 reopened the stage through ordinary recovering watermark helpers. The candidate

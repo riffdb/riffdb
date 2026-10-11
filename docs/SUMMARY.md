@@ -115,6 +115,7 @@
   - [Local main integration review](architecture/WP-825-MAIN-SYNC-2026-10-10-REVIEW.md)
   - [Latest main integration and identifier reconciliation](architecture/WP-825-MAIN-SYNC-2026-10-11-REVIEW.md)
   - [Owned private restore custody review](architecture/WP-825-ADR-0285-REVIEW.md)
+  - [Workload-arrival main synchronization review](architecture/WP-825-MAIN-SYNC-2026-10-11-ARRIVAL-REVIEW.md)
   - [Private materialization first-open repair refusal](architecture/WP-825-PRIVATE-FIRST-OPEN-IMPLEMENTATION.md)
   - [Captured-source retention correction](architecture/WP-825-NATIVE-SOURCE-PIN-RETENTION.md)
   - [Complete logical validation evidence](architecture/WP-825-COMPLETE-LOGICAL-PROOF-RETENTION.md)

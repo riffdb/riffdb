@@ -38,7 +38,7 @@ impl CompleteLogicalValidation {
         not(test),
         expect(
             dead_code,
-            reason = "ADR-0285 owned private factory integration is still pending"
+            reason = "ADR-0289 owned private factory integration is still pending"
         )
     )]
     pub(crate) fn into_authorization_parts(

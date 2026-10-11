@@ -28629,7 +28629,7 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-005, REC-006, REC-007, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0285, ADR-0284]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0289, ADR-0284, ADR-0285]
   # Maintainer approved necessary native fixes in session, 2026-10-04.
   # Exact ADR-0269 accepted in session, 2026-10-05; engine, offline scrub and simulator repair scope.
   # Exact revised ADR-0271 accepted in session, 2026-10-05; bounded FIFO source admission and native drain.
@@ -28647,11 +28647,11 @@ work_packages:
   # Bootstrap decision accepted as ADR-0281 in session, 2026-10-07; now ADR-0288.
   # Maintainer approved ADR-0281 to ADR-0284 identifier-only reconciliation in session, 2026-10-09.
   # Maintainer accepted ADR-0284 to ADR-0288 identifier/path reconciliation in session, 2026-10-11.
-  # Exact ADR-0285 accepted in session, 2026-10-11; owned private restore validation custody.
+  # Exact ADR-0289 accepted in session, 2026-10-11; owned private restore validation custody.
   # Standing necessary-native-fix approval covers the receipt-cursor architecture guard consequence.
   # Record the two governance paths from the approved identifier-only reconciliation.
   # ADR-0287 remains an unaccepted, unimplemented proposal; this grants no implementation authority.
-  allowed_paths: [adr/0285-owned-private-restore-validation-custody.md, adr/0287-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0286-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
+  allowed_paths: [adr/0289-owned-private-restore-validation-custody.md, adr/0285-owned-private-restore-validation-custody.md, adr/0287-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0286-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
   - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
@@ -28672,7 +28672,7 @@ work_packages:
     status: open
     decisions_taken:
     - >-
-      ADR-0285 implementation foundation: retain exact primary, journal and
+      ADR-0289 implementation foundation: retain exact primary, journal and
       marker file identities from private materialization into the sealed
       publication owner. Byte-identical replacements cannot authorize sealing
       or incarnation stamping. Track archive conversion's verified empty-journal

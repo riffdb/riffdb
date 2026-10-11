@@ -1,4 +1,4 @@
-//! ADR-0285 custody foundation, exercised before production-stage integration.
+//! ADR-0289 custody foundation, exercised before production-stage integration.
 //!
 //! The outer owner acquires native exclusion independently of engine leases.
 //! Engine range methods acquire bounded subleases of that stronger exclusion;

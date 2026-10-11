@@ -1,5 +1,5 @@
 ---
-adr: "0285"
+adr: "0289"
 title: Owned Private Restore Validation Custody
 status: accepted
 tier: guarantee
@@ -18,7 +18,7 @@ review_triggers:
   - A proof crosses uncertain byte identity, an unclassified mutation, an operation or a process restart.
   - An application surface, durable identity, format, dependency, ordering, durability policy, resource ceiling or workload gate changes.
 ---
-# ADR-0285: Owned Private Restore Validation Custody
+# ADR-0289: Owned Private Restore Validation Custody
 
 ## Context
 

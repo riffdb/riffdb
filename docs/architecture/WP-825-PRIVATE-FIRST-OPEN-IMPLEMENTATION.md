@@ -1,6 +1,6 @@
 # WP-825 private materialization first-open repair refusal
 
-Package: WP-825 (open). Tier: guarantee, covered by accepted ADR-0285.
+Package: WP-825 (open). Tier: guarantee, covered by accepted ADR-0289.
 
 The first private restore copy used an ordinary recovering engine open before
 the later repair-refusing hydration and complete verification. A repair at that
@@ -28,7 +28,7 @@ Compatibility: original manifest comparisons, journal and marker predicates,
 history hydration, retention-watermark preparation and target publication remain
 required. The existing offline restore path and compatibility formats remain.
 
-Hazards and follow-ups: this entry-point correction does not provide ADR-0285's
+Hazards and follow-ups: this entry-point correction does not provide ADR-0289's
 continuous engine custody or retained complete native validation proof. Those
 remain implementation work. The native retention refusal, final combined-source
 CI, unchanged whole-action recovery measurement and real rehearsal are also

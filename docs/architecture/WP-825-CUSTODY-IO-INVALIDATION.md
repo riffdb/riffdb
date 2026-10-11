@@ -1,6 +1,6 @@
 # WP-825 native custody I/O invalidation
 
-Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0285.
+Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0289.
 
 The private custody foundation already retained sticky cancellation, identity
 and lease-poison refusals. A native backend I/O failure did not invalidate its

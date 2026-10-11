@@ -651,7 +651,7 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let mut paths = Vec::new();
     collect_rust_sources(&source, &mut paths);
     for path in paths {
-        // ADR-0285 retains the catalog validator's existing proof in this one
+        // ADR-0289 retains the catalog validator's existing proof in this one
         // closed offline adapter; storage still owns no catalog interpretation.
         if path != offline_catalog {
             assert!(

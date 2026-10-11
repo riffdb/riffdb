@@ -1,6 +1,6 @@
 # WP-825 complete logical evidence retention
 
-Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0285.
+Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0289.
 
 The existing complete offline validator discarded its immutable read and
 catalog proof, then opened a replacement read for its final continuity check.
@@ -32,7 +32,7 @@ Handbook: no public or operator behavior changes in this internal evidence
 plumbing; ordinary offline scrub still validates its owned copy completely.
 
 Hazards and follow-ups: this is one native ownership seam, not the complete
-ADR-0285 factory. It does not remove the second restore verification copy or
+ADR-0289 factory. It does not remove the second restore verification copy or
 replace staged startup with authorization readers. Whole-action recovery and
 the actual rehearsal remain unqualified; no package closure is claimed.
 
