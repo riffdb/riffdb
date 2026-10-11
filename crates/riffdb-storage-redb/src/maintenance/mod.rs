@@ -43,6 +43,8 @@ mod follower_columnar_scratch_tests;
 mod follower_namespace;
 mod path_guard;
 mod physical_scrub;
+#[cfg(test)]
+mod restore_custody;
 pub(crate) use follower_namespace::FollowerNamespace;
 pub(crate) use physical_scrub::PhysicalScrubCopy;
 mod staged;

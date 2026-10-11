@@ -625,3 +625,88 @@ fn staged_stamp_refuses_changed_bytes_after_sealing() {
     );
     assert_eq!(sealed.staged_history_incarnation(), 2);
 }
+
+fn assert_identical_private_artifact_replacement_is_refused(artifact: &str, sealed: bool) {
+    let scope = crate::test_path::ScopedDirectory::new("stage-identical-replacement");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original_backup =
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "identity-stage");
+    let id = stage.manifest_identity().database_id();
+    let path = match artifact {
+        "primary" => stage.staged_database_file().to_path_buf(),
+        "journal" => crate::journal::journal_path(stage.staged_database_file()),
+        "marker" => crate::durable_format_marker_path(stage.staged_database_file()),
+        _ => unreachable!("closed test artifact selection"),
+    };
+    let (unsealed_stage, sealed_stage) = if sealed {
+        (None, Some(stage.seal_after_validation(id).unwrap()))
+    } else {
+        (Some(stage), None)
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::rename(&path, scope.join("detached-original")).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let mut replacement = std::fs::File::open(&path).unwrap();
+    let result = match sealed_stage {
+        Some(mut stage) => stage.apply_published_history_incarnation(2),
+        None => unsealed_stage
+            .unwrap()
+            .seal_after_validation(id)
+            .map(|_| ()),
+    };
+    let mut observed = Vec::new();
+    std::io::Read::read_to_end(&mut replacement, &mut observed).unwrap();
+    assert!(
+        observed == bytes,
+        "a replacement is never opened for mutation"
+    );
+    assert!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap()
+            == original_backup,
+        "immutable backup bytes are preserved"
+    );
+    assert!(!scope.join("configured.redb").exists());
+    assert_eq!(
+        result
+            .expect_err("identical bytes cannot replace retained artifact identity")
+            .kind(),
+        StorageErrorKind::CorruptData,
+    );
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_seal_refuses_identical_primary_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("primary", false);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_seal_refuses_identical_journal_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("journal", false);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_seal_refuses_identical_marker_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("marker", false);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_stamp_refuses_identical_primary_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("primary", true);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_stamp_refuses_identical_journal_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("journal", true);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_stamp_refuses_identical_marker_replacement() {
+    assert_identical_private_artifact_replacement_is_refused("marker", true);
+}

@@ -478,6 +478,15 @@ writes cannot replace the seal of a changed artifact. Stamping independently
 refuses engine repair. Refusal leaves the immutable backup intact, and a retry
 rebuilds the unpublished stage from that backup.
 
+The private stage retains the native identities of its primary, journal, and
+format marker through authorization, sealing, stamping, and publication.
+Replacing any of these files with an identical copy still refuses the operation;
+matching checksums alone cannot establish continuity. Archive recovery tracks
+its intentional removal of the empty source journal, receipt-authorized creation
+of the new RestoreAnchor journal, and rename of the retained marker explicitly.
+These identity checks do not yet implement ADR-0285's continuous native custody
+or eliminate the additional private verification copy.
+
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete
 structural and catalog-semantic streams through exact end before staged

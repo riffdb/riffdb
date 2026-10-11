@@ -2,7 +2,9 @@
 
 The maintainer accepted ADR-0285 in session on 2026-10-11: "I accept". Its body
 is unchanged; the exact proposed record SHA-256 was `03b5dde4c68bca8d53c827bbe285deb2e22f0e30534ce88e3530b3a52193b371`.
-No implementation of its new custody model has begun.
+Implementation has begun. The native lock foundation is test-only; production
+artifact identity retention is a separate correction. The complete owned
+validation and authorization lifecycle remains unfinished.
 
 ## Native correctness evidence
 
@@ -143,5 +145,44 @@ prove that this proposal alone will satisfy the unchanged 60-second whole-action
 limit: core staging already exceeds the budget remaining after backup and
 handoff. Latest-main claim groups may reduce future history volume, but that
 requires fresh combined-source measurement. No copy elimination, proof reuse,
-lock-protocol change or qualification-limit change has been implemented.
+production lock-protocol change or qualification-limit change has been implemented.
 The ADR's exact proposed text and SHA-256 remain unchanged.
+
+## Native custody foundation and retained artifact identities
+
+The actual native engine-close regression reproduces loss of exclusion even
+when a cloned descriptor remains alive. A separate test-only outer native guard
+with one bounded engine lease passes 13 checks, including independent process
+writer and reader attempts across engine close and reopen, shared-lock downgrade,
+stale-close isolation, concurrent admission, cancellation, replacement and final
+owner release. Native Clippy and formatting also pass on the required host.
+This foundation is not a production restore factory or a retained validation proof.
+
+Three genuine current-backup regressions also reproduce acceptance of
+byte-identical primary, journal and marker replacements between complete private
+validation and final sealing. The primary replacement is opened for mutation.
+Checksum equality therefore cannot substitute for exact artifact identity.
+The correction retains all three native file identities before complete stage
+validation and transfers them into the sealed owner. It verifies them at the
+existing private path boundaries before opening or mutating a replacement.
+Archive conversion explicitly removes its verified empty source journal;
+receipt-authorized publication explicitly creates its new RestoreAnchor journal.
+Marker quarantine and restoration retain the same marker inode.
+
+These checks do not prove continuous exclusion during every private engine open,
+retain the catalog validation proof, remove the dense verification copy, or
+replace ordinary staged source activation with an authorization-only reader.
+Those accepted ADR-0285 requirements and final-source qualification remain open.
+
+PR note: Package WP-825 (open); Tier guarantee. Behavior: retain exact native
+identities for private primary, journal and marker files across existing stage
+boundaries; establish the outer-lock protocol in test-only code. Checks run:
+required-host native replacement baselines and corrected sealing/stamping
+checks, maintenance and server caller coverage, native custody schedules,
+Clippy, formatting, allowed paths and scoped acceptance. Compatibility:
+unchanged public interfaces, durable formats, native transaction policy and
+receipt authority. Handbook: `docs/backup-restore.md` and this linked review
+page. Hazards and follow-ups: continuous production custody, single-artifact
+validation, retained catalog proof and reader-only authorization remain open;
+component checks and earlier combined-source CI do not qualify the final
+source, whole public recovery action or the eight-hour and 24-hour campaigns.

@@ -155,11 +155,18 @@ impl RedbSealedArchiveRestore {
             frontier.administration(),
             [0; 32],
         );
-        crate::journal::reset_journal(&stage.staged_journal_file, &header)
-            .map_err(crate::backup::backup_journal_error)?;
-        stage.stage_cleanup.directory_guard.sync()?;
+        stage.verify_paths()?;
+        self.stage
+            .artifact_identities
+            .create_archive_anchor_journal(
+                &self.stage.stage_cleanup.directory_guard,
+                &self.stage.staged_journal_file,
+                &header,
+            )?;
+        self.stage.stage_cleanup.directory_guard.sync()?;
         edge("restore-journal-created");
         if self.private.is_some() {
+            let stage = &self.stage;
             verify_quarantine(stage)?;
             prefix::prefix_edge("private-journal-created");
             let marker = crate::durable_format_marker_path(&stage.staged_database_file);
@@ -216,6 +223,7 @@ impl RedbSealedArchiveRestore {
             sealed_format_marker_checksum,
             backup_directory_guard: stage.backup_directory_guard,
             configured_parent_guard: stage.configured_parent_guard,
+            artifact_identities: stage.artifact_identities,
             stage_cleanup: stage.stage_cleanup,
             test_controller: stage.test_controller,
         })

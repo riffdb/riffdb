@@ -28672,6 +28672,18 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      ADR-0285 implementation foundation: retain exact primary, journal and
+      marker file identities from private materialization into the sealed
+      publication owner. Byte-identical replacements cannot authorize sealing
+      or incarnation stamping. Track archive conversion's verified empty-journal
+      removal, receipt-authorized RestoreAnchor journal creation and same-inode
+      marker quarantine explicitly. Independently establish the native outer
+      guard and bounded single-engine lease in test-only code. This does not
+      implement the complete production custody factory, retain the catalog
+      validation proof, remove the verification copy or replace ordinary staged
+      source activation with a reader. Preserve all compatibility, crash,
+      validation, publication and measured gates. WP-825 remains open.
+    - >-
       D-003 implementation consequence under accepted ADR-0284: forward new
       atomic claim groups through the existing narrow native dispatcher port
       and independent server outbox owner. The merged-source native-port and

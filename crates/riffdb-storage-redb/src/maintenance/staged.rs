@@ -23,6 +23,10 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 #[path = "staged_promotion.rs"]
 mod promotion;
 
+#[path = "staged_identity.rs"]
+mod identity;
+use identity::StagedArtifactIdentities;
+
 #[path = "archive_restore.rs"]
 mod archive;
 pub(crate) use archive::PrivateArchiveValidationBinding;
@@ -50,6 +54,7 @@ pub struct RedbStagedRestore {
     promoted_authorization_checksum: Option<BackupIntegrityChecksumV1>,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
+    artifact_identities: StagedArtifactIdentities,
     stage_cleanup: StagedDirectoryCleanup,
     test_controller: Option<RedbMaintenanceTestController>,
 }
@@ -101,14 +106,21 @@ impl RedbStagedRestore {
             backup_directory_guard.verify()?;
             configured_parent_guard.verify()?;
             stage_cleanup.verify()?;
+            let database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+            let artifact_identities = StagedArtifactIdentities::capture(
+                &stage_cleanup.directory_guard,
+                &database_file,
+                &crate::journal::journal_path(&database_file),
+                &crate::durable_format_marker_path(&database_file),
+            )?;
             if let Some(controller) = &test_controller {
                 controller.hit(RedbMaintenanceFailpoint::AfterStagedMaterialization, false)?;
             }
-            Ok(*manifest)
+            Ok((*manifest, artifact_identities))
         })();
 
         match materialized {
-            Ok(manifest) => {
+            Ok((manifest, artifact_identities)) => {
                 let staged_database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
                 let staged_journal_file = crate::journal::journal_path(&staged_database_file);
                 let staged_format_marker_file =
@@ -126,6 +138,7 @@ impl RedbStagedRestore {
                     promoted_authorization_checksum: None,
                     backup_directory_guard,
                     configured_parent_guard,
+                    artifact_identities,
                     stage_cleanup,
                     test_controller,
                 };
@@ -218,6 +231,7 @@ impl RedbStagedRestore {
             sealed_format_marker_checksum,
             backup_directory_guard: self.backup_directory_guard,
             configured_parent_guard: self.configured_parent_guard,
+            artifact_identities: self.artifact_identities,
             stage_cleanup: self.stage_cleanup,
             test_controller: self.test_controller,
         })
@@ -226,7 +240,13 @@ impl RedbStagedRestore {
     fn verify_paths(&self) -> Result<(), StorageError> {
         self.backup_directory_guard.verify()?;
         self.configured_parent_guard.verify()?;
-        self.stage_cleanup.verify()
+        self.stage_cleanup.verify()?;
+        self.artifact_identities.verify(
+            &self.stage_cleanup.directory_guard,
+            &self.staged_database_file,
+            &self.staged_journal_file,
+            &self.staged_format_marker_file,
+        )
     }
 }
 
@@ -258,6 +278,7 @@ pub struct RedbSealedStagedRestore {
     sealed_format_marker_checksum: BackupIntegrityChecksumV1,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
+    artifact_identities: StagedArtifactIdentities,
     stage_cleanup: StagedDirectoryCleanup,
     test_controller: Option<RedbMaintenanceTestController>,
 }
@@ -482,7 +503,13 @@ impl RedbSealedStagedRestore {
     fn verify_paths(&self) -> Result<(), StorageError> {
         self.backup_directory_guard.verify()?;
         self.configured_parent_guard.verify()?;
-        self.stage_cleanup.verify()
+        self.stage_cleanup.verify()?;
+        self.artifact_identities.verify(
+            &self.stage_cleanup.directory_guard,
+            &self.staged_database_file,
+            &self.staged_journal_file,
+            &self.staged_format_marker_file,
+        )
     }
 
     fn hit(

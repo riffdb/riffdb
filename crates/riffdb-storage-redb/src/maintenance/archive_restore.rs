@@ -71,7 +71,7 @@ impl RedbStagedRestore {
     }
 
     fn begin_archive_replay_inner(
-        self,
+        mut self,
         archive: RedbArchiveRepository,
         selection: Option<ArchiveRestoreSelectionV3>,
         cancellation: &AtomicBool,
@@ -214,8 +214,8 @@ impl RedbStagedRestore {
         write.commit().map_err(unavailable)?;
         edge("conversion-committed");
         drop(database);
-        directory
-            .remove_file_if_present(self.staged_journal_file.file_name().ok_or_else(corrupt)?)?;
+        self.artifact_identities
+            .remove_archive_source_journal(directory, &self.staged_journal_file)?;
         directory.sync()?;
         edge("journal-removed");
         let value = RedbArchiveRestoreStage {
