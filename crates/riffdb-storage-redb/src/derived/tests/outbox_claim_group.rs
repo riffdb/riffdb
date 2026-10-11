@@ -205,3 +205,49 @@ fn claim_group_missing_authority_aborts_every_match() {
         OutboxStatusReadResultV1::Status(OutboxStatusObservationV1::AbsentInitialPending)
     );
 }
+
+#[test]
+fn owned_outbox_port_preserves_atomic_claim_group_receipt() {
+    let (_path, ports) = operational("owned-outbox-claim-group");
+    let events = seed_command(&ports, CommitSequence::first(), 2);
+    let claims = events
+        .iter()
+        .map(|event| {
+            claim(
+                event.event_id(),
+                OutboxStatusObservationV1::AbsentInitialPending,
+            )
+        })
+        .collect::<Vec<_>>();
+    let before = history(&ports);
+    let commits_before = ports.shared.outbox_stage_census.snapshot()[7][0];
+    let mut dispatcher = ports.outbox_ports();
+    assert!(dispatcher.supports_outbox_claim_groups());
+    let OutboxClaimGroupResultV1::Complete(completion) = dispatcher
+        .claim_outbox_group(&OutboxClaimGroupV1::new(claims.clone()).unwrap())
+        .unwrap()
+    else {
+        panic!("fixture authority must exist");
+    };
+    for (claim, result) in claims.iter().zip(completion.results()) {
+        assert_eq!(
+            result,
+            &OutboxTransitionResultV1::Applied(claim.updated().clone())
+        );
+        assert_eq!(
+            dispatcher.read_outbox_status(claim.event_id()).unwrap(),
+            OutboxStatusReadResultV1::Status(OutboxStatusObservationV1::Present(
+                claim.updated().clone()
+            ))
+        );
+    }
+    assert_eq!(
+        ports.shared.outbox_stage_census.snapshot()[7][0] - commits_before,
+        1
+    );
+    assert_eq!(
+        history(&ports).tail().sequence().get(),
+        before.tail().sequence().get() + 1
+    );
+    assert!(dispatcher.has_undelivered_outbox().unwrap());
+}

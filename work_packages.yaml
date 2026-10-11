@@ -28672,6 +28672,17 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 implementation consequence under accepted ADR-0284: forward new
+      atomic claim groups through the existing narrow native dispatcher port
+      and independent server outbox owner. The merged-source native-port and
+      deterministic server-cell regressions fail before this correction; five
+      native claim-group and five production bridge checks pass afterward on
+      C3D, including process-crash redelivery. Preserve native event/CAS
+      authority, one captured receipt, FIFO writer
+      admission, poison refusal and read-only mutation denial. This changes
+      no transaction or synchronization boundary and grants no measured or
+      final-source CI qualification. WP-825 remains open.
+    - >-
       D-003 implementation choice under ADR-0050: retain the exact public
       storage_unavailable/retry response as unknown only for read-only polling
       of the original registered maintenance operation. Preserve sticky whole-

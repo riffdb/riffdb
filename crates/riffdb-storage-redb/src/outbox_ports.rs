@@ -43,6 +43,17 @@ impl RedbOperationalPorts {
 }
 
 impl OutboxRepository for RedbOutboxPorts {
+    fn supports_outbox_claim_groups(&self) -> bool {
+        OutboxRepository::supports_outbox_claim_groups(&self.ports)
+    }
+
+    fn claim_outbox_group(
+        &mut self,
+        group: &riffdb_storage_api::OutboxClaimGroupV1,
+    ) -> Result<riffdb_storage_api::OutboxClaimGroupResultV1, StorageError> {
+        OutboxRepository::claim_outbox_group(&mut self.ports, group)
+    }
+
     fn supports_outbox_succeed_groups(&self) -> bool {
         OutboxRepository::supports_outbox_succeed_groups(&self.ports)
     }

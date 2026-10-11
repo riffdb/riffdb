@@ -2031,8 +2031,7 @@ impl OutboxRepository for SharedRedbOperationalPorts {
         &mut self,
         group: &riffdb_storage_api::OutboxClaimGroupV1,
     ) -> Result<riffdb_storage_api::OutboxClaimGroupResultV1, StorageError> {
-        self.cell
-            .with_mut(|ports| OutboxRepository::claim_outbox_group(ports, group))
+        self.with_outbox(|ports| OutboxRepository::claim_outbox_group(ports, group))
     }
 
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
@@ -2394,6 +2393,14 @@ mod tests {
             real.storage.claim_outbox(&claim).unwrap_err().kind(),
             StorageErrorKind::InvariantViolation
         );
+        let claim_group = riffdb_storage_api::OutboxClaimGroupV1::new(vec![claim]).unwrap();
+        assert_eq!(
+            real.storage
+                .claim_outbox_group(&claim_group)
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::InvariantViolation
+        );
     }
 
     // req: OUT-001, REC-001, END-008
@@ -2449,6 +2456,57 @@ mod tests {
         assert_eq!(
             result.unwrap().unwrap(),
             OutboxSucceedGroupResultV1::AuthoritativeIntentMissing
+        );
+    }
+
+    // req: OUT-001, REC-001, END-008
+    #[test]
+    fn production_outbox_claim_group_does_not_wait_under_the_shared_storage_cell() {
+        use riffdb_storage_api::{OutboxClaimGroupResultV1, OutboxRepository};
+        use std::sync::{Barrier, mpsc};
+        use std::time::Duration;
+
+        let real = crate::real_storage_support::RealStorage::open("outbox-claim-cell-exclusion");
+        let cell = real.storage.cell.clone();
+        let entered = std::sync::Arc::new(Barrier::new(2));
+        let release = std::sync::Arc::new(Barrier::new(2));
+        let locked = {
+            let entered = entered.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                cell.with_mut(|_| {
+                    entered.wait();
+                    release.wait();
+                    Ok(())
+                })
+                .unwrap();
+            })
+        };
+        entered.wait();
+        let mut outbox = real.storage.clone();
+        let event_id = riffdb_types::EventId::new(riffdb_types::CommitSequence::first(), 0);
+        let claim = riffdb_storage_api::OutboxClaimV1::new(
+            event_id,
+            riffdb_storage_api::OutboxStatusObservationV1::AbsentInitialPending,
+            riffdb_storage_api::OutboxDestinationIdV1::new("test").unwrap(),
+            riffdb_types::Timestamp::new(10, 0).unwrap(),
+            riffdb_types::Timestamp::new(20, 0).unwrap(),
+        )
+        .unwrap();
+        let group = riffdb_storage_api::OutboxClaimGroupV1::new(vec![claim]).unwrap();
+        let (sent, received) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sent.send(outbox.claim_outbox_group(&group)).unwrap();
+        });
+        // Explicitly hold the bridge cell throughout the transition. The
+        // timeout is only a deadlock watchdog; release before asserting.
+        let result = received.recv_timeout(Duration::from_secs(10));
+        release.wait();
+        locked.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            result.unwrap().unwrap(),
+            OutboxClaimGroupResultV1::AuthoritativeIntentMissing
         );
     }
 

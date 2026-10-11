@@ -52,3 +52,25 @@ The maintainer accepted this identifier and path reconciliation in session on
 2026-10-11: "I accept". The bootstrap Decision section remains byte-identical.
 The same response accepts the separate exact ADR-0285 proposal; its record path
 is registered alongside this scope and its body is preserved unchanged.
+
+## Native claim-group integration consequence
+
+The original automatic Rust merge gives claim groups a route through the broad
+server storage cell, while existing dispatcher transitions use the independently
+owned native outbox port. That would retain the broad cell during native writer
+or checkpoint admission. The restricted port also inherits the default absence
+of claim-group support instead of forwarding the accepted native capability.
+
+Two C3D regressions reproduce the defects before the correction: a real native
+claim group through the owned dispatcher port lacks support, and a production
+server claim group cannot finish while an explicit barrier holds the broad cell.
+The latter releases the barrier and joins both threads before asserting; its
+watchdog grants no timing or workload qualification. The correction forwards the
+same native atomic claim operation through the existing dispatcher owner and
+preserves shared poison refusal, exact event authority, FIFO admission, durable
+receipts and read-only authority. No fixture, encoding or transaction changes.
+
+The corrected source passes five native claim-group checks, including actual
+process-crash redelivery, and five production server outbox checks. C3D also
+passes workspace formatting and the three-file native scope check. These
+focused results do not replace combined-source full CI or measured recovery.
