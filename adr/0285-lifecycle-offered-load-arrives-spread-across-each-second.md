@@ -1,11 +1,11 @@
 ---
 adr: "0285"
 title: Lifecycle Offered Load Arrives Spread Across Each Second
-status: proposed
+status: accepted
 tier: surface
 date: 2026-10-11
-accepted: null
-acceptance: null
+accepted: '2026-10-11'
+acceptance: 'maintainer, in session, 2026-10-11: "i accept", in response to the exact-text acceptance request for ADR-0285 as committed at ae24df222'
 requires: [ADR-0265]
 amends: []
 supersedes: []

@@ -317,7 +317,7 @@ record with no front matter.
 | [0282](0282-derived-sidecar-absence-observed-once-per-handle.md) | Derived Sidecar Absence Observed Once Per Handle | Accepted | guarantee |
 | [0283](0283-validation-walks-decode-each-command-segment-once.md) | Validation Walks Decode Each Command Segment Once | Accepted | guarantee |
 | [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Accepted | guarantee |
-| [0285](0285-lifecycle-offered-load-arrives-spread-across-each-second.md) | Lifecycle Offered Load Arrives Spread Across Each Second | Proposed | surface |
+| [0285](0285-lifecycle-offered-load-arrives-spread-across-each-second.md) | Lifecycle Offered Load Arrives Spread Across Each Second | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
