@@ -90,16 +90,20 @@ tempfile = { version = "=3.24.0", default-features = false }
 # every envelope checksum. Pinned exact per house style.
 crc32c = { version = "=0.6.8", default-features = false }
 
-# h2 v0.4.20 plus one commit, proposed upstream as hyperium/h2#980 (issue #979):
+# h2 v0.4.20 plus two commits, proposed upstream as hyperium/h2#980 (issue #979):
 # trailers queued behind a chained DATA frame are written in the same vectored
 # write instead of a second one. Every gRPC unary response with a body of 256
 # bytes or more has that shape, so this halves `writev` per response and cut
-# tokio worker CPU per read 12% at 32 clients on the E2 benchmark host. Pinned
-# by commit; the source is allowed in deny.toml for this repository only.
+# tokio worker CPU per read 12% at 32 clients on the E2 benchmark host. The
+# second commit restricts this to a DATA frame carrying the rest of its body:
+# the first commit could write trailers after the first frame of a body larger
+# than one frame or the flow window, truncating the response (pinned by
+# `authenticated_unary_responses_preserve_complete_payload_across_http2_frames`).
+# Pinned by commit; the source is allowed in deny.toml for this repository only.
 # Remove this entry, and the deny.toml allowance, once an h2 release contains
 # the change.
 [patch.crates-io]
-h2 = { git = "https://github.com/koshea/h2", rev = "96b62ae6179422368ae292008e25925bfd5b4ebf" }
+h2 = { git = "https://github.com/koshea/h2", rev = "e9554c2cb105845d0ed6f0a7f89c8032ba24edba" }
 # Build configuration, not code: ADR-0183's freeze governs PERF work-package
 # registrations, and this programme registers none, so check-performance-freeze
 # is satisfied and the freeze remains in force. The hot paths are
