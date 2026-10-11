@@ -178,19 +178,24 @@ class CampaignOperator:
                          base=base, environment=None, worker=False)
 
     def _poll_unavailable(self, command, arguments, value):
-        return (command == "backup.operation" and type(arguments) is list
+        if not (command == "backup.operation" and type(arguments) is list
             and len(arguments) == 3 and arguments[:2] == ["backup", "operation"]
             and arguments[2] in self.pending_maintenance and type(value) is dict
             and value.keys() == {"schema", "command", "ok", "error"}
             and value["schema"] == "riffdb.cli.output/v1"
             and value["command"] == command and value["ok"] is False
-            and type(value["error"]) is dict
-            and value["error"].keys() == {"type", "code", "message"}
-            and value["error"]["type"] == "client"
-            and type(value["error"]["code"]) is str and type(value["error"]["message"]) is str
-            and (value["error"]["code"], value["error"]["message"]) in {
+            and type(value["error"]) is dict):
+            return False
+        error = value["error"]
+        # ADR-0050 also keeps a bound recovery listener write-fenced: its
+        # exact public refusal says nothing about this operation's outcome.
+        return (error == {"type": "public", "code": "storage_unavailable",
+                "message": "storage is temporarily unavailable", "recovery_action": "retry"}
+            or (error.keys() == {"type", "code", "message"} and error["type"] == "client"
+            and type(error["code"]) is str and type(error["message"]) is str
+            and (error["code"], error["message"]) in {
                 ("transport_unavailable", "the gRPC transport is unavailable"),
-                ("tls_connection_failed", "the verified TLS channel could not connect")})
+                ("tls_connection_failed", "the verified TLS channel could not connect")}))
 
     def _run(self, command, arguments, *, elapsed_ns, timeout_s, base, environment, worker, terminal_archive=False):
         require(not self.failed, "campaign_operator_failed")
@@ -243,9 +248,9 @@ class CampaignOperator:
                         pass
                     if child.poll() == 3 and self._maintenance_uncertain(command, value): expected_exit = 3
                     elif child.poll() == 1 and self._poll_unavailable(command, arguments, value): expected_exit = 1
-                # ADR-0050 closes the offline listener. An exact original
-                # read-only poll can remain unknown through failed verified
-                # connection establishment; no peer verification or receipt
+                # ADR-0050 closes offline polling. An exact original read-only
+                # poll remains unknown through its typed public refusal or
+                # failed verified connection establishment; no receipt
                 # result is invented. Every other nonzero exit is unexpected,
                 # including a
                 # child that finished before its first live process census.

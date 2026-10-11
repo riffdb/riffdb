@@ -107,3 +107,21 @@ class CampaignMaintenanceTests(unittest.TestCase):
         with self.assertRaises(MaintenanceError):
             owner.poll(17 * SECOND)
         self.assertEqual(len(operator.calls), 17)
+
+    def test_offline_poll_is_unknown_and_cannot_extend_original_deadline(self):
+        operator, owner = self.owner()
+        self.assertFalse(owner.start(0))
+        operator.value = {"schema": "riffdb.cli.output/v1", "command": "backup.operation", "ok": False,
+            "error": {"type": "public", "code": "storage_unavailable",
+                "message": "storage is temporarily unavailable", "recovery_action": "retry"}}
+        self.assertFalse(owner.poll(SECOND))
+        self.assertFalse(owner.complete)
+        self.assertEqual(owner.phase, "accepted")
+        self.assertEqual(owner.operation, OPERATION)
+        self.assertEqual(owner.deadline_ns, 60 * SECOND)
+        with self.assertRaisesRegex(MaintenanceError, "campaign_maintenance_deadline"):
+            owner.poll(60 * SECOND)
+        with self.assertRaisesRegex(MaintenanceError, "campaign_maintenance_failed"):
+            owner.poll(61 * SECOND)
+        self.assertEqual(operator.calls, [("backup.create", ["backup", "create", "campaign"]),
+            ("backup.operation", ["backup", "operation", OPERATION])])

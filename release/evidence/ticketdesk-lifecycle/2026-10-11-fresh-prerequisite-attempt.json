@@ -1,0 +1,93 @@
+{
+  "current_source_full_ci_qualified": false,
+  "evidence_kind": "fresh_measured_prerequisites_with_failed_whole_restore_and_native_attribution",
+  "host_specifications": {
+    "durable_ssd": true,
+    "nominal_ram_bytes": 34359738368,
+    "vcpus": 8
+  },
+  "measured_eight_hour_run_started": false,
+  "measured_twenty_four_hour_run_started": false,
+  "native_restore_attribution": {
+    "authorization_and_sealing_ns": 3248074082,
+    "complete_private_verification_ns": 64141113950,
+    "completed_whole_restore": false,
+    "component_restore_status": "unknown",
+    "diagnostic_only": true,
+    "history_hydration_ns": 12915827160,
+    "incarnation_transition_ns": 11325463653,
+    "materialization_including_validation_ns": 104174634381,
+    "observer_stop_reason": "finite_diagnostic_poll_bound_exhausted",
+    "ordinary_binaries_qualified_by_profile": false,
+    "post_publication_validation_completed": false,
+    "post_publication_validation_started": true,
+    "publication_ns": 16754927297,
+    "receipt_sha256": "27a59f9138762a8154a990aa0f649cbafe709b9514405f5910d98e49a47b2209",
+    "retention_watermark_ns": 9564928418,
+    "staging_core_ns": 38915189643,
+    "status": "attribution_collected",
+    "timings_are_inclusive": true,
+    "unknown_public_poll_observations": 720,
+    "verification_session_ns": 33962630009
+  },
+  "observed_at_utc": "2026-10-11",
+  "ordinary_preparation": {
+    "archive_payloads_reconciled": true,
+    "archive_policy_anchors_reconciled": true,
+    "archive_records_reconciled": 215536,
+    "commands": 150000,
+    "duration_s": 1500,
+    "enabled_optional_diagnostics": [],
+    "normal_windows": [
+      {
+        "end_s": 1200,
+        "p95_us": 68260,
+        "p99_us": 109477,
+        "start_s": 900
+      },
+      {
+        "end_s": 1500,
+        "p95_us": 86484,
+        "p99_us": 136559,
+        "start_s": 1200
+      }
+    ],
+    "post_duration_operations": 0,
+    "reads": 600000,
+    "receipt_sha256": "71e0ea16a61fe5c9ec6cb0c80ec2a3e096064de5bbceacdcc82bbd02aa062a59",
+    "retries": 0,
+    "sink_pause_ns": 300034779385,
+    "sink_recovery_ns": 296704943957,
+    "status": "passed",
+    "tickets_reconciled": 65536
+  },
+  "preserved_failures": [
+    "Earlier normal-window latency and restricted-promotion startup failures remain retained.",
+    "Original whole-restore attempts remain failed; later profiling neither replaces their verdicts nor changes the 60-second limit.",
+    "The first native profiler refused an unavailable public poll; ADR-0050 intentionally closes polling during recovery and offline states."
+  ],
+  "qualifies_alpha_endurance": false,
+  "qualifies_wp825": false,
+  "qualifies_wp826": false,
+  "remaining_requirements": [
+    "Integrate latest local main after the pending accepted-record identifier review.",
+    "Correct the native restore lifecycle while retaining every complete validator and the unchanged whole-action deadline.",
+    "Run full final-source CI, four-language conformance and fresh ordinary preparation with four frozen ordinary binaries.",
+    "Complete the real eight-hour rehearsal, close and merge WP-825, then complete the separate real 24-hour WP-826 campaign."
+  ],
+  "schema": "riffdb.ticketdesk-lifecycle-prerequisite-observations/v1",
+  "source_revision": "8d5e6172e5bf080d973d112a27e787b5a10a1142",
+  "whole_backup_restore": {
+    "backup_create_ns": 19338824947,
+    "backup_inventory_entries": 99,
+    "failure_code": "restore_request_exceeded_remaining_whole_fault_budget",
+    "phase": "public_empty_restore",
+    "receipt_sha256": "7e98de91dbe33ee89f2bfc7ee4e2902e57d4117419850913ab2e2691f85c9bfb",
+    "recovery_admission_ns": 1048128547,
+    "restore_request_remaining_budget_ns": 28234494112,
+    "restore_submitted": true,
+    "status": "failed",
+    "whole_action_limit_ns": 60000000000,
+    "whole_backup_restore_fault_proved": false
+  }
+}

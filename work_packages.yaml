@@ -28670,6 +28670,17 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 implementation choice under ADR-0050: retain the exact public
+      storage_unavailable/retry response as unknown only for read-only polling
+      of the original registered maintenance operation. Preserve sticky whole-
+      action deadlines, finite polls, no mutation resubmission and independent
+      durable receipt/recovery proof. Two regressions fail before the correction
+      and pass afterward; 359 lifecycle tests pass on the required host. Preserve
+      fresh preparation and failed whole-restore evidence separately from native
+      attribution: materialization including complete private verification takes
+      104.17 seconds and proves no complete restore. Main integration, exact
+      custody review, full final-source CI and both measured runs remain open.
+    - >-
       D-023 apply the maintainer's standing approval to expand scope for any
       necessary fixes to the native follower process regressions in
       tests/replication_follower/**. Combined-source CI refuses one restricted

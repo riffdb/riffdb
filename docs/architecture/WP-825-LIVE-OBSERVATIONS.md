@@ -3840,3 +3840,59 @@ unimplemented. No accepted Decision text changes. Fresh combined-source checks,
 ordinary preparation, whole public recovery within 60 seconds and the measured
 eight-hour rehearsal remain required. The earlier native startup refusal remains
 unexplained. Neither an eight-hour nor a 24-hour campaign has started.
+
+
+### Fresh preparation passes; native restore remains over budget
+
+The scrub cancellation correction at `8d5e6172` passes scoped server acceptance,
+but that source has not passed full final-source CI. A fresh ordinary 1,500-second
+preparation completes 150,000 commands and 600,000 reads with zero retries and
+zero operations after its offered clock. It reconciles all 65,536 tickets and
+215,536 archive records. Sink recovery takes 296.7 seconds. Both normal windows
+pass: p95/p99 are 68.260/109.477 ms and 86.484/136.559 ms.
+
+The unchanged whole public recovery check still fails. Backup creation takes
+19.34 seconds and empty-target recovery admission takes 1.05 seconds; the restore
+request then exhausts the remaining 28.23 seconds of the whole 60-second budget.
+No readiness, first write or restored-state reconciliation is proved by that
+attempt. The original failure and its immutable backup remain preserved.
+
+A separate native profiler uses an owned copy and cannot qualify that gate. It
+measures 38.92 seconds in core staging, including 12.92 seconds in retained
+history hydration and 9.56 seconds in retention-watermark processing. Complete
+private verification takes another 64.14 seconds, including 33.96 seconds in its
+validation session. Materialization including verification takes 104.17 seconds
+before staged authorization, sealing, publication and fresh startup finish.
+These timers are inclusive; nested values must not be added to their parents.
+The bounded observer stops before post-publication validation completes, so the
+component's final restore outcome remains unknown.
+
+ADR-0050 intentionally closes public maintenance polling during offline recovery.
+The diagnostic records the exact typed `storage_unavailable`/`retry` response as
+unknown; it grants no successful receipt, authority or readiness. The original
+whole-action oracle and every qualification limit remain unchanged.
+
+This is a native restore-lifecycle limitation. The proposed private-custody
+redesign remains unaccepted and unimplemented, and removing an extra verification
+copy alone has not been shown sufficient. Main's bounded outbox claim groups may
+reduce future receipt history; that is an inference requiring fresh combined-
+source measurement. See the curated observations in
+`release/evidence/ticketdesk-lifecycle/2026-10-11-fresh-prerequisite-attempt.json`.
+WP-825 and WP-826 remain open; neither measured campaign has started.
+
+
+### Preserve unknown outcomes while offline polling is closed
+
+ADR-0050 closes maintenance polling during offline and staged-only recovery.
+A bound recovery listener can return the exact public `storage_unavailable`
+error with `recovery_action: retry` instead of a transport connection failure.
+The campaign operator now records that response as unknown only for read-only
+polling of an operation registered by its original create or restore request.
+It still refuses other operations, commands, altered errors and missing fields.
+
+This observation never resubmits the mutation, proves completion, resets the
+original whole-action deadline or enlarges the finite polling population. A
+successful durable receipt and every independent recovery check remain required.
+An unavailable poll at the deadline is a sticky campaign failure. The native
+restore-lifecycle cost remains unresolved; this classification correction alone
+qualifies neither WP-825 nor WP-826.

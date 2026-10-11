@@ -23,6 +23,11 @@ def unavailable():
                   "message": "the gRPC transport is unavailable"}}
 
 
+def offline_unavailable():
+    return dict(unavailable(), error={"type": "public", "code": "storage_unavailable",
+        "message": "storage is temporarily unavailable", "recovery_action": "retry"})
+
+
 class CampaignOperatorWorkerTests(unittest.TestCase):
     fixture = fixtures.CampaignOperatorTests.fixture
 
@@ -48,10 +53,35 @@ class CampaignOperatorWorkerTests(unittest.TestCase):
                 self.encoded = json.dumps(tls).encode()
                 self.assertEqual(operator.run("backup.operation", ["backup", "operation", OPERATION],
                     elapsed_ns=operator.last_ns + 1, timeout_s=5), tls)
+                self.encoded = json.dumps(offline_unavailable()).encode()
+                self.assertEqual(operator.run("backup.operation", ["backup", "operation", OPERATION],
+                    elapsed_ns=operator.last_ns + 1, timeout_s=5), offline_unavailable())
             rows = [json.loads(line) for line in (root / "campaign-operator.jsonl").read_bytes().splitlines()]
-            self.assertEqual([row["exit_code"] for row in rows], [3, 1, 1])
+            self.assertEqual([row["exit_code"] for row in rows], [3, 1, 1, 1])
             self.assertTrue(all(row["outcome_known"] is False for row in rows))
-            self.assertEqual(roster.retired, 3)
+            self.assertEqual(roster.retired, 4)
+
+    def test_offline_poll_refusal_cannot_authorize_another_operation_or_changed_error(self):
+        cases = [(False, "backup.operation", ["backup", "operation", OPERATION], offline_unavailable()),
+            (True, "backup.operation", ["backup", "operation", "01900000-0000-7000-8001-000000000002"], offline_unavailable()),
+            (True, "backup.restore", ["backup", "restore", "fixture"],
+                dict(offline_unavailable(), command="backup.restore"))]
+        for key, value in (("type", "client"), ("code", "outcome_unknown"),
+                ("message", "other"), ("recovery_action", "poll_maintenance_operation"),
+                ("extra", True)):
+            cases.append((True, "backup.operation", ["backup", "operation", OPERATION],
+                dict(offline_unavailable(), error=dict(offline_unavailable()["error"], **{key: value}))))
+        missing = offline_unavailable()
+        del missing["error"]["recovery_action"]
+        cases.append((True, "backup.operation", ["backup", "operation", OPERATION], missing))
+        for known, command, arguments, value in cases:
+            with self.subTest(command=command, known=known, value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); roster = self.fixture(root, json.dumps(value).encode(), exit_code=1)
+                with CampaignOperator(root, roster, ["fixture"]) as operator:
+                    if known: operator.pending_maintenance.add(OPERATION)
+                    with self.assertRaises(ResourceError):
+                        operator.run(command, arguments, elapsed_ns=0, timeout_s=5)
+                self.assertEqual(roster.retired, 0)
 
     def test_unregistered_different_operation_and_non_transport_errors_remain_fatal(self):
         cases = [(False, "backup.operation", ["backup", "operation", OPERATION], unavailable())]
