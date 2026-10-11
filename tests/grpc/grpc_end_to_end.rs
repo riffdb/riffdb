@@ -76,6 +76,9 @@ use tonic::{Code, Request, Response, Status};
 use tonic_prost::prost::Message as _;
 use tonic_prost::prost::bytes::{Buf, BufMut};
 
+#[path = "unary_transport.rs"]
+mod unary_transport;
+
 const CAPABILITY_TOKEN: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const CAPABILITY_KEYS: &[u8] = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const LINEAGE: &str = "grpc-projection";
@@ -203,6 +206,7 @@ async fn installation_start_retry_and_observe_cross_authenticated_grpc() {
 }
 
 struct ProjectionService {
+    projection_payload: Option<riffdb_types::CanonicalValue>,
     observed: Mutex<Vec<ObservedInvocation>>,
     command_discovery_prior: Mutex<Vec<bool>>,
     outcome_locators: Mutex<Vec<String>>,
@@ -334,6 +338,7 @@ enum ObservedMaintenanceInvocation {
 impl ProjectionService {
     fn new() -> Self {
         Self {
+            projection_payload: None,
             observed: Mutex::new(Vec::new()),
             command_discovery_prior: Mutex::new(Vec::new()),
             outcome_locators: Mutex::new(Vec::new()),
@@ -661,7 +666,10 @@ impl QueryApplication for ProjectionService {
         }
 
         let result = match request.projection_id().get() {
-            1 => Ok(ready_projection()),
+            1 => Ok(match self.projection_payload.clone() {
+                Some(value) => unary_transport::ready_projection_with_value(value),
+                None => ready_projection(),
+            }),
             2 => Ok(QueryProjectionResult::WaitTimedOut {
                 required: CommitSequence::first(),
                 current: FrontierPosition::BeforeFirst,

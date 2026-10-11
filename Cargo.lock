@@ -670,7 +670,7 @@ dependencies = [
 [[package]]
 name = "h2"
 version = "0.4.20"
-source = "git+https://github.com/koshea/h2?rev=96b62ae6179422368ae292008e25925bfd5b4ebf#96b62ae6179422368ae292008e25925bfd5b4ebf"
+source = "git+https://github.com/koshea/h2?rev=e9554c2cb105845d0ed6f0a7f89c8032ba24edba#e9554c2cb105845d0ed6f0a7f89c8032ba24edba"
 dependencies = [
  "atomic-waker",
  "bytes",
