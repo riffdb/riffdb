@@ -1,41 +1,50 @@
 # WP-825 native lifecycle investigation and observations
 
-## Current status (2026-10-10)
+## Current status (2026-10-11 UTC)
 
-WP-825 remains open. The public campaign entry point implements the fixed
-8-hour protocol, all seven fault handlers, bounded process ownership, shared
-workload epochs and independent resource reconciliation. The complete real
-campaign has not run, and no 24-hour qualification has started. Final combined
-source CI, four-language conformance, three measured physical retirements in the
-final incarnation and the final six quiet hours remain required.
+WP-825 remains open. The public entry point implements the fixed 8-hour
+rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process
+ownership, shared workload epochs and independent resource reconciliation.
+Neither measured campaign has started.
 
-The latest ordinary preparation completes 150,000 commands and 600,000 reads,
-with zero retries or post-duration operations and all 65,536 tickets reconciled.
-Its final normal window fails at 102.658 ms p95 against the unchanged 100-ms
-limit. A subsequent instrumented diagnostic observes 95.199 ms in that window,
-but cannot qualify performance; its wrapper also refuses an artifact hardlink
-introduced by the diagnostic profiler. Preserve both failed receipts and the
-ordinary population. The profiler's extra link was removed after identity and
-hash verification; the original binary bytes remain unchanged.
+Runtime revision `c2428736` passes the complete combined-source acceptance and CI
+battery, native gRPC regressions, the original operational-adapter checks and
+four-language remote conformance. Its ordinary 1,500-second preparation passes
+with 150,000 commands, 600,000 reads, zero retries or post-duration operations,
+all 65,536 tickets reconciled and all 215,536 archive records checked for payload
+and policy-anchor integrity. The two normal five-minute windows measure:
 
-Native thread attribution proves repeated append-worker creation across direct
-checkpoints. The physical-worker correction passes all six scoped acceptance
-checks and 1,378 native tests with two existing skips. Those component results
-establish correctness and ownership reuse, not latency causality. Local main's
-startup and transport improvements are now merged, with the approved identifier
-reconciliation. The parallel offline validator now shares the walk's single bounded
-segment memo, and combined-source compilation and four-language remote
-conformance pass. Full CI then refuses one native restricted-promotion startup
-and a missing handbook navigation link. The link is corrected; the original
-startup refusal remains unexplained after bounded diagnostics. Combined-source
-full CI, fresh ordinary preparation and the unchanged whole-action restore
-measurement remain required. No preparation or restore ran after either CI
-refusal.
+| Window | p95 | p99 |
+|---|---:|---:|
+| 900–1,200 seconds | 69.666 ms | 110.096 ms |
+| 1,200–1,500 seconds | 97.757 ms | 158.655 ms |
 
-The preceding populated native materialization component measures 100.1 seconds.
-That measurement is neither the whole backup/restore/restart/reconciliation
-sequence nor evidence that the merged source meets its unchanged 60-second gate.
-The complete measured campaign remains unqualified.
+The original limits remain p95 below 100 ms and p99 below 250 ms. The injected
+sink outage lasts 300.033 seconds and drains in 298.637 seconds after release,
+within its unchanged 600-second recovery limit. These observations establish
+preparation only.
+
+The following whole public backup/restore attempt fails. Backup creation takes
+54.055 seconds and retains 100 artifacts totaling 2,953,236,770 bytes. The empty
+replacement exceeds the original 60-second whole-action deadline before
+recovery admission, so restore is never submitted. Downstream TypeScript,
+freeze and 8-hour launch jobs refuse this failed prerequisite. Native backup
+and recovery attribution is in progress; the validators, input and deadline
+remain unchanged.
+
+Curated numbers and original private-receipt digests are recorded in
+`release/evidence/ticketdesk-lifecycle/2026-10-11-prerequisite-attempt.json`.
+Earlier failed attempts remain retained, including the unexplained restricted
+promotion startup refusal from CI428. A later test pass does not establish that
+refusal's cause. The private-stage custody proposal remains unaccepted and
+unimplemented.
+
+A successful whole-action restore, retained TypeScript execution, fresh frozen
+bindings and a complete real 8-hour rehearsal remain required for WP-825. The
+separate WP-826 24-hour run follows WP-825 acceptance and its merged dependency.
+Both runs must prove all 19 predicates, at least three physical retirements in
+the final restored incarnation and the final six fault-free hours. Neither
+qualifies the separate 72-hour alpha endurance gate.
 
 ## Private hydration repair refusal
 

@@ -8,56 +8,54 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-10)
+## Current status (2026-10-11 UTC)
 
-WP-825 remains open. The public campaign entry point implements the fixed
-8-hour protocol, all seven fault handlers, bounded process ownership, shared
-workload epochs and independent resource reconciliation. The complete real
-campaign has not run, and no 24-hour qualification has started. Final combined
-source CI, four-language conformance, three measured physical retirements in the
-final incarnation and the final six quiet hours remain required.
+WP-825 remains open. The public entry point implements the fixed 8-hour
+rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process
+ownership, shared workload epochs and independent resource reconciliation.
+Neither measured campaign has started.
 
-The latest ordinary preparation refuses resource qualification after three
-bounded attempts cannot obtain a stable server task census. A subsequent
-instrumented diagnostic completes 150,000 commands and 600,000 reads without
-retries, but fails latency and does not qualify ordinary performance. The
-earlier genuine normal-window p95 failure of 101.766 ms also remains open.
-Preserve the failed populations, original workload and qualification thresholds.
+Runtime revision `c2428736` passes the complete combined-source acceptance and CI
+battery, native gRPC regressions, the original operational-adapter checks and
+four-language remote conformance. Its ordinary 1,500-second preparation passes
+with 150,000 commands, 600,000 reads, zero retries or post-duration operations,
+all 65,536 tickets reconciled and all 215,536 archive records checked for payload
+and policy-anchor integrity. The two normal five-minute windows measure:
 
-The latest populated native component measurement, before the two current
-native fixes, takes 100.1 seconds. This exceeds the unchanged 60-second limit for the **whole** public backup,
-restore, restart and reconciliation sequence. A private-stage custody redesign
-is proposed separately and remains unaccepted; no such redesign is implemented.
-The narrower repair-refusal and spare-demand fixes preserve the existing native
-ownership and complete validation boundaries.
+| Window | p95 | p99 |
+|---|---:|---:|
+| 900–1,200 seconds | 69.666 ms | 110.096 ms |
+| 1,200–1,500 seconds | 97.757 ms | 158.655 ms |
 
-Combined-source workspace tests pass, but that full CI attempt then fails the
-checker launcher because eight test modules cannot import its first-party
-library. The corrected launcher passes all 355 self-tests, the previously
-blocked CI checks and four-language remote conformance. The next full CI attempt
-passes 609 server unit tests and fails the concurrent promotion fixture with
-transport unavailability. Later whole-fixture passes on unchanged source,
-including the original test executable, do not explain or dismiss that failure.
-The next complete CI attempt reproduces the failure: all eight workers lose
-transport in the first standard-profile, caught-up case, and the daemon stdout
-channel closes. Bounded
-failure reporting preserves every fencing assertion and request deadline;
-follow-up natural-exit evidence uses the same failure-only diagnostic budget.
-A later untraced fixture run passes promotion but fails exact-prefix follower
-catch-up at sequence 391 of 408 within the existing 60-second deadline. That
-result is preserved separately. Exact failed-CI executables subsequently
-reproduce promotion transport loss and capture an ordinary primary core. The
-matching backtrace confirms a columnar-worker stack overflow during complete
-journal command-segment decoding. The native correction decodes members
-directly and separates base decoding from later semantic reconstruction,
-preserving every validator and the existing production stack reservation.
-Its bounded-stack regression fails before repair and passes afterward with
-572 storage API tests and doctests, Clippy, formatting and all 26 rebuilt native
-replication fixtures. Final-source full CI still must confirm the correction;
-the separate follower-prefix failure is retained rather than dismissed by a pass.
-Final-source CI, ordinary resource and latency qualification, whole-action
-recovery and the complete campaign remain open. See the
-[latest native findings](WP-825-LIVE-OBSERVATIONS.md).
+The original limits remain p95 below 100 ms and p99 below 250 ms. The injected
+sink outage lasts 300.033 seconds and drains in 298.637 seconds after release,
+within its unchanged 600-second recovery limit. These observations establish
+preparation only.
+
+The following whole public backup/restore attempt fails. Backup creation takes
+54.055 seconds and retains 100 artifacts totaling 2,953,236,770 bytes. The empty
+replacement exceeds the original 60-second whole-action deadline before
+recovery admission, so restore is never submitted. Downstream TypeScript,
+freeze and 8-hour launch jobs refuse this failed prerequisite. Native backup
+and recovery attribution is in progress; the validators, input and deadline
+remain unchanged.
+
+Curated numbers and original private-receipt digests are recorded in
+`release/evidence/ticketdesk-lifecycle/2026-10-11-prerequisite-attempt.json`.
+Earlier failed attempts remain retained, including the unexplained restricted
+promotion startup refusal from CI428. A later test pass does not establish that
+refusal's cause. The private-stage custody proposal remains unaccepted and
+unimplemented.
+
+A successful whole-action restore, retained TypeScript execution, fresh frozen
+bindings and a complete real 8-hour rehearsal remain required for WP-825. The
+separate WP-826 24-hour run follows WP-825 acceptance and its merged dependency.
+Both runs must prove all 19 predicates, at least three physical retirements in
+the final restored incarnation and the final six fault-free hours. Neither
+qualifies the separate 72-hour alpha endurance gate.
+
+See the [latest native findings](WP-825-LIVE-OBSERVATIONS.md) for the retained
+investigation history.
 
 ## Earlier preparation observations
 
