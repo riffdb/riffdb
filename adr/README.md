@@ -316,7 +316,7 @@ record with no front matter.
 | [0281](0281-changelog-root-validation-once-per-replay-transaction.md) | Changelog Root Validation Once Per Replay Transaction | Accepted | guarantee |
 | [0282](0282-derived-sidecar-absence-observed-once-per-handle.md) | Derived Sidecar Absence Observed Once Per Handle | Accepted | guarantee |
 | [0283](0283-validation-walks-decode-each-command-segment-once.md) | Validation Walks Decode Each Command Segment Once | Accepted | guarantee |
-| [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Proposed | guarantee |
+| [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

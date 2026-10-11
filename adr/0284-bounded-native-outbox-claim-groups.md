@@ -1,11 +1,11 @@
 ---
 adr: "0284"
 title: Bounded Native Outbox Claim Groups
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-11
-accepted: null
-acceptance: null
+accepted: '2026-10-11'
+acceptance: 'maintainer, in session, 2026-10-11: "yes, i accept", in response to the exact-text acceptance request for ADR-0284 as committed at 5b1a50f17'
 requires: [ADR-0273, ADR-0269, ADR-0004]
 amends: [ADR-0273]
 supersedes: []
