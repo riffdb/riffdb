@@ -18,7 +18,7 @@ readiness, checkpoint, authorization or publication capability. It is logical
 evidence only: physical validation, verified materialization and uninterrupted
 artifact custody remain separate requirements.
 
-Checks required on C3D: two genuine original completion-boundary failures;
+Checks required on the required 8-vCPU, 32-GiB Linux SSD host: two genuine original completion-boundary failures;
 the corrected boundary and native lifetime, mutation, cancellation, exact-end
 and catalog-session checks; existing physical integrity and compatibility
 checks; native Clippy, formatting, scope and scoped acceptance. Verify the
@@ -35,3 +35,18 @@ Hazards and follow-ups: this is one native ownership seam, not the complete
 ADR-0285 factory. It does not remove the second restore verification copy or
 replace staged startup with authorization readers. Whole-action recovery and
 the actual rehearsal remain unqualified; no package closure is claimed.
+
+The internal logical-reader handoff moves that same immutable read into one
+owned snapshot and retains its mutation lease and native engine owner across
+all snapshot clones. The final reader drops its read before releasing the
+lease and engine. Cancellation and an unclassified durable commit invalidate
+all clones' logical evidence; another clone cannot restore it. The handoff
+returns the original database/session identities, retained metadata and catalog
+proof for the server's existing join. It grants no physical verification or
+materialization authority and remains unavailable to applications.
+
+Native follow-up checks cover final-clone ownership, original versus successor
+reads, cancellation, epoch and catalog substitution. This internal handoff is
+not yet called by the production restore factory. Physical proof, verified
+materialization, continuous artifact custody and the server's existing proof
+join must all be wired before it may become the staged authorization path.

@@ -23,7 +23,7 @@ licensed receipt in the captured suffix, a candidate older than the licensed
 point, and a missing receipt inside claimed coverage. The original source must
 fail the intended regressions before the corrected source is tested.
 
-Checks on C3D: failing native baselines, the covered-hole corruption control,
+Checks on the required 8-vCPU, 32-GiB Linux SSD host: failing native baselines, the covered-hole corruption control,
 corrected floor and finite-license tests, native Clippy, formatting, allowed
 paths and scoped acceptance. Verify the bound terminal receipt before committing.
 

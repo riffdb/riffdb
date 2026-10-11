@@ -298,10 +298,7 @@ fn construct(
         .ok_or_else(corrupt)?
         .join(PRIVATE_MARKER);
     prefix_edge("prefix-quarantined");
-    let database = redb::Database::builder()
-        .set_cache_size(64 * 1024 * 1024)
-        .create_file(stage.file.try_clone().map_err(unavailable)?)
-        .map_err(unavailable)?;
+    let database = open_prefix_construction_database(&stage.file)?;
     let mut write = database.begin_write().map_err(unavailable)?;
     write.set_two_phase_commit(true);
     write
@@ -376,6 +373,10 @@ fn construct(
         selection: stage.selection,
         frontier,
     })
+}
+
+fn open_prefix_construction_database(file: &File) -> Result<redb::Database, StorageError> {
+    crate::backup::open_unrepaired_private_file(file, Some(64 * 1024 * 1024))
 }
 
 pub(super) fn prefix_edge(_name: &str) {

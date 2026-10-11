@@ -11,6 +11,15 @@ pub(super) enum EngineRepairPolicy {
     Refuse,
 }
 
+/// Exact engine construction state carried into the existing native store join.
+/// Keeps backend rewrite observation and repair state bound to their engine.
+struct OwnedEngineOpen {
+    database: Database,
+    checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
+    repair_observed: Arc<AtomicBool>,
+    refuse_repair: bool,
+}
+
 impl RedbStore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_after_format_preflight(
@@ -74,7 +83,6 @@ impl RedbStore {
         // Sidecar durability follows the primary path, not the backend
         // wrapper: a FileBackend kill-barrier still has to observe the
         // sidecar after process death (ADR-0240 two-store crash).
-        let derived_in_memory = false;
         let checkpoint_rewrite = Arc::new(crate::checkpoint_rewrite::CheckpointRewrite::default());
         let database = match engine_backend {
             Some(backend) => builder.create_with_backend(
@@ -106,6 +114,42 @@ impl RedbStore {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         let database = database.map_err(database_error)?;
+        Self::finish_owned_engine_open(
+            open_mode,
+            path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            initialize_marker_witness,
+            journal_media,
+            OwnedEngineOpen {
+                database,
+                checkpoint_rewrite,
+                repair_observed,
+                refuse_repair,
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_owned_engine_open(
+        open_mode: OpenMode,
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        journal_media: Arc<dyn JournalMedia>,
+        engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        let OwnedEngineOpen {
+            database,
+            checkpoint_rewrite,
+            repair_observed,
+            refuse_repair,
+        } = engine;
+        // Preserve source directory sync, binding/follower admission, resolver
+        // registration and every required preparation in their original order.
         if open_mode == OpenMode::Source {
             // redb synchronizes file contents, not first-creation directory
             // publication. Recheck on reopen too: a prior failed sync may have
@@ -157,7 +201,7 @@ impl RedbStore {
                 outbox_stage_census: crate::outbox_stage_census::Census::default(),
                 derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
-                derived_in_memory,
+                derived_in_memory: false,
                 derived_absent: AtomicBool::new(false),
                 path: path.to_path_buf(),
                 journal_media,

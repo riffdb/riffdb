@@ -475,8 +475,10 @@ still completes the existing storage, catalog, retained-metadata, bootstrap and
 allocator startup checks before checking the retained bearer and policy.
 Healthy startup preparation remains supported; ordinary primary crash recovery
 retains its existing recovery behavior.
-Private archive conversion, archive validation, promoted-backup validation and
-archive incarnation stamping also abort engine repair requests.
+Private archive conversion, command-prefix reconstruction, archive validation,
+promoted-backup validation and archive incarnation stamping also abort engine
+repair requests. Private archive replay startup and projection preparation use
+the same refusal policy; published follower crash recovery remains available.
 A repaired private stage cannot gain publication authority from a subsequent
 successful integrity check. Before incarnation stamping, the sealed owner also
 rechecks its primary, journal, and format marker checksums; intended metadata

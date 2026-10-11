@@ -149,3 +149,145 @@ fn complete_logical_proof_requires_both_exact_ends_from_the_owned_session() {
         Err(error) if error.kind() == StorageErrorKind::CorruptData)
     );
 }
+
+#[test]
+fn complete_logical_reader_clones_retain_the_original_pin_engine_and_mutation_lease() {
+    use riffdb_storage_api::SnapshotFenceReader;
+    let (scope, session) = fixture(0x68);
+    let database_id = session.database_id();
+    let session_id = session.open_session_id();
+    let owner = Arc::downgrade(&session.shared);
+    let proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
+    let gate = proof.snapshot._lease.gate_for_test();
+    let epoch = proof.snapshot.durable_commit_epoch;
+    let original_read_frontier = read_retained_metadata(&proof.snapshot.read).unwrap();
+    let (id, session, retained, catalog, reader) = proof.into_authorization_parts().unwrap();
+    assert_eq!(id, database_id);
+    assert_eq!(session, session_id);
+    assert!(catalog.matches(id, session));
+    assert_eq!(retained, original_read_frontier);
+    let last_reader = reader.clone();
+    assert_eq!(
+        reader.application_frontier().unwrap(),
+        last_reader.application_frontier().unwrap()
+    );
+    drop(reader);
+    drop(catalog);
+    assert!(
+        owner.upgrade().is_some(),
+        "logical reader clones must retain the SAME native engine owner"
+    );
+    assert!(
+        gate.is_held(),
+        "logical reader clones must retain the completed mutation lease"
+    );
+    assert!(gate.try_acquire().unwrap().is_none());
+    last_reader.verify_complete_logical_read().unwrap();
+    assert_eq!(owner.upgrade().unwrap().durable_commit_epoch(), epoch);
+    assert!(matches!(
+        redb::Database::open(scope.join("db.redb")),
+        Err(redb::DatabaseError::DatabaseAlreadyOpen)
+    ));
+    drop(last_reader);
+    assert!(
+        owner.upgrade().is_none(),
+        "the final reader releases all native ownership"
+    );
+    assert!(!gate.is_held());
+    drop(redb::Database::open(scope.join("db.redb")).unwrap());
+}
+
+#[test]
+fn complete_logical_reader_handoff_refuses_a_changed_epoch_catalog_or_cancellation() {
+    for refusal in 0..3 {
+        let (_scope, mut session) = fixture(0x69 + refusal);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        session.set_cancellation(Arc::clone(&cancelled));
+        let owner = Arc::downgrade(&session.shared);
+        let mut proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
+        let gate = proof.snapshot._lease.gate_for_test();
+        if refusal == 0 {
+            cancelled.store(true, Ordering::Release);
+        } else if refusal == 1 {
+            let shared = Arc::clone(&proof.snapshot.shared);
+            let write = shared.database.begin_write().unwrap();
+            write
+                .open_table(OUTBOX_STATUS)
+                .unwrap()
+                .insert(b"reader-proof-fixture".as_slice(), b"changed".as_slice())
+                .unwrap();
+            shared.commit_durable(write).unwrap();
+        } else {
+            let (_other_scope, other_session) = fixture(0x70);
+            let other =
+                RedbOfflineIntegrityScrub::validate_complete_session(other_session).unwrap();
+            proof.catalog = other.catalog;
+        }
+        let result = proof.into_authorization_parts();
+        assert!(
+            matches!(result, Err(error) if error.kind() == if refusal == 0 {StorageErrorKind::Unavailable} else {StorageErrorKind::CorruptData})
+        );
+        assert!(owner.upgrade().is_none());
+        assert!(!gate.is_held());
+    }
+}
+
+#[test]
+fn complete_logical_reader_keeps_original_bytes_and_refuses_later_mutation_or_cancellation() {
+    for cancel in [false, true] {
+        let (_scope, mut session) = fixture(if cancel { 0x73 } else { 0x72 });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        session.set_cancellation(Arc::clone(&cancelled));
+        let proof = RedbOfflineIntegrityScrub::validate_complete_session(session).unwrap();
+        let shared = Arc::clone(&proof.snapshot.shared);
+        let gate = proof.snapshot._lease.gate_for_test();
+        let (_, _, _, _, reader) = proof.into_authorization_parts().unwrap();
+        let clone = reader.clone();
+        if cancel {
+            cancelled.store(true, Ordering::Release);
+        } else {
+            let write = shared.database.begin_write().unwrap();
+            write
+                .open_table(OUTBOX_STATUS)
+                .unwrap()
+                .insert(
+                    b"reader-original-pin".as_slice(),
+                    b"later-native-write".as_slice(),
+                )
+                .unwrap();
+            shared.commit_durable(write).unwrap();
+            assert!(
+                reader
+                    .complete_logical_access_for_test()
+                    .read_value(
+                        crate::journal::JournalTable::OutboxStatus,
+                        b"reader-original-pin",
+                    )
+                    .unwrap()
+                    .is_none(),
+                "authorization must retain the original validated read"
+            );
+            let current = shared.database.begin_read().unwrap();
+            assert_eq!(
+                current
+                    .open_table(OUTBOX_STATUS)
+                    .unwrap()
+                    .get(b"reader-original-pin".as_slice(),)
+                    .unwrap()
+                    .unwrap()
+                    .value(),
+                b"later-native-write"
+            );
+        }
+        assert!(reader.verify_complete_logical_read().is_err());
+        cancelled.store(false, Ordering::Release);
+        assert!(
+            clone.verify_complete_logical_read().is_err(),
+            "another clone cannot launder invalidated logical evidence"
+        );
+        drop(reader);
+        assert!(gate.is_held());
+        drop(clone);
+        assert!(!gate.is_held());
+    }
+}

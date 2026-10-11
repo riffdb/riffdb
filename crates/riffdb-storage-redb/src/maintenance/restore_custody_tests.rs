@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::test_path::ScopedDirectory;
+use redb::ReadableDatabase;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -415,4 +416,76 @@ fn close_joins_an_in_flight_access_before_revoking_its_lease() {
     );
     assert_eq!(backend.len().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
     probe(&path, true);
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn native_preparation_growth_freezes_only_after_observed_engine_close() {
+    use redb::ReadableTableMetadata;
+    let scope = ScopedDirectory::new("private-custody-preparation-growth");
+    let path = healthy(&scope);
+    let initial = std::fs::metadata(&path).unwrap().len();
+    assert!(initial > 0 && initial <= 16 * 1024 * 1024);
+    let owner =
+        RestoreCustody::capture_for_preparation(&path, Arc::new(AtomicBool::new(false))).unwrap();
+    let database = engine(&owner);
+    let frozen_while_open = owner.freeze_prepared_artifact();
+    assert!(
+        matches!(frozen_while_open, Err(error) if error.kind() == StorageErrorKind::Unavailable)
+    );
+    let rows = initial.div_ceil(64 * 1024) + 32;
+    let definition = redb::TableDefinition::<u64, &[u8]>::new("preparation-growth");
+    let write = database.begin_write().unwrap();
+    {
+        let mut table = write.open_table(definition).unwrap();
+        let value = [0x41_u8; 64 * 1024];
+        for ordinal in 0..rows {
+            table.insert(ordinal, value.as_slice()).unwrap();
+        }
+    }
+    write
+        .commit()
+        .expect("native preparation must retain ordinary allocator growth");
+    owner.verify_identity().unwrap();
+    probe(&path, true);
+    drop(database);
+    let frozen = owner.freeze_prepared_artifact().unwrap();
+    assert!(
+        frozen > initial,
+        "fixture must really grow the native artifact"
+    );
+    assert_eq!(frozen, std::fs::metadata(&path).unwrap().len());
+    probe(&path, true);
+    let database = engine(&owner);
+    let read = database.begin_read().unwrap();
+    {
+        let table = read.open_table(definition).unwrap();
+        let expected = [0x41_u8; 64 * 1024];
+        assert_eq!(table.len().unwrap(), rows);
+        for ordinal in 0..rows {
+            assert_eq!(
+                table.get(ordinal).unwrap().unwrap().value(),
+                expected.as_slice()
+            );
+        }
+    }
+    drop(read);
+    drop(database);
+    owner.verify_identity().unwrap();
+    let backend = owner.lease().unwrap();
+    assert_eq!(
+        backend.set_len(frozen + 1).unwrap_err().kind(),
+        io::ErrorKind::StorageFull
+    );
+    assert_eq!(
+        backend.write(frozen, &[1]).unwrap_err().kind(),
+        io::ErrorKind::StorageFull
+    );
+    backend.close().unwrap();
+    owner.verify_identity().unwrap();
+    assert!(matches!(owner.freeze_prepared_artifact(),
+        Err(error) if error.kind() == StorageErrorKind::InvariantViolation));
+    drop(backend);
+    drop(owner);
+    probe(&path, false);
 }

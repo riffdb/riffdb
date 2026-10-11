@@ -208,3 +208,30 @@ fn private_archive_incarnation_open_refuses_repair_before_stamping() {
         "private archive stamp must not repair the private artifact"
     );
 }
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn private_archive_prefix_construction_refuses_repair_before_mutation() {
+    let (scope, store, _) = private_root_fixture(true);
+    drop(store);
+    let path = scope.join("db.redb");
+    let damaged = require_native_repair(&path);
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    // Exercise the actual descriptor-bound constructor called after marker
+    // quarantine, before the reconstruction owner's immediate transaction.
+    let result = open_prefix_construction_database(&file);
+    let refused = matches!(&result, Err(error) if error.kind() == StorageErrorKind::CorruptData);
+    drop(result);
+    assert!(
+        refused,
+        "private archive prefix construction must abort native repair"
+    );
+    assert!(
+        std::fs::read(&path).unwrap() == damaged,
+        "prefix reconstruction must preserve repair-requiring staged bytes"
+    );
+}

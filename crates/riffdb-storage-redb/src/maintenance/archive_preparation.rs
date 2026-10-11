@@ -28,7 +28,7 @@ pub(super) fn rebuild_projection_state(
     };
     cancelled(&cancellation)?;
     verify_file(stage, file)?;
-    let store = crate::RedbFollowerStore::open(stage.staged_database_file())?;
+    let store = crate::RedbFollowerStore::open_private_archive(stage.staged_database_file())?;
     let session = store.begin_projection_recovery(inputs, Arc::clone(&cancellation))?;
     let owner = rebuilder.rebuild(session, Arc::clone(&cancellation))?;
     if owner.durable_history()? != expected {

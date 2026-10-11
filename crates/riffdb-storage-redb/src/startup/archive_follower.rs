@@ -15,7 +15,8 @@ pub(crate) fn open_validated_archive_follower(
         }
     };
     cancelled(cancellation)?;
-    let mut session = crate::RedbFollowerStore::open(path)?.begin_structural_evidence(inputs)?;
+    let mut session =
+        crate::RedbFollowerStore::open_private_archive(path)?.begin_structural_evidence(inputs)?;
     let mut cursor =
         StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
     let end = loop {

@@ -16,7 +16,7 @@ use std::{
     path::Path,
     sync::{
         Arc, RwLock, RwLockReadGuard,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -32,7 +32,9 @@ struct Shared {
     name: OsString,
     file: File,
     native_guard: redb::backends::FileBackend,
-    maximum_bytes: u64,
+    // Zero is the private preparation phase, before any validation proof.
+    // A frozen verifier is bounded by the exact completed artifact length.
+    maximum_bytes: AtomicU64,
     cancellation: Arc<AtomicBool>,
     invalid: AtomicBool,
     leases: RwLock<Leases>,
@@ -89,7 +91,7 @@ impl RestoreCustody {
                 name,
                 file,
                 native_guard,
-                maximum_bytes,
+                maximum_bytes: AtomicU64::new(maximum_bytes),
                 cancellation,
                 invalid: AtomicBool::new(false),
                 leases: RwLock::new(Leases::default()),
@@ -99,16 +101,64 @@ impl RestoreCustody {
         Ok(owner)
     }
 
+    // This module remains test-only. A production preparation constructor must
+    // consume authenticated copied-artifact provenance, never a raw pathname.
+    // Preparation preserves the native allocator and caller's existing bounded
+    // hydration rules; the verification backend cannot invent growth headroom.
+    fn capture_for_preparation(
+        path: &Path,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<Self, StorageError> {
+        let owner = Self::capture(path, cancellation)?;
+        owner.shared.maximum_bytes.store(0, Ordering::Release);
+        Ok(owner)
+    }
+
+    fn freeze_prepared_artifact(&self) -> Result<u64, StorageError> {
+        self.verify_identity()?;
+        let leases = self.shared.leases.write().map_err(|_| {
+            self.shared.invalid.store(true, Ordering::Release);
+            unavailable(())
+        })?;
+        self.shared.available().map_err(unavailable)?;
+        // Observe close rather than assuming that dropping an engine completed
+        // it. No backend operation can race the exact-length freeze.
+        if leases.active.is_some() || !leases.ranges.is_empty() {
+            return Err(unavailable(()));
+        }
+        if self.shared.maximum_bytes.load(Ordering::Acquire) != 0 {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let length = self
+            .shared
+            .observe_io(self.shared.file.metadata())
+            .map_err(unavailable)?
+            .len();
+        if length == 0 {
+            self.shared.invalid.store(true, Ordering::Release);
+            return Err(corrupt());
+        }
+        self.shared.maximum_bytes.store(length, Ordering::Release);
+        self.verify_identity()?;
+        Ok(length)
+    }
+
     fn verify_identity(&self) -> Result<(), StorageError> {
         let result = (|| {
             self.shared.available().map_err(unavailable)?;
             self.shared.parent.verify()?;
+            let length = self
+                .shared
+                .observe_io(self.shared.file.metadata())
+                .map_err(unavailable)?
+                .len();
+            let maximum_bytes = self.shared.maximum_bytes.load(Ordering::Acquire);
             if !self
                 .shared
                 .parent
                 .regular_file_matches(&self.shared.name, &self.shared.file)?
-                || self.shared.file.metadata().map_err(unavailable)?.len()
-                    != self.shared.maximum_bytes
+                || length == 0
+                || (maximum_bytes != 0 && length != maximum_bytes)
             {
                 return Err(corrupt());
             }
@@ -223,7 +273,8 @@ impl RestoreEngineBackend {
     }
 
     fn capacity(&self, end: u64) -> io::Result<()> {
-        if end > self.shared.maximum_bytes {
+        let maximum_bytes = self.shared.maximum_bytes.load(Ordering::Acquire);
+        if maximum_bytes != 0 && end > maximum_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "private restore artifact capacity exhausted",

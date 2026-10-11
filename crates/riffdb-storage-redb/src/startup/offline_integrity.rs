@@ -31,6 +31,60 @@ impl CompleteLogicalValidation {
         Ok(())
     }
 
+    /// Logical handoff only. The eventual native materialization owner must
+    /// separately prove physical integrity and artifact custody before exposing
+    /// this reader to the server's unchanged startup proof join.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ADR-0285 owned private factory integration is still pending"
+        )
+    )]
+    pub(crate) fn into_authorization_parts(
+        self,
+    ) -> Result<
+        (
+            DatabaseId,
+            OpenSessionId,
+            RetainedMetadataV1,
+            riffdb_catalog::ValidatedCatalogHistory,
+            crate::RedbOwnedSnapshot,
+        ),
+        StorageError,
+    > {
+        self.verify()?;
+        let Self { snapshot, catalog } = self;
+        let CompletedLogicalSnapshot {
+            read,
+            _lease,
+            shared,
+            durable_commit_epoch,
+            database_id,
+            open_session_id,
+            retained_metadata,
+            cancellation,
+        } = snapshot;
+        let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+        let custody = Arc::new(ValidatedReadCustody {
+            _lease,
+            shared,
+            durable_commit_epoch,
+            cancellation,
+            invalid: AtomicBool::new(false),
+        });
+        let reader =
+            crate::RedbOwnedSnapshot::from_read_access(crate::store::RedbReadAccess::Durable(root))
+                .with_validated_custody(custody);
+        Ok((
+            database_id,
+            open_session_id,
+            retained_metadata,
+            catalog,
+            reader,
+        ))
+    }
+
     fn into_receipt(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
         self.verify()?;
         // A public offline receipt carries none of the native evidence. Its

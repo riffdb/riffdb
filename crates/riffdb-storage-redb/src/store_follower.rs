@@ -58,22 +58,35 @@ impl RedbFollowerStore {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         let namespace = crate::maintenance::FollowerNamespace::open(path)?;
-        Self::open_with_namespace(path, namespace)
+        Self::open_with_namespace(path, namespace, engine_open::EngineRepairPolicy::Recover)
+    }
+
+    /// Closed first-party archive preparation; no recovering open may precede
+    /// complete private validation or make a repaired copy publication input.
+    pub(crate) fn open_private_archive(path: &Path) -> Result<Self, StorageError> {
+        if preflight_durable_format_path(path).map_err(format_preflight_storage_error)?
+            != RedbDurableFormatPreflight::OpenCurrent
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        let namespace = crate::maintenance::FollowerNamespace::open(path)?;
+        Self::open_with_namespace(path, namespace, engine_open::EngineRepairPolicy::Refuse)
     }
 
     #[cfg(test)]
     pub(crate) fn open_with_failed_namespace_sync(path: &Path) -> Result<Self, StorageError> {
         let mut namespace = crate::maintenance::FollowerNamespace::open(path)?;
         namespace.fail_directory_sync();
-        Self::open_with_namespace(path, namespace)
+        Self::open_with_namespace(path, namespace, engine_open::EngineRepairPolicy::Recover)
     }
 
     fn open_with_namespace(
         path: &Path,
         mut namespace: crate::maintenance::FollowerNamespace,
+        repair_policy: engine_open::EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
         let backend = namespace.backend()?;
-        let store = RedbStore::open_after_format_preflight(
+        let store = RedbStore::open_after_format_preflight_with_repair_policy(
             OpenMode::Follower,
             path,
             RedbCommitProfile::Hardened,
@@ -82,6 +95,7 @@ impl RedbFollowerStore {
             None,
             Some(Box::new(backend)),
             Arc::new(RealJournalMedia),
+            repair_policy,
         )?;
         // The actual engine lock remains held during both syncs. A publisher's
         // lost/failed final sync can never be mistaken for a durable pathname.

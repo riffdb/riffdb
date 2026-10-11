@@ -136,6 +136,37 @@ struct CompletedLogicalSnapshot {
     cancellation: Option<Arc<AtomicBool>>,
 }
 
+/// Retained native ownership for clones of one completed logical read.
+/// This grants no physical, materialization, authorization or publication proof.
+/// The immutable read lives in the snapshot and drops before this lease/owner.
+pub(crate) struct ValidatedReadCustody {
+    _lease: ExclusiveLease,
+    shared: Arc<SharedRedb>,
+    durable_commit_epoch: u64,
+    cancellation: Option<Arc<AtomicBool>>,
+    invalid: AtomicBool,
+}
+
+impl ValidatedReadCustody {
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            self.invalid.store(true, Ordering::Release);
+        }
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
+            self.invalid.store(true, Ordering::Release);
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+}
+
 #[allow(dead_code)]
 impl OfflineIntegrityScrubReceiptV1 {
     /// Closed receipt version.

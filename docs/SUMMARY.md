@@ -232,7 +232,7 @@
 - [WP-773 Bounded Columnar Shutdown](performance/wp-773-columnar-shutdown.md)
 - [WP-777 Demand-activated Columnar Runtime](performance/wp-777-demand-activated-columnar.md)
 - [WP-791 Derived Sinks Local Measurement](performance/wp-791-derived-sinks-local-2026-09.md)
-- [WP-791 Derived Sinks C3D Measurement](performance/wp-791-derived-sinks-c3d-2026-09.md)
+- [WP-791 Derived Sinks the required 8-vCPU, 32-GiB Linux SSD host Measurement](performance/wp-791-derived-sinks-c3d-2026-09.md)
 - [WP-800 Vector Write Attribution](performance/wp-800-vector-write-attribution.md)
 - [WP-803 Live Field Addition](performance/wp-803-live-field-addition.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)

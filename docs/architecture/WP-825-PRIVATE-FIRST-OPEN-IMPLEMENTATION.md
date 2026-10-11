@@ -18,7 +18,7 @@ materialization must return `CorruptData`, leave every backup artifact intact,
 and publish neither a staged primary nor the configured target. The same test
 must fail against the preceding implementation before the correction is tested.
 
-Checks run on C3D: the failing first-open regression, the corrected regression,
+Checks run on the required 8-vCPU, 32-GiB Linux SSD host: the failing first-open regression, the corrected regression,
 native backup and maintenance tests, native Clippy, formatting, allowed paths,
 and scoped acceptance. Review the bound receipt before committing this change.
 

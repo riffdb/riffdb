@@ -61,6 +61,8 @@ pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
     derived: Option<std::sync::Arc<redb::ReadTransaction>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
+    // Field order releases every read before the final retained lease/engine.
+    validated_custody: Option<std::sync::Arc<crate::startup::ValidatedReadCustody>>,
 }
 
 impl RedbOwnedSnapshot {
@@ -69,7 +71,35 @@ impl RedbOwnedSnapshot {
             access,
             derived: None,
             source_pins: None,
+            validated_custody: None,
         }
+    }
+
+    pub(crate) fn with_validated_custody(
+        mut self,
+        custody: std::sync::Arc<crate::startup::ValidatedReadCustody>,
+    ) -> Self {
+        self.validated_custody = Some(custody);
+        self
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ADR-0285 private authorization join integration is pending"
+        )
+    )]
+    pub(crate) fn verify_complete_logical_read(&self) -> Result<(), StorageError> {
+        self.validated_custody
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .verify()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn complete_logical_access_for_test(&self) -> &RedbReadAccess {
+        &self.access
     }
 
     pub(crate) fn derived_transaction(&self) -> Option<&redb::ReadTransaction> {
@@ -121,6 +151,7 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
             access: self.begin_composite_read()?,
             derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
             source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
+            validated_custody: None,
         })
     }
 }

@@ -102,6 +102,58 @@ fn isolated_applier(store: RedbFollowerStore) -> RedbFollowerApplier {
     RedbFollowerApplier::from_validated_shared(store.0.shared).unwrap()
 }
 
+fn require_follower_engine_repair(path: &Path) -> Vec<u8> {
+    let mut bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+    assert_eq!(bytes[9] & 2, 0);
+    bytes[9] = (bytes[9] | 2) & !4;
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn private_archive_follower_refuses_repair_before_replay_and_projection_preparation() {
+    for needs_repair in [false, true] {
+        let scope = crate::test_path::ScopedDirectory::new("private-archive-follower-repair");
+        let path = scope.join("db.redb");
+        let expected = fixture(&path);
+        let damaged = needs_repair.then(|| require_follower_engine_repair(&path));
+        let result = RedbFollowerStore::open_private_archive(&path);
+        if let Some(damaged) = damaged {
+            let refused = matches!(&result,
+                Err(error) if error.kind() == StorageErrorKind::CorruptData);
+            drop(result);
+            assert!(refused, "private archive follower must abort native repair");
+            assert_eq!(std::fs::read(&path).unwrap(), damaged);
+        } else {
+            let store = result.expect("healthy private archive follower remains supported");
+            assert!(!store.0.shared.engine_repaired_at_open);
+            let read = store.0.shared.database.begin_read().unwrap();
+            assert_eq!(
+                crate::changelog_v3_roots::read_checkpoint_roots(&read).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+}
+
+// req: REP-003, REC-001, REC-006
+#[test]
+fn ordinary_published_follower_retains_engine_crash_recovery() {
+    let scope = crate::test_path::ScopedDirectory::new("published-follower-engine-recovery");
+    let path = scope.join("db.redb");
+    let expected = fixture(&path);
+    require_follower_engine_repair(&path);
+    let store = RedbFollowerStore::open(&path).expect("published follower crash recovery");
+    assert!(store.0.shared.engine_repaired_at_open);
+    let read = store.0.shared.database.begin_read().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&read).unwrap(),
+        Some(expected)
+    );
+}
+
 #[test]
 fn follower_handle_refuses_source_state_and_never_exposes_source_activation() {
     let scope = crate::test_path::ScopedDirectory::new("follower-open");

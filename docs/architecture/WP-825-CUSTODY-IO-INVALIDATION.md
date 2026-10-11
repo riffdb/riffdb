@@ -14,7 +14,7 @@ Admission refusals before I/O and access through an already closed generation
 remain distinct: they do not invalidate a healthy successor merely because an
 old handle was used. No native I/O error is converted to success or absence.
 
-Checks required on C3D: a genuine FileBackend failing-read counterexample;
+Checks required on the required 8-vCPU, 32-GiB Linux SSD host: a genuine FileBackend failing-read counterexample;
 all custody ownership, cross-process, cancellation and deterministic lease
 schedule tests; native Clippy, formatting and allowed paths. Verify the actual
 terminal receipt and exact formatted source before committing.
@@ -27,3 +27,20 @@ update is needed for this internal foundation correction.
 Hazards and follow-ups: this is no proof that production has continuous custody.
 The complete private factory, owned logical/physical proof, authorization reader,
 final combined CI and unchanged recovery/rehearsal gates remain open.
+
+Private preparation and verification have distinct length authority. Native
+hydration may grow an unpublished copy under the existing allocator and caller
+bounds. Only after the engine lease has actually closed can its exact completed
+length become the verifier's capacity. A live engine cannot freeze that bound,
+a repeated freeze cannot increase it, and later verifier resize or write requests
+cannot extend the captured artifact. This foundation remains test-only: raw-path
+capture cannot become a production constructor. Production construction must
+consume complete authenticated copied-artifact provenance. A controlled stamp
+must also retain its existing legitimate allocation behavior under its separate
+receipt and pre-stamp seals; a frozen verification cap cannot silently narrow it.
+
+Required native proof: fill a real owned engine beyond its initial file length,
+observe close, freeze the exact resulting length, reopen and read every row,
+then refuse extension. Verify independent-process exclusion before and after
+the freeze and ordinary opens after final release. This adds no publication
+authority or production custody integration.
