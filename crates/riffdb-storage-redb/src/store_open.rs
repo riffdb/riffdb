@@ -18,6 +18,7 @@ pub(crate) struct OwnedEngineOpen {
     checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     repair_observed: Arc<AtomicBool>,
     refuse_repair: bool,
+    restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
 }
 
 enum EngineMedium<'a> {
@@ -29,7 +30,10 @@ impl OwnedEngineOpen {
     pub(crate) fn from_private_restore_backend(
         backend: crate::maintenance::RestoreEngineBackend,
     ) -> Result<Self, StorageError> {
-        Self::create(EngineMedium::Backend(Box::new(backend)), true)
+        let binding = backend.integrity_binding()?;
+        let mut engine = Self::create(EngineMedium::Backend(Box::new(backend)), true)?;
+        engine.restore_integrity = Some(binding);
+        Ok(engine)
     }
 
     fn create(medium: EngineMedium<'_>, refuse_repair: bool) -> Result<Self, StorageError> {
@@ -89,6 +93,7 @@ impl OwnedEngineOpen {
             checkpoint_rewrite,
             repair_observed,
             refuse_repair,
+            restore_integrity: None,
         })
     }
 
@@ -99,6 +104,15 @@ impl OwnedEngineOpen {
     #[cfg(test)]
     pub(crate) fn checkpoint_observer(&self) -> Arc<crate::checkpoint_rewrite::CheckpointRewrite> {
         Arc::clone(&self.checkpoint_rewrite)
+    }
+}
+
+impl SharedRedb {
+    pub(crate) fn verify_private_restore_integrity(&self) -> Result<(), StorageError> {
+        match &self.restore_integrity {
+            Some(binding) => binding.verify(),
+            None => Ok(()),
+        }
     }
 }
 
@@ -139,9 +153,12 @@ impl RedbStore {
         self.upgrade_registry_completion_pending()?;
         let shared = Arc::get_mut(&mut self.shared)
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-        if !shared.database.check_integrity().map_err(database_error)?
-            || shared.engine_repaired_at_open
-        {
+        shared
+            .restore_integrity
+            .as_mut()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .check_integrity(&mut shared.database)?;
+        if shared.engine_repaired_at_open {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         self.cache_verified_retention_watermark()
@@ -222,6 +239,7 @@ impl RedbStore {
             checkpoint_rewrite,
             repair_observed,
             refuse_repair,
+            restore_integrity,
         } = engine;
         // Preserve source directory sync, binding/follower admission, resolver
         // registration and every required preparation in their original order.
@@ -275,6 +293,7 @@ impl RedbStore {
                 follower_namespace: Mutex::new(None),
                 database,
                 checkpoint_rewrite,
+                restore_integrity,
                 outbox_stage_census: crate::outbox_stage_census::Census::default(),
                 derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),

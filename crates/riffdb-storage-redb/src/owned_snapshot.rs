@@ -66,6 +66,13 @@ pub struct RedbOwnedSnapshot {
 }
 
 impl RedbOwnedSnapshot {
+    fn verify_snapshot_custody(&self) -> Result<(), StorageError> {
+        match &self.validated_custody {
+            Some(custody) => custody.verify(),
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
         Self {
             access,
@@ -119,6 +126,7 @@ impl RedbOwnedSnapshot {
     pub fn pin_derived_source_v3(
         &self,
     ) -> Result<crate::RedbDerivedSourcePin, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.verify_snapshot_custody()?;
         let pins = self
             .source_pins
             .as_ref()
@@ -131,6 +139,7 @@ impl RedbOwnedSnapshot {
         &self,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<crate::RedbDerivedSourcePin, riffdb_storage_api::ChangelogCursorErrorV3> {
+        self.verify_snapshot_custody()?;
         let pins = self
             .source_pins
             .as_ref()
@@ -166,10 +175,12 @@ impl OwnedSnapshotReader for RedbSharedPorts {
 
 impl SnapshotFenceReader for RedbOwnedSnapshot {
     fn application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
+        self.verify_snapshot_custody()?;
         self.access.application_frontier()
     }
 
     fn index_epoch(&self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
+        self.verify_snapshot_custody()?;
         let key = encode_partition_index_key(target);
         let Some(encoded) = self.access.read_value(JournalTable::IndexEpochs, &key)? else {
             return Ok(0);
@@ -185,6 +196,7 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
         &self,
         request: SnapshotIndexRangeRequestV1,
     ) -> Result<SnapshotIndexRangePageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let wanted = usize::from(request.limit().get());
         let mut upper = request.upper().to_vec();
         if request.upper_inclusive() {
@@ -232,6 +244,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         &self,
         target: &EntityTarget,
     ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         read_entity_record_access(&self.access, target)
     }
 
@@ -239,6 +252,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         &self,
         identity: &IdempotencyIdentity,
     ) -> Result<Option<StoredOutcomeV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let key = identity.storage_key().map_err(|_| invariant())?;
         let encoded_key = encode_idempotency_key(&key);
         let encoded = match self
@@ -289,6 +303,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         &self,
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         if let Some(command) = command_member_at_access(&self.access, sequence)? {
             if command.base().commit_sequence() != sequence {
                 return Err(corrupt());
@@ -302,6 +317,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         &self,
         provenance_id: ProvenanceId,
     ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let encoded_key = encode_provenance_key(provenance_id);
         let Some(encoded) = self
             .access
@@ -340,6 +356,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         &self,
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         if let Some(CommandAuthorityMember::CapsuleV2(capsule)) =
             command_member_at_access(&self.access, event_id.commit_sequence())?
         {
@@ -364,6 +381,7 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
 
 impl SnapshotReader for RedbOwnedSnapshot {
     fn read_snapshot(&self, request: SnapshotRequest) -> Result<ReadSnapshot, StorageError> {
+        self.verify_snapshot_custody()?;
         let observed = self.access.application_frontier()?;
         read_snapshot_from_access(request, observed, &self.access)
     }
@@ -374,6 +392,7 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
         &self,
         request: AuthoritativeEntityPartitionScanRequest,
     ) -> Result<AuthoritativeEntityPartitionScanPage, StorageError> {
+        self.verify_snapshot_custody()?;
         let application_head = self.access.application_frontier()?.map_or(
             FrontierPosition::BeforeFirst,
             FrontierPosition::AppliedThrough,
@@ -416,6 +435,7 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
         &self,
         request: AuthoritativeIndexScanRequest,
     ) -> Result<AuthoritativeIndexScanPage, StorageError> {
+        self.verify_snapshot_custody()?;
         let epoch = read_epoch_position_access(&self.access, request.target().generation_target())?;
         let prefix = request.target().prefix().as_bytes();
         let upper = exclusive_prefix_end(prefix).ok_or_else(corrupt)?;
@@ -480,6 +500,7 @@ impl AuthoritativeScanReader for RedbOwnedSnapshot {
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let inclusive_upper = match request.inclusive_upper() {
             Some(sequence) => FrontierPosition::AppliedThrough(sequence),
             None => self.access.application_frontier()?.map_or(
@@ -601,6 +622,7 @@ impl FilteredAuthoritativeScanReader for RedbOwnedSnapshot {
         &self,
         request: FilteredAuthoritativeIndexScanRequest,
     ) -> Result<FilteredAuthoritativeIndexScanPage, StorageError> {
+        self.verify_snapshot_custody()?;
         if request.partition_filter().is_none() {
             return FilteredAuthoritativeIndexScanPage::exact_end(
                 &request,
@@ -699,6 +721,7 @@ impl VectorObservationRepository for RedbOwnedSnapshot {
         &self,
         target: &VectorObservationTargetV1,
     ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let key = encode_vector_observation_key(target).map_err(|_| invariant())?;
         self.access
             .read_value(JournalTable::VectorObservations, &key)?
@@ -710,6 +733,7 @@ impl VectorObservationRepository for RedbOwnedSnapshot {
         &self,
         lineage: &ContractLineage,
     ) -> Result<Option<VectorHealthObservationV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let key = encode_vector_health_observation_key(lineage).map_err(|_| invariant())?;
         self.access
             .read_value(JournalTable::VectorObservations, &key)?
@@ -725,6 +749,7 @@ impl VectorEvidenceIndexRepository for RedbOwnedSnapshot {
         &self,
         request: &VectorEvidenceIndexScanRequestV1,
     ) -> Result<VectorEvidenceIndexPageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let prefix =
             encode_vector_evidence_index_prefix(request.target()).map_err(|_| invariant())?;
         let upper = exclusive_prefix_end(&prefix).ok_or_else(invariant)?;

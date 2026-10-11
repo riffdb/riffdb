@@ -35,6 +35,7 @@ struct Shared {
     // Zero is the private preparation phase, before any validation proof.
     // A frozen verifier is bounded by the exact completed artifact length.
     maximum_bytes: AtomicU64,
+    mutation_generation: AtomicU64,
     cancellation: Arc<AtomicBool>,
     invalid: AtomicBool,
     leases: RwLock<Leases>,
@@ -115,6 +116,7 @@ impl RestoreCustody {
                 native_guard,
                 maximum_bytes: AtomicU64::new(if preparing { 0 } else { maximum_bytes }),
                 cancellation,
+                mutation_generation: AtomicU64::new(0),
                 invalid: AtomicBool::new(false),
                 leases: RwLock::new(Leases::default()),
             }),
@@ -271,6 +273,22 @@ impl RestoreCustody {
 }
 
 impl Shared {
+    fn note_mutation(&self) -> io::Result<()> {
+        if self
+            .mutation_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .is_err()
+        {
+            self.invalid.store(true, Ordering::Release);
+            return Err(io::Error::other(
+                "private restore mutation generation exhausted",
+            ));
+        }
+        Ok(())
+    }
+
     fn observe_io<T, E>(&self, result: Result<T, E>) -> Result<T, E> {
         if result.is_err() {
             // A later successful operation, close or unchanged inode cannot
@@ -303,7 +321,77 @@ impl Drop for Shared {
     }
 }
 
+/// Bound to the actual backend, original file and engine lease. Only a real
+/// clean physical pass can set its validated mutation generation.
+pub(crate) struct RestoreIntegrityBinding {
+    shared: Arc<Shared>,
+    engine_generation: u64,
+    validated_mutation: Option<u64>,
+}
+
+impl RestoreIntegrityBinding {
+    fn verify_owner(&self) -> Result<(), StorageError> {
+        let result = (|| {
+            RestoreCustody {
+                shared: Arc::clone(&self.shared),
+            }
+            .verify_identity()?;
+            let leases = self.shared.leases.read().map_err(|_| unavailable(()))?;
+            if leases.active != Some(self.engine_generation) {
+                return Err(corrupt());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.shared.invalid.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    /// Called with the uniquely retained engine, before any validation read.
+    /// A caller-supplied successful check or receipt cannot mint this binding.
+    pub(crate) fn check_integrity(
+        &mut self,
+        database: &mut redb::Database,
+    ) -> Result<(), StorageError> {
+        self.verify_owner()?;
+        match database.check_integrity() {
+            Ok(true) => {}
+            Ok(false) => {
+                self.shared.invalid.store(true, Ordering::Release);
+                return Err(corrupt());
+            }
+            Err(error) => {
+                self.shared.invalid.store(true, Ordering::Release);
+                return Err(crate::error::database_error(error));
+            }
+        }
+        self.verify_owner()?;
+        self.validated_mutation = Some(self.shared.mutation_generation.load(Ordering::Acquire));
+        self.verify()
+    }
+
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
+        self.verify_owner()?;
+        if self.validated_mutation != Some(self.shared.mutation_generation.load(Ordering::Acquire))
+        {
+            self.shared.invalid.store(true, Ordering::Release);
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+}
+
 impl RestoreEngineBackend {
+    pub(crate) fn integrity_binding(&self) -> Result<RestoreIntegrityBinding, StorageError> {
+        let _access = self.access().map_err(unavailable)?;
+        Ok(RestoreIntegrityBinding {
+            shared: Arc::clone(&self.shared),
+            engine_generation: self.generation,
+            validated_mutation: None,
+        })
+    }
+
     fn access(&self) -> io::Result<RwLockReadGuard<'_, Leases>> {
         let leases = self.shared.leases.read().map_err(|_| {
             self.shared.invalid.store(true, Ordering::Release);
@@ -363,6 +451,7 @@ impl StorageBackend for RestoreEngineBackend {
     fn set_len(&self, length: u64) -> io::Result<()> {
         let _access = self.access()?;
         self.capacity(length)?;
+        self.shared.note_mutation()?;
         self.shared.observe_io(self.file.set_len(length))
     }
     fn sync_data(&self) -> io::Result<()> {
@@ -375,6 +464,7 @@ impl StorageBackend for RestoreEngineBackend {
             .checked_add(u64::try_from(data.len()).map_err(io::Error::other)?)
             .ok_or_else(|| io::Error::other("private restore offset overflow"))?;
         self.capacity(end)?;
+        self.shared.note_mutation()?;
         self.shared.observe_io(self.file.write(offset, data))
     }
     fn close(&self) -> io::Result<()> {

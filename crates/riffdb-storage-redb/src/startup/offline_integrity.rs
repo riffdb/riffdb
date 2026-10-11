@@ -10,8 +10,14 @@ pub(crate) struct CompleteLogicalValidation {
 }
 
 impl CompleteLogicalValidation {
+    #[cfg(test)]
+    pub(crate) fn native_owner_for_test(&self) -> Arc<SharedRedb> {
+        Arc::clone(&self.snapshot.shared)
+    }
+
     fn verify(&self) -> Result<(), StorageError> {
         let snapshot = &self.snapshot;
+        snapshot.shared.verify_private_restore_integrity()?;
         if snapshot
             .cancellation
             .as_ref()
@@ -237,7 +243,9 @@ impl RedbOfflineIntegrityScrub {
             return Err(corrupt());
         }
         let snapshot = session.finish_offline_integrity_scrub(structural_end, historical_end)?;
-        Ok(CompleteLogicalValidation { snapshot, catalog })
+        let proof = CompleteLogicalValidation { snapshot, catalog };
+        proof.verify()?;
+        Ok(proof)
     }
 }
 

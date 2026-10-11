@@ -434,6 +434,7 @@ pub(crate) struct SharedRedb {
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
     pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
+    pub(super) restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
     pub(crate) outbox_stage_census: crate::outbox_stage_census::Census,
     /// Sidecar redb for rebuildable derived state (ADR-0240). Writes here never
     /// acquire `mutation_gate` or the primary store's write transaction.

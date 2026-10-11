@@ -3561,6 +3561,133 @@ mod tests {
         assert!(!root.join("configured.redb").exists());
     }
 
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_native_proof_refuses_an_untracked_engine_commit() {
+        let root = TestRoot::new("owned-native-proof-raw-commit");
+        let (_, backup, _) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        let shared = validated.logical.native_owner_for_test();
+        let epoch = shared.durable_commit_epoch();
+        let OwnedValidatedMaterialization {
+            logical,
+            materialization,
+        } = validated;
+        let (_, _, _, _, reader) = logical.into_authorization_parts().unwrap();
+        let clone = reader.clone();
+        reader.verify_complete_logical_read().unwrap();
+        assert!(
+            reader
+                .complete_logical_access_for_test()
+                .read_value(
+                    crate::journal::JournalTable::OutboxStatus,
+                    b"native-proof-raw-write"
+                )
+                .unwrap()
+                .is_none()
+        );
+        let write = shared.database.begin_write().unwrap();
+        write
+            .open_table(crate::layout::OUTBOX_STATUS)
+            .unwrap()
+            .insert(
+                b"native-proof-raw-write".as_slice(),
+                b"unclassified".as_slice(),
+            )
+            .unwrap();
+        // Exercise the actual engine directly, bypassing SharedRedb's commit
+        // epoch. Private native proof must observe every backend mutation.
+        write.commit().unwrap();
+        assert_eq!(shared.durable_commit_epoch(), epoch);
+        assert!(
+            reader
+                .complete_logical_access_for_test()
+                .read_value(
+                    crate::journal::JournalTable::OutboxStatus,
+                    b"native-proof-raw-write"
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(
+            riffdb_storage_api::SnapshotFenceReader::application_frontier(&reader).is_err(),
+            "native restore proof must refuse an unclassified engine commit"
+        );
+        assert!(riffdb_storage_api::CatalogRepository::read_active_catalog(&reader).is_err());
+        assert!(
+            riffdb_storage_api::CapabilityReader::resolve_capability_digests(&reader, &[]).is_err()
+        );
+        assert!(reader.verify_complete_logical_read().is_err());
+        assert!(clone.verify_complete_logical_read().is_err());
+        drop(reader);
+        drop(clone);
+        drop(shared);
+        drop(materialization);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_native_proof_refuses_primary_replacement_on_cached_reads() {
+        let root = TestRoot::new("owned-native-proof-cached-identity");
+        let (_, backup, _) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        let OwnedValidatedMaterialization {
+            logical,
+            materialization,
+        } = validated;
+        let (_, _, _, _, reader) = logical.into_authorization_parts().unwrap();
+        let clone = reader.clone();
+        reader.verify_complete_logical_read().unwrap();
+        assert!(
+            reader
+                .complete_logical_access_for_test()
+                .read_value(
+                    crate::journal::JournalTable::OutboxStatus,
+                    b"native-proof-cache"
+                )
+                .unwrap()
+                .is_none()
+        );
+        let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        fs::rename(&path, root.join("original-primary")).unwrap();
+        fs::copy(root.join("original-primary"), &path).unwrap();
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(
+            riffdb_storage_api::SnapshotFenceReader::application_frontier(&reader).is_err(),
+            "cached native restore proof must verify the original primary identity"
+        );
+        assert!(riffdb_storage_api::CatalogRepository::read_active_catalog(&reader).is_err());
+        assert!(
+            riffdb_storage_api::CapabilityReader::resolve_capability_digests(&reader, &[]).is_err()
+        );
+        assert!(reader.verify_complete_logical_read().is_err());
+        fs::remove_file(&path).unwrap();
+        fs::rename(root.join("original-primary"), &path).unwrap();
+        assert!(
+            clone.verify_complete_logical_read().is_err(),
+            "restored pathname cannot launder an invalidated cached proof"
+        );
+        drop(reader);
+        drop(clone);
+        drop(materialization);
+    }
+
     fn owned_validation_inputs() -> StartupValidationInputs {
         let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
         StartupValidationInputs::new(

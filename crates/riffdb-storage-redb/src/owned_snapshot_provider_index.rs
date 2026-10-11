@@ -21,6 +21,7 @@ impl RedbOwnedSnapshot {
         request: &AuthoritativeIndexScanRequest,
         budget: &ProviderBudget,
     ) -> Result<AdmittedProviderIndexPageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let wanted = usize::from(request.limit().get());
         let per_row =
             2 * MAX_KEY_BYTES + 4096 + 4 * std::mem::size_of::<EncodedPageItem<IndexRangeEntry>>();
@@ -117,6 +118,7 @@ impl RedbOwnedSnapshot {
         target: &PartitionIndexTarget,
         budget: &ProviderBudget,
     ) -> Result<IndexEpochPosition, StorageError> {
+        self.verify_snapshot_custody()?;
         let _scratch = budget.reserve(32 * 1024).map_err(|_| unavailable())?;
         let key = super::encode_partition_index_key(target);
         let Some(bytes) = self.access.read_provider_value_v1(

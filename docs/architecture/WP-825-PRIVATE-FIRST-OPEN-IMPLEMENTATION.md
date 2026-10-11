@@ -104,3 +104,19 @@ three derived locator tables before producing an immutable backup and requires
 the native owner to restore them without changing that backup. Post-validation
 registry completion and legacy journal identity transitions still need their
 native handoffs before production integration is complete.
+
+A native proof-binding experiment attaches the original backend's file, lease
+and mutation generation to the same engine container and private store. Every
+backend write or resize advances a checked generation, including raw engine
+commits which bypass the store commit counter. Only the actual complete physical
+pass on the uniquely owned engine records a validated generation. Logical proof
+completion and cached authorization-reader clones recheck that binding and the
+original primary identity; observed uncertainty permanently refuses reuse.
+Ordinary source and follower construction carry no restore binding. This still
+does not implement the server join, sidecar sealing or publication lifecycle.
+
+Every semantic owned-snapshot reader checks an attached completed-validation
+custody before accessing cached rows or allocating provider input. Ordinary
+operational snapshots have no such attached private proof. Native regressions
+exercise the actual frontier, catalog and capability-reader interfaces after
+uncertain primary identity or an untracked engine commit, including cloned reads.

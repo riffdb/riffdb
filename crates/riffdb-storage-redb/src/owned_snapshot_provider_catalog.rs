@@ -32,6 +32,7 @@ impl RedbOwnedSnapshot {
         Option<Arc<ProviderAllocation<riffdb_storage_api::StoredContractMigrationEdgeV1>>>,
         StorageError,
     > {
+        self.verify_snapshot_custody()?;
         // The record's copied private strings/checksum are each bounded by 256
         // bytes; the actor is shared. Admit join copies and settlement census
         // before any metadata key or record reconstruction.
@@ -90,6 +91,7 @@ impl RedbOwnedSnapshot {
         &self,
         budget: &ProviderBudget,
     ) -> Result<Option<Arc<ProviderAllocation<ActiveCatalogPointerV1>>>, StorageError> {
+        self.verify_snapshot_custody()?;
         // Closed metadata handles and bounded key scratch, before opening/copying.
         let _work = budget
             .reserve(32 * 1024)
@@ -131,6 +133,7 @@ impl RedbOwnedSnapshot {
         version: ContractVersion,
         budget: &ProviderBudget,
     ) -> Result<Option<Arc<ProviderAllocation<StoredContractBundleV1>>>, StorageError> {
+        self.verify_snapshot_custody()?;
         let _work = budget
             .reserve(32 * 1024)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;

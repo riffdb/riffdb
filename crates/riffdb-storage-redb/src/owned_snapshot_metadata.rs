@@ -11,6 +11,7 @@ impl riffdb_storage_api::CatalogRepository for RedbOwnedSnapshot {
     fn read_active_catalog(
         &self,
     ) -> Result<Option<riffdb_storage_api::ActiveCatalogPointerV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let access = &self.access;
         let table = access
             .open_table(crate::layout::CATALOG_ACTIVE)
@@ -42,6 +43,7 @@ impl riffdb_storage_api::CatalogRepository for RedbOwnedSnapshot {
         lineage: &riffdb_types::ContractLineage,
         version: riffdb_types::ContractVersion,
     ) -> Result<Option<riffdb_storage_api::StoredContractBundleV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         crate::administration::read_contract_bundle_from_table(
             &self
                 .access
@@ -55,6 +57,7 @@ impl riffdb_storage_api::CatalogRepository for RedbOwnedSnapshot {
         &self,
         predecessor: riffdb_types::ContractBundleHash,
     ) -> Result<Option<riffdb_storage_api::StoredContractMigrationEdgeV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         crate::administration::read_contract_migration_edge_at(&self.access, predecessor)
     }
 }
@@ -64,6 +67,7 @@ impl CapabilityReader for RedbOwnedSnapshot {
         &self,
         capability_id: CapabilityId,
     ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let database = crate::administration::read_database_id_readonly(&self.access)?;
         crate::administration::capability_from_tables(
             &self
@@ -82,6 +86,7 @@ impl CapabilityReader for RedbOwnedSnapshot {
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError> {
+        self.verify_snapshot_custody()?;
         let database = crate::administration::read_database_id_readonly(&self.access)?;
         crate::administration::resolve_capability_digests_from_tables(
             &self
@@ -104,6 +109,7 @@ impl ProjectionApplySnapshotReader for RedbOwnedSnapshot {
         &self,
         request: &ProjectionApplySnapshotRequest,
     ) -> Result<ProjectionApplySnapshot, StorageError> {
+        self.verify_snapshot_custody()?;
         if let Some(derived) = self.derived_transaction() {
             crate::projection_replay::read_projection_replay_snapshot_from(derived, request)
         } else {
@@ -116,6 +122,7 @@ impl ProjectionQueryReader for RedbOwnedSnapshot {
         &self,
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
+        self.verify_snapshot_custody()?;
         self.require_replayed_projection(request.selector().identity())?;
         let head = self.access.application_frontier()?.map_or(
             FrontierPosition::BeforeFirst,
@@ -131,6 +138,7 @@ impl ProjectionQueryReader for RedbOwnedSnapshot {
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
+        self.verify_snapshot_custody()?;
         self.require_replayed_projection(identity)?;
         if let Some(derived) = self.derived_transaction() {
             crate::derived::read_projection_status_from(&self.access, derived, identity)
@@ -149,6 +157,7 @@ impl RedbOwnedSnapshot {
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<(), StorageError> {
+        self.verify_snapshot_custody()?;
         let tables = self.projection_tables();
         let control = crate::derived::read_projection_control(
             &tables
@@ -184,6 +193,7 @@ impl riffdb_storage_api::QueryModuleRepository for RedbOwnedSnapshot {
         &self,
         module_hash: riffdb_types::QueryModuleHash,
     ) -> Result<Option<riffdb_storage_api::StoredQueryModuleV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         crate::administration::read_database_id_readonly(&self.access)?;
         crate::administration::query_module_from_table(
             &self
@@ -199,6 +209,7 @@ impl riffdb_storage_api::QueryModuleRepository for RedbOwnedSnapshot {
         version: riffdb_types::ContractVersion,
         bundle_hash: riffdb_types::ContractBundleHash,
     ) -> Result<Option<riffdb_storage_api::ActiveQueryModulePointerV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         // Complete stream integrity was proved at startup. The pinned read still
         // checks every exact pointer/audit/module cross-link without a history scan.
         crate::administration::read_active_query_module_at(
@@ -214,6 +225,7 @@ impl riffdb_storage_api::ReactiveModuleRepository for RedbOwnedSnapshot {
         &self,
         module_hash: riffdb_types::ReactiveModuleHash,
     ) -> Result<Option<riffdb_storage_api::StoredReactiveModuleV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         crate::administration::reactive_module_from_table(
             &self
                 .access
@@ -231,6 +243,7 @@ impl riffdb_storage_api::AuthoritativeEntitySnapshotReader for RedbOwnedSnapshot
         after: Option<&[u8]>,
         limit: riffdb_storage_api::StorageScanLimit,
     ) -> Result<riffdb_storage_api::ApplicationExportSourcePageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let catalog = riffdb_storage_api::CatalogRepository::read_active_catalog(self)?
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         crate::application_export::read_entity_type_page_at(
@@ -248,6 +261,7 @@ impl RedbOwnedSnapshot {
     pub fn read_columnar_projection_controls(
         &self,
     ) -> Result<Vec<riffdb_storage_api::StoredColumnarProjectionControlV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         crate::columnar_projection_control::read_controls_at(&self.access)
     }
 }

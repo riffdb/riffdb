@@ -160,6 +160,10 @@ impl ValidatedReadCustody {
         if self.invalid.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        if let Err(error) = self.shared.verify_private_restore_integrity() {
+            self.invalid.store(true, Ordering::Release);
+            return Err(error);
+        }
         if self.shared.durable_commit_epoch() != self.durable_commit_epoch {
             self.invalid.store(true, Ordering::Release);
             return Err(corrupt());

@@ -16,6 +16,7 @@ impl RedbOwnedSnapshot {
         target: &EntityTarget,
         budget: &ProviderBudget,
     ) -> Result<Option<ProviderSourceBytesV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         self.access
             .read_provider_value_v1(JournalTable::Entities, target.key().as_bytes(), budget)
     }
@@ -30,6 +31,7 @@ impl RedbOwnedSnapshot {
         request: &riffdb_storage_api::AuthoritativeEntityPartitionScanRequest,
         budget: &ProviderBudget,
     ) -> Result<crate::store::ProviderSourcePageBytesV1, StorageError> {
+        self.verify_snapshot_custody()?;
         // Prefix and range metadata are scratch, separate from retained rows.
         let scratch = budget
             .reserve(32 * 1024)
@@ -57,6 +59,7 @@ impl RedbOwnedSnapshot {
         request: &riffdb_storage_api::AuthoritativeIndexScanRequest,
         budget: &ProviderBudget,
     ) -> Result<crate::store::ProviderSourcePageBytesV1, StorageError> {
+        self.verify_snapshot_custody()?;
         let scratch = budget
             .reserve(32 * 1024)
             .map_err(|_| super::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable))?;
@@ -86,6 +89,7 @@ impl RedbOwnedSnapshot {
         target: &EntityTarget,
         budget: &ProviderBudget,
     ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         let Some(bytes) = self.read_provider_entity_bytes_v1(target, budget)? else {
             return Ok(None);
         };
@@ -109,6 +113,7 @@ impl RedbOwnedSnapshot {
         request: &riffdb_storage_api::AuthoritativeEntityPartitionScanRequest,
         budget: &ProviderBudget,
     ) -> Result<riffdb_storage_api::AdmittedProviderEntityPartitionPageV1, StorageError> {
+        self.verify_snapshot_custody()?;
         use riffdb_storage_api::{
             AuthoritativeEntityPartitionScanPage, EncodedContentCharge, EncodedPageItem,
             StoredEntityRecordV1,
@@ -198,6 +203,7 @@ impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
         target: &EntityTarget,
         budget: &ProviderBudget,
     ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError> {
+        self.verify_snapshot_custody()?;
         RedbOwnedSnapshot::read_provider_entity_record_v1(self, target, budget)
     }
 
@@ -213,6 +219,7 @@ impl riffdb_storage_api::ProviderPolicySourceReaderV1 for RedbOwnedSnapshot {
         >,
         StorageError,
     > {
+        self.verify_snapshot_custody()?;
         use riffdb_storage_api::{
             EncodedContentCharge, EncodedPageItem, SnapshotIndexDirectionV1,
             SnapshotIndexRangePageV1,
