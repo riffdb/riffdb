@@ -28,9 +28,11 @@ The following whole public backup/restore attempt fails. Backup creation takes
 54.055 seconds and retains 100 artifacts totaling 2,953,236,770 bytes. The empty
 replacement exceeds the original 60-second whole-action deadline before
 recovery admission, so restore is never submitted. Downstream TypeScript,
-freeze and 8-hour launch jobs refuse this failed prerequisite. Native backup
-and recovery attribution is in progress; the validators, input and deadline
-remain unchanged.
+freeze and 8-hour launch jobs refuse this failed prerequisite. Native attribution
+isolates a 19.5-second background-scrub join: shutdown never raises the flag
+checked by the native retained-history validator. The repair propagates that
+cancellation before joining; whole-action restore still needs requalification.
+The validators, input and deadline remain unchanged.
 
 Curated numbers and original private-receipt digests are recorded in
 `release/evidence/ticketdesk-lifecycle/2026-10-11-prerequisite-attempt.json`.
@@ -45,6 +47,34 @@ separate WP-826 24-hour run follows WP-825 acceptance and its merged dependency.
 Both runs must prove all 19 predicates, at least three physical retirements in
 the final restored incarnation and the final six fault-free hours. Neither
 qualifies the separate 72-hour alpha endurance gate.
+
+## Native scrub cancellation during maintenance
+
+An instrumented attribution run on runtime revision `c2428736` measures
+19.539 seconds in maintenance graph shutdown, of which 19.502 seconds is the
+scrub worker join. Outbox shutdown takes 7.377 milliseconds and retention
+shutdown takes 2.681 milliseconds. Ordinary final graph shutdown likewise
+spends 20.842 seconds joining the scrub. These inclusive timings identify the
+worker responsible; the diagnostic whole-action restore still fails and does
+not qualify either campaign.
+
+The worker previously signaled its outer stop state and joined, but never
+raised the separate atomic cancellation flag supplied to the native
+retained-history validator. A walk already inside that validator therefore
+continued until completion. The repair lets the stop state own the same flag
+and raises it before joining, after recording the outer stop request so an
+interrupted page is classified as cancellation rather than an integrity
+incident. Shutdown and owner drop both retain their existing join behavior.
+
+The deterministic regression opens a real pinned native scrub session, orders
+shutdown before its next history page using an explicit condition variable,
+and requires native cancellation, the closed cancelled state and successful
+fresh validation of the original source. It fails before flag propagation and
+passes afterward; existing worker tests and all ten native history-cancellation
+tests also pass. Complete validation remains mandatory for a completed scrub;
+shutdown does not fabricate completion or publish partial evidence. The
+unchanged whole public backup/restore gate still needs an ordinary-binary run
+after correctness acceptance of the final repair.
 
 ## Private hydration repair refusal
 

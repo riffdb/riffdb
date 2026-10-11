@@ -36,9 +36,11 @@ The following whole public backup/restore attempt fails. Backup creation takes
 54.055 seconds and retains 100 artifacts totaling 2,953,236,770 bytes. The empty
 replacement exceeds the original 60-second whole-action deadline before
 recovery admission, so restore is never submitted. Downstream TypeScript,
-freeze and 8-hour launch jobs refuse this failed prerequisite. Native backup
-and recovery attribution is in progress; the validators, input and deadline
-remain unchanged.
+freeze and 8-hour launch jobs refuse this failed prerequisite. Native attribution
+isolates a 19.5-second background-scrub join: shutdown never raises the flag
+checked by the native retained-history validator. The repair propagates that
+cancellation before joining; whole-action restore still needs requalification.
+The validators, input and deadline remain unchanged.
 
 Curated numbers and original private-receipt digests are recorded in
 `release/evidence/ticketdesk-lifecycle/2026-10-11-prerequisite-attempt.json`.
