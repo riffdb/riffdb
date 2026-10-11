@@ -1,5 +1,5 @@
 # req: END-003, END-007, END-008, END-009, END-010
-"""Execute the fixed eight-hour controller and close its measured observations.
+"""Execute the fixed eight-hour or 24-hour controller and close its observations.
 
 The result remains explicitly unqualified. Clean-source full CI, four-language
 conformance, host/storage verification and frozen prerequisite bindings must be
@@ -28,6 +28,7 @@ from .ticketdesk_lifecycle_campaign_owner_reconciliation import read_private,dec
 from .ticketdesk_lifecycle_resources import ProcessMemory
 
 DURATION=28800
+CAMPAIGN_DURATION=86400
 FAULTS=(('consumer_outage',600,300),('sink_outage',1800,300),('capability_rotation',3000,45),
     ('additive_deploy',3600,45),('graceful_restart',4200,45),('process_kill',4800,45),
     ('backup_restore',5400,45))
@@ -164,12 +165,14 @@ def post_validation(runtime,closed):
         elapsed_ns=runtime.elapsed(),controller=sample,files=files,qualifies_complete_campaign=False)
 
 
-def run(root,source,repository):
+def run(root,source,repository,*,duration_s=DURATION):
+    require(type(duration_s) is int and duration_s in (DURATION,CAMPAIGN_DURATION),
+            'campaign_entry_duration')
     require(sys.platform=='linux' and os.geteuid()!=0,'campaign_entry_platform')
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_AS,(PROCESS_LIMITS['controller'],PROCESS_LIMITS['controller']))
     descriptor,frozen=prepare(root,source,repository)
-    runtime=CampaignRuntime(root,Path(root)/'artifacts',descriptor,duration_s=DURATION,faults=schedule())
+    runtime=CampaignRuntime(root,Path(root)/'artifacts',descriptor,duration_s=duration_s,faults=schedule())
     result=execute(runtime)
     closed=reconcile(runtime,result)
     require(artifacts(root,Path(root)/'artifacts')==frozen,'campaign_entry_artifact_changed')
@@ -184,8 +187,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',required=True,type=Path)
     parser.add_argument('--artifacts',required=True,type=Path)
+    parser.add_argument('--mode',choices=('rehearsal','campaign'),default='rehearsal',
+                        help='rehearsal runs eight hours; campaign runs 24 hours')
     args=parser.parse_args()
     repository=Path(__file__).resolve().parents[2]
-    run(args.root,args.artifacts,repository)
-    print('Eight-hour measured controller and closed observations complete; prerequisite qualification remains separate.')
+    duration=DURATION if args.mode=='rehearsal' else CAMPAIGN_DURATION
+    run(args.root,args.artifacts,repository,duration_s=duration)
+    print(f'{duration//3600}-hour measured controller and closed observations complete; prerequisite qualification remains separate.')
     return 0

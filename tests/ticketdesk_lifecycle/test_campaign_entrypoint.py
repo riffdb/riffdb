@@ -29,6 +29,34 @@ class CampaignEntrypointTests(unittest.TestCase):
         self.assertTrue(all(row['start_s']+row['duration_s']+600<=DURATION-21600 for row in plans))
         plans[0]['start_s']=0;self.assertEqual(schedule()[0]['start_s'],600)
 
+    def test_entrypoint_selects_only_the_fixed_rehearsal_or_full_campaign_duration(self):
+        from lib.ticketdesk_lifecycle_campaign_entrypoint import main
+        for mode,seconds in ((None,28800),('rehearsal',28800),('campaign',86400)):
+            with self.subTest(mode=mode):
+                argv=['ticketdesk-lifecycle-campaign','--root','/tmp/fresh-campaign',
+                      '--artifacts','/tmp/frozen-binaries']
+                if mode is not None:argv+=['--mode',mode]
+                with patch('sys.argv',argv), \
+                     patch('lib.ticketdesk_lifecycle_campaign_entrypoint.run') as run, \
+                     patch('builtins.print'):
+                    self.assertEqual(main(),0)
+                self.assertEqual(run.call_args.kwargs,{'duration_s':seconds})
+                plans=schedule();CampaignTimeline(plans,duration_s=seconds)
+                self.assertEqual(len(plans),7)
+                self.assertTrue(all(row['start_s']+row['duration_s']+600<=seconds-21600
+                                    for row in plans))
+
+    def test_unknown_run_duration_is_refused_before_controls_or_resource_changes(self):
+        from lib.ticketdesk_lifecycle_campaign_entrypoint import run
+        for seconds in (0,300,28799,28800.0,True,86401):
+            with self.subTest(seconds=seconds), \
+                 patch('lib.ticketdesk_lifecycle_campaign_entrypoint.prepare') as prepare, \
+                 patch('lib.ticketdesk_lifecycle_campaign_entrypoint.resource.setrlimit') as limit:
+                with self.assertRaisesRegex(CampaignEntrypointError,'campaign_entry_duration'):
+                    run(Path('/tmp/fresh-campaign'),Path('/tmp/frozen-binaries'),Path('/tmp/source'),
+                        duration_s=seconds)
+                prepare.assert_not_called();limit.assert_not_called()
+
     def test_frozen_copies_bind_exact_preparation_binaries_and_private_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             parent=Path(directory);source=self.source(parent);root=parent/'root';root.mkdir(mode=0o700)

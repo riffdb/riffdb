@@ -3703,3 +3703,20 @@ is pending and it has no measured qualification. The
 [live observations](WP-825-LIVE-OBSERVATIONS.md) record the failure and ownership
 invariants. Combined-source full CI, ordinary preparation, whole public recovery
 within 60 seconds and the complete eight-hour rehearsal still gate WP-826.
+
+
+### Select the full campaign without changing rehearsal gates
+
+The measured entrypoint retains its eight-hour default. Pass `--mode campaign`
+to `scripts/ticketdesk-lifecycle-campaign --root <fresh-private-root> --artifacts
+<frozen-binary-directory>` for the fixed 24-hour run; `--mode rehearsal` selects
+the original eight-hour duration explicitly. Both modes use the same workload,
+seven faults, finite resource model, recovery deadlines and final six quiet
+hours. No arbitrary duration or qualification bypass is exposed. Each run needs
+fresh controls and artifacts bound to its actual duration and source.
+
+Component observations remain unqualified until independent prerequisite and
+measured-evidence checks pass. The 24-hour mode is executable support for
+WP-826, not evidence that its run has happened. WP-825 remains open pending
+final-source CI, ordinary preparation, whole public recovery within 60 seconds
+and the actual eight-hour rehearsal.
