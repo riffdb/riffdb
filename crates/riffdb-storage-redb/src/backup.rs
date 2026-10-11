@@ -742,19 +742,23 @@ impl RedbOfflineRestore {
         let target_journal = crate::journal::journal_path(&target_artifact);
         let target_format_marker = crate::durable_format_marker_path(&target_artifact);
         let target_lock = lock_existing_target(&target_artifact)?;
-        let mut staged_artifact = StagedArtifact::create(&self.target_directory)?;
-        let mut staged_journal = StagedArtifact::create_named(
+        let private = matches!(&layout, RestoredHistoryLayout::SelfContained { .. });
+        let mut staged_artifact = MaterializationArtifact::create(
+            &self.target_directory,
+            OsStr::new(DATABASE_ARTIFACT_FILE_NAME),
+            private,
+        )?;
+        let mut staged_journal = MaterializationArtifact::create(
             &self.target_directory,
             OsStr::new(JOURNAL_ARTIFACT_FILE_NAME),
+            private,
         )?;
-        let mut staged_format_marker = StagedArtifact::create_named(
+        let mut staged_format_marker = MaterializationArtifact::create(
             &self.target_directory,
             OsStr::new(FORMAT_MARKER_ARTIFACT_FILE_NAME),
+            private,
         )?;
-        copy_and_sync(
-            &self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME),
-            staged_artifact.path(),
-        )?;
+        staged_artifact.copy_from(&self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME))?;
         let staged_lock = match &layout {
             RestoredHistoryLayout::Retained => {
                 Some(validate_artifact(staged_artifact.path(), &manifest)?)
@@ -763,7 +767,7 @@ impl RedbOfflineRestore {
                 // A native private stage cannot recover/repair its first copy
                 // and then present the repaired bytes as a clean validation.
                 // Authenticate every artifact before its first engine open.
-                if sha256_file(staged_artifact.path())? != manifest_checksum(&manifest)? {
+                if staged_artifact.checksum()? != manifest_checksum(&manifest)? {
                     return Err(corrupt());
                 }
                 None
@@ -771,26 +775,21 @@ impl RedbOfflineRestore {
         };
         match manifest_journal_checksum(&manifest)? {
             Some(expected) => {
-                copy_and_sync(
-                    &self.backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME),
-                    staged_journal.path(),
-                )?;
-                if sha256_file(staged_journal.path())? != expected {
+                staged_journal
+                    .copy_from(&self.backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME))?;
+                if staged_journal.checksum()? != expected {
                     return Err(corrupt());
                 }
             }
             None => {
-                fs::remove_file(staged_journal.path()).map_err(io_unavailable)?;
-                crate::journal::reset_journal(
-                    staged_journal.path(),
+                staged_journal.create_legacy_journal(
                     &crate::journal::JournalFileHeader::with_frontiers(
                         manifest.database_id(),
                         manifest.last_commit_sequence(),
                         None,
                         [0; 32],
                     ),
-                )
-                .map_err(backup_journal_error)?;
+                )?;
             }
         }
         validate_backup_journal(
@@ -800,11 +799,9 @@ impl RedbOfflineRestore {
         )?;
         let expected_format_marker =
             manifest_format_marker_checksum(&manifest)?.ok_or_else(corrupt)?;
-        copy_and_sync(
-            &self.backup_directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME),
-            staged_format_marker.path(),
-        )?;
-        if sha256_file(staged_format_marker.path())? != expected_format_marker {
+        staged_format_marker
+            .copy_from(&self.backup_directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME))?;
+        if staged_format_marker.checksum()? != expected_format_marker {
             return Err(corrupt());
         }
         validate_manifest_format_marker(staged_format_marker.path(), &manifest)?;
@@ -816,7 +813,11 @@ impl RedbOfflineRestore {
         let staged_lock = match staged_lock {
             Some(database) => database,
             None => {
-                let database = open_unrepaired_private_database(staged_artifact.path())?;
+                let database = open_private_materialization_database(
+                    &staged_artifact,
+                    &staged_journal,
+                    &staged_format_marker,
+                )?;
                 validate_copied_database_facts(read_database_facts(&database)?, &manifest)?;
                 database
             }
@@ -830,10 +831,8 @@ impl RedbOfflineRestore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_unavailable(error)),
         }
-        fs::rename(staged_artifact.path(), &target_artifact).map_err(io_unavailable)?;
-        staged_artifact.mark_published();
-        fs::rename(staged_journal.path(), &target_journal).map_err(io_unavailable)?;
-        staged_journal.mark_published();
+        staged_artifact.rename_to(&target_artifact)?;
+        staged_journal.rename_to(&target_journal)?;
         // Sealed extents of whatever the target held before never survive, and
         // the backup's own become the restored database's (ADR-0263 A5).
         for (_, stale) in sealed_extents_beside(&target_artifact)? {
@@ -847,8 +846,7 @@ impl RedbOfflineRestore {
             .map_err(io_unavailable)?;
             staged.mark_published();
         }
-        fs::rename(staged_format_marker.path(), &target_format_marker).map_err(io_unavailable)?;
-        staged_format_marker.mark_published();
+        staged_format_marker.rename_to(&target_format_marker)?;
         if sync_directory(&self.target_directory).is_err() {
             return Err(unknown());
         }
@@ -2536,26 +2534,169 @@ impl Drop for StagingDirectory {
     }
 }
 
+/// Three fixed materialization artifacts retain their creation descriptors.
+/// Sealed extents continue using the bounded, descriptor-free staging vector.
+struct MaterializationArtifact {
+    staged: StagedArtifact,
+    identity: Option<(crate::maintenance::PinnedDirectory, File)>,
+}
+
+impl MaterializationArtifact {
+    fn create(directory: &Path, stem: &OsStr, private: bool) -> Result<Self, StorageError> {
+        let parent = if private {
+            Some(crate::maintenance::PinnedDirectory::open(directory)?)
+        } else {
+            None
+        };
+        let (staged, file) = StagedArtifact::create_named_with_file(directory, stem, private)?;
+        let artifact = Self {
+            staged,
+            identity: parent.map(|parent| (parent, file)),
+        };
+        artifact.verify()?;
+        Ok(artifact)
+    }
+
+    fn path(&self) -> &Path {
+        self.staged.path()
+    }
+
+    fn verify(&self) -> Result<(), StorageError> {
+        if let Some((parent, file)) = &self.identity {
+            parent.verify()?;
+            if !parent.regular_file_matches(self.path().file_name().ok_or_else(corrupt)?, file)? {
+                return Err(corrupt());
+            }
+            parent.verify()?;
+        }
+        Ok(())
+    }
+
+    fn copy_from(&self, source: &Path) -> Result<(), StorageError> {
+        self.verify()?;
+        copy_and_sync(source, self.path())?;
+        self.verify()
+    }
+
+    fn checksum(&self) -> Result<BackupIntegrityChecksumV1, StorageError> {
+        self.verify()?;
+        let checksum = match &self.identity {
+            Some((_, file)) => {
+                use std::io::{Seek, SeekFrom};
+                let mut reader = file.try_clone().map_err(io_unavailable)?;
+                reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+                sha256_reader(reader)?
+            }
+            None => sha256_file(self.path())?,
+        };
+        self.verify()?;
+        Ok(checksum)
+    }
+
+    fn private_file(&self) -> Result<&File, StorageError> {
+        self.verify()?;
+        let (_, file) = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if file.metadata().map_err(io_unavailable)?.len() == 0 {
+            return Err(corrupt());
+        }
+        Ok(file)
+    }
+
+    fn rename_to(&mut self, destination: &Path) -> Result<(), StorageError> {
+        self.verify()?;
+        if self.path().parent() != destination.parent() {
+            return Err(corrupt());
+        }
+        fs::rename(self.path(), destination).map_err(io_unavailable)?;
+        self.staged.mark_published();
+        self.staged.path = destination.to_path_buf();
+        self.verify()
+    }
+
+    /// This is the existing no-journal backup compatibility path: reset_journal
+    /// has deliberately replaced the original zero-length temporary file.
+    /// No validation proof or engine has yet existed. Never use for ordinary
+    /// identity verification or after a failed/uncertain materialization.
+    fn create_legacy_journal(
+        &mut self,
+        header: &crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        if let Some((_, file)) = &self.identity
+            && file.metadata().map_err(io_unavailable)?.len() != 0
+        {
+            return Err(corrupt());
+        }
+        fs::remove_file(self.path()).map_err(io_unavailable)?;
+        crate::journal::reset_journal(self.path(), header).map_err(backup_journal_error)?;
+        if let Some((parent, file)) = &mut self.identity {
+            parent.verify()?;
+            *file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.staged.path)
+                .map_err(io_unavailable)?;
+        }
+        self.verify()
+    }
+}
+
+fn open_private_materialization_database(
+    primary: &MaterializationArtifact,
+    journal: &MaterializationArtifact,
+    marker: &MaterializationArtifact,
+) -> Result<Database, StorageError> {
+    // The caller has checked every copied artifact against the canonical
+    // manifest and sealed extent inventory. Bind the first engine to the exact
+    // created primary descriptor, never a freshly selected pathname.
+    primary.verify()?;
+    journal.verify()?;
+    marker.verify()?;
+    let database = open_unrepaired_private_file(
+        primary.private_file()?,
+        Some(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES),
+    )?;
+    primary.verify()?;
+    journal.verify()?;
+    marker.verify()?;
+    Ok(database)
+}
+
 struct StagedArtifact {
     path: PathBuf,
     published: bool,
 }
 
 impl StagedArtifact {
-    fn create(target_directory: &Path) -> Result<Self, StorageError> {
-        Self::create_named(target_directory, OsStr::new(DATABASE_ARTIFACT_FILE_NAME))
+    fn create_named(target_directory: &Path, stem: &OsStr) -> Result<Self, StorageError> {
+        Self::create_named_with_file(target_directory, stem, false)
+            .map(|(artifact, _file)| artifact)
     }
 
-    fn create_named(target_directory: &Path, stem: &OsStr) -> Result<Self, StorageError> {
+    fn create_named_with_file(
+        target_directory: &Path,
+        stem: &OsStr,
+        readable: bool,
+    ) -> Result<(Self, File), StorageError> {
         for ordinal in 0..MAX_STAGING_ATTEMPTS {
             let path = target_directory.join(staging_name(stem, "restore", ordinal));
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
+            match OpenOptions::new()
+                .read(readable)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(file) => {
-                    drop(file);
-                    return Ok(Self {
-                        path,
-                        published: false,
-                    });
+                    return Ok((
+                        Self {
+                            path,
+                            published: false,
+                        },
+                        file,
+                    ));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(io_unavailable(error)),
@@ -2675,6 +2816,178 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn native_materialization_copies(
+        root: &TestRoot,
+    ) -> (
+        OfflineBackupManifestV1,
+        MaterializationArtifact,
+        MaterializationArtifact,
+        MaterializationArtifact,
+        PathBuf,
+    ) {
+        let source = root.join("source.redb");
+        initialize(&source);
+        let backup = root.join("backup");
+        RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        let (manifest, _) = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let primary =
+            MaterializationArtifact::create(&stage, OsStr::new(DATABASE_ARTIFACT_FILE_NAME), true)
+                .unwrap();
+        let journal =
+            MaterializationArtifact::create(&stage, OsStr::new(JOURNAL_ARTIFACT_FILE_NAME), true)
+                .unwrap();
+        let marker = MaterializationArtifact::create(
+            &stage,
+            OsStr::new(FORMAT_MARKER_ARTIFACT_FILE_NAME),
+            true,
+        )
+        .unwrap();
+        for (artifact, source) in [
+            (&primary, DATABASE_ARTIFACT_FILE_NAME),
+            (&journal, JOURNAL_ARTIFACT_FILE_NAME),
+            (&marker, FORMAT_MARKER_ARTIFACT_FILE_NAME),
+        ] {
+            artifact.copy_from(&backup.join(source)).unwrap();
+        }
+        assert_eq!(
+            primary.checksum().unwrap(),
+            manifest_checksum(&manifest).unwrap()
+        );
+        assert_eq!(
+            Some(journal.checksum().unwrap()),
+            manifest_journal_checksum(&manifest).unwrap()
+        );
+        assert_eq!(
+            Some(marker.checksum().unwrap()),
+            manifest_format_marker_checksum(&manifest).unwrap()
+        );
+        validate_backup_journal(
+            journal.path(),
+            manifest.database_id(),
+            manifest.last_commit_sequence(),
+        )
+        .unwrap();
+        validate_manifest_format_marker(marker.path(), &manifest).unwrap();
+        (manifest, primary, journal, marker, backup)
+    }
+
+    fn assert_native_materialization_replacement_refused(replaced: usize) {
+        let root = TestRoot::new("private-copy-native-identity");
+        let (manifest, primary, journal, marker, backup) = native_materialization_copies(&root);
+        let artifacts = [&primary, &journal, &marker];
+        let before: Vec<_> = artifacts
+            .iter()
+            .map(|artifact| fs::read(artifact.path()).unwrap())
+            .collect();
+        let target = artifacts[replaced].path();
+        fs::rename(target, root.join("original-copied-artifact")).unwrap();
+        fs::write(target, &before[replaced]).unwrap();
+        let result = open_private_materialization_database(&primary, &journal, &marker);
+        let refused =
+            matches!(&result, Err(error) if error.kind() == StorageErrorKind::CorruptData);
+        drop(result);
+        assert!(
+            refused,
+            "first private materialization open must refuse replaced copied artifacts"
+        );
+        for (artifact, bytes) in artifacts.iter().zip(before) {
+            assert_eq!(
+                fs::read(artifact.path()).unwrap(),
+                bytes,
+                "refusal must precede engine writes"
+            );
+        }
+        assert_eq!(validate_immutable_backup(&backup).unwrap().0, manifest);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn private_materialization_first_open_refuses_replaced_primary_before_engine_write() {
+        assert_native_materialization_replacement_refused(0);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn private_materialization_first_open_refuses_replaced_journal_before_engine_write() {
+        assert_native_materialization_replacement_refused(1);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn private_materialization_first_open_refuses_replaced_marker_before_engine_write() {
+        assert_native_materialization_replacement_refused(2);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn private_materialization_first_open_refuses_replaced_parent_before_engine_write() {
+        let root = TestRoot::new("private-copy-parent-native-identity");
+        let (manifest, primary, journal, marker, backup) = native_materialization_copies(&root);
+        let artifacts = [&primary, &journal, &marker];
+        let before: Vec<_> = artifacts
+            .iter()
+            .map(|artifact| fs::read(artifact.path()).unwrap())
+            .collect();
+        fs::rename(root.join("stage"), root.join("original-stage")).unwrap();
+        fs::create_dir(root.join("stage")).unwrap();
+        for (artifact, bytes) in artifacts.iter().zip(&before) {
+            fs::write(artifact.path(), bytes).unwrap();
+        }
+        let result = open_private_materialization_database(&primary, &journal, &marker);
+        let refused =
+            matches!(&result, Err(error) if error.kind() == StorageErrorKind::CorruptData);
+        drop(result);
+        assert!(
+            refused,
+            "first private materialization open must refuse replaced copied artifacts"
+        );
+        for (artifact, bytes) in artifacts.iter().zip(before) {
+            assert_eq!(fs::read(artifact.path()).unwrap(), bytes);
+        }
+        assert_eq!(validate_immutable_backup(&backup).unwrap().0, manifest);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn private_materialization_descriptor_open_preserves_manifest_facts_and_known_rename_identity()
+    {
+        let root = TestRoot::new("private-copy-native-identity-control");
+        let (manifest, mut primary, mut journal, mut marker, backup) =
+            native_materialization_copies(&root);
+        let database = open_private_materialization_database(&primary, &journal, &marker).unwrap();
+        validate_copied_database_facts(read_database_facts(&database).unwrap(), &manifest).unwrap();
+        let target = root.join("stage").join(DATABASE_ARTIFACT_FILE_NAME);
+        primary.rename_to(&target).unwrap();
+        journal
+            .rename_to(&crate::journal::journal_path(&target))
+            .unwrap();
+        marker
+            .rename_to(&crate::durable_format_marker_path(&target))
+            .unwrap();
+        primary.verify().unwrap();
+        journal.verify().unwrap();
+        marker.verify().unwrap();
+        validate_copied_database_facts(read_database_facts(&database).unwrap(), &manifest).unwrap();
+        assert!(matches!(
+            Database::open(&target),
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+        ));
+        drop(database);
+        assert_eq!(validate_immutable_backup(&backup).unwrap().0, manifest);
+        assert_eq!(
+            journal.checksum().unwrap(),
+            manifest_journal_checksum(&manifest).unwrap().unwrap()
+        );
+        assert_eq!(
+            marker.checksum().unwrap(),
+            manifest_format_marker_checksum(&manifest).unwrap().unwrap()
+        );
     }
 
     fn database_id() -> DatabaseId {

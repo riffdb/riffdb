@@ -15,7 +15,7 @@ use cap_std::fs::MetadataExt as CapMetadataExt;
 use std::os::unix::fs::MetadataExt as StdMetadataExt;
 
 /// A directory handle and identity retained across maintenance path operations.
-pub(super) struct PinnedDirectory {
+pub(crate) struct PinnedDirectory {
     path: PathBuf,
     canonical_path: PathBuf,
     directory: Dir,
@@ -88,7 +88,7 @@ impl PinnedDirectory {
         Ok(())
     }
 
-    pub(super) fn open(path: &Path) -> Result<Self, StorageError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, StorageError> {
         reject_symlink_components(path)?;
         let path_metadata = fs::symlink_metadata(path).map_err(io_unavailable)?;
         if !path_metadata.file_type().is_dir() {
@@ -136,7 +136,7 @@ impl PinnedDirectory {
         }
     }
 
-    pub(super) fn verify(&self) -> Result<(), StorageError> {
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
         reject_symlink_components(&self.path)?;
         let metadata = fs::symlink_metadata(&self.path).map_err(io_unavailable)?;
         if !metadata.file_type().is_dir()
@@ -278,7 +278,7 @@ impl PinnedDirectory {
 
     /// Checks whether one direct regular-file child is still the retained
     /// open file.
-    pub(super) fn regular_file_matches(
+    pub(crate) fn regular_file_matches(
         &self,
         name: &OsStr,
         retained_file: &File,

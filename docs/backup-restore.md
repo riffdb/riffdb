@@ -543,3 +543,8 @@ is not a recovery procedure. A V2 source always receives complete validation,
 even after CLEAN; V1 clean-start behavior is unchanged. The experimental
 [follower administration path](operations/FOLLOWER-ADMINISTRATION.md) describes
 restricted pre-cutover retries and the required fresh source fence proof.
+
+Private restore materialization retains the original primary, journal and
+format-marker file identities before their first engine open. A same-byte
+replacement of one of those files or its parent directory refuses the private
+open. This identity check does not substitute for complete integrity validation.

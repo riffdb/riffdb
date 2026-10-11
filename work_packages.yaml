@@ -28647,7 +28647,7 @@ work_packages:
   # Bootstrap decision accepted as ADR-0281 in session, 2026-10-07; now ADR-0288.
   # Maintainer approved ADR-0281 to ADR-0284 identifier-only reconciliation in session, 2026-10-09.
   # Maintainer accepted ADR-0284 to ADR-0288 identifier/path reconciliation in session, 2026-10-11.
-  # Exact ADR-0289 accepted in session, 2026-10-11; owned private restore validation custody.
+  # Restore custody accepted as ADR-0285, 2026-10-11; identifier-only move to ADR-0289 approved the same day.
   # Standing necessary-native-fix approval covers the receipt-cursor architecture guard consequence.
   # Record the two governance paths from the approved identifier-only reconciliation.
   # ADR-0287 remains an unaccepted, unimplemented proposal; this grants no implementation authority.

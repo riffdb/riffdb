@@ -42,6 +42,7 @@ pub use follower_columnar_scratch::{RedbFollowerColumnarBuild, RedbFollowerColum
 mod follower_columnar_scratch_tests;
 mod follower_namespace;
 mod path_guard;
+pub(crate) use path_guard::PinnedDirectory;
 mod physical_scrub;
 #[cfg(test)]
 mod restore_custody;

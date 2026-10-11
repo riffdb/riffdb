@@ -78,7 +78,20 @@ impl OfferedClock {
     }
 
     async fn wait_for(&self, second: u64) -> Result<()> {
-        let deadline = Duration::from_secs(second);
+        self.wait_until(Duration::from_secs(second)).await
+    }
+
+    async fn wait_for_offset(&self, second: u64, offset_us: u32) -> Result<()> {
+        if offset_us >= 1_000_000 {
+            return Err("offered_clock_value");
+        }
+        let deadline = Duration::from_secs(second)
+            .checked_add(Duration::from_micros(u64::from(offset_us)))
+            .ok_or("offered_clock_value")?;
+        self.wait_until(deadline).await
+    }
+
+    async fn wait_until(&self, deadline: Duration) -> Result<()> {
         loop {
             let remaining = deadline.saturating_sub(self.elapsed()?);
             if remaining.is_zero() {
@@ -363,45 +376,93 @@ enum Operation {
 struct Job {
     operation: Operation,
     offered: Instant,
+    window: u64,
 }
 
-struct Metrics {
+/// Bound on how long a closed window waits for its offered operations to
+/// settle before it is published with whatever completed.
+const WINDOW_SETTLE: Duration = Duration::from_secs(60);
+
+/// Per-second offered operations: exactly 100 updates and 400 reads, each at
+/// its own offset within the second. Offsets come from a fixed-seed generator
+/// keyed by the second, so every run offers the identical schedule. Uniform
+/// independent offsets for a fixed count are a Poisson arrival process
+/// conditioned on that count: clustered like real traffic, never a burst of
+/// the whole second at one instant.
+fn arrival_schedule(second: u64) -> Vec<(u32, Operation)> {
+    let mut state = second
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0xD1B5_4A32_D192_ED03);
+    let mut next_offset = || {
+        // splitmix64
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut mixed = state;
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^= mixed >> 31;
+        u32::try_from(mixed % 1_000_000).unwrap_or(0)
+    };
+    let mut schedule = Vec::with_capacity(500);
+    for command in 0..100 {
+        schedule.push((next_offset(), Operation::Update(second * 100 + command)));
+        for read in 0..4 {
+            schedule.push((
+                next_offset(),
+                Operation::Read(second * 400 + command * 4 + read),
+            ));
+        }
+    }
+    // Stable: equal offsets keep their generation order.
+    schedule.sort_by_key(|(offset, _)| *offset);
+    schedule
+}
+
+/// One 300-second observation window. Operations are attributed to the
+/// window they were offered in, wherever their completion falls.
+struct Window {
+    index: u64,
+    start: u64,
+    end: u64,
     commands: u64,
     reads: u64,
     retries: u64,
-    total_commands: u64,
-    total_reads: u64,
     latencies: Vec<u32>,
     overflow: u64,
+    peak: u32,
 }
 
-impl Metrics {
-    fn new() -> Self {
+impl Window {
+    fn new(index: u64, start: u64, end: u64) -> Self {
         Self {
+            index,
+            start,
+            end,
             commands: 0,
             reads: 0,
             retries: 0,
-            total_commands: 0,
-            total_reads: 0,
             latencies: vec![0; LATENCY_CEILING + 1],
             overflow: 0,
+            peak: 0,
         }
     }
 
-    fn record(&mut self, operation: Operation, latency: Duration) -> Result<()> {
+    fn settled(&self) -> bool {
+        let seconds = self.end - self.start;
+        self.commands == seconds * 100 && self.reads == seconds * 400
+    }
+
+    fn record(&mut self, operation: Operation, latency: Duration, retries: u32) -> Result<()> {
         if self.commands + self.reads >= MAX_WINDOW_SAMPLES {
             return Err("sample_bound");
         }
         match operation {
-            Operation::Update(_) => {
-                self.commands += 1;
-                self.total_commands += 1;
-            }
-            Operation::Read(_) => {
-                self.reads += 1;
-                self.total_reads += 1;
-            }
+            Operation::Update(_) => self.commands += 1,
+            Operation::Read(_) => self.reads += 1,
         }
+        self.retries = self
+            .retries
+            .checked_add(u64::from(retries))
+            .ok_or("sample_bound")?;
         let micros = latency.as_micros();
         if micros > LATENCY_CEILING as u128 {
             self.overflow += 1;
@@ -428,12 +489,12 @@ impl Metrics {
         u64::MAX
     }
 
-    fn publish(&mut self, start: u64, end: u64, peak: u32) -> Result<()> {
-        let duration = end.checked_sub(start).ok_or("window_bound")?;
+    fn line(&self) -> Result<String> {
+        let duration = self.end.checked_sub(self.start).ok_or("window_bound")?;
         if duration == 0 {
             return Err("window_bound");
         }
-        println!(
+        Ok(format!(
             concat!(
                 "{{\"schema\":\"riffdb.ticketdesk-lifecycle-load-probe/v1\",",
                 "\"start_s\":{},\"end_s\":{},\"offered_commands\":{},\"offered_reads\":{},",
@@ -442,8 +503,8 @@ impl Metrics {
                 "\"p95_us\":{},\"p99_us\":{},\"load_peak_in_flight\":{},",
                 "\"reserved_auxiliary_slots\":4,\"latency_overflow\":{}}}"
             ),
-            start,
-            end,
+            self.start,
+            self.end,
             duration * 100,
             duration * 400,
             self.commands,
@@ -453,17 +514,93 @@ impl Metrics {
             self.retries,
             self.quantile(95),
             self.quantile(99),
-            peak,
+            self.peak,
             self.overflow
-        );
-        io::stdout().flush().map_err(|_| "observation_output")?;
-        self.commands = 0;
-        self.reads = 0;
-        self.retries = 0;
-        self.latencies.fill(0);
-        self.overflow = 0;
+        ))
+    }
+}
+
+/// The open window, the window closing behind it, and completions that
+/// arrived after their window was published.
+struct Metrics {
+    total_commands: u64,
+    total_reads: u64,
+    open: Window,
+    closing: Option<(Window, Instant)>,
+    late_commands: u64,
+    late_reads: u64,
+}
+
+impl Metrics {
+    fn new(first_end: u64) -> Self {
+        Self {
+            total_commands: 0,
+            total_reads: 0,
+            open: Window::new(0, 0, first_end),
+            closing: None,
+            late_commands: 0,
+            late_reads: 0,
+        }
+    }
+
+    fn record(
+        &mut self,
+        window: u64,
+        operation: Operation,
+        latency: Duration,
+        retries: u32,
+    ) -> Result<()> {
+        match operation {
+            Operation::Update(_) => self.total_commands += 1,
+            Operation::Read(_) => self.total_reads += 1,
+        }
+        if self.open.index == window {
+            return self.open.record(operation, latency, retries);
+        }
+        if let Some((closing, _)) = self.closing.as_mut()
+            && closing.index == window
+        {
+            return closing.record(operation, latency, retries);
+        }
+        match operation {
+            Operation::Update(_) => self.late_commands += 1,
+            Operation::Read(_) => self.late_reads += 1,
+        }
         Ok(())
     }
+
+    /// Starts the next window; the current one closes once its offered
+    /// operations settle or at `deadline`, whichever comes first.
+    fn rotate(&mut self, next: Option<Window>, peak: u32, deadline: Instant) -> Result<()> {
+        if self.closing.is_some() {
+            return Err("window_bound");
+        }
+        let mut finished = match next {
+            Some(next) => std::mem::replace(&mut self.open, next),
+            None => std::mem::replace(&mut self.open, Window::new(u64::MAX, 0, 0)),
+        };
+        finished.peak = peak;
+        self.closing = Some((finished, deadline));
+        Ok(())
+    }
+
+    /// The closing window's observation line, once it is due.
+    fn due(&mut self, now: Instant) -> Result<Option<String>> {
+        let ready = self
+            .closing
+            .as_ref()
+            .is_some_and(|(window, deadline)| window.settled() || now >= *deadline);
+        if !ready {
+            return Ok(None);
+        }
+        let (window, _) = self.closing.take().ok_or("window_bound")?;
+        window.line().map(Some)
+    }
+}
+
+fn publish_line(line: &str) -> Result<()> {
+    println!("{line}");
+    io::stdout().flush().map_err(|_| "observation_output")
 }
 
 pub(super) async fn run() -> Result<()> {
@@ -483,7 +620,7 @@ pub(super) async fn run() -> Result<()> {
     let (sender, receiver) = mpsc::channel::<Job>(QUEUE);
     let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
     let ready = Arc::new(Barrier::new(WORKERS as usize + 1));
-    let metrics = Arc::new(Mutex::new(Metrics::new()));
+    let metrics = Arc::new(Mutex::new(Metrics::new(duration.min(300))));
     let current = Arc::new(AtomicU32::new(0));
     let peak = Arc::new(AtomicU32::new(0));
     let version = match env::var("RIFFDB_LIFECYCLE_CONTRACT_VERSION") {
@@ -623,11 +760,7 @@ pub(super) async fn run() -> Result<()> {
                     }
                 };
                 let mut observation = metrics.lock().map_err(|_| "observation_state")?;
-                observation.record(job.operation, job.offered.elapsed())?;
-                observation.retries = observation
-                    .retries
-                    .checked_add(u64::from(retries))
-                    .ok_or("sample_bound")?;
+                observation.record(job.window, job.operation, job.offered.elapsed(), retries)?;
                 drop(observation);
                 drop(active);
             }
@@ -652,7 +785,7 @@ pub(super) async fn run() -> Result<()> {
     io::stdout().flush().map_err(|_| "observation_output")?;
     let mut control_tick = tokio::time::interval(Duration::from_millis(100));
     control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut window_start = 0;
+    let mut window = 0_u64;
     for second in 0..duration {
         let tick = clock.wait_for(second);
         tokio::pin!(tick);
@@ -670,41 +803,61 @@ pub(super) async fn run() -> Result<()> {
         if clock.elapsed()?.as_millis() > u128::from(second) * 1000 + 500 {
             return Err("offered_clock_gap");
         }
+        let due = metrics
+            .lock()
+            .map_err(|_| "observation_state")?
+            .due(Instant::now())?;
+        if let Some(line) = due {
+            publish_line(&line)?;
+        }
         if second > 0 && second.is_multiple_of(300) {
-            metrics.lock().map_err(|_| "observation_state")?.publish(
-                window_start,
-                second,
+            window += 1;
+            metrics.lock().map_err(|_| "observation_state")?.rotate(
+                Some(Window::new(window, second, (second + 300).min(duration))),
                 peak.swap(0, Ordering::AcqRel),
+                Instant::now() + WINDOW_SETTLE,
             )?;
             peak.fetch_max(current.load(Ordering::Acquire), Ordering::AcqRel);
-            window_start = second;
         }
         offered_commands.store((second + 1) * 100, Ordering::Release);
-        let offered = Instant::now();
-        for command in 0..100 {
+        for (offset, operation) in arrival_schedule(second) {
+            let arrival = clock.wait_for_offset(second, offset);
+            tokio::pin!(arrival);
+            loop {
+                tokio::select! {
+                    result = &mut arrival => { result?; break; },
+                    _ = control_tick.tick(), if control.is_some() => {
+                        admission.poll(control.as_ref().ok_or("load_control_root")?, &metrics)?;
+                    }
+                    result = workers.join_next() => {
+                        return result.ok_or("worker")?.map_err(|_| "worker")?.and(Err("worker_ended"));
+                    }
+                }
+            }
             sender
                 .try_send(Job {
-                    operation: Operation::Update(second * 100 + command),
-                    offered,
+                    operation,
+                    offered: Instant::now(),
+                    window,
                 })
                 .map_err(|_| "offered_queue_bound")?;
-            for read in 0..4 {
-                sender
-                    .try_send(Job {
-                        operation: Operation::Read(second * 400 + command * 4 + read),
-                        offered,
-                    })
-                    .map_err(|_| "offered_queue_bound")?;
-            }
         }
     }
-    // Close the last observed window at its deadline. Later drain completions
-    // are disclosed separately and never added to a normal-window rate.
+    // Close the last observed window at its deadline. Its operations still
+    // count toward it when they settle; later completions are disclosed
+    // separately and never added to a window.
     clock.wait_for(duration).await?;
-    metrics.lock().map_err(|_| "observation_state")?.publish(
-        window_start,
-        duration,
+    let due = metrics
+        .lock()
+        .map_err(|_| "observation_state")?
+        .due(Instant::now())?;
+    if let Some(line) = due {
+        publish_line(&line)?;
+    }
+    metrics.lock().map_err(|_| "observation_state")?.rotate(
+        None,
         peak.load(Ordering::Acquire),
+        Instant::now() + WINDOW_SETTLE,
     )?;
     drop(sender);
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -718,13 +871,19 @@ pub(super) async fn run() -> Result<()> {
     if let Some(witness) = witness {
         witness.finish()?;
     }
+    // Every worker has finished, so the last window has settled.
+    let last = metrics
+        .lock()
+        .map_err(|_| "observation_state")?
+        .due(Instant::now() + WINDOW_SETTLE)?;
+    publish_line(&last.ok_or("window_bound")?)?;
     let (total_commands, total_reads, post_commands, post_reads) = {
         let final_state = metrics.lock().map_err(|_| "observation_state")?;
         (
             final_state.total_commands,
             final_state.total_reads,
-            final_state.commands,
-            final_state.reads,
+            final_state.late_commands,
+            final_state.late_reads,
         )
     };
     println!(
@@ -782,8 +941,17 @@ mod tests {
             clock.elapsed().unwrap().as_nanos() <= u128::from(monotonic_ns().unwrap() - origin)
         );
         clock.wait_for(0).await.unwrap();
+        clock.wait_for_offset(0, 0).await.unwrap();
+        assert_eq!(
+            clock.wait_for_offset(0, 1_000_000).await,
+            Err("offered_clock_value")
+        );
         clock.shared_origin_ns = Some(u64::MAX);
         assert_eq!(clock.elapsed(), Err("offered_clock_rewind"));
+        assert_eq!(
+            clock.wait_for_offset(0, 0).await,
+            Err("offered_clock_rewind")
+        );
     }
 
     // req: END-003, END-007, END-008, END-010
@@ -800,11 +968,11 @@ mod tests {
         );
         std::fs::create_dir(&root.0).unwrap();
         std::fs::write(root.0.join("next.credential"), b"private fixture\n").unwrap();
-        let metrics = Mutex::new(Metrics::new());
+        let metrics = Mutex::new(Metrics::new(300));
         metrics
             .lock()
             .unwrap()
-            .record(Operation::Update(0), Duration::ZERO)
+            .record(0, Operation::Update(0), Duration::ZERO, 0)
             .unwrap();
         let admission = Admission::new(
             Release {
@@ -827,7 +995,7 @@ mod tests {
         metrics
             .lock()
             .unwrap()
-            .record(Operation::Read(0), Duration::ZERO)
+            .record(0, Operation::Read(0), Duration::ZERO, 0)
             .unwrap();
         admission.poll(&root.0, &metrics).unwrap();
         assert!(!root.0.join("load.resumed").exists());
@@ -839,7 +1007,7 @@ mod tests {
         metrics
             .lock()
             .unwrap()
-            .record(Operation::Update(1), Duration::ZERO)
+            .record(0, Operation::Update(1), Duration::ZERO, 0)
             .unwrap();
         drop(active);
         admission.poll(&root.0, &metrics).unwrap();
@@ -1029,11 +1197,135 @@ mod tests {
     // req: END-004, END-007
     #[test]
     fn overflow_latency_cannot_report_a_fast_tail() {
-        let mut metrics = Metrics::new();
-        metrics
-            .record(Operation::Update(0), Duration::from_secs(1))
+        let mut window = Window::new(0, 0, 300);
+        window
+            .record(Operation::Update(0), Duration::from_secs(1), 0)
             .unwrap();
-        assert_eq!(metrics.quantile(95), u64::MAX);
-        assert_eq!(metrics.quantile(99), u64::MAX);
+        assert_eq!(window.quantile(95), u64::MAX);
+        assert_eq!(window.quantile(99), u64::MAX);
+    }
+
+    // req: END-007
+    #[test]
+    fn each_second_offers_exactly_its_operations_spread_across_the_second() {
+        for second in [0_u64, 1, 299, 86_399] {
+            let schedule = arrival_schedule(second);
+            assert_eq!(schedule.len(), 500);
+            assert!(schedule.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+            assert!(schedule.iter().all(|(offset, _)| *offset < 1_000_000));
+            let mut updates = schedule
+                .iter()
+                .filter_map(|(_, operation)| match operation {
+                    Operation::Update(ordinal) => Some(*ordinal),
+                    Operation::Read(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let mut reads = schedule
+                .iter()
+                .filter_map(|(_, operation)| match operation {
+                    Operation::Read(ordinal) => Some(*ordinal),
+                    Operation::Update(_) => None,
+                })
+                .collect::<Vec<_>>();
+            updates.sort_unstable();
+            reads.sort_unstable();
+            assert_eq!(
+                updates,
+                (second * 100..second * 100 + 100).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                reads,
+                (second * 400..second * 400 + 400).collect::<Vec<_>>()
+            );
+            // Arrivals cover the whole second rather than one instant: every
+            // tenth of it holds some offers and none holds most of them.
+            let mut tenths = [0_u32; 10];
+            for (offset, _) in &schedule {
+                tenths[(*offset / 100_000) as usize] += 1;
+            }
+            assert!(
+                tenths.iter().all(|count| (10..=100).contains(count)),
+                "{tenths:?}"
+            );
+            // The same second always offers the same schedule.
+            let again = arrival_schedule(second);
+            assert!(
+                schedule
+                    .iter()
+                    .zip(&again)
+                    .all(|(a, b)| a.0 == b.0 && same_operation(a.1, b.1))
+            );
+        }
+        assert!(
+            arrival_schedule(1)
+                .iter()
+                .zip(arrival_schedule(2).iter())
+                .any(|(a, b)| a.0 != b.0)
+        );
+    }
+
+    fn same_operation(a: Operation, b: Operation) -> bool {
+        match (a, b) {
+            (Operation::Update(a), Operation::Update(b))
+            | (Operation::Read(a), Operation::Read(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    // req: END-007
+    #[test]
+    fn operations_count_toward_the_window_they_were_offered_in() {
+        let start = Instant::now();
+        let mut metrics = Metrics::new(1);
+        metrics
+            .rotate(
+                Some(Window::new(1, 1, 2)),
+                3,
+                start + Duration::from_secs(60),
+            )
+            .unwrap();
+        // A first-window update completing after the rotation still counts
+        // toward the first window, which publishes once all its work settles.
+        for ordinal in 0..99 {
+            metrics
+                .record(0, Operation::Update(ordinal), Duration::from_millis(5), 0)
+                .unwrap();
+        }
+        for ordinal in 0..400 {
+            metrics
+                .record(0, Operation::Read(ordinal), Duration::from_millis(1), 0)
+                .unwrap();
+        }
+        assert!(
+            metrics.due(start).unwrap().is_none(),
+            "one update is still out"
+        );
+        metrics
+            .record(0, Operation::Update(99), Duration::from_millis(5), 0)
+            .unwrap();
+        let line = metrics.due(start).unwrap().unwrap();
+        assert!(line.contains("\"start_s\":0,\"end_s\":1,"));
+        assert!(line.contains("\"completed_commands\":100,\"completed_reads\":400,"));
+        assert!(line.contains("\"load_peak_in_flight\":3,"));
+        // Second-window work goes to the open window; anything for a window
+        // already published is disclosed as late rather than counted.
+        metrics
+            .record(1, Operation::Read(400), Duration::from_millis(1), 0)
+            .unwrap();
+        metrics
+            .record(0, Operation::Read(0), Duration::from_millis(1), 0)
+            .unwrap();
+        assert_eq!(metrics.open.reads, 1);
+        assert_eq!(metrics.late_reads, 1);
+        // An unsettled window publishes at its deadline with what completed.
+        metrics
+            .rotate(None, 1, start + Duration::from_secs(60))
+            .unwrap();
+        assert!(metrics.due(start).unwrap().is_none());
+        let line = metrics
+            .due(start + Duration::from_secs(60))
+            .unwrap()
+            .unwrap();
+        assert!(line.contains("\"completed_commands\":0,\"completed_reads\":1,"));
     }
 }
