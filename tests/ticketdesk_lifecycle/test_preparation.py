@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[2] / "scripts/ticketdesk-lifecycle-smoke"
 sys.path.insert(0, str(SOURCE.parent))
@@ -22,6 +22,69 @@ loader = importlib.machinery.SourceFileLoader("preparation", str(SOURCE))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 preparation = importlib.util.module_from_spec(spec)
 loader.exec_module(preparation)
+
+
+class DriverShutdownDiagnostics(unittest.TestCase):
+    def stop(self, root, *, status, timed_out=False):
+        driver = Mock()
+        driver.poll.return_value = None
+        driver.returncode = status
+        driver.wait.side_effect = ([subprocess.TimeoutExpired("owned-driver", 15), status]
+                                  if timed_out else [status])
+        with patch.object(preparation.time, "monotonic_ns", side_effect=[100, 500]):
+            preparation.stop_driver(root, driver)
+        return driver
+
+    def test_clean_shutdown_records_only_closed_numeric_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = self.stop(root, status=0)
+            value = json.loads((root / "driver-shutdown.json").read_text())
+            self.assertEqual(value, {
+                "schema": "riffdb.ticketdesk-lifecycle-driver-shutdown/v1",
+                "timed_out": False, "exit_code": 0, "elapsed_ns": 400})
+            driver.terminate.assert_called_once_with()
+            driver.kill.assert_not_called()
+            self.assertNotIn(str(root), json.dumps(value))
+
+    def test_signal_exit_and_timeout_remain_failures_after_diagnostic_publication(self):
+        for status, timed_out in [(-15, False), (1, False), (-9, True), (0, True)]:
+            with self.subTest(status=status, timed_out=timed_out), \
+                    tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with self.assertRaisesRegex(preparation.SmokeError, "^driver_shutdown$"):
+                    self.stop(root, status=status, timed_out=timed_out)
+                value = json.loads((root / "driver-shutdown.json").read_text())
+                self.assertEqual(value["timed_out"], timed_out)
+                self.assertEqual(value["exit_code"], status)
+                self.assertEqual(value["elapsed_ns"], 400)
+
+
+class DriverFailurePreservation(unittest.TestCase):
+    def test_startup_refusal_is_not_replaced_by_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = Mock()
+            driver.poll.return_value = 1
+            driver.returncode = 1
+            driver.wait.return_value = 1
+            with self.assertRaisesRegex(preparation.SmokeError, "^driver_startup$"):
+                with preparation.owned_driver(root, driver):
+                    raise preparation.SmokeError("driver_startup")
+            value = json.loads((root / "driver-shutdown.json").read_text())
+            self.assertEqual(value["exit_code"], 1)
+            self.assertFalse(value["timed_out"])
+
+    def test_successful_body_still_fails_if_driver_cleanup_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = Mock()
+            driver.poll.return_value = 1
+            driver.returncode = 1
+            driver.wait.return_value = 1
+            with self.assertRaisesRegex(preparation.SmokeError, "^driver_shutdown$"):
+                with preparation.owned_driver(root, driver):
+                    pass
 
 
 class PreparationDurationBoundaries(unittest.TestCase):
@@ -298,47 +361,86 @@ class SinkOutageReconciliation(unittest.TestCase):
 
 class ChildOwnership(unittest.TestCase):
     def test_observed_load_collects_owned_process_memory_without_an_extra_request_thread(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            children = []
-            try:
-                for _role in ("server", "observer"):
-                    child = subprocess.Popen([sys.executable, "-c",
-                        "import sys; print('ready', flush=True); sys.stdin.buffer.read()"],
-                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    children.append(child)
-                    self.assertTrue(select.select([child.stdout], [], [], 5)[0])
-                    self.assertEqual(child.stdout.readline(), b"ready\n")
-                worker = root / "fixture-worker"
-                worker.write_text("#!/usr/bin/env python3\nimport signal, sys\n"
-                    "def done(*_args):\n"
-                    " print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\"}', flush=True)\n"
-                    " sys.exit(0)\n"
-                    "signal.signal(signal.SIGUSR1, done)\n"
-                    "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
-                    "signal.pause()\n")
-                worker.chmod(0o700)
-                original = preparation.PreparationMemorySamples.poll
-                released = False
+        for native in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                children = []
+                try:
+                    for _role in (("server", "observer", "native_sampler") if native else ("server", "observer")):
+                        child = subprocess.Popen([sys.executable, "-c",
+                            "import sys; print('ready', flush=True); sys.stdin.buffer.read()"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        children.append(child)
+                        self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+                        self.assertEqual(child.stdout.readline(), b"ready\n")
+                    worker = root / "fixture-worker"
+                    worker.write_text("#!/usr/bin/env python3\nimport signal, sys\n"
+                        "def done(*_args):\n"
+                        " print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-stopped/v1\"}', flush=True)\n"
+                        " sys.exit(0)\n"
+                        "signal.signal(signal.SIGUSR1, done)\n"
+                        "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
+                        "signal.pause()\n")
+                    worker.chmod(0o700)
+                    original = preparation.PreparationMemorySamples.poll
+                    released = False
 
-                def release_after_observation(samples, elapsed_ns):
-                    nonlocal released
-                    original(samples, elapsed_ns)
-                    if samples.count == 1 and not released:
-                        released = True
-                        os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
+                    def release_after_observation(samples, elapsed_ns):
+                        nonlocal released
+                        original(samples, elapsed_ns)
+                        if samples.count == 1 and not released:
+                            released = True
+                            os.kill(samples.inventory.owners["load"].pid, signal.SIGUSR1)
 
-                with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation):
-                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
-                        children[1], preparation.queue.Queue(maxsize=1), False, server=children[0])
-                records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
-                self.assertEqual(len(records), 1)
-                self.assertEqual(records[0]["processes"].keys(), {"controller", "server", "load", "observer"})
-                self.assertIs(records[0]["qualifies_resource_model"], False)
-                self.assertTrue(all(value["rss_bytes"] > 0 for value in records[0]["processes"].values()))
-            finally:
-                for child in children:
-                    child.communicate(timeout=5)
+                    # These child fixtures produce process memory, not native pool diagnostics.
+                    # Keep the real process-memory oracle; pool semantics have independent tests.
+                    with patch.object(preparation.PreparationMemorySamples, "poll", release_after_observation), \
+                            patch.object(preparation, "ProviderLog", autospec=True) as provider_log, \
+                            patch.object(preparation, "SourceBytesLog", autospec=True) as source_log, \
+                            patch.object(preparation, "LogicalBytesLog", autospec=True) as logical_log, \
+                            patch.object(preparation, "PhysicalBytesLog", autospec=True) as physical_log:
+                        provider_log.return_value.finish.return_value = {}
+                        source_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
+                        logical_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
+                        physical_log.return_value.finish.return_value = {"qualifies_complete_resource_model": False}
+                        sampler = Mock(spec=preparation.NativeProjectionSampler) if native else None
+                        if sampler is not None:
+                            sampler.native = Mock(process=children[2], samples=Mock(last={"history_incarnation": 7}))
+                        preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                            children[1], preparation.queue.Queue(maxsize=1), False, server=children[0],
+                            projection=sampler, collect_source_bytes=native)
+                        self.assertTrue(provider_log.return_value.poll.called)
+                        provider_log.return_value.__exit__.assert_called_once()
+                        if native:
+                            self.assertEqual(source_log.call_args.args[2](), 7)
+                            self.assertTrue(source_log.return_value.poll.called)
+                            source_log.return_value.__exit__.assert_called_once()
+                            summary = json.loads((root / "source-byte-observation.json").read_text())
+                            self.assertFalse(summary["qualifies_complete_resource_model"])
+                            self.assertEqual(physical_log.call_args.args[2](), 7)
+                            self.assertTrue(physical_log.return_value.poll.called)
+                            physical_log.return_value.__exit__.assert_called_once()
+                            self.assertFalse(json.loads((root / "physical-byte-observation.json").read_text())["qualifies_complete_resource_model"])
+                            self.assertEqual(logical_log.call_args.args[2](), 7)
+                            self.assertTrue(logical_log.return_value.poll.called)
+                            logical_log.return_value.__exit__.assert_called_once()
+                            summary = json.loads((root / "logical-byte-observation.json").read_text())
+                            self.assertFalse(summary["qualifies_complete_resource_model"])
+                        else:
+                            source_log.assert_not_called()
+                            logical_log.assert_not_called()
+                    records = [json.loads(line) for line in (root / "memory-samples.jsonl").read_bytes().splitlines()]
+                    self.assertEqual(len(records), 1)
+                    roles = {"controller", "server", "load", "observer"} | ({"native_sampler"} if native else set())
+                    self.assertEqual(records[0]["processes"].keys(), roles)
+                    if native:
+                        self.assertEqual(records[0]["scope"], "verified_owned_descendant_tree_at_sample")
+                        self.assertGreater(records[0]["rss_peak_upper_bound_bytes"], 0)
+                    self.assertIs(records[0]["qualifies_resource_model"], False)
+                    self.assertTrue(all(value["rss_bytes"] > 0 for value in records[0]["processes"].values()))
+                finally:
+                    for child in children:
+                        child.communicate(timeout=5)
 
     def test_invalid_or_oversized_load_output_stops_the_owned_child(self):
         for output in ('{"schema":"unknown"}', 'x' * 8192):
@@ -356,6 +458,45 @@ class ChildOwnership(unittest.TestCase):
                 pid = int((root / "pid").read_text())
                 with self.assertRaises(ProcessLookupError):
                     os.kill(pid, 0)
+
+
+    def test_resource_refusal_survives_cleanup_failure_and_reaps_the_load_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = root / "fixture-worker"
+            worker.write_text("#!/usr/bin/env python3\nimport os,signal\n"
+                "from pathlib import Path\n"
+                "Path(__file__).with_name('pid').write_text(str(os.getpid()))\n"
+                "print('{\"schema\":\"riffdb.ticketdesk-lifecycle-load-ready/v1\"}', flush=True)\n"
+                "signal.pause()\n")
+            worker.chmod(0o700)
+            refusal = preparation.ResourceError("resource_process_inventory",
+                reason="task_census_exhausted", role="server", census_attempts=3)
+            server, observer = Mock(pid=124), Mock(pid=126)
+            server.poll.return_value = observer.poll.return_value = None
+            projection = Mock()
+            projection.stop.side_effect = preparation.SmokeError("projection_sample_shutdown")
+            with patch.object(preparation, "PreparationMemorySamples", autospec=True) as memory, \
+                    patch.object(preparation, "ProviderLog", autospec=True):
+                memory.return_value.poll.side_effect = refusal
+                with self.assertRaisesRegex(preparation.SmokeError, "^projection_sample_shutdown$"):
+                    preparation.observed_load(root, str(worker), dict(os.environ), 1,
+                        observer, preparation.queue.Queue(maxsize=1), False,
+                        server=server, projection=projection)
+                memory.return_value.__exit__.assert_called_once()
+            encoded = (root / "resource-refusal.json").read_text()
+            report = json.loads(encoded)
+            self.assertEqual(report["code"], "resource_process_inventory")
+            self.assertEqual(report["reason"], "task_census_exhausted")
+            self.assertEqual(report["role"], "server")
+            self.assertEqual(report["census_attempts"], 3)
+            self.assertFalse(report["qualifies_resource_model"])
+            self.assertLessEqual(len(encoded), 512)
+            self.assertNotIn(str(root), encoded)
+            pid = int((root / "pid").read_text())
+            self.assertNotIn(str(pid), encoded)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
 
 class ArchiveReadiness(unittest.TestCase):
@@ -382,6 +523,72 @@ class ArchiveReadiness(unittest.TestCase):
 class PhysicalInventory(unittest.TestCase):
     def census(self, deleted=0, recycled=0):
         return dict(deleted=deleted, recycled=recycled, held_references=0, held_readers=0, reclaim_us=0)
+
+    def test_complete_native_shutdown_census_survives_a_bounded_day_of_diagnostics(self):
+        from lib.ticketdesk_lifecycle_inventory import InventoryMonitor
+        # Diagnostic volume is unrelated to whether physical reclamation occurred.
+        # Each line is small; the complete bounded log exceeds the old 1-MiB cap.
+        unrelated = b"[riffdbd-diag] trigger=other available=true\n" * 30000
+        extent = (b"riffdb-retention-extents-v1\tdeleted=3\trecycled=0\t"
+                  b"held_references=0\theld_readers=0\treclaim_us=3\n")
+        terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
+        retired = b"".join(
+            f"riffdb-retention-extent-retired-v1\troot=8\tgeneration={generation}\tdeleted=1\trecycled=0\n".encode()
+            for generation in (1, 2, 3))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "server.stderr").write_bytes(unrelated + retired + extent + terminal)
+            observed = InventoryMonitor(root).finish(root)
+            self.assertEqual(observed["census"]["deleted"], 3)
+            self.assertEqual(observed["physically_removed_generations"], [])
+            self.assertEqual(observed["native_retired_generations"], [1, 2, 3])
+
+    def test_shutdown_log_bounds_and_immutable_custody_remain_required(self):
+        from lib import ticketdesk_lifecycle_inventory as inventory
+        valid = (b"riffdb-retention-extents-v1\tdeleted=0\trecycled=0\t"
+                 b"held_references=0\theld_readers=0\treclaim_us=3\n"
+                 b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n")
+        for mutation in ("oversize", "long_line", "partial", "symlink", "replaced"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "server.stderr"
+                path.write_bytes(valid)
+                if mutation == "oversize":
+                    with path.open("r+b") as output:
+                        output.truncate(inventory.MAX_LOG_BYTES + 1)
+                elif mutation == "long_line":
+                    path.write_bytes(b"x" * inventory.MAX_LOG_LINE_BYTES + b"\n" + valid)
+                elif mutation == "partial":
+                    path.write_bytes(valid[:-1])
+                elif mutation == "symlink":
+                    path.rename(root / "alternate")
+                    path.symlink_to(root / "alternate")
+                if mutation == "replaced":
+                    real_fstat = os.fstat
+                    calls = 0
+
+                    def replace_before_final_fstat(descriptor):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            path.rename(root / "alternate")
+                            path.write_bytes(valid)
+                        return real_fstat(descriptor)
+
+                    with patch.object(inventory.os, "fstat", side_effect=replace_before_final_fstat):
+                        with self.assertRaises(inventory.InventoryError):
+                            inventory.shutdown_diagnostics(path)
+                else:
+                    with self.assertRaises(inventory.InventoryError):
+                        inventory.shutdown_diagnostics(path)
+
+    def test_shutdown_log_line_count_cannot_exhaust_the_scan_budget(self):
+        from lib import ticketdesk_lifecycle_inventory as inventory
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.stderr"
+            path.write_bytes(b"\n" * (inventory.MAX_LOG_LINES + 1))
+            with self.assertRaises(inventory.InventoryError):
+                inventory.shutdown_diagnostics(path)
 
     def test_refused_or_missing_retention_lane_cannot_pass_preparation(self):
         from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
@@ -413,7 +620,8 @@ class PhysicalInventory(unittest.TestCase):
             with self.subTest(accepted=accepted), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 terminal = b"riffdb-shutdown-release-v1\tonline_retention=cancelled\n"
-                (root / "server.stderr").write_bytes(lines + terminal * 2)
+                retired = b"riffdb-retention-extent-retired-v1\troot=8\tgeneration=7\tdeleted=1\trecycled=0\n"
+                (root / "server.stderr").write_bytes(retired + lines + terminal * 2)
                 monitor = InventoryMonitor(root)
                 if accepted:
                     observed = monitor.finish(root)
@@ -463,3 +671,78 @@ class PhysicalInventory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ServerOutputCapture(unittest.TestCase):
+    def capture(self, data, *, explicit_failure=True, total_bound=None):
+        import io
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        ready = preparation.queue.Queue(maxsize=2)
+        failed = threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arguments = (SimpleNamespace(stdout=io.BytesIO(data)), root, ready)
+            bound = patch.object(preparation, "MAX_SERVER_OUTPUT_BYTES", total_bound) if total_bound else nullcontext()
+            with bound:
+                preparation.pump_ready(*arguments, failed) if explicit_failure else preparation.pump_ready(*arguments)
+            retained = (root / "server.stdout").read_bytes()
+        return retained, list(ready.queue), failed.is_set()
+
+    def test_complete_writer_census_is_retained_after_ready(self):
+        ready = b"riffdbd-ready-v1\tready=true\n"
+        census = b"riffdb-writer-batch-stages-v1\t" + b"1," * 6000 + b"1\n"
+        data = ready + census + b"riffdb-shutdown-v1\tclosed=true\n"
+        retained, values, failed = self.capture(data, explicit_failure=False)
+        self.assertEqual(retained, data, "the complete census and following records must survive capture")
+        self.assertEqual(values, [True])
+        self.assertFalse(failed)
+
+    def test_post_ready_unknown_large_record_reports_capture_failure(self):
+        retained, values, failed = self.capture(b"riffdbd-ready-v1\n" + b"unknown\t" + b"1" * 5000 + b"\n")
+        self.assertEqual(retained, b"riffdbd-ready-v1\n")
+        self.assertEqual(values, [True])
+        self.assertTrue(failed)
+
+    def test_known_census_cannot_exceed_its_own_bound_or_end_in_partial_record(self):
+        for tail in (b"1" * (128 * 1024) + b"\n", b"1" * 5000):
+            with self.subTest(size=len(tail)):
+                retained, values, failed = self.capture(b"riffdbd-ready-v1\n" + b"riffdb-writer-batch-stages-v1\t" + tail)
+                self.assertEqual(retained, b"riffdbd-ready-v1\n")
+                self.assertEqual(values, [True])
+                self.assertTrue(failed)
+
+    def test_large_or_partial_readiness_never_reports_ready(self):
+        for data in (b"riffdbd-ready-v1\t" + b"1" * 5000 + b"\n", b"riffdbd-ready-v1", b""):
+            with self.subTest(size=len(data)):
+                retained, values, failed = self.capture(data)
+                self.assertEqual(retained, b"")
+                self.assertEqual(values, [False])
+                self.assertTrue(failed)
+
+    def test_total_output_is_bounded_independently_of_line_sizes(self):
+        first = b"riffdbd-ready-v1\n"
+        retained, values, failed = self.capture(first + b"1" * 20 + b"\n" + b"2" * 20 + b"\n", total_bound=40)
+        self.assertLessEqual(len(retained), 40)
+        self.assertEqual(values, [True])
+        self.assertTrue(failed)
+
+
+    def test_exact_writer_census_bound_is_retained_without_truncation(self):
+        prefix = b"riffdb-writer-batch-stages-v1\t"
+        census = prefix + b"1" * (128 * 1024 - len(prefix) - 1) + b"\n"
+        data = b"riffdbd-ready-v1\n" + census
+        retained, values, failed = self.capture(data)
+        self.assertEqual(retained, data)
+        self.assertEqual(values, [True])
+        self.assertFalse(failed)
+
+
+    def test_census_at_first_read_boundary_does_not_consume_following_line(self):
+        prefix = b"riffdb-writer-batch-stages-v1\t"
+        census = prefix + b"1" * (4097 - len(prefix) - 1) + b"\n"
+        data = b"riffdbd-ready-v1\n" + census + b"2" * 4097 + b"\n"
+        retained, values, failed = self.capture(data)
+        self.assertEqual(retained, b"riffdbd-ready-v1\n" + census)
+        self.assertEqual(values, [True])
+        self.assertTrue(failed, "the following oversized ordinary line retains its own refusal")

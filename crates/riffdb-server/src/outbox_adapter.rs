@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use riffdb_commit::{ApplicationCommitNotificationError, ApplicationCommitNotificationSink};
 use riffdb_outbox::{
@@ -31,7 +31,7 @@ pub(crate) enum OutboxDerivedReadiness {
 /// Payload-free dynamic health cache for the no-destination composition.
 #[derive(Clone)]
 pub(crate) struct NoDestinationOutboxHealth {
-    state: Arc<AtomicU8>,
+    state: Arc<AtomicU64>,
     destination_unready: Arc<AtomicU8>,
 }
 
@@ -40,7 +40,7 @@ impl NoDestinationOutboxHealth {
     pub(crate) fn new(recovery: OutboxRecoveryReadiness) -> Self {
         Self {
             destination_unready: Arc::new(AtomicU8::new(0)),
-            state: Arc::new(AtomicU8::new(match recovery {
+            state: Arc::new(AtomicU64::new(match recovery {
                 OutboxRecoveryReadiness::Ready => 0,
                 OutboxRecoveryReadiness::Degraded => 1,
             })),
@@ -49,8 +49,31 @@ impl NoDestinationOutboxHealth {
 
     /// Refreshes the cache from exact commit-coupled undelivered membership.
     pub(crate) fn refresh(&self, source: &impl OutboxRepository) {
-        let degraded = source.has_undelivered_outbox().unwrap_or(true);
-        self.state.store(u8::from(degraded), Ordering::Release);
+        self.refresh_snapshot(|| source.has_undelivered_outbox().unwrap_or(true));
+    }
+
+    fn refresh_snapshot(&self, inspect: impl FnOnce() -> bool) {
+        // The low bit is degraded; upper bits are an ephemeral observation
+        // generation. Mark the latest capture unknown before inspecting it.
+        // A delayed older capture can never clear or replace a newer result.
+        // Reserve MAX as permanently degraded exhaustion, never wrap identity.
+        let generation = self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
+                prior
+                    .checked_add(2)
+                    .map(|next| next | 1)
+                    .filter(|next| *next < u64::MAX)
+            });
+        let Ok(prior) = generation else {
+            self.state.store(u64::MAX, Ordering::Release);
+            return;
+        };
+        let admitted = (prior + 2) | 1;
+        let observed = (admitted & !1) | u64::from(inspect());
+        let _ =
+            self.state
+                .compare_exchange(admitted, observed, Ordering::AcqRel, Ordering::Acquire);
     }
 
     /// Configured destination recovery/refusal independently fences readiness.
@@ -61,7 +84,7 @@ impl NoDestinationOutboxHealth {
 
     /// Returns the current payload-free aggregate classification.
     pub(crate) fn readiness(&self) -> OutboxDerivedReadiness {
-        if self.state.load(Ordering::Acquire) == 0
+        if self.state.load(Ordering::Acquire) & 1 == 0
             && self.destination_unready.load(Ordering::Acquire) == 0
         {
             OutboxDerivedReadiness::Ready
@@ -266,5 +289,82 @@ mod tests {
             health.destination_ready(true);
             assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
         }
+    }
+    // req: EFF-002, END-007, END-008
+    #[test]
+    fn older_health_refresh_cannot_overwrite_a_completed_newer_snapshot() {
+        for older_pending in [false, true] {
+            let health = NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready);
+            let previous = health.clone();
+            let (captured, captured_rx) = std::sync::mpsc::sync_channel(1);
+            let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+            let thread = std::thread::spawn(move || {
+                previous.refresh_snapshot(|| {
+                    captured.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    older_pending
+                });
+            });
+            captured_rx.recv().unwrap();
+            health.refresh_snapshot(|| !older_pending);
+            let expected = if older_pending {
+                OutboxDerivedReadiness::Ready
+            } else {
+                OutboxDerivedReadiness::Degraded
+            };
+            assert_eq!(health.readiness(), expected);
+            resume.send(()).unwrap();
+            thread.join().unwrap();
+            assert_eq!(
+                health.readiness(),
+                expected,
+                "the delayed older observation cannot replace the newer completed state"
+            );
+        }
+    }
+
+    // req: EFF-002, END-007, END-008
+    #[test]
+    fn in_flight_health_refresh_and_exhaustion_remain_degraded() {
+        let health = NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready);
+        health.refresh_snapshot(|| {
+            assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+            false
+        });
+        assert_eq!(health.readiness(), OutboxDerivedReadiness::Ready);
+        health.state.store(u64::MAX - 3, Ordering::Release);
+        let mut inspected = false;
+        health.refresh_snapshot(|| {
+            inspected = true;
+            false
+        });
+        assert!(!inspected);
+        assert_eq!(health.state.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+        health.refresh_snapshot(|| false);
+        assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
+    }
+    // req: EFF-002, END-007, END-008
+    #[test]
+    fn exhaustion_cannot_be_cleared_by_the_last_admitted_delayed_refresh() {
+        let health = NoDestinationOutboxHealth::new(OutboxRecoveryReadiness::Ready);
+        health.state.store(u64::MAX - 5, Ordering::Release);
+        let previous = health.clone();
+        let (captured, captured_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            previous.refresh_snapshot(|| {
+                captured.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                false
+            });
+        });
+        captured_rx.recv().unwrap();
+        health.refresh_snapshot(|| false);
+        assert_eq!(health.state.load(Ordering::Acquire), u64::MAX);
+        resume.send(()).unwrap();
+        thread.join().unwrap();
+        assert_eq!(health.state.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(health.readiness(), OutboxDerivedReadiness::Degraded);
     }
 }

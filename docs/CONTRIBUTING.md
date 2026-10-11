@@ -268,6 +268,27 @@ a language change reaches a downstream adapter before it reaches anything else.
 `AGENTS.md`, in `SPEC.md`, or in an accepted record's decision actually exists,
 or is still owed by an open package.
 
+`./scripts/check-ticketdesk-lifecycle --self-test` supplies the repository's
+`scripts` import root to its discovery subprocess. It runs the complete checker
+test collection without depending on an ambient `PYTHONPATH` or the order in
+which test modules are imported. These synthetic tests do not qualify a real
+database rehearsal.
+
+The concurrent promotion regression reports its static profile and lagging
+case when an unexpected client failure occurs. A failed primary-fence request
+also consumes the existing bounded, closed daemon failure record for diagnosis.
+After stdout disconnects, it observes natural exit status and output counts
+using the remainder of the same 100-ms diagnostic budget, without lifecycle
+input. It retains the original fencing assertions and deadlines; an isolated pass does
+not dismiss a failure from the complete CI run.
+
+The complete command-segment decoder has a process-isolated 160-KiB stack
+regression that checks semantic equality, canonical re-encoding and corruption
+refusal. This reserves space for journal replay, operational admission and
+allocation within production workers' existing 384-KiB stack. An overflow in
+the child fails the test; increasing production stack reservations or omitting
+semantic validation does not repair the regression.
+
 ### External adapter compatibility
 
 RiffDB builds, tests, releases, and merges independently of sample adapter

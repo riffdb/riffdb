@@ -206,6 +206,11 @@ fn production_retention_lane_releases_receipts_then_retires_extent_after_reader_
         AdmissionLookupResultV1::Found(_)
     ));
     assert_committed(&ports, 5);
+    // Source reclamation is now an acknowledged journal transition. Optional
+    // prefix refresh still validates a drained, exact native checkpoint and
+    // must never force materialization itself. Install the cut through the
+    // ordinary scheduled checkpoint before asking for that separate proof.
+    complete_checkpoint(&ports, &schedule);
     lane.refresh_validated_prefix(
         startup_inputs(),
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

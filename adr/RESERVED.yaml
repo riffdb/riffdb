@@ -22,13 +22,3 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0278"
-    status: in-flight
-    note: >-
-      Allocated on unmerged branches before ADR-0280 was written; two proposals
-      currently claim it. Remove this entry when the record lands.
-  - adr: "0279"
-    status: in-flight
-    note: >-
-      Allocated on an unmerged branch before ADR-0280 was written. Remove this
-      entry when the record lands.

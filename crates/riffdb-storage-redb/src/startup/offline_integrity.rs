@@ -77,10 +77,12 @@ impl RedbOfflineIntegrityScrub {
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         let copy =
             crate::maintenance::PhysicalScrubCopy::capture(&self.path, Arc::clone(&cancellation))?;
-        let store = RedbStore::open_offline_scrub(&self.path, &copy, follower)?;
-        let mut session = store.begin_structural_evidence_for(
+        let (store, history) =
+            RedbStore::open_offline_scrub(&self.path, &copy, follower)?.into_parts();
+        let mut session = store.begin_structural_evidence_for_history(
             self.inputs,
             EvidenceOpenPurpose::OfflineIntegrityScrub,
+            history,
         )?;
         session.set_cancellation(cancellation);
         let receipt = Self::validate_session(session)?;

@@ -91,6 +91,7 @@ fn all_five_step_put_delete_histories_match_an_independent_net_state_oracle() {
             let mut remaining = program;
             let mut observed = initial;
             let mut changes = AuthoritativeMutationAccumulatorV3::default();
+            let mut inputs = Vec::new();
             for _ in 0..5 {
                 let next = match remaining % 3 {
                     0 => None,
@@ -98,18 +99,56 @@ fn all_five_step_put_delete_histories_match_an_independent_net_state_oracle() {
                     _ => Some(b"B".as_slice()),
                 };
                 remaining /= 3;
-                match (observed, next) {
-                    (None, None) => (),
-                    (Some(before), None) => changes
-                        .record(M::delete(N::Entities, b"key", hash(before)).unwrap())
-                        .unwrap(),
-                    (before, Some(after)) => changes
-                        .record(M::put(N::Entities, b"key", before.map(hash), after).unwrap())
-                        .unwrap(),
+                let mutation = match (observed, next) {
+                    (None, None) => None,
+                    (Some(before), None) => {
+                        Some(M::delete(N::Entities, b"key", hash(before)).unwrap())
+                    }
+                    (before, Some(after)) => {
+                        Some(M::put(N::Entities, b"key", before.map(hash), after).unwrap())
+                    }
+                };
+                if let Some(mutation) = mutation {
+                    changes.record(mutation.clone()).unwrap();
+                    inputs.push(mutation);
                 }
                 observed = next;
             }
             let net = changes.finish().unwrap();
+            let borrowed = AuthoritativeMutationAccumulatorV3::fold_borrowed_indexed_v1(
+                inputs.len(),
+                |index| {
+                    let row = &inputs[index];
+                    Ok(Some((
+                        row.namespace(),
+                        row.key(),
+                        row.expected_hash(),
+                        row.value(),
+                    )))
+                },
+            )
+            .unwrap();
+            assert_eq!(borrowed, net);
+            for bad_index in 1..inputs.len() {
+                let mut changed = inputs.clone();
+                changed[bad_index] =
+                    M::put(N::Entities, b"key", Some(hash(b"foreign")), b"bad").unwrap();
+                assert_eq!(
+                    AuthoritativeMutationAccumulatorV3::fold_borrowed_indexed_v1(
+                        changed.len(),
+                        |index| {
+                            let row = &changed[index];
+                            Ok(Some((
+                                row.namespace(),
+                                row.key(),
+                                row.expected_hash(),
+                                row.value(),
+                            )))
+                        }
+                    ),
+                    Err(ChangelogV3Error::PredecessorMismatch)
+                );
+            }
             if initial == observed {
                 assert!(
                     net.is_empty(),

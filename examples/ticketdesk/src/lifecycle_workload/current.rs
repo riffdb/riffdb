@@ -171,6 +171,28 @@ impl CurrentClient {
     }
 }
 
+pub(super) async fn verify_successor_authorization() -> Result<()> {
+    let mut client = connect().await?;
+    let CurrentClient::V2(generated, _) = &mut client else {
+        return Err("successor_required");
+    };
+    let denied = generated
+        .lifecycle_version(v2::LifecycleVersionInput {
+            organization_id: super::uuid(0x8001, 0),
+            idempotency_key: "ticketdesk-lifecycle-ungranted-successor".to_owned(),
+        })
+        .await
+        .err()
+        .ok_or("successor_authorization")?;
+    if denied.semantic_error().map(|error| error.code().as_str()) != Some("RDB-AUTH-0214") {
+        return Err("successor_authorization");
+    }
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-successor-authorization/v1\",\"contract_version\":2,\"ungranted_command_refused\":true}}"
+    );
+    Ok(())
+}
+
 pub(super) async fn smoke() -> Result<()> {
     let mut client = connect().await?;
     if !matches!(&client, CurrentClient::V2(_, _)) {
@@ -287,13 +309,29 @@ pub(super) async fn rotation_smoke() -> Result<()> {
         }
     }
     let root = std::env::var_os("RIFFDB_LIFECYCLE_WITNESS_ROOT").ok_or("configuration")?;
-    let mut reader =
-        super::witness::Reader::open(&std::path::PathBuf::from(root).join("updates.witness"))?;
-    let original = reader.next()?.ok_or("rotation_witness")?;
+    let root = std::path::PathBuf::from(root);
+    let quiesced = match std::env::var("RIFFDB_LIFECYCLE_QUIESCED_COMMANDS") {
+        Ok(value) => {
+            let count = value.parse::<u64>().map_err(|_| "rotation_witness")?;
+            if count == 0
+                || count > super::model::MAX_COMMANDS
+                || count.to_string() != value
+                || !root.join("load.quiesce").is_file()
+                || !root.join("load.quiesced").is_file()
+            {
+                return Err("rotation_witness");
+            }
+            Some(count)
+        }
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("configuration"),
+    };
+    let mut reader = super::witness::Reader::open(&root.join("updates.witness"))?;
+    let (original, revisions) = reader.acknowledged_prefix(quiesced.unwrap_or(1))?;
     if original.ordinal != 0
         || original.version != 1
         || original.incarnation != 1
-        || reader.next()?.is_some()
+        || (quiesced.is_none() && reader.next()?.is_some())
     {
         return Err("rotation_witness");
     }
@@ -316,7 +354,7 @@ pub(super) async fn rotation_smoke() -> Result<()> {
     else {
         return Err("rotation_read");
     };
-    super::model::validate_final(1, 0, &found.ticket)?;
+    super::model::validate_revision(0, revisions[0], &found.ticket)?;
     println!(
         "{{\"schema\":\"riffdb.ticketdesk-lifecycle-rotation-smoke/v1\",\"revoked_reads_refused\":true,\"revoked_replay_refused\":true,\"same_principal_replay\":true,\"state_reconciled\":true}}"
     );

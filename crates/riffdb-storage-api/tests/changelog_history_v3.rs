@@ -378,3 +378,104 @@ fn complete_history_and_follower_envelope_vectors_are_frozen() {
         );
     }
 }
+
+// req: REC-001, STO-030, STO-032, REP-003
+#[test]
+fn borrowed_history_validation_matches_owned_canonical_and_semantic_refusals() {
+    use riffdb_storage_api::{AuthoritativeMutationV3 as Mutation, AuthoritativeNamespaceV1 as N};
+    use sha2::{Digest, Sha256};
+    let initial = History::new(lineage(), point(1), point(1), point(1)).unwrap();
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: lineage().database_id(),
+        history_incarnation: 1,
+        predecessor: Some(point(1).sequence()),
+        sequence: point(2).sequence(),
+        predecessor_frontier: DualFrontier::INITIAL,
+        covered_frontier: DualFrontier::new(CommitSequence::new(1), None),
+        prior_history_hash: point(1).history_hash(),
+    };
+    let receipt = AuthoritativeTransactionV3::new(
+        binding,
+        ChangelogAttributionV3::JournaledApplicationGroup,
+        vec![
+            Mutation::put(N::Entities, b"a", None, b"first").unwrap(),
+            Mutation::delete(N::Entities, b"b", [0x73; 32]).unwrap(),
+        ],
+    )
+    .unwrap();
+    let bytes = receipt.encode().unwrap();
+    let owned = initial.advance(&receipt).unwrap();
+    assert_eq!(initial.advance_canonical_v1(&bytes).unwrap(), owned);
+    owned.validate_terminal_canonical_v1(&bytes).unwrap();
+    let compare = |candidate: &[u8]| {
+        let owned = AuthoritativeTransactionV3::decode(candidate)
+            .and_then(|receipt| initial.advance(&receipt));
+        let borrowed = initial.advance_canonical_v1(candidate);
+        assert_eq!(borrowed.is_ok(), owned.is_ok());
+        if let (Ok(left), Ok(right)) = (owned, borrowed) {
+            assert_eq!(left, right);
+        }
+    };
+    for offset in 0..bytes.len() {
+        compare(&bytes[..offset]);
+        let mut corrupt = bytes.clone();
+        corrupt[offset] ^= 0x80;
+        compare(&corrupt);
+        // An attacker with a valid checksum still cannot bypass shape,
+        // namespace, canonical order, or exact history-chain checks.
+        let end = corrupt.len() - 32;
+        let checksum: [u8; 32] = Sha256::digest(&corrupt[..end]).into();
+        corrupt[end..].copy_from_slice(&checksum);
+        compare(&corrupt);
+    }
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    compare(&trailing);
+    assert!(initial.validate_terminal_canonical_v1(&bytes).is_err());
+}
+
+// req: REC-005, STO-030, STO-032, REP-003
+#[test]
+fn borrowed_history_validation_accepts_the_exact_catalog_maximum_receipt() {
+    use riffdb_storage_api::{
+        AuthoritativeMutationV3 as Mutation, AuthoritativeNamespaceV1 as N,
+        AuthoritativeStateCatalogV2, MAX_CHANGELOG_FRAME_BYTES,
+    };
+    let lineage = Lineage::new_with_catalog(
+        lineage().database_id(),
+        1,
+        LeadershipEpochV1::initial(),
+        AuthoritativeStateCatalogV2.digest(),
+    )
+    .unwrap();
+    let initial = History::new(lineage, point(1), point(1), point(1)).unwrap();
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: lineage.database_id(),
+        history_incarnation: 1,
+        predecessor: Some(point(1).sequence()),
+        sequence: point(2).sequence(),
+        predecessor_frontier: DualFrontier::INITIAL,
+        covered_frontier: DualFrontier::new(CommitSequence::new(1), None),
+        prior_history_hash: point(1).history_hash(),
+    };
+    // V2 catalog: 166 + 4*34 frame header, 48 footer, 4 row length;
+    // receipt: 160 fixed bytes and 44 mutation bytes plus a one-byte key.
+    let maximum = MAX_CHANGELOG_FRAME_BYTES - (166 + 4 * 34 + 48 + 4);
+    let receipt = AuthoritativeTransactionV3::new_for_catalog(
+        binding,
+        ChangelogAttributionV3::JournaledApplicationGroup,
+        vec![Mutation::put(N::Entities, b"a", None, &vec![0x71; maximum - 160 - 44 - 1]).unwrap()],
+        lineage.catalog_digest(),
+    )
+    .unwrap();
+    let bytes = receipt.encode().unwrap();
+    let expected = initial.advance(&receipt).unwrap();
+    drop(receipt);
+    assert_eq!(bytes.len(), maximum);
+    assert_eq!(initial.advance_canonical_v1(&bytes).unwrap(), expected);
+    expected.validate_terminal_canonical_v1(&bytes).unwrap();
+    let mut corrupt = bytes;
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    assert!(initial.advance_canonical_v1(&corrupt).is_err());
+}

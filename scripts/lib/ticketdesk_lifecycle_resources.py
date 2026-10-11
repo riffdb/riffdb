@@ -6,6 +6,7 @@ It also includes executable and file mappings, stacks and reserved/free address
 space. It is never presented as allocated live bytes. VmData is not substituted
 for an allocator measurement. A campaign must freeze this basis and its limit.
 """
+import errno
 import os
 import json
 from pathlib import Path
@@ -18,15 +19,68 @@ MAX_STATUS_BYTES = 65536
 MAX_STAT_BYTES = 8192
 MAX_U64 = 2**64 - 1
 MAX_PREPARATION_SAMPLE_SECONDS = 1500
+MAX_OWNED_THREADS = 512
+MAX_OWNED_PROCESSES = 8
+OWNED_ROLES = frozenset({"controller", "server", "load", "observer", "native_sampler",
+                         "typescript_driver", "operator"})
 
+
+RESOURCE_REFUSAL_CODES = frozenset({
+    "resource_measurement", "resource_process_identity", "resource_process_inventory",
+    "resource_process_unavailable", "resource_sample_bound", "resource_sample_clock",
+    "resource_sample_coverage", "resource_sample_gap", "resource_sample_terminal",
+})
+RESOURCE_REFUSAL_REASONS = frozenset({
+    "unspecified", "task_census_exhausted", "lost_child_evidence", "changed_children",
+    "untracked_descendant", "self_descendant", "invalid_parent_map", "ownership_cycle",
+    "disconnected_tree", "thread_count_bound", "thread_identity", "child_inventory_bound",
+    "duplicate_child", "child_identity", "census_counter_overflow",
+})
 
 class ResourceError(ValueError):
-    """Closed diagnostics contain no process name, identity, path or input text."""
+    """Keep the original refusal and expose only a closed diagnostic context."""
+
+    def __init__(self, code, *, reason="unspecified", role=None, census_attempts=None):
+        super().__init__(code)
+        self.reason = (reason if type(reason) is str and reason in RESOURCE_REFUSAL_REASONS
+                       else "unspecified")
+        self.role = role if type(role) is str and role in OWNED_ROLES else None
+        self.census_attempts = (census_attempts if type(census_attempts) is int
+                                and 0 <= census_attempts <= 3 else None)
+
+    def for_role(self, role):
+        self.role = role if type(role) is str and role in OWNED_ROLES else None
+        return self
+
+    def observation(self):
+        code = str(self)
+        return {"schema": "riffdb.ticketdesk-lifecycle-resource-refusal/v1",
+                "code": code if code in RESOURCE_REFUSAL_CODES else "resource_observation_refusal",
+                "reason": self.reason, "role": self.role,
+                "census_attempts": self.census_attempts,
+                "qualifies_resource_model": False}
 
 
-def require(condition, code):
+class _TaskCensusChanged(Exception):
+    """An enumerated thread retired; retain every child already observed."""
+
+    def __init__(self, children):
+        self.children = frozenset(children)
+
+
+def retired_task(task, name, error, children):
+    if error.errno in (errno.ENOENT, errno.ESRCH):
+        try:
+            os.stat(name, dir_fd=task, follow_symlinks=False)
+        except OSError as later:
+            if later.errno in (errno.ENOENT, errno.ESRCH):
+                raise _TaskCensusChanged(children) from error
+    raise error
+
+
+def require(condition, code, *, reason="unspecified", role=None):
     if not condition:
-        raise ResourceError(code)
+        raise ResourceError(code, reason=reason, role=role)
 
 
 def number(encoded):
@@ -88,6 +142,65 @@ def memory(encoded, expected_pid):
             "allocator_basis": ALLOCATOR_BASIS}
 
 
+def memory_peaks(encoded, current):
+    selected = {}
+    for line in encoded.splitlines():
+        key, separator, value = line.partition(b":")
+        if key not in (b"VmHWM", b"VmPeak"):
+            continue
+        require(separator and key not in selected, "resource_measurement")
+        fields = value.split()
+        require(len(fields) == 2 and fields[1] == b"kB", "resource_measurement")
+        selected[key] = number(fields[0]) * 1024
+    require(selected.keys() == {b"VmHWM", b"VmPeak"}, "resource_measurement")
+    rss, virtual = selected[b"VmHWM"], selected[b"VmPeak"]
+    require(current["rss_bytes"] <= rss <= virtual <= MAX_U64
+            and current["allocator_bytes"] <= virtual, "resource_measurement")
+    return {"rss_peak_bytes": rss, "allocator_peak_bytes": virtual}
+
+
+def thread_children(directory):
+    """Inspect every bounded task, since children belong to the spawning thread."""
+    task = os.open("task", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        children = set()
+        count = 0
+        with os.scandir(task) as entries:
+            for entry in entries:
+                count += 1
+                require(count <= MAX_OWNED_THREADS, "resource_process_inventory", reason="thread_count_bound")
+                tid = number(entry.name.encode())
+                require(0 < tid <= 2**31 - 1, "resource_process_inventory", reason="thread_identity")
+                try:
+                    thread = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                     dir_fd=task)
+                except OSError as error:
+                    retired_task(task, entry.name, error, children)
+                try:
+                    try:
+                        descriptor = os.open("children", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                             dir_fd=thread)
+                    except OSError as error:
+                        retired_task(task, entry.name, error, children)
+                    with os.fdopen(descriptor, "rb") as source:
+                        require(stat.S_ISREG(os.fstat(source.fileno()).st_mode),
+                                "resource_process_inventory")
+                        encoded = source.read(MAX_STAT_BYTES + 1)
+                    require(len(encoded) <= MAX_STAT_BYTES, "resource_process_inventory")
+                    for field in encoded.split():
+                        pid = number(field)
+                        require(0 < pid <= 2**31 - 1, "resource_process_inventory", reason="child_identity")
+                        require(pid not in children, "resource_process_inventory", reason="duplicate_child")
+                        require(len(children) < MAX_OWNED_PROCESSES, "resource_process_inventory", reason="child_inventory_bound")
+                        children.add(pid)
+                finally:
+                    os.close(thread)
+        require(count > 0, "resource_process_inventory")
+        return children
+    finally:
+        os.close(task)
+
+
 class ProcessMemory:
     """One owned process incarnation; replacement needs a separate owner.
 
@@ -101,6 +214,8 @@ class ProcessMemory:
         self.pid = pid
         self.root = Path(proc_root)
         self.start = None
+        self.peaks = None
+        self.task_census_restarts = 0
 
     def sample(self):
         descriptor = None
@@ -119,6 +234,133 @@ class ProcessMemory:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    def tree_sample(self):
+        """Bracket memory with task-child and process-incarnation observations."""
+        observed = set()
+        for _attempt in range(3):
+            try:
+                value, children = self._tree_sample_once()
+                require(observed <= children, "resource_process_inventory", reason="lost_child_evidence")
+                value["task_census_restarts"] = self.task_census_restarts
+                return value, children
+            except _TaskCensusChanged as error:
+                observed.update(error.children)
+                self.task_census_restarts += 1
+                require(self.task_census_restarts <= MAX_U64, "resource_process_inventory", reason="census_counter_overflow")
+        raise ResourceError("resource_process_inventory", reason="task_census_exhausted", census_attempts=3)
+
+    def _tree_sample_once(self):
+        directory = None
+        try:
+            directory = os.open(self.root / str(self.pid),
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            before = identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid)
+            require(self.start is None or before == self.start, "resource_process_identity")
+            # Pin the incarnation even if a disappearing task aborts this pass.
+            self.start = before
+            children = thread_children(directory)
+            encoded = read_bounded(directory, "status", MAX_STATUS_BYTES)
+            current = memory(encoded, self.pid)
+            value = dict(current, **memory_peaks(encoded, current))
+            peaks = (value["rss_peak_bytes"], value["allocator_peak_bytes"])
+            # RSS counters are asynchronous on Linux. Keep the actual reported
+            # reading, and never lower the maximum already observed for this
+            # same live incarnation. Virtual-address high water still cannot
+            # rewind; replacement, missing fields and invalid units still fail.
+            require(self.peaks is None or peaks[1] >= self.peaks[1], "resource_measurement")
+            value["reported_rss_peak_bytes"] = peaks[0]
+            value["reported_allocator_peak_bytes"] = peaks[1]
+            peaks = (max(peaks[0], self.peaks[0] if self.peaks else 0), peaks[1])
+            value["rss_peak_bytes"] = peaks[0]
+            self.peaks = peaks
+            try:
+                later_children = thread_children(directory)
+            except _TaskCensusChanged as error:
+                raise _TaskCensusChanged(children | error.children) from error
+            require(children == later_children, "resource_process_inventory", reason="changed_children")
+            require(before == identity(read_bounded(directory, "stat", MAX_STAT_BYTES), self.pid),
+                    "resource_process_identity")
+            self.start = before
+            self.peaks = peaks
+            return value, children
+        except OSError as error:
+            raise ResourceError("resource_process_unavailable") from error
+        finally:
+            if directory is not None:
+                os.close(directory)
+
+
+class OwnedProcessMemory:
+    """Known persistent owners, with an exact descendant census at each sample.
+
+    This refuses untracked CLI children. Lifetime high-water observations cover
+    peaks of the inventoried live incarnations; their sum is conservative rather
+    than a claim that each peak occurred simultaneously. Transient descendants
+    between censuses still require an independent launch/exit inventory. This
+    collector alone never establishes the campaign resource-model check.
+    """
+
+    def __init__(self, pids, *, proc_root=Path("/proc")):
+        require(type(pids) is dict and {"controller", "server", "load", "observer"} <= pids.keys()
+                and pids.keys() <= OWNED_ROLES and len(pids) <= MAX_OWNED_PROCESSES,
+                "resource_process_inventory")
+        require(all(type(pid) is int for pid in pids.values())
+                and len(set(pids.values())) == len(pids), "resource_process_inventory")
+        self.controller = pids["controller"]
+        self.owners = {role: ProcessMemory(pid, proc_root=proc_root) for role, pid in pids.items()}
+
+    def sample(self, elapsed_ns):
+        require(type(elapsed_ns) is int and 0 <= elapsed_ns <= MAX_U64, "resource_measurement")
+        values, edges = {}, {}
+        known = {owner.pid for owner in self.owners.values()}
+        fields = ("rss_bytes", "allocator_bytes", "rss_peak_bytes", "allocator_peak_bytes",
+                  "reported_rss_peak_bytes", "reported_allocator_peak_bytes")
+        for role, owner in self.owners.items():
+            try:
+                sample, children = owner.tree_sample()
+            except ResourceError as error:
+                error.for_role(role)
+                raise
+            require(children <= known, "resource_process_inventory", reason="untracked_descendant", role=role)
+            require(owner.pid not in children, "resource_process_inventory", reason="self_descendant", role=role)
+            edges[owner.pid] = children
+            values[role] = {name: sample[name] for name in fields}
+            values[role]["task_census_restarts"] = sample["task_census_restarts"]
+        # Every non-root belongs to exactly one owner, and all owners connect
+        # to the controller. A disconnected cycle must not look like a tree.
+        parents = [pid for children in edges.values() for pid in children]
+        require(len(parents) == len(set(parents))
+                and set(parents) == known - {self.controller}, "resource_process_inventory", reason="invalid_parent_map")
+        reached, pending = set(), [self.controller]
+        while pending:
+            current = pending.pop()
+            require(current not in reached, "resource_process_inventory", reason="ownership_cycle")
+            reached.add(current)
+            pending.extend(edges[current])
+        require(reached == known, "resource_process_inventory", reason="disconnected_tree")
+        for role, owner in self.owners.items():
+            try:
+                later, children = owner.tree_sample()
+            except ResourceError as error:
+                error.for_role(role)
+                raise
+            require(children == edges[owner.pid], "resource_process_inventory", reason="changed_children", role=role)
+            for name in ("rss_peak_bytes", "allocator_peak_bytes"):
+                values[role][name] = max(values[role][name], later[name])
+            values[role]["later_reported_rss_peak_bytes"] = later["reported_rss_peak_bytes"]
+            values[role]["later_reported_allocator_peak_bytes"] = later["reported_allocator_peak_bytes"]
+            values[role]["task_census_restarts"] = later["task_census_restarts"]
+        totals = {name: sum(value[name] for value in values.values()) for name in fields}
+        require(all(value <= MAX_U64 for value in totals.values()), "resource_measurement")
+        return {"schema": "riffdb.ticketdesk-lifecycle-owned-memory/v1", "elapsed_ns": elapsed_ns,
+                "allocator_basis": ALLOCATOR_BASIS,
+                "rss_peak_basis": "maximum_observed_asynchronous_kernel_high_water_counter",
+                "rss_observation_basis": "asynchronous_linux_kernel_rss_counter",
+                "scope": "verified_owned_descendant_tree_at_sample", "processes": values,
+                "rss_bytes": totals["rss_bytes"], "allocator_bytes": totals["allocator_bytes"],
+                "rss_peak_upper_bound_bytes": totals["rss_peak_bytes"],
+                "allocator_peak_upper_bound_bytes": totals["allocator_peak_bytes"]}
 
 
 class PersistentProcessMemory:
@@ -157,7 +399,15 @@ class PreparationMemorySamples:
     def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
         require(type(duration) is int and 1 <= duration <= MAX_PREPARATION_SAMPLE_SECONDS,
                 "resource_sample_bound")
-        self.inventory = PersistentProcessMemory(pids, proc_root=proc_root)
+        self._initialize(root, pids, duration, proc_root)
+
+    def _initialize(self, root, pids, duration, proc_root):
+        inventory = (OwnedProcessMemory(pids, proc_root=proc_root) if "native_sampler" in pids
+                     else PersistentProcessMemory(pids, proc_root=proc_root))
+        self._initialize_inventory(root, inventory, duration)
+
+    def _initialize_inventory(self, root, inventory, duration):
+        self.inventory = inventory
         self.duration_ns = duration * 1000000000
         self.coverage = [0] * ((duration + 299) // 300)
         self.last_elapsed_ns = None
@@ -165,6 +415,8 @@ class PreparationMemorySamples:
         self.count = 0
         self.path = Path(root) / "memory-samples.jsonl"
         self.output = None
+        self.cadence_ns = 5000000000
+        self.maximum_gap_ns = None
 
     def __enter__(self):
         descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -177,12 +429,18 @@ class PreparationMemorySamples:
                 and (self.last_elapsed_ns is None or elapsed_ns >= self.last_elapsed_ns),
                 "resource_sample_clock")
         self.last_elapsed_ns = elapsed_ns
+        if self.maximum_gap_ns is not None:
+            require(elapsed_ns <= self.duration_ns + self.maximum_gap_ns
+                    and elapsed_ns - (self.last_sample_ns or 0) <= self.maximum_gap_ns,
+                    "resource_sample_gap")
         if elapsed_ns >= self.duration_ns:
             return
-        if self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < 5000000000:
+        if self.last_sample_ns is not None and elapsed_ns - self.last_sample_ns < self.cadence_ns:
             return
         require(self.output is not None and self.count < 2048, "resource_sample_bound")
         value = self.inventory.sample(elapsed_ns)
+        # A persistent census still cannot prove transient launch/exit coverage.
+        value["qualifies_resource_model"] = False
         encoded = json.dumps(value, sort_keys=True).encode() + b"\n"
         require(len(encoded) <= 4096, "resource_sample_bound")
         self.output.write(encoded)
@@ -199,3 +457,49 @@ class PreparationMemorySamples:
             self.output.close()
             self.output = None
         return False
+
+
+class CampaignMemorySamples(PreparationMemorySamples):
+    """Continuous campaign observations over a fixed inventory or owned roster.
+
+    One sample per minute fits 1,440 records for a day. An observation gap above
+    75 seconds refuses, including initial and terminal coverage. Process exits,
+    replacement ownership and transient children require a CampaignProcessRoster.
+    Complete model reconciliation remains separate; this class cannot qualify it.
+    """
+
+    def __init__(self, root, pids, duration, *, proc_root=Path("/proc")):
+        self._validate_duration(duration)
+        require(type(pids) is dict and "native_sampler" in pids,
+                "resource_process_inventory")
+        self._initialize(root, pids, duration, proc_root)
+        self._campaign_cadence()
+
+    @staticmethod
+    def _validate_duration(duration):
+        require(type(duration) is int and duration % 300 == 0
+                and 73 <= duration // 300 <= 288, "resource_sample_bound")
+
+    @classmethod
+    def from_roster(cls, root, roster, duration):
+        # Import after module initialization: the roster uses the same bounded
+        # process readers and ResourceError, and must retain their exact types.
+        from .ticketdesk_lifecycle_campaign_process_roster import CampaignProcessRoster
+        cls._validate_duration(duration)
+        require(isinstance(roster, CampaignProcessRoster), "resource_process_inventory")
+        samples = cls.__new__(cls)
+        samples._initialize_inventory(root, roster, duration)
+        samples._campaign_cadence()
+        return samples
+
+    def _campaign_cadence(self):
+        self.cadence_ns = 60000000000
+        self.maximum_gap_ns = 75000000000
+
+    def finish(self):
+        require(self.last_elapsed_ns is not None and self.last_sample_ns is not None
+                and self.duration_ns <= self.last_elapsed_ns
+                <= self.duration_ns + self.maximum_gap_ns
+                and self.duration_ns - self.last_sample_ns <= self.maximum_gap_ns,
+                "resource_sample_terminal")
+        super().finish()

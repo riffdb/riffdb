@@ -99,6 +99,17 @@ pub fn stamp_history_incarnation(
     stamp_incarnation(database, incarnation, None)
 }
 
+/// Stamps only a closed, sealed private stage; ordinary recovery is separate.
+pub(crate) fn stamp_sealed_history_incarnation(
+    path: &Path,
+    incarnation: u64,
+) -> Result<(), StorageError> {
+    if incarnation < HISTORY_INCARNATION_INITIAL {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    stamp_incarnation(open_unrepaired_private_database(path)?, incarnation, None)
+}
+
 pub(crate) fn stamp_private_archive_incarnation(
     file: &File,
     binding: crate::maintenance::PrivateArchiveValidationBinding,
@@ -610,6 +621,36 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         &mut self,
         overwrite_policy: OfflineRestoreOverwritePolicyV1,
     ) -> Result<OfflineRestoreResultV1, StorageError> {
+        self.restore_offline_backup_with_layout(overwrite_policy, RestoredHistoryLayout::Retained)
+    }
+}
+
+/// Backend-private representation choice. Ordinary offline restore retains its
+/// reviewed extents and mutation order. Only the unpublished staged owner uses
+/// the self-contained representation it already requires before validation.
+enum RestoredHistoryLayout<'a> {
+    Retained,
+    SelfContained { configured_database_file: &'a Path },
+}
+
+impl RedbOfflineRestore {
+    pub(crate) fn restore_staged_backup(
+        &mut self,
+        configured_database_file: &Path,
+    ) -> Result<OfflineRestoreResultV1, StorageError> {
+        self.restore_offline_backup_with_layout(
+            OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+            RestoredHistoryLayout::SelfContained {
+                configured_database_file,
+            },
+        )
+    }
+
+    fn restore_offline_backup_with_layout(
+        &mut self,
+        overwrite_policy: OfflineRestoreOverwritePolicyV1,
+        layout: RestoredHistoryLayout<'_>,
+    ) -> Result<OfflineRestoreResultV1, StorageError> {
         validate_backup_inventory(&self.backup_directory)?;
         let manifest_bytes = read_bounded_file(
             &self.backup_directory.join(MANIFEST_FILE_NAME),
@@ -733,6 +774,29 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
+        if let RestoredHistoryLayout::SelfContained {
+            configured_database_file,
+        } = layout
+        {
+            // All source artifact checks have completed. Expand only this
+            // unpublished copy through the existing bounded durable hydrator.
+            // C3 makes each replacement canonically identical; every watermark
+            // validator below still runs completely against its own transaction.
+            // No old snapshot or representation certificate authorizes a read.
+            hydrate_staged_history(
+                &self.target_directory,
+                manifest.database_id(),
+                configured_database_file,
+            )?;
+        }
+        // Watermark validation reads the retained V3 receipt chain. The source
+        // is offline and may have no live resolver; retain this restored copy's
+        // own verified extents through every stamp and fencing read.
+        let _history_resolver = crate::history_stub::HistoryResolver::register(
+            manifest.database_id(),
+            &target_artifact,
+            std::sync::Arc::new(crate::media::RealJournalMedia),
+        );
         // Stamp/re-derive the retention watermark from the manifest so restore
         // of pre-stamp artifacts and fencing drift stay fail-safe (ADR-0085 A2).
         apply_restored_retention_watermark(
@@ -743,6 +807,56 @@ impl OfflineRestorePersistencePort for RedbOfflineRestore {
             manifest: Box::new(manifest),
         })
     }
+}
+
+/// A repaired unpublished stage must never acquire publication authority.
+/// Observe refusal before mapping the engine's RepairAborted error, since a
+/// later clean open cannot prove that an earlier open did not repair the file.
+fn open_unrepaired_private_database(path: &Path) -> Result<Database, StorageError> {
+    let repair_observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = std::sync::Arc::clone(&repair_observed);
+    let mut builder = redb::Builder::new();
+    builder.set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES);
+    builder.set_repair_callback(move |session| {
+        observed.store(true, std::sync::atomic::Ordering::Release);
+        session.abort();
+    });
+    let opened = builder.open(path);
+    if repair_observed.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(corrupt());
+    }
+    opened.map_err(database_error)
+}
+
+/// Expands the staged copy's history stubs into full rows, resolving them from
+/// the sealed extents the restore placed beside it, then removes those extents:
+/// the published restore carries only its database, journal, and marker
+/// (ADR-0263 Amendment 1). Its journal is re-issued above every extent beside
+/// the configured database, which it replaces, so no later seal collides.
+fn hydrate_staged_history(
+    staged_directory: &Path,
+    database_id: DatabaseId,
+    configured_database_file: &Path,
+) -> Result<(), StorageError> {
+    let database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        database_id,
+        &database_file,
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    );
+    {
+        let database = open_unrepaired_private_database(&database_file)?;
+        crate::history_stub::hydrate_history_stubs(&database)?;
+    }
+    crate::backup::remove_sealed_extents_beside(&database_file)?;
+    let floor = crate::backup::highest_extent_generation_beside(configured_database_file)?;
+    crate::journal::renew_extent_above_with_media(
+        &crate::media::RealJournalMedia,
+        &crate::journal::journal_path(&database_file),
+        floor,
+    )
+    .map_err(crate::backup::backup_journal_error)?;
+    crate::backup::sync_parent(&database_file)
 }
 
 fn open_database_with_facts(path: &Path) -> Result<(Database, DatabaseFacts), StorageError> {
@@ -993,12 +1107,7 @@ fn validate_manifest_format_marker(
     {
         return Err(incompatible());
     }
-    let current = riffdb_storage_api::current_durable_format_manifest();
-    if marker.identity() == current.identity()
-        && marker.registry_digest() != current.registry_digest()
-    {
-        return Err(incompatible());
-    }
+    riffdb_storage_api::preflight_durable_format_marker(marker).map_err(|_| incompatible())?;
     Ok(())
 }
 
@@ -1150,6 +1259,17 @@ pub(crate) fn create_compatible_backup_fixture(
     write_new_and_sync(&backup_directory.join(MANIFEST_FILE_NAME), &encoded)?;
     sync_directory(backup_directory)?;
     Ok(manifest)
+}
+
+/// Final semantic reread may not repair the already validated private stage.
+pub(crate) fn validate_sealed_database_semantics(
+    artifact: &Path,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<Database, StorageError> {
+    let _ = manifest_checksum(manifest)?;
+    let database = open_unrepaired_private_database(artifact)?;
+    validate_readable_database_semantics(&database, manifest)?;
+    Ok(database)
 }
 
 pub(crate) fn validate_database_semantics(
@@ -3059,5 +3179,46 @@ mod tests {
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
         stamp_history_incarnation(&db_path, 2).expect("idempotent stamp");
         assert_eq!(read_history_incarnation(&db_path).expect("read"), Some(2));
+    }
+    // req: REC-001, REC-002, REC-006, REC-008
+    #[test]
+    fn staged_history_hydration_refuses_engine_repair_before_scrub() {
+        let root = TestRoot::new("staged-hydration-repair-refusal");
+        let (_source, backup, _) = create_backup(&root);
+        let stage = root.join("stage");
+        RedbOfflineRestore::bind(&backup, &stage)
+            .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+            .unwrap();
+        let artifact = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        // A healthy private stage remains hydratable; an existing native
+        // engine owner is still excluded before the repair-only refusal.
+        hydrate_staged_history(&stage, database_id(), &root.join("configured.redb")).unwrap();
+        let held = Database::open(&artifact).unwrap();
+        let locked = hydrate_staged_history(&stage, database_id(), &root.join("configured.redb"));
+        assert!(matches!(locked, Err(ref error) if error.kind() == StorageErrorKind::Unavailable));
+        drop(held);
+        let mut primary = fs::read(&artifact).unwrap();
+        assert_eq!(&primary[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+        assert_eq!(primary[9] & 2, 0, "clean engine recovery flag");
+        // Pinned redb fixture: require full allocator repair, rather than
+        // loading an intact two-phase allocator after a normal dirty close.
+        primary[9] = (primary[9] | 2) & !4;
+        fs::write(&artifact, &primary).unwrap();
+        let original_backup = fs::read(backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+        let result = hydrate_staged_history(&stage, database_id(), &root.join("configured.redb"));
+        assert_eq!(
+            fs::read(backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+            original_backup
+        );
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == StorageErrorKind::CorruptData),
+            "private stage must refuse engine repair before a later clean scrub: {result:?}",
+        );
+        assert_eq!(fs::read(&artifact).unwrap(), primary);
+        // The incarnation helper must independently reject repair too, even
+        // when reached without the sealed owner's prior checksum check.
+        let stamp = stamp_sealed_history_incarnation(&artifact, 2);
+        assert!(matches!(stamp, Err(ref error) if error.kind() == StorageErrorKind::CorruptData));
+        assert_eq!(fs::read(&artifact).unwrap(), primary);
     }
 }

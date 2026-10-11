@@ -7,6 +7,30 @@ use std::ffi::OsStr;
 use std::sync::{Arc, atomic::AtomicBool};
 
 impl RedbStagedRestore {
+    /// Opens the ordinary private stage for the existing complete startup join.
+    ///
+    /// Uses fresh native exclusive engine ownership and refuses engine repair.
+    /// This neither reuses an earlier validation proof nor grants publication;
+    /// the caller must complete the normal startup checks before authorization.
+    #[doc(hidden)]
+    pub fn open_authorization_store(
+        &self,
+        application_commit_profile: crate::RedbCommitProfile,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<crate::RedbStore, StorageError> {
+        self.verify_paths()?;
+        if self.promoted_authorization_checksum.is_some() {
+            return Err(corrupt());
+        }
+        let store = crate::RedbStore::open_private_stage_authorization(
+            &self.staged_database_file,
+            application_commit_profile,
+            changelog_port,
+        )?;
+        self.verify_paths()?;
+        Ok(store)
+    }
+
     pub(super) fn validate_materialized(
         &mut self,
         inputs: StartupValidationInputs,

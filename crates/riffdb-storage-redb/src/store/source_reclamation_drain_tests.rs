@@ -2,6 +2,247 @@
 // req: STO-030, STO-031, STO-032, REC-001
 use super::*;
 use crate::journal::{JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable};
+use std::num::NonZeroU64;
+
+// req: STO-030, STO-031, STO-032, REC-001
+#[test]
+fn published_composite_source_validation_matches_materialized_full_oracle() {
+    use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
+    use crate::source_validation_pin::ValidationSource;
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 300);
+    let RedbReadAccess::Composite(view) = ports.begin_composite_read().unwrap() else {
+        panic!("acknowledged journal receipts retain their composite pin");
+    };
+    let expected =
+        crate::changelog_v3_cursor::history(&RedbReadAccess::Composite(Arc::clone(&view))).unwrap();
+    let mut walk = RetainedHistoryValidation::new_source(ValidationSource::Composite(view))
+        .unwrap()
+        .unwrap();
+    let mut pages = 0;
+    while !walk
+        .advance(riffdb_storage_api::EvidencePageLimit::new(1).unwrap())
+        .unwrap()
+    {
+        assert!(walk.proof().is_err());
+        pages += 1;
+        assert!(pages < 1000);
+    }
+    assert!(pages >= 600);
+    assert_eq!(walk.proof().unwrap().history(), expected);
+    assert_eq!(
+        walk.rows_read(),
+        [
+            expected.tail().sequence().get() - expected.minimum_resume().sequence().get() + 1,
+            300
+        ]
+    );
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .checkpoint_published_journal_suffix_for_barrier()
+        .unwrap();
+    let root = ports.shared.capture_checkpoint_root().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&root).unwrap(),
+        Some(expected)
+    );
+    drop(lease);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn source_reclamation_progresses_without_draining_oversized_published_tail() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    for _ in 0..16 {
+        assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+        if control.reclamation_yields()[0] == 1 {
+            break;
+        }
+    }
+    assert_eq!(control.reclamation_yields()[0], 1);
+    append_acknowledged_audits(&mut ports, 300);
+    ports
+        .shared
+        .mutation_gate
+        .note_source_publication_request()
+        .unwrap();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    ports.shared.join_journal_sealer();
+    for ordinal in 301..=557 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the distinct audit retains its original completion fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let publication = ports.shared.capture_checkpoint_root().unwrap().identity();
+    let mut removed = 0;
+    for _ in 0..16 {
+        removed += control.reclaim_history_online().unwrap().0;
+        for _ in 0..16 {
+            if !control.receipt_validation_pending() {
+                break;
+            }
+            control.advance_validation_off_gate().unwrap();
+        }
+        if removed > 0 {
+            break;
+        }
+    }
+    assert!(
+        removed > 0,
+        "a fully published tail must not prevent a bounded licensed source cut"
+    );
+    assert!(removed <= 256);
+    assert_eq!(
+        ports.shared.capture_checkpoint_root().unwrap().identity(),
+        publication,
+        "reclamation must not materialize the oversized active tail"
+    );
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 600)
+            .unwrap()
+            .len(),
+        557
+    );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn completed_source_proof_catches_published_checkpoint_before_requesting_admission() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut control = ports.replication_source_control();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    for _ in 0..16 {
+        control.advance_validation_off_gate().unwrap();
+        if !control.receipt_validation_pending() {
+            break;
+        }
+    }
+    assert!(!control.receipt_validation_pending());
+    let original_root = ports.shared.capture_checkpoint_root().unwrap().identity();
+    let qualification = ports
+        .shared
+        .source_continuation_epoch
+        .load(Ordering::Acquire);
+    append_acknowledged_audits(&mut ports, 300);
+    ports
+        .shared
+        .mutation_gate
+        .note_source_publication_request()
+        .unwrap();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    ports.shared.join_journal_sealer();
+    assert!(ports.shared.capture_checkpoint_root().unwrap().identity() > original_root);
+    assert_eq!(
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+        qualification
+    );
+
+    // Both the installed checkpoint and its acknowledged active tail can be
+    // continued off-gate. The ordinary writer below prevents source admission.
+    for ordinal in 301..=557 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the distinct audit retains its original completion fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+    let census = ports.shared.mutation_gate.source_census().unwrap();
+    let epoch = ports.shared.durable_commit_epoch();
+    let live_pins = || {
+        ports
+            .shared
+            .extent_roots
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|root| root.strong_count() != 0)
+            .count()
+    };
+    let pins_before = live_pins();
+    let published = ports.shared.published_composite_view().unwrap().unwrap();
+    let captured = Arc::downgrade(&published);
+    drop(published);
+    let source_owners_before = captured.strong_count();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert!(
+        control.receipt_validation_pending(),
+        "installed checkpoint continuation must start before a new source turn"
+    );
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
+    assert_eq!(
+        live_pins(),
+        pins_before,
+        "the candidate shares the actual published root"
+    );
+    assert_eq!(captured.strong_count(), source_owners_before + 1);
+    let [initial, mut continued_rows, invalidated, _] = control.validation_phases();
+    assert_eq!(initial, 0);
+    assert_eq!(invalidated, 0);
+    assert!(continued_rows <= 256);
+    for _ in 0..16 {
+        let [initial, continued, invalidated] = control.advance_validation_off_gate().unwrap();
+        assert_eq!(initial, 0);
+        assert!(continued <= 256);
+        assert_eq!(invalidated, 0);
+        continued_rows += continued;
+        if !control.receipt_validation_pending() {
+            break;
+        }
+    }
+    assert!(!control.receipt_validation_pending());
+    assert_eq!(
+        continued_rows, 1114,
+        "only the 557 new receipts and their audit rows are validated"
+    );
+    assert_eq!(
+        live_pins(),
+        pins_before,
+        "exact end releases the replacement pin"
+    );
+    assert_eq!(captured.strong_count(), source_owners_before);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), census);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert!(ports.shared.mutation_gate.is_held());
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    drop(writer);
+    assert_eq!(control.reclaim_history_online().unwrap().0, 0);
+    assert_eq!(
+        control.reclamation_yields()[0],
+        1,
+        "a completed proof alone is not a prior independently durable observation"
+    );
+    assert_eq!(control.admission_yields()[1], 0);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+}
 
 #[test]
 fn source_validation_pages_finish_without_requesting_a_writer_turn() {
@@ -126,10 +367,17 @@ fn unfinished_extent_publication_yields_before_spending_or_waiting_for_a_root_pi
     }
     let (entered, entry) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
-    *ports.shared.journal_sealer.lock().unwrap() = Some(std::thread::spawn(move || {
-        entered.send(()).unwrap();
-        released.recv().unwrap();
-    }));
+    let finished = Arc::new(CheckpointCompletion::default());
+    let completion = CheckpointPublisher(Arc::clone(&finished));
+    *ports.shared.journal_sealer.lock().unwrap() = Some(JournalSealer {
+        publication_complete: Arc::new(AtomicBool::new(false)),
+        finished,
+        handle: std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            completion.publish(Ok(()));
+        }),
+    });
     entry.recv().unwrap();
     let lease = ports
         .shared
@@ -194,6 +442,734 @@ fn source_capture_does_not_initialize_an_absent_native_journal_lane() {
     assert!(!ports.shared.mutation_gate.is_held());
 }
 
+fn source_audit_intent(ordinal: u64) -> riffdb_storage_api::ServiceAuditAppendIntentV1 {
+    use riffdb_storage_api::{AuditPrincipalV1, ServiceAuditAppendIntentV1};
+    use riffdb_types::{
+        ActorId, ActorKind, CapabilityId, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+        ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, Timestamp,
+    };
+    ServiceAuditAppendIntentV1::new(
+        RequestId::from_unix_milliseconds_and_random(19 + ordinal, [0x51; 10]).unwrap(),
+        Timestamp::new(1700000000, 0).unwrap(),
+        ServiceOperationV1::GetHealth,
+        ServiceAuditPhaseV1::Denied,
+        AuditPrincipalV1::new(
+            ActorId::new("checkpoint-fixture").unwrap(),
+            ActorKind::Human,
+            CapabilityId::from_unix_milliseconds_and_random(19, [0x52; 10]).unwrap(),
+            std::num::NonZeroU64::MIN,
+        ),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .unwrap()
+}
+
+fn append_acknowledged_audits(ports: &mut RedbOperationalPorts, count: u64) {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    for ordinal in 1..=count {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the standard native writer must acknowledge through its journal");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+    }
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(unix)]
+#[test]
+fn direct_checkpoints_retain_one_append_owner_for_an_unchanged_extent() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    let mut append_owner = None;
+    for ordinal in 1..=32 {
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(ordinal)])
+            .unwrap()
+        else {
+            panic!("the audit must retain its journal acknowledgement fence");
+        };
+        assert_eq!(fence.wait().unwrap().len(), 1);
+        let (owner, generation) = {
+            let runtime = ports.shared.journal_runtime.lock().unwrap();
+            let runtime = runtime.as_ref().unwrap();
+            (Arc::downgrade(&runtime.lane), runtime.lane.generation())
+        };
+        if let Some(previous) = &append_owner {
+            assert!(std::sync::Weak::ptr_eq(previous, &owner));
+        }
+        let before = ports.begin_composite_read().unwrap();
+        let history = crate::changelog_v3_cursor::history(&before).unwrap();
+        let audits = before
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap();
+        let lease = ports.shared.mutation_gate.acquire().unwrap();
+        ports
+            .shared
+            .materialize_published_suffix_for_barrier(false)
+            .unwrap();
+        let checkpoint = ports.shared.capture_checkpoint_root().unwrap();
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(&checkpoint).unwrap(),
+            Some(history)
+        );
+        assert_eq!(
+            crate::changelog_v3_cursor::history(&before).unwrap(),
+            history
+        );
+        assert_eq!(
+            before
+                .read_range_to(JournalTable::Audit, &[], None, 64)
+                .unwrap(),
+            audits,
+            "materialization must preserve the already captured read"
+        );
+        assert_eq!(
+            crate::journal::extent_generation_with_media(
+                ports.shared.journal_media.as_ref(),
+                &crate::journal::journal_path(&ports.shared.path),
+            )
+            .unwrap(),
+            Some(generation)
+        );
+        let epoch = ports.shared.durable_commit_epoch();
+        ports
+            .shared
+            .materialize_published_suffix_for_barrier(false)
+            .unwrap();
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        drop(lease);
+        assert!(
+            owner.upgrade().is_some(),
+            "an unchanged active extent must keep its bounded append owner"
+        );
+        append_owner = Some(owner);
+    }
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap()
+            .len(),
+        32
+    );
+    let last_owner = append_owner.unwrap();
+    drop(ports);
+    assert!(last_owner.upgrade().is_none());
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(unix)]
+#[test]
+fn idle_append_owner_cannot_write_an_unlinked_copy_of_the_active_extent() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 1);
+    let old_owner = Arc::downgrade(
+        &ports
+            .shared
+            .journal_runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lane,
+    );
+    let path = crate::journal::journal_path(&ports.shared.path);
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .materialize_published_suffix_for_barrier(false)
+        .unwrap();
+    let replacement = path.with_extension("replacement");
+    std::fs::copy(&path, &replacement).unwrap();
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .sync_all()
+        .unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    crate::journal::sync_parent_directory_with_media(ports.shared.journal_media.as_ref(), &path)
+        .unwrap();
+    drop(lease);
+
+    let ServiceAuditGroupAppend::Submitted(fence) = ports
+        .submit_service_audit_group(&[source_audit_intent(2)])
+        .unwrap()
+    else {
+        panic!("the replacement must retain its ordinary durable fence");
+    };
+    assert_eq!(fence.wait().unwrap().len(), 1);
+    assert!(old_owner.upgrade().is_none());
+    let database =
+        read_identity_from_read_transaction(&ports.shared.database.begin_read().unwrap()).unwrap();
+    let (_, tail) = crate::journal::scan_journal_with_media(
+        ports.shared.journal_media.as_ref(),
+        &path,
+        database,
+        |_| Ok(()),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(tail.last_administration_sequence.unwrap().get(), 2);
+    assert_eq!(tail.audit_count, 1);
+    assert!(!tail.incomplete_tail);
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[cfg(all(unix, feature = "test-fixtures"))]
+#[test]
+fn reused_append_owner_keeps_pending_fences_ahead_of_a_direct_checkpoint() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 1);
+    let owner = Arc::downgrade(
+        &ports
+            .shared
+            .journal_runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .lane,
+    );
+    let lease = ports.shared.mutation_gate.acquire().unwrap();
+    ports
+        .shared
+        .materialize_published_suffix_for_barrier(false)
+        .unwrap();
+    drop(lease);
+    let before = ports.begin_composite_read().unwrap();
+    schedule.arm(Point::BeforeJournalSync);
+    let ServiceAuditGroupAppend::Submitted(fence) = ports
+        .submit_service_audit_group(&[source_audit_intent(2)])
+        .unwrap()
+    else {
+        panic!("the reused worker must retain its original receipt");
+    };
+    schedule.wait(Point::BeforeJournalSync);
+    let shared = Arc::clone(&ports.shared);
+    let (entered, entering) = std::sync::mpsc::channel();
+    let checkpoint = std::thread::spawn(move || {
+        let lease = shared.mutation_gate.acquire()?;
+        let _ = entered.send(());
+        let result = shared
+            .publish_pending_journal_prefix()
+            .and_then(|()| shared.materialize_published_suffix_for_barrier(false));
+        drop(lease);
+        result
+    });
+    // Channel arrival is synchronization; timeout only detects a deadlock.
+    let entered = entering.recv_timeout(Duration::from_secs(10));
+    let prior_rows = before.read_range_to(JournalTable::Audit, &[], None, 64);
+    let idle_while_pending = ports
+        .shared
+        .idle_journal_lane
+        .lock()
+        .map(|idle| idle.is_none());
+    let same_owner = ports.shared.journal_runtime.lock().map(|runtime| {
+        runtime
+            .as_ref()
+            .is_some_and(|runtime| std::sync::Weak::ptr_eq(&owner, &Arc::downgrade(&runtime.lane)))
+    });
+    // Unpause before assertions so failures cannot strand the native worker.
+    schedule.release(Point::BeforeJournalSync);
+    let acknowledged = fence.wait();
+    let checkpointed = checkpoint.join();
+    entered.unwrap();
+    assert_eq!(prior_rows.unwrap().len(), 1);
+    assert!(idle_while_pending.unwrap());
+    assert!(same_owner.unwrap());
+    assert_eq!(acknowledged.unwrap().len(), 1);
+    checkpointed.unwrap().unwrap();
+    assert!(owner.upgrade().is_some());
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 64)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+// req: OUT-001, REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn outbox_admission_checkpoints_large_suffix_without_blocking_audited_writers() {
+    background_admission_checkpoints_large_suffix(
+        riffdb_storage_api::ChangelogAttributionV3::OutboxTransition,
+    );
+}
+
+// req: REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn event_consumer_admission_checkpoints_large_suffix_without_blocking_audited_writers() {
+    background_admission_checkpoints_large_suffix(
+        riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+    );
+}
+
+#[cfg(feature = "test-fixtures")]
+fn background_admission_checkpoints_large_suffix(
+    source: riffdb_storage_api::ChangelogAttributionV3,
+) {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 300);
+    schedule.arm(Point::BeforeMaterialization);
+    let outbox = RedbOperationalPorts {
+        shared: Arc::clone(&ports.shared),
+    };
+    let writer = std::thread::spawn(move || {
+        let access = outbox.begin_attributed_write(source).unwrap();
+        access.abort().unwrap();
+    });
+    schedule.wait(Point::BeforeMaterialization);
+    // Acknowledging another audit while the checkpoint is explicitly paused
+    // proves neither its receiver nor the writer gate is held by admission.
+    let shared = Arc::clone(&ports.shared);
+    let (sent, received) = std::sync::mpsc::channel();
+    let audit = std::thread::spawn(move || {
+        let result = match ports.submit_service_audit_group(&[source_audit_intent(301)]) {
+            Ok(ServiceAuditGroupAppend::Submitted(fence)) => fence.wait().map(|rows| rows.len()),
+            Ok(_) => panic!("the audit retains its original durable completion fence"),
+            Err(error) => Err(error),
+        };
+        sent.send(result).unwrap();
+        ports
+    });
+    let progressed = received.recv_timeout(Duration::from_secs(10));
+    let remaining = shared.journal_suffix_activity();
+    schedule.release(Point::BeforeMaterialization);
+    let ports = audit.join().unwrap();
+    writer.join().unwrap();
+    assert_eq!(progressed.unwrap().unwrap(), 1);
+    assert_eq!(remaining.unwrap().1, 1);
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 400)
+            .unwrap()
+            .len(),
+        301
+    );
+}
+
+// req: OUT-001, REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn outbox_admission_waits_for_spare_preparation_outside_the_writer_gate() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 300);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports
+        .shared
+        .start_journal_sealer(JournalFileHeader::new(
+            states[0].lineage().database_id(),
+            None,
+            [0; 32],
+        ))
+        .unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    schedule.arm(Point::BeforeOutboxCheckpointPreparation);
+    let outbox = RedbOperationalPorts {
+        shared: Arc::clone(&ports.shared),
+    };
+    let writer = std::thread::spawn(move || {
+        outbox
+            .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::OutboxTransition)
+            .and_then(|access| access.abort())
+    });
+    schedule.wait(Point::BeforeOutboxCheckpointPreparation);
+    let (sent, received) = std::sync::mpsc::channel();
+    let audit = std::thread::spawn(move || {
+        let result = match ports.submit_service_audit_group(&[source_audit_intent(301)]) {
+            Ok(ServiceAuditGroupAppend::Submitted(fence)) => fence.wait().map(|rows| rows.len()),
+            Ok(_) => panic!("the audit retains its durable completion fence"),
+            Err(error) => Err(error),
+        };
+        sent.send(result).unwrap();
+    });
+    schedule.release(Point::BeforeOutboxCheckpointPreparation);
+    // The timeout is only a deadlock watchdog: the sealer is explicitly held
+    // throughout this durable acknowledgement, and released before assertions.
+    let progressed = received.recv_timeout(Duration::from_secs(10));
+    schedule.release(Point::BeforeSparePreparation);
+    audit.join().unwrap();
+    let outbox_result = writer.join().unwrap();
+    assert_eq!(progressed.unwrap().unwrap(), 1);
+    outbox_result.unwrap();
+}
+
+// req: REC-001, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn event_consumer_checkpoint_wait_releases_the_ordered_writer_gate() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 300);
+    schedule.arm(Point::BeforeMaterialization);
+    schedule.request_checkpoint();
+    ports
+        .begin_deferred_service_audit_write()
+        .unwrap()
+        .abort()
+        .unwrap();
+    schedule.wait(Point::BeforeMaterialization);
+    schedule.arm(Point::BeforeConsumerCheckpointPreparation);
+    let consumer = RedbOperationalPorts {
+        shared: Arc::clone(&ports.shared),
+    };
+    let writer = std::thread::spawn(move || {
+        consumer
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .and_then(|access| access.abort())
+    });
+    schedule.wait(Point::BeforeConsumerCheckpointPreparation);
+    let (sent, received) = std::sync::mpsc::channel();
+    let audit = std::thread::spawn(move || {
+        let result = match ports.submit_service_audit_group(&[source_audit_intent(301)]) {
+            Ok(ServiceAuditGroupAppend::Submitted(fence)) => fence.wait().map(|rows| rows.len()),
+            Ok(_) => panic!("the audit retains its original durable completion fence"),
+            Err(error) => Err(error),
+        };
+        sent.send(result).unwrap();
+    });
+    schedule.release(Point::BeforeConsumerCheckpointPreparation);
+    // The checkpoint stays explicitly paused until the audit acknowledges.
+    // This timeout is a deadlock watchdog, not schedule synchronization.
+    let progressed = received.recv_timeout(Duration::from_secs(10));
+    schedule.release(Point::BeforeMaterialization);
+    audit.join().unwrap();
+    let consumer_result = writer.join().unwrap();
+    assert_eq!(progressed.unwrap().unwrap(), 1);
+    consumer_result.unwrap();
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn source_validation_uses_durable_seal_publication_before_spare_preparation() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, mut ports, _) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    append_acknowledged_audits(&mut ports, 1);
+    ports.shared.join_journal_sealer();
+    let audit_before = ports
+        .begin_composite_read()
+        .unwrap()
+        .read_range_to(JournalTable::Audit, &[], None, 2)
+        .unwrap();
+    schedule.arm(Point::BeforeSparePreparation);
+    schedule.request_checkpoint();
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    ordinary.abort().unwrap();
+    let writer = ports.shared.mutation_gate.acquire().unwrap();
+    ports.shared.poll_async_checkpoint_locked(true).unwrap();
+    drop(writer);
+    schedule.wait(Point::BeforeSparePreparation);
+    // Release and join before assertions: a failed assertion must not strand
+    // the store's destructor behind this intentionally paused native worker.
+    let epoch = ports.shared.durable_commit_epoch();
+    let pending = ports.shared.source_checkpoint_publication_pending();
+    let mut control = ports.replication_source_control();
+    let capture = control.reclaim_history_online();
+    let validation_pending = control.receipt_validation_pending();
+    let epoch_after = ports.shared.durable_commit_epoch();
+    let audit_after = ports
+        .begin_composite_read()
+        .and_then(|read| read.read_range_to(JournalTable::Audit, &[], None, 2));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(
+        !pending.unwrap(),
+        "future spare preparation is not extent publication"
+    );
+    assert_eq!(capture.unwrap().0, 0);
+    assert!(
+        validation_pending,
+        "durably published roots must start their real validation"
+    );
+    assert_eq!(
+        epoch_after, epoch,
+        "capturing validation cannot advance authority"
+    );
+    assert_eq!(audit_after.unwrap(), audit_before);
+    assert!(!ports.shared.mutation_gate.is_held());
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn source_seal_publication_is_bound_to_each_serialized_job() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSealPublication);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSealPublication);
+    let first_unpublished = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSealPublication);
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_published = ports.shared.source_checkpoint_publication_pending();
+    schedule.arm(Point::BeforeSealPublication);
+    ports.shared.start_journal_sealer(header).unwrap();
+    let waiting_for_previous = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSparePreparation);
+    schedule.wait(Point::BeforeSealPublication);
+    let second_unpublished = ports.shared.source_checkpoint_publication_pending();
+    schedule.arm(Point::BeforeSparePreparation);
+    schedule.release(Point::BeforeSealPublication);
+    schedule.wait(Point::BeforeSparePreparation);
+    let second_published = ports.shared.source_checkpoint_publication_pending();
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(first_unpublished.unwrap());
+    assert!(!first_published.unwrap());
+    assert!(waiting_for_previous.unwrap());
+    assert!(
+        second_unpublished.unwrap(),
+        "an old job cannot publish its successor"
+    );
+    assert!(!second_published.unwrap());
+}
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn failed_native_sealing_does_not_report_successful_publication() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    let sealing = crate::journal::sealing_journal_path(&ports.shared.path);
+    std::fs::write(&sealing, b"invalid-sealing-header").unwrap();
+    schedule.arm(Point::BeforeSparePreparation);
+    ports
+        .shared
+        .start_journal_sealer(JournalFileHeader::new(
+            states[0].lineage().database_id(),
+            None,
+            [0; 32],
+        ))
+        .unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let pending = ports.shared.source_checkpoint_publication_pending();
+    let mut control = ports.replication_source_control();
+    let capture = control.reclaim_history_online();
+    let validation_pending = control.receipt_validation_pending();
+    let unchanged = std::fs::read(&sealing);
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    assert!(pending.unwrap());
+    assert_eq!(capture.unwrap().0, 0);
+    assert!(!validation_pending);
+    assert_eq!(unchanged.unwrap(), b"invalid-sealing-header");
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn oversized_acknowledged_source_suffix_progresses_through_an_ordinary_checkpoint() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let audit_before = ports
+        .begin_composite_read()
+        .unwrap()
+        .read_range_to(JournalTable::Audit, &[], None, 300)
+        .unwrap();
+    assert_eq!(audit_before.len(), 257);
+    let publication_before = ports.shared.capture_checkpoint_root().unwrap().identity();
+    {
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::PendingJournal
+        ));
+        assert_eq!(
+            ports.shared.capture_checkpoint_root().unwrap().identity(),
+            publication_before
+        );
+        assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+        assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+        drop(lease);
+    }
+    // An ordinary subsequent writer performs existing checkpoint preparation;
+    // the refused source turn neither drains nor waits under its lease.
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    assert!(
+        ports.shared.async_checkpoint_in_flight().unwrap(),
+        "a known source backlog must not wait for the much larger capacity trigger"
+    );
+    ordinary.abort().unwrap();
+    {
+        let writer = ports.shared.mutation_gate.acquire().unwrap();
+        ports.shared.poll_async_checkpoint_locked(true).unwrap();
+        drop(writer);
+    }
+    ports.shared.join_journal_sealer();
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
+    assert!(ports.shared.capture_checkpoint_root().unwrap().identity() > publication_before);
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap(),
+        audit_before
+    );
+    let lease = ports
+        .shared
+        .mutation_gate
+        .acquire_source()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        ports.shared.prepare_online_source_root().unwrap(),
+        Readiness::Ready
+    ));
+    drop(lease);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn published_source_suffix_does_not_force_a_checkpoint_when_logical_retention_is_at_target() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
+    let lane = ports.online_retention_lane();
+    let (step, phases) = lane
+        .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+        .unwrap();
+    assert_eq!(
+        step,
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::TargetReached)
+    );
+    assert_eq!(phases.source_admission_pending_journal, 0);
+    assert_eq!(phases.source_admission_checkpoint, 0);
+    assert!(
+        !lane.source_checkpoint_publication_pending().unwrap(),
+        "a suggestion is not a started or completed checkpoint"
+    );
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+    assert!(!lane.source_checkpoint_publication_pending().unwrap());
+    ordinary.abort().unwrap();
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 257);
+    assert!(!ports.shared.async_checkpoint_in_flight().unwrap());
+}
+
+// req: STO-030, STO-031, STO-032, END-007, END-008
+#[test]
+fn source_drain_observations_distinguish_unpublished_unknown_and_oversized_work() {
+    let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+    append_acknowledged_audits(&mut ports, 257);
+    let lane = ports.online_retention_lane();
+    let epoch = ports.shared.durable_commit_epoch();
+    let bytes = ports
+        .shared
+        .journal_runtime
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .suffix_bytes;
+    for reason in 0..3 {
+        {
+            let mut guard = ports.shared.journal_runtime.lock().unwrap();
+            let runtime = guard.as_mut().unwrap();
+            runtime.unpublished_transitions = usize::from(reason == 0);
+            runtime.unpublished_bytes = usize::from(reason == 0);
+            runtime.suffix_bytes = bytes + usize::from(reason == 1);
+        }
+        ports
+            .shared
+            .mutation_gate
+            .clear_source_checkpoint_request()
+            .unwrap();
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::PendingJournal
+        ));
+        drop(lease);
+        let observed = lane.source_drain_observation().unwrap();
+        assert_eq!(
+            &observed[..3],
+            &std::array::from_fn::<_, 3, _>(|index| u64::from(index <= reason))
+        );
+        assert_eq!(observed[3], 257);
+        assert_eq!(
+            observed[4],
+            u64::try_from(bytes + usize::from(reason == 1)).unwrap()
+        );
+        assert_eq!(observed[5], u64::from(reason == 0));
+        assert_eq!(observed[6], u64::from(reason == 0));
+        assert_eq!(
+            ports
+                .shared
+                .mutation_gate
+                .source_checkpoint_requested()
+                .unwrap(),
+            reason == 2
+        );
+        assert_eq!(
+            ports
+                .shared
+                .mutation_gate
+                .source_publication_requested()
+                .unwrap(),
+            reason == 2
+        );
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+    }
+    let mut guard = ports.shared.journal_runtime.lock().unwrap();
+    let runtime = guard.as_mut().unwrap();
+    runtime.unpublished_transitions = 0;
+    runtime.unpublished_bytes = 0;
+    runtime.suffix_bytes = bytes;
+}
+
 fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
     let database_id =
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x82; 10]).unwrap();
@@ -223,6 +1199,7 @@ fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
     let length = encoded.as_bytes().len();
     let physical = crate::journal::extent_frame_bytes(length).unwrap();
     let frame = ValidatedCheckpointFrame {
+        source_reclamation: None,
         changelog_binding: None,
         database_id,
         predecessor_sequence: None,
@@ -291,6 +1268,10 @@ fn source_metadata_refuses_every_unknown_or_unpublished_charge_before_materializ
             _ => unreachable!(),
         }
         assert!(!suffix_is_bounded(&runtime), "unknown charge {changed}");
+        assert!(
+            published_suffix_counts(&runtime).is_none(),
+            "unknown accounting cannot request ordinary checkpoint work: {changed}"
+        );
         // The accounting check has neither submitted nor taken a frame.
         assert_eq!(
             crate::journal::scan_journal(
@@ -323,4 +1304,436 @@ fn source_metadata_accepts_exact_closed_transition_and_encoded_byte_limits() {
     assert!(suffix_is_bounded(&exact));
     let excess = runtime(&scope.join("excess.riffextent"), value_bytes + 1);
     assert!(!suffix_is_bounded(&excess));
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-007, END-008
+#[test]
+fn source_pending_publication_requests_checkpoint_from_the_next_ordinary_writer() {
+    use riffdb_storage_api::{ServiceAuditAppendRepository, ServiceAuditGroupAppend};
+    for acknowledged in [0, 257] {
+        let (_scope, mut ports, _) = crate::changelog_v3_control_tests::fixture();
+        append_acknowledged_audits(&mut ports, acknowledged);
+        let ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 1)])
+            .unwrap()
+        else {
+            panic!("the native writer must retain its original fence");
+        };
+        ports.shared.join_journal_sealer();
+        let root_before = ports.shared.capture_checkpoint_root().unwrap().identity();
+        let published_before = ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap();
+        assert_eq!(
+            published_before.len(),
+            usize::try_from(acknowledged).unwrap()
+        );
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        let result = ports.shared.prepare_online_source_root();
+        drop(lease);
+        assert!(matches!(result.unwrap(), Readiness::PendingJournal));
+        assert_eq!(
+            ports.shared.capture_checkpoint_root().unwrap().identity(),
+            root_before
+        );
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            1
+        );
+        assert_eq!(
+            ports
+                .begin_composite_read()
+                .unwrap()
+                .read_range_to(JournalTable::Audit, &[], None, 300)
+                .unwrap(),
+            published_before
+        );
+        // Do not complete the original fence before the ordinary writer begins.
+        // This deterministic overlap reproduces a pipeline that never becomes empty.
+        let ordinary = ports.begin_deferred_service_audit_write().unwrap();
+        let checkpoint_started = ports.shared.async_checkpoint_in_flight().unwrap();
+        ordinary.abort().unwrap();
+        let ServiceAuditGroupAppend::Submitted(second) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 2)])
+            .unwrap()
+        else {
+            panic!("the second caller also retains its original fence");
+        };
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            0,
+            "an active source handoff publishes the ordinary writer before releasing its lease"
+        );
+        assert_eq!(second.wait().unwrap().len(), 1);
+        let original = fence.wait().unwrap();
+        assert_eq!(
+            original.len(),
+            1,
+            "the original completion owner keeps its result"
+        );
+        assert!(
+            checkpoint_started,
+            "a source hint must reach the ordinary checkpoint despite an unpublished predecessor"
+        );
+        let writer = ports.shared.mutation_gate.acquire().unwrap();
+        ports.shared.poll_async_checkpoint_locked(true).unwrap();
+        drop(writer);
+        ports.shared.join_journal_sealer();
+        let audits = ports
+            .begin_composite_read()
+            .unwrap()
+            .read_range_to(JournalTable::Audit, &[], None, 300)
+            .unwrap();
+        assert_eq!(audits.len(), usize::try_from(acknowledged + 2).unwrap());
+        assert_eq!(
+            &audits[..published_before.len()],
+            published_before.as_slice()
+        );
+        let lease = ports
+            .shared
+            .mutation_gate
+            .acquire_source()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ports.shared.prepare_online_source_root().unwrap(),
+            Readiness::Ready
+        ));
+        drop(lease);
+        assert!(
+            !ports
+                .shared
+                .mutation_gate
+                .source_publication_requested()
+                .unwrap()
+        );
+        let ServiceAuditGroupAppend::Submitted(third) = ports
+            .submit_service_audit_group(&[source_audit_intent(acknowledged + 3)])
+            .unwrap()
+        else {
+            panic!("ordinary pipelining resumes after source capture");
+        };
+        assert_eq!(
+            ports
+                .shared
+                .journal_runtime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unpublished_transitions,
+            1
+        );
+        assert_eq!(third.wait().unwrap().len(), 1);
+    }
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn unknown_pending_tail_never_requests_publication_or_checkpoint() {
+    for changed in 0..15 {
+        let scope = crate::test_path::ScopedDirectory::new("source-pending-accounting");
+        let mut runtime = runtime(&scope.join("journal.riffextent"), 1);
+        let first = &runtime.suffix_frames[0];
+        runtime.published_sequence = first.predecessor_sequence;
+        runtime.published_administration_sequence = first.predecessor_administration_sequence;
+        runtime.published_hash = first.previous_hash;
+        runtime.unpublished_transitions = runtime.suffix_transitions;
+        runtime.unpublished_commands = runtime.suffix_commands;
+        runtime.unpublished_audits = runtime.suffix_audits;
+        runtime.unpublished_bytes = runtime.suffix_bytes;
+        assert!(unpublished_suffix_is_accounted(&runtime));
+        assert!(published_suffix_counts(&runtime).is_none());
+        match changed {
+            0 => runtime.unpublished_transitions += 1,
+            1 => runtime.unpublished_commands += 1,
+            2 => runtime.unpublished_audits += 1,
+            3 => runtime.unpublished_bytes += 1,
+            4 => runtime.published_sequence = CommitSequence::new(99),
+            5 => runtime.published_hash = [0x67; 32],
+            6 => runtime.suffix_transitions += 1,
+            7 => runtime.suffix_bytes += 1,
+            8 => runtime.suffix_frames[0].frame_hash = [0x67; 32],
+            9 => runtime.suffix_frames[0].placement.padded_len += 4096,
+            10 => runtime.suffix_frames.clear(),
+            11 => runtime.last_hash = [0x67; 32],
+            12 => runtime.last_sequence = CommitSequence::new(99),
+            13 => runtime.suffix_frames[0].transition_count = 0,
+            14 => runtime.suffix_bytes = crate::journal::MAX_JOURNAL_SUFFIX_BYTES + 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            !unpublished_suffix_is_accounted(&runtime),
+            "unknown tail {changed}"
+        );
+    }
+}
+
+#[path = "source_reclamation_license_tests.rs"]
+mod license_tests;
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn missing_spare_requests_reuse_inflight_preparation_without_inventing_publication() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    // The physical-history fixture bypasses ordinary startup preparation.
+    // Enter and abort its ordinary write path before opening journal runtimes.
+    ports
+        .begin_deferred_service_audit_write()
+        .unwrap()
+        .abort()
+        .unwrap();
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    schedule.arm(Point::BeforeSparePreparation);
+    ports
+        .shared
+        .start_journal_sealer(JournalFileHeader::new(
+            states[0].lineage().database_id(),
+            None,
+            [0; 32],
+        ))
+        .unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_completion = Arc::clone(
+        &ports
+            .shared
+            .journal_sealer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .finished,
+    );
+    let first_published = ports
+        .shared
+        .source_checkpoint_publication_pending()
+        .unwrap();
+    let observations = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut invented_publication = false;
+        let mut replaced_preparation = false;
+        for _ in 0..32 {
+            let runtime = {
+                let mut runtime = ports.shared.journal_runtime().unwrap();
+                assert_eq!(runtime.as_ref().unwrap().suffix_transitions, 0);
+                assert_eq!(runtime.as_ref().unwrap().unpublished_transitions, 0);
+                runtime.take().unwrap()
+            };
+            drop(runtime);
+            invented_publication |= ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap();
+            replaced_preparation |= !Arc::ptr_eq(
+                &first_completion,
+                &ports
+                    .shared
+                    .journal_sealer
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .finished,
+            );
+        }
+        (invented_publication, replaced_preparation)
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    let (invented_publication, replaced_preparation) = observations.unwrap();
+    assert!(
+        !first_published,
+        "first extent publication completed before spare preparation"
+    );
+    assert!(spare.is_file(), "the original preparation must finish");
+    assert!(
+        !invented_publication && !replaced_preparation,
+        "missing spare demand must reuse in-flight preparation without inventing publication",
+    );
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn concurrent_spare_demand_reuses_the_active_job_without_waiting_for_preparation() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let first_completion = Arc::clone(
+        &ports
+            .shared
+            .journal_sealer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .finished,
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let (send, receive) = std::sync::mpsc::channel();
+    let mut producers = Vec::new();
+    for _ in 0..2 {
+        let shared = Arc::clone(&ports.shared);
+        let barrier = Arc::clone(&barrier);
+        let send = send.clone();
+        let header = header.clone();
+        producers.push(std::thread::spawn(move || {
+            barrier.wait();
+            let _ = send.send(shared.ensure_journal_spare(header));
+        }));
+    }
+    drop(send);
+    barrier.wait();
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        for _ in 0..2 {
+            receive
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("preparation demand must return while the worker is paused")
+                .expect("existing preparation owns the demand");
+        }
+        let same_completion = Arc::ptr_eq(
+            &first_completion,
+            &ports
+                .shared
+                .journal_sealer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .finished,
+        );
+        let pending = ports
+            .shared
+            .source_checkpoint_publication_pending()
+            .unwrap();
+        (same_completion, pending)
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    for producer in producers {
+        producer.join().unwrap();
+    }
+    ports.shared.join_journal_sealer();
+    let (same_completion, pending) = observed.unwrap();
+    assert!(
+        same_completion,
+        "concurrent demand must retain one preparation capability"
+    );
+    assert!(
+        !pending,
+        "spare demand cannot invalidate completed extent publication"
+    );
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn spare_demand_keeps_failed_extent_publication_pending() {
+    use crate::hooks::RedbCheckpointTestPoint as Point;
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    let (_scope, ports, states) =
+        crate::changelog_v3_control_tests::fixture_with_controller(controller);
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let sealing = crate::journal::sealing_journal_path(&ports.shared.path);
+    std::fs::write(&sealing, b"invalid-sealing-header").unwrap();
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    schedule.arm(Point::BeforeSparePreparation);
+    ports.shared.start_journal_sealer(header.clone()).unwrap();
+    schedule.wait(Point::BeforeSparePreparation);
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ports.shared.ensure_journal_spare(header).unwrap();
+        let pending = ports
+            .shared
+            .source_checkpoint_publication_pending()
+            .unwrap();
+        let mut control = ports.replication_source_control();
+        let reclaimed = control.reclaim_history_online().unwrap();
+        (pending, reclaimed.0, control.receipt_validation_pending())
+    }));
+    schedule.release(Point::BeforeSparePreparation);
+    ports.shared.join_journal_sealer();
+    let (pending, reclaimed, validating) = observed.unwrap();
+    assert!(
+        pending,
+        "preparation demand cannot certify failed publication"
+    );
+    assert_eq!(reclaimed, 0);
+    assert!(!validating);
+    assert_eq!(std::fs::read(&sealing).unwrap(), b"invalid-sealing-header");
+}
+
+// req: STO-032, REC-001, END-007, END-008
+#[test]
+fn completed_failed_spare_preparation_can_retry_without_replacing_source_history() {
+    let (_scope, ports, states) = crate::changelog_v3_control_tests::fixture();
+    ports.shared.join_journal_sealer();
+    let spare = crate::journal::spare_journal_path(&ports.shared.path);
+    if spare.exists() {
+        std::fs::remove_file(&spare).unwrap();
+    }
+    let preparing = crate::journal::preparing_spare_journal_path(&ports.shared.path);
+    std::fs::create_dir(&preparing).unwrap();
+    let header = JournalFileHeader::new(states[0].lineage().database_id(), None, [0; 32]);
+    ports.shared.ensure_journal_spare(header.clone()).unwrap();
+    ports.shared.join_journal_sealer();
+    assert!(
+        !spare.exists(),
+        "the injected preparation failure must occur"
+    );
+    std::fs::remove_dir(&preparing).unwrap();
+    ports.shared.ensure_journal_spare(header).unwrap();
+    ports.shared.join_journal_sealer();
+    assert!(
+        spare.is_file(),
+        "a completed failed preparation must allow a fresh attempt"
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &ports.shared.database.begin_read().unwrap(),
+        )
+        .unwrap()
+        .unwrap(),
+        *states.last().unwrap(),
+    );
 }

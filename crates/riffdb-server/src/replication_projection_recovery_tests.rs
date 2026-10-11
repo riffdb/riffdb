@@ -5,7 +5,7 @@ use super::*;
 use riffdb_storage_api::*;
 use riffdb_types::*;
 #[path = "../../../tests/command_semantics/support.rs"]
-mod command_support;
+pub(crate) mod command_support;
 use command_support::{
     BudgetDatabase, FixedAdmissionClock, IncrementingProvenanceSource, command_timestamp, runtime,
     start_coordinator,

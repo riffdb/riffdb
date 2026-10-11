@@ -363,7 +363,12 @@ impl LaneControl {
     }
 
     /// Waits for stop, an explicit wake, or `timeout`; true when stopping.
+    #[cfg(test)]
     fn pause(&self, timeout: Duration) -> bool {
+        self.pause_observation_slice(timeout).0
+    }
+
+    fn pause_observation_slice(&self, timeout: Duration) -> (bool, bool) {
         let signals = self
             .signals
             .lock()
@@ -372,8 +377,9 @@ impl LaneControl {
             .changed
             .wait_timeout_while(signals, timeout, |signals| !signals.stop && !signals.wake)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let woke = signals.wake;
         signals.wake = false;
-        signals.stop
+        (signals.stop, woke)
     }
 }
 
@@ -458,6 +464,10 @@ impl RunningRetentionLane {
         failure: RetentionLaneFailureSinks,
         validation_inputs: riffdb_storage_api::StartupValidationInputs,
     ) -> Result<Self, std::io::Error> {
+        // Even a held retention configuration shares acknowledgement pacing.
+        // Bind before a worker or any graph-owned source step can start.
+        lane.bind_source_scheduler()
+            .map_err(std::io::Error::other)?;
         let control = Arc::new(LaneControl {
             source_retirement: Some(lane.clone()),
             ..LaneControl::default()
@@ -552,8 +562,15 @@ fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
     // Actual durable source deletion is progress even when the separate
     // logical watermark is at its target or fenced. The full writer-residence
     // rest below still applies; zero-progress source attempts retain backoff.
-    if phases.receipt_validation_pending || phases.reclaimed_receipts > 0 {
+    if phases.reclaimed_receipts > 0 {
         Duration::ZERO
+    } else if phases.receipt_validation_pending {
+        // The pending-proof exception drives ready bounded pages, not a spin
+        // through full maintenance while its shared scheduler is resting.
+        // Observe only a short slice of already charged rest: source readiness
+        // is rechecked natively, and captured read-only pages continue inside
+        // the existing pause without granting another writer or proof turn.
+        phases.source_work_wait.min(RETENTION_LANE_CHECKPOINT_SLICE)
     } else {
         RETENTION_LANE_RECHECK
     }
@@ -565,24 +582,136 @@ fn gate_residence_rest(gate_held: Duration) -> Duration {
         .min(RETENTION_LANE_RECHECK.saturating_mul(RETENTION_LANE_REST_FACTOR))
 }
 
+/// Decide the existing rest and checkpoint-wakeup policy from one native turn.
+fn maintenance_wait_policy(
+    pause: Duration,
+    logical_checkpoint: bool,
+    gate_held: Duration,
+    phases: &OnlineRetentionPhases,
+) -> (Duration, bool) {
+    let rest = gate_residence_rest(gate_held);
+    if SourceCheckpointWait::from_phases(phases) != SourceCheckpointWait::None
+        || (logical_checkpoint && rest.is_zero())
+    {
+        (rest, true)
+    } else {
+        (pause.max(rest), false)
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SourceCheckpointWait {
+    None,
+    Journal,
+    Publication,
+}
+
+impl SourceCheckpointWait {
+    fn from_phases(phases: &OnlineRetentionPhases) -> Self {
+        if phases.source_admission_pending_journal > 0 {
+            Self::Journal
+        } else if phases.source_admission_checkpoint > 0 {
+            Self::Publication
+        } else {
+            Self::None
+        }
+    }
+}
+
 /// Continues captured read-only pages inside the existing checkpoint wait.
 /// Completion stops page work; only a checkpoint changes the next-step hint.
 fn wait_with_source_validation(
     control: &LaneControl,
     seen: u64,
-    mut pending: bool,
-    mut wait: impl FnMut(Duration) -> u64,
+    observations: (
+        bool,
+        impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+    ),
+    source: (
+        SourceCheckpointWait,
+        impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+    ),
+    mut wait: impl FnMut(u64, Duration) -> u64,
     mut elapsed: impl FnMut() -> Duration,
     mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
 ) -> Result<bool, riffdb_storage_api::StorageError> {
+    let (mut pending, mut read_only_ready) = observations;
+    let (source_wait, mut publication_pending) = source;
+    let mut checkpoint_observed = false;
+    let mut waiting_seen = seen;
     loop {
         if control.stop_requested() {
             return Ok(false);
         }
-        if wait(RETENTION_LANE_CHECKPOINT_SLICE) != seen {
-            return Ok(true);
+        // Ready captured pages need no checkpoint polling delay. The zero
+        // wait still observes native completion, and cancellation is checked
+        // between every bounded page. Paced proof work keeps its poll slice.
+        let slice = if pending && read_only_ready()? {
+            Duration::ZERO
+        } else {
+            RETENTION_LANE_CHECKPOINT_SLICE
+        };
+        let observed = wait(waiting_seen, slice);
+        if observed != waiting_seen {
+            waiting_seen = observed;
+            checkpoint_observed = true;
+            if source_wait == SourceCheckpointWait::None {
+                return Ok(true);
+            }
         }
         if elapsed() >= RETENTION_LANE_RECHECK || control.stop_requested() {
+            return Ok(false);
+        }
+        // A journal yield first needs an actual ordinary checkpoint. A
+        // publication yield can finish when its existing sealer finishes,
+        // without inventing another checkpoint or joining under a source lease.
+        let publication_finished = source_wait != SourceCheckpointWait::None
+            && (source_wait == SourceCheckpointWait::Publication || checkpoint_observed)
+            && !publication_pending()?;
+        if pending {
+            pending = advance()?;
+        }
+        if publication_finished {
+            return Ok(checkpoint_observed);
+        }
+    }
+}
+
+/// Continue only captured read-only pages during the mandatory writer rest.
+/// Read-only pages never authorize a new writer turn or shorten its rest.
+fn pause_with_captured_observations(
+    duration: Duration,
+    observations: (
+        bool,
+        impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+    ),
+    mut elapsed: impl FnMut() -> Duration,
+    mut wait: impl FnMut(Duration) -> (bool, bool),
+    mut advance: impl FnMut() -> Result<bool, riffdb_storage_api::StorageError>,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    let (mut pending, mut read_only_ready) = observations;
+    if duration.is_zero() {
+        return Ok(wait(duration).0);
+    }
+    loop {
+        let remaining = duration.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        let slice = if pending && read_only_ready()? {
+            // This is work inside the existing wall-clock rest, not another
+            // source turn. Check stop/wake before each bounded captured page.
+            Duration::ZERO
+        } else if pending {
+            remaining.min(RETENTION_LANE_CHECKPOINT_SLICE)
+        } else {
+            remaining
+        };
+        let (stopped, woke) = wait(slice);
+        if stopped || woke {
+            return Ok(stopped);
+        }
+        if elapsed() >= duration {
             return Ok(false);
         }
         if pending {
@@ -615,53 +744,54 @@ fn run_lane(
         let woke_on_checkpoint = std::mem::take(&mut after_checkpoint);
         let mut await_checkpoint = false;
         let receipt_validation_pending;
-        let (pause, mut gate_held) = match lane.step_timed(retain, budget, woke_on_checkpoint) {
-            Ok((step, phases)) => {
-                receipt_validation_pending = phases.receipt_validation_pending;
-                status.note_phases(&phases);
-                let pause = match step {
-                    OnlineRetentionStep::Advanced { sequences, .. } => {
-                        status.note_fence(None);
-                        status.set(RetentionLaneState::Advancing);
-                        status.note_step(sequences);
-                        Duration::ZERO
-                    }
-                    OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {
-                        status.note_hold(2);
-                        await_checkpoint = true;
-                        Duration::ZERO
-                    }
-                    OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint) => {
-                        status.note_hold(3);
-                        await_checkpoint = true;
-                        Duration::ZERO
-                    }
-                    OnlineRetentionStep::Held(
-                        OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
-                    ) => {
-                        status.note_hold(0);
-                        status.note_fence(None);
-                        status.set(RetentionLaneState::Idle);
-                        idle_recheck_pause(&phases)
-                    }
-                    OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding)) => {
-                        status.note_hold(1);
-                        status.note_fence(Some(binding));
-                        status.set(RetentionLaneState::Fenced);
-                        idle_recheck_pause(&phases)
-                    }
-                };
-                (pause, Duration::from_micros(phases.gate_held_us()))
-            }
-            Err(_) if control.stop_requested() => {
-                status.set(RetentionLaneState::Cancelled);
-                return;
-            }
-            Err(error) => {
-                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
-                return;
-            }
-        };
+        let (pause, mut gate_held, step_phases) =
+            match lane.step_timed(retain, budget, woke_on_checkpoint) {
+                Ok((step, phases)) => {
+                    receipt_validation_pending = phases.receipt_validation_pending;
+                    status.note_phases(&phases);
+                    let pause = match step {
+                        OnlineRetentionStep::Advanced { sequences, .. } => {
+                            status.note_fence(None);
+                            status.set(RetentionLaneState::Advancing);
+                            status.note_step(sequences);
+                            Duration::ZERO
+                        }
+                        OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {
+                            status.note_hold(2);
+                            await_checkpoint = true;
+                            Duration::ZERO
+                        }
+                        OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingCheckpoint) => {
+                            status.note_hold(3);
+                            await_checkpoint = true;
+                            Duration::ZERO
+                        }
+                        OnlineRetentionStep::Held(
+                            OnlineRetentionHold::TargetReached | OnlineRetentionHold::RowBoundary,
+                        ) => {
+                            status.note_hold(0);
+                            status.note_fence(None);
+                            status.set(RetentionLaneState::Idle);
+                            idle_recheck_pause(&phases)
+                        }
+                        OnlineRetentionStep::Held(OnlineRetentionHold::Fenced(binding)) => {
+                            status.note_hold(1);
+                            status.note_fence(Some(binding));
+                            status.set(RetentionLaneState::Fenced);
+                            idle_recheck_pause(&phases)
+                        }
+                    };
+                    (pause, Duration::from_micros(phases.gate_held_us()), phases)
+                }
+                Err(_) if control.stop_requested() => {
+                    status.set(RetentionLaneState::Cancelled);
+                    return;
+                }
+                Err(error) => {
+                    refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                    return;
+                }
+            };
         if !receipt_validation_pending
             && matches!(
                 status.state(),
@@ -709,27 +839,104 @@ fn run_lane(
                     status.observation().phases.source_admission_census,
                 )
             );
+            match lane.source_drain_observation() {
+                Ok(
+                    [
+                        unpublished,
+                        unaccounted,
+                        oversized,
+                        transitions,
+                        bytes,
+                        unpublished_transitions,
+                        unpublished_bytes,
+                        sequence_matches,
+                        administration_matches,
+                        hash_matches,
+                        frames,
+                    ],
+                ) => eprintln!(
+                    "riffdb-retention-source-drain-v1\tavailable=1\tunpublished={unpublished}\tunaccounted={unaccounted}\toversized={oversized}\tsuffix_transitions={transitions}\tsuffix_bytes={bytes}\tunpublished_transitions={unpublished_transitions}\tunpublished_bytes={unpublished_bytes}\tsequence_matches={sequence_matches}\tadministration_matches={administration_matches}\thash_matches={hash_matches}\tsuffix_frames={frames}"
+                ),
+                Err(_) => eprintln!("riffdb-retention-source-drain-v1\tavailable=0"),
+            }
         }
-        // Rest in proportion to the time the attempt held the writer gate,
-        // never less than the outcome's own recheck interval.
-        let rest = gate_residence_rest(gate_held);
-        if await_checkpoint && rest.is_zero() {
+        // Preserve complete writer-residence rest. Source checkpoint waits
+        // replace idle backoff with bounded completion/publication rechecks;
+        // ordinary idle and noncheckpoint refusals keep their prior backoff.
+        let (rest, wait_for_checkpoint) =
+            maintenance_wait_policy(pause, await_checkpoint, gate_held, &step_phases);
+        let observation_pending = match lane.captured_observations_pending() {
+            Ok(pending) => pending,
+            Err(_) if control.stop_requested() => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Err(error) => {
+                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                return;
+            }
+        };
+        let waiting = std::time::Instant::now();
+        let paused = pause_with_captured_observations(
+            rest,
+            (observation_pending, || {
+                lane.captured_read_only_observation_pending()
+            }),
+            || waiting.elapsed(),
+            |slice| control.pause_observation_slice(slice),
+            || {
+                let phases = lane.advance_captured_observations_off_gate()?;
+                status.note_phases(&phases);
+                lane.captured_observations_pending()
+            },
+        );
+        match paused {
+            Ok(true) => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Ok(false) => {}
+            Err(_) if control.stop_requested() => {
+                status.set(RetentionLaneState::Cancelled);
+                return;
+            }
+            Err(error) => {
+                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                return;
+            }
+        }
+        if wait_for_checkpoint {
             // Step right after the next journal checkpoint, while its suffix
             // is nearly empty; look for shutdown between short waits.
             let waiting = std::time::Instant::now();
-            match wait_with_source_validation(
-                control,
-                checkpoints_seen,
-                receipt_validation_pending,
-                |slice| lane.wait_for_journal_checkpoint(checkpoints_seen, slice),
-                || waiting.elapsed(),
-                || {
-                    let phases = lane.advance_source_validation_off_gate()?;
-                    status.note_phases(&phases);
-                    Ok(phases.receipt_validation_pending)
-                },
-            ) {
-                Ok(checkpoint) => after_checkpoint = checkpoint,
+            let checkpoint = lane
+                .captured_observations_pending()
+                .and_then(|observation_pending| {
+                    wait_with_source_validation(
+                        control,
+                        checkpoints_seen,
+                        (observation_pending, || {
+                            lane.captured_read_only_observation_pending()
+                        }),
+                        (SourceCheckpointWait::from_phases(&step_phases), || {
+                            lane.source_checkpoint_publication_pending()
+                        }),
+                        |waiting_seen, slice| lane.wait_for_journal_checkpoint(waiting_seen, slice),
+                        || waiting.elapsed(),
+                        || {
+                            let phases = lane.advance_captured_observations_off_gate()?;
+                            status.note_phases(&phases);
+                            lane.captured_observations_pending()
+                        },
+                    )
+                });
+            match checkpoint {
+                Ok(checkpoint) => {
+                    // A source-only wake cannot grant the logical lane's
+                    // existing after-checkpoint suffix-drain exception.
+                    after_checkpoint =
+                        checkpoint && await_checkpoint && gate_residence_rest(gate_held).is_zero();
+                }
                 Err(_) if control.stop_requested() => {
                     status.set(RetentionLaneState::Cancelled);
                     return;
@@ -740,10 +947,6 @@ fn run_lane(
                 }
             }
             continue;
-        }
-        if control.pause(pause.max(rest)) {
-            status.set(RetentionLaneState::Cancelled);
-            return;
         }
     }
 }

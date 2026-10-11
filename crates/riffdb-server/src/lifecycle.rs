@@ -317,6 +317,14 @@ impl ProductionLifecycleRoute {
         close_issuer(&mut state.issuer);
     }
 
+    /// Whether the installed restore-only service currently admits recovery.
+    pub(crate) fn recovery_admission_available(&self) -> bool {
+        let state = self.lock_state();
+        state.model.stage != LifecycleStage::Stopped
+            && self.maintenance.recovery_restore_available()
+            && self.recovery.get().is_some()
+    }
+
     /// Returns the one routing authority owned by this lifecycle route.
     pub(crate) fn runtime_routing(&self) -> RuntimeRoutingState {
         self.runtime.clone()
@@ -470,10 +478,13 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         operation_id: OfflineMaintenanceOperationId,
         input_hash: riffdb_types::OfflineMaintenanceInputHash,
     ) -> Option<Arc<dyn RestoreRetryOfflineMaintenanceApplication>> {
-        self.maintenance
-            .credential_retry_restore_matches(operation_id, input_hash)
-            .then(|| self.restore_retry.get().cloned())
-            .flatten()
+        let state = self.lock_state();
+        (state.model.stage != LifecycleStage::Stopped
+            && self
+                .maintenance
+                .credential_retry_restore_matches(operation_id, input_hash))
+        .then(|| self.restore_retry.get().cloned())
+        .flatten()
     }
 
     fn admit_recovery_restore(
@@ -481,10 +492,13 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         operation_id: OfflineMaintenanceOperationId,
         input_hash: riffdb_types::OfflineMaintenanceInputHash,
     ) -> Option<Arc<dyn RecoveryOfflineMaintenanceApplication>> {
-        self.maintenance
-            .recovery_restore_matches(operation_id, input_hash)
-            .then(|| self.recovery.get().cloned())
-            .flatten()
+        let state = self.lock_state();
+        (state.model.stage != LifecycleStage::Stopped
+            && self
+                .maintenance
+                .recovery_restore_matches(operation_id, input_hash))
+        .then(|| self.recovery.get().cloned())
+        .flatten()
     }
 
     fn security_context(&self) -> Option<CheckedGrpcSecurityContext> {
@@ -1875,6 +1889,170 @@ mod tests {
             .admit_recovery_restore(operation, input_hash)
             .expect("the frozen recovery identity remains retryable");
         assert!(Arc::ptr_eq(&admitted, &recovery));
+    }
+
+    // req: REC-001, END-008, END-009
+    #[test]
+    fn recovery_admission_diagnostic_follows_installation_and_closes_before_transport_drain() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let maintenance = Arc::new(MaintenanceLifecycle::ready());
+        let route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            Arc::clone(&maintenance),
+        );
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x93; 10],
+            )
+            .unwrap();
+        let hash = maintenance_input_hash(0x79);
+        let mut output = Vec::new();
+        assert!(!crate::recovery_host::publish_recovery_admission(&route, &mut output).unwrap());
+        assert!(output.is_empty());
+        maintenance.enter_recovery_mode().unwrap();
+        assert!(route.admit_recovery_restore(operation, hash).is_none());
+        assert!(!crate::recovery_host::publish_recovery_admission(&route, &mut output).unwrap());
+        assert!(output.is_empty());
+        let service: Arc<dyn RecoveryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        route.install_recovery(Arc::clone(&service)).unwrap();
+        assert!(Arc::ptr_eq(
+            &route.admit_recovery_restore(operation, hash).unwrap(),
+            &service
+        ));
+        assert!(crate::recovery_host::publish_recovery_admission(&route, &mut output).unwrap());
+        assert_eq!(output, b"riffdb-recovery-admission-v1\tready=1\n");
+        struct Refused;
+        impl std::io::Write for Refused {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(crate::recovery_host::publish_recovery_admission(&route, &mut Refused).is_err());
+        assert!(route.admit_recovery_restore(operation, hash).is_some());
+        route.stop();
+        assert!(route.admit_recovery_restore(operation, hash).is_none());
+        output.clear();
+        assert!(!crate::recovery_host::publish_recovery_admission(&route, &mut output).unwrap());
+        assert!(output.is_empty());
+    }
+
+    // req: REC-001, END-008, END-009
+    #[test]
+    fn recovery_admission_stop_schedule_retains_only_the_previously_admitted_owner() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let maintenance = Arc::new(MaintenanceLifecycle::ready());
+        maintenance.enter_recovery_mode().unwrap();
+        let route = Arc::new(ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            maintenance,
+        ));
+        let service: Arc<dyn RecoveryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        route.install_recovery(Arc::clone(&service)).unwrap();
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x95; 10],
+            )
+            .unwrap();
+        let hash = maintenance_input_hash(0x77);
+        let (admitted, observed) = std::sync::mpsc::sync_channel(1);
+        let (stopped, release) = std::sync::mpsc::sync_channel(1);
+        let worker_route = Arc::clone(&route);
+        let worker = std::thread::spawn(move || {
+            let prior = worker_route
+                .admit_recovery_restore(operation, hash)
+                .unwrap();
+            admitted.send(()).unwrap();
+            release.recv().unwrap();
+            assert!(
+                worker_route
+                    .admit_recovery_restore(operation, hash)
+                    .is_none()
+            );
+            prior
+        });
+        observed.recv().unwrap();
+        route.stop();
+        assert!(route.admit_recovery_restore(operation, hash).is_none());
+        stopped.send(()).unwrap();
+        assert!(Arc::ptr_eq(&worker.join().unwrap(), &service));
+    }
+
+    // req: REC-001, END-008, END-009
+    #[test]
+    fn stopped_recovery_route_closes_restore_admission_before_transport_drain() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let maintenance = Arc::new(MaintenanceLifecycle::ready());
+        maintenance.enter_recovery_mode().unwrap();
+        let route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            maintenance,
+        );
+        let service: Arc<dyn RecoveryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        route.install_recovery(Arc::clone(&service)).unwrap();
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x94; 10],
+            )
+            .unwrap();
+        let hash = maintenance_input_hash(0x78);
+        assert!(route.admit_recovery_restore(operation, hash).is_some());
+        route.stop();
+        assert!(
+            route.admit_recovery_restore(operation, hash).is_none(),
+            "stopped recovery route must close restore admission before transport drains"
+        );
+    }
+
+    // req: REC-001, END-008, END-009
+    #[test]
+    fn stopped_exact_restore_retry_route_closes_admission_before_transport_drain() {
+        let (initializing, _activator, issuer) =
+            riffdb_service::RiffDbService::begin_initialization();
+        let maintenance = Arc::new(MaintenanceLifecycle::ready());
+        let route = ProductionLifecycleRoute::new_with_maintenance(
+            initializing,
+            issuer,
+            RuntimeRoutingState::new(),
+            Arc::clone(&maintenance),
+        );
+        let operation =
+            riffdb_types::OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1, [0x96; 10],
+            )
+            .unwrap();
+        let hash = maintenance_input_hash(0x76);
+        maintenance.await_restore_retry(operation, hash).unwrap();
+        let service: Arc<dyn RestoreRetryOfflineMaintenanceApplication> =
+            Arc::new(ClosedApplicationService);
+        route
+            .install_restore_retry(
+                operation,
+                hash,
+                Arc::clone(&service),
+                test_restore_retry_security_context(),
+            )
+            .unwrap();
+        assert!(route.admit_restore_retry(operation, hash).is_some());
+        route.stop();
+        assert!(
+            route.admit_restore_retry(operation, hash).is_none(),
+            "stopped exact restore retry route must close admission before transport drains"
+        );
     }
 
     #[derive(Debug, Eq, PartialEq)]

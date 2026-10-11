@@ -144,9 +144,12 @@ impl PrimaryFencePlan {
                 .get(key)
                 .map_err(precommit_storage_error)?
                 .ok_or_else(corrupt)?;
-            if row.value() != expected.as_bytes() {
-                return Err(corrupt());
-            }
+            validate_source_metadata_row(
+                key,
+                row.value(),
+                expected.as_bytes(),
+                self.predecessor.lineage(),
+            )?;
         }
         Ok(())
     }
@@ -293,4 +296,37 @@ pub(super) fn source_metadata(
             encode_replication_primary_admission_v1(admission).map_err(codec_error)?,
         ),
     ])
+}
+
+/// Registry metadata has retained V2 and V3 encodings. Fence transactions never
+/// mutate it; validate its semantic identity without inventing a V2 afterimage.
+pub(super) fn validate_source_metadata_row(
+    key: &str,
+    encoded: &[u8],
+    expected: &[u8],
+    lineage: riffdb_storage_api::ChangelogLineageV3,
+) -> Result<(), StorageError> {
+    if key != META_RECORD_REGISTRY {
+        return if encoded == expected {
+            Ok(())
+        } else {
+            Err(corrupt())
+        };
+    }
+    let registry = decode_record_registry(encoded).map_err(codec_error)?;
+    let registry = registry.value();
+    let digest = current_record_registry_digest();
+    if registry.digest() != digest
+        || matches!(
+            registry.validation(),
+            RecordRegistryValidation::Completed { .. }
+        ) && !registry.completed_for(
+            lineage.database_id(),
+            lineage.history_incarnation(),
+            digest,
+        )
+    {
+        return Err(corrupt());
+    }
+    Ok(())
 }

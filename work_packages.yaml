@@ -28629,7 +28629,7 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-005, REC-006, REC-007, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0285, ADR-0284]
   # Maintainer approved necessary native fixes in session, 2026-10-04.
   # Exact ADR-0269 accepted in session, 2026-10-05; engine, offline scrub and simulator repair scope.
   # Exact revised ADR-0271 accepted in session, 2026-10-05; bounded FIFO source admission and native drain.
@@ -28639,6 +28639,18 @@ work_packages:
   # ADR-0275 exact text and proto scope accepted in session, 2026-10-06.
   # Existing necessary-native-fix approval covers driver cancellation ownership; ADR-0106 preserves uncertainty.
   # Driver boundary regression tests are consequence paths under the approved native-fix scope.
+  # ADR-0278 exact text accepted in session, 2026-10-07; journaled bounded source reclamation.
+  # ADR-0279 exact text accepted in session, 2026-10-07; finite licensing and exact byte continuation.
+  # ADR-0283 (originally ADR-0280) exact text and commit-layer scope accepted in session, 2026-10-07.
+  # Maintainer approved ADR-0280 to ADR-0283 renumbering and reference updates in session, 2026-10-09.
+  # Maintainer approved ADR-0283 to ADR-0286 identifier-only reconciliation, 2026-10-10.
+  # Bootstrap decision accepted as ADR-0281 in session, 2026-10-07; now ADR-0288.
+  # Maintainer approved ADR-0281 to ADR-0284 identifier-only reconciliation in session, 2026-10-09.
+  # Maintainer accepted ADR-0284 to ADR-0288 identifier/path reconciliation in session, 2026-10-11.
+  # Exact ADR-0285 accepted in session, 2026-10-11; owned private restore validation custody.
+  # Standing necessary-native-fix approval covers the receipt-cursor architecture guard consequence.
+  # Record the two governance paths from the approved identifier-only reconciliation.
+  # ADR-0287 remains an unaccepted, unimplemented proposal; this grants no implementation authority.
   allowed_paths: [adr/0285-owned-private-restore-validation-custody.md, adr/0287-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0286-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
@@ -28659,6 +28671,600 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - >-
+      D-003 implementation choice under ADR-0050: retain the exact public
+      storage_unavailable/retry response as unknown only for read-only polling
+      of the original registered maintenance operation. Preserve sticky whole-
+      action deadlines, finite polls, no mutation resubmission and independent
+      durable receipt/recovery proof. Two regressions fail before the correction
+      and pass afterward; 359 lifecycle tests pass on the required host. Preserve
+      fresh preparation and failed whole-restore evidence separately from native
+      attribution: materialization including complete private verification takes
+      104.17 seconds and proves no complete restore. Main integration, exact
+      custody review, full final-source CI and both measured runs remain open.
+    - >-
+      D-023 apply the maintainer's standing approval to expand scope for any
+      necessary fixes to the native follower process regressions in
+      tests/replication_follower/**. Combined-source CI refuses one restricted
+      promotion restart with ReadinessDisconnected. Preserve that failure;
+      an isolated success does not clear it. Retain the first-line readiness
+      assertion, original timeout and lifecycle schedule while exposing only
+      existing closed daemon failure kinds, bounded output counts and native
+      exit status. Diagnostics must not qualify the source or hide a refusal.
+    - >-
+      D-022 retain at most one idle physical journal append worker after a
+      direct checkpoint of an unchanged active extent. Ordinary preparation
+      at f2e0aead fails the final normal window at 102,658 microseconds p95
+      against the unchanged 100,000-microsecond limit. Diagnostic attribution
+      observes 277 new riffdb-journal threads in 10.13 seconds. The existing
+      direct-checkpoint path drops and recreates its worker for the same extent.
+      Preserve that failure; profiling does not prove latency causality.
+      A new unchanged-extent ownership regression fails on the original code.
+      Keep only one physical owner, database identity and cursor byte count;
+      discard all semantic runtime state and reconstruct it through the complete
+      existing root, journal, anchor and tail validators. Reuse requires the
+      same live worker, device/inode, generation, database and physical cursor,
+      with exclusive lane ownership. Replacement, retirement, simulated media
+      and unidentifiable files use the original fresh-open path. Preserve the
+      original fences, extent rotation, checkpoint anchors, spare preparation,
+      formats, stack sizes and acknowledgement boundaries. Four focused native
+      regressions pass on C3D, covering unchanged ownership and snapshot/history
+      semantics, inode replacement, deterministic pending-fence/checkpoint
+      ordering, and retired-worker refusal. All six scoped acceptance checks
+      and 1,378 native tests pass with two existing skips; combined-source
+      full CI and ordinary measured qualification remain required.
+    - >-
+      D-021 bounded complete command-segment decoding: exact failed-CI binaries
+      reproduce concurrent promotion transport loss and capture a fresh ordinary
+      primary core. The matching native backtrace proves a columnar-worker stack
+      overflow during complete journal segment decoding for command-audit counts.
+      The unwound stack spans 417,216 bytes against its unchanged 393,216-byte
+      reservation. A complete semantic decoder regression aborts on unchanged
+      production code with a 160-KiB test stack, leaving 224 KiB for native callers
+      and allocation. Replace iterator Result collection with a direct member
+      loop across the same six segment revisions, retaining every decoder,
+      canonicality, digest, manifest and semantic check. That first candidate
+      still overflows in the bounded regression. Finish flat-capsule semantic
+      reconstruction after base decoding returns, so both stages' large
+      temporaries no longer reserve stack together. Preserve original
+      failures, private crash evidence, stack reservations and qualification
+      gates. The corrected regression, all 572 storage API tests and doctests,
+      storage API Clippy, formatting, brief and scope checks pass on C3D.
+      The workspace-feature native rebuild passes all 26 replication fixtures,
+      including promotion, without a fresh ordinary-daemon crash report.
+      Final-source CI remains required; the distinct follower-prefix deadline
+      failure is preserved rather than dismissed by this pass.
+    - >-
+      D-020 preserve concurrent promotion transport failures: full CI first
+      reports unexpected command-worker refusals and an unavailable primary
+      fence request. A second full-CI failure proves all eight workers lose
+      transport availability in the first standard-profile caught-up case,
+      followed by a disconnected daemon stdout channel. Retain that failed source and result; isolated and later
+      whole-fixture passes do not establish a cause or dismiss the failure.
+      Add bounded failure context to the existing native promotion regression:
+      its static profile, lagging case, worker ordinal and already-checked
+      client error; after a failed fence request, consume only the existing
+      closed daemon failure protocol within its unchanged diagnostic bound.
+      When stdout is disconnected, observe the existing controller's natural
+      exit and output counts using only the remainder of that same 100-ms
+      diagnostic budget; do not send shutdown input or kill the daemon.
+      Preserve every assertion, command, retry rule, success path and deadline.
+      The standing necessary-native-fix scope covers this test consequence.
+      This improves failure evidence and does not repair or qualify availability.
+    - >-
+      D-019 deterministic checker self-test discovery: combined-source full CI
+      passes workspace tests but the TicketDesk checker child cannot import
+      eight campaign-test modules without an ambient scripts import path.
+      Supply the repository's first-party scripts root explicitly to that
+      existing discovery subprocess, independent of import order and caller
+      PYTHONPATH. Preserve every test, assertion, checker predicate, native
+      implementation and workload gate. Keep the failed full-CI result and
+      require corrected self-tests plus final full acceptance before closure.
+    - >-
+      D-018 bounded missing-spare preparation demand: an unchanged-source
+      regression proves that repeated ordinary journal-runtime construction
+      while spare preparation is paused replaces the active worker capability
+      and invents pending extent publication. Under the existing sealer mutex,
+      reuse an unfinished job for preparation demand; allow a fresh attempt
+      after a completed preparation failure. Keep distinct publication jobs
+      for actual extent rotation, their per-job publication tracking, full
+      joins, fail-closed sealing errors, ordinary writer ownership and exact
+      source validation. This adds no queue, actor, application selector,
+      durable format, dependency, durability change or qualification exemption.
+      Preserve the original resource and latency failures without claiming
+      this defect is their sole cause. Combined validation remains required.
+    - >-
+      D-017 ordinary staged-authorization repair refusal: a server regression
+      reaches the invalid-bearer check even after its ordinary startup open
+      repairs a damaged private stage. Refuse repair at that fresh engine open
+      while sharing every existing startup proof join and activation step with
+      ordinary startup. Select this stricter construction only through the
+      existing staged owner; expose no application repair selector. Preserve
+      native exclusive ownership, ordinary primary recovery, healthy startup
+      preparation, digest inventories, authorization, exact validation and
+      final sealing. This introduces no retained validation proof or changed
+      file-lock ownership; any separate custody redesign still requires
+      accepted authority. Keep the immutable backup and configured target
+      unchanged on refusal. Validation and campaign qualification remain
+      required before closure.
+    - >-
+      D-016 private final sealing and sealed stamping refusal: two native
+      regressions expose repair during final sealing and replacement of a
+      changed primary seal during incarnation stamping. Share the hydration
+      repair-aborting construction with these private opens and verify all
+      three existing artifact seals before the unchanged controlled stamp
+      transaction. Preserve healthy repeated stamping, native corruption
+      classification, original backup and configured target, ordinary primary
+      recovery, transaction boundaries, durability and formats. All seven
+      scoped acceptance checks pass on the required host, including 1,368
+      native tests with two existing skips. A separate native ordinary-source
+      open still repairs a stage before a later full scrub and sealing accept
+      it; healthy ordinary opens also change bytes. Preserve that failing
+      oracle and require review of any changed custody boundary. No complete
+      staged authorization, target publication, whole-action deadline,
+      normal-window latency or complete campaign qualification follows.
+    - >-
+      D-015 private hydration repair refusal: a native allocator-repair fixture
+      proves that the preceding hydration silently repairs a private stage and
+      a later complete physical, structural and catalog scrub accepts it. Abort
+      repair at the hydration open and classify the observed refusal before
+      mapping the engine error. Preserve healthy hydration, native exclusion,
+      original backup and refused-stage bytes, ordinary primary recovery,
+      complete validators, transaction boundaries, durability and formats. All
+      25 backup/watermark tests, 26 staged-maintenance tests, physical custody
+      checks, 59 architecture checks, Clippy and seven scoped acceptance checks
+      pass on the required host; 1,366 native tests pass with two existing skips.
+      The corrected populated component still takes 100.1 seconds and preserves
+      all 100 original artifacts. Whole-action recovery, genuine normal-window
+      latency, final combined-source CI and the real short campaign remain
+      unqualified. WP-825 remains open.
+    - >-
+      D-014 complete footer allocation admission: share the existing bounded
+      index-reader footer ceiling with the complete sealed-extent reader before
+      allocation, preserving full frame/footer validation and compatibility.
+      The preceding native regression fails; the correction and all seven
+      scoped acceptance checks pass, including 1,365 native tests with two
+      existing skips. Document four fixed backup artifacts plus the declared
+      sealed extent family. Retain no artifact-copy parallelism, decoded-frame
+      cache, alternate engine cache or repeated audit-table-handle experiment:
+      the diagnostic observations do not justify those production changes.
+      Existing resource limits, formats, ordering and all rehearsal gates remain.
+    - >-
+      D-013 bounded protected-event prefix evaluation: use the maintainer's
+      existing authorization for necessary database fixes to include query-
+      executor sources. Inspection finds that protected replay authorizes
+      up to 1,024 candidates before discarding the suffix beyond the requested
+      admitted row. Move only that existing prefix cut into evaluation.
+      Preserve denied observations, candidate ceilings, one pinned policy
+      snapshot, capability and row checks, final transaction-current
+      revalidation and all-selected lease authorization. The separate scope
+      predecessor passes metadata acceptance. The eager-walk regression
+      fails its intended assertion on C3D; seven prefix regressions, the
+      query-executor suite, ten row-policy conformance tests, protected-
+      consumer coverage, the server suite, Clippy and formatting pass afterward.
+      Final metadata acceptance remains required. The preceding unchanged
+      preparation still fails the native consumer deadline; the repair is
+      not qualified and makes no sole-cause claim. WP-825 stays open.
+    - >-
+      D-012 target-image launch observation: an explicit pre-exec pipe barrier
+      proves that closing the finite-limit proof before exec lets the owner
+      pin the launcher's memory image. Keep the existing non-inheritable
+      descriptor open until exec closes it. The original assertion fails;
+      all 13 persistent-owner tests, nine roster tests and 205 lifecycle tests
+      pass afterward on C3D. Preserve every memory bound and refusal. Final
+      metadata acceptance and integrated campaign evidence remain required.
+    - >-
+      D-011 active historical payload retention: a deterministic native
+      regression reads the oldest of 64 cached segments, publishes one newer
+      segment and proves the active older read unnecessarily decodes again.
+      The original test fails at that exact assertion on C3D. Evict the least
+      recently verified payload instead of the smallest commit sequence,
+      preserving the 64-entry and 64-MiB ceilings and every canonical, stub,
+      metadata and member check. Refresh only after authority validation and
+      reinsert only while the exact metadata entry remains current. Thirteen
+      focused native tests pass, including both lookup paths and capture,
+      eviction, revalidation and corrupt-successor schedules. Full storage,
+      59 architecture checks, Clippy and formatting also pass on C3D. Final
+      metadata acceptance and unchanged preparation remain required;
+      no sole-cause claim is made. WP-825 stays open.
+    - >-
+      D-010 campaign process roster: preserve exact live role ownership and
+      prior kernel exit RSS peaks across replacement. Require the original
+      owned child's expected exit and finite inherited birth bound before a
+      successor. Retain short operator exit evidence even before a live census;
+      freeze per-role hard address-space ceilings plus one serialized launch
+      birth ceiling without summing sequential births as simultaneous usage.
+      Refuse missing proof, unknown RSS, changed identities or ceilings,
+      untracked children, clock rewind and more than 64 incarnations. Nine
+      roster tests, 12 persistent-owner tests and all 204 lifecycle tests pass
+      on C3D, including actual bounded-parent children, server replacement and
+      operator exit. Scope and metadata acceptance, continuous sampling, native
+      epochs and complete campaign integration remain pending. Resource-model
+      qualification stays false, and WP-825 stays open.
+    - >-
+      D-009 pinned payload read custody: a corrected deterministic native
+      schedule reads the canonical command successfully, then proves that
+      payload storage I/O still holds the index publication guard. Capture one
+      immutable metadata entry and one optional cache candidate under the
+      original frontier check, then resolve the same pinned authority outside
+      that guard. Preserve every canonical, stub, checksum, metadata and
+      member validator, exact negative lookup, bounded capture retry, cache
+      limit and writer-side continuous published/unpublished guard. Reinsert
+      only while the exact metadata entry remains current; existing registered
+      roots retain physical history custody. Eleven focused native tests, the
+      full storage suite, 59 architecture tests, Clippy and formatting pass on
+      C3D. A lint-only test-helper relocation preserves production source;
+      existing ignored qualification tests remain unrun. Scoped metadata
+      acceptance also passes. The first unchanged preparation stops before load
+      at the original consumer transport deadline; a separate debugger seed
+      diagnostic does not reproduce it and cannot qualify preparation. Preserve
+      both failed receipts: uninterrupted repetition reaches the same consumer
+      timeout before load. This defect is not established as the sole latency cause. WP-825 stays open.
+    - >-
+      D-008 native handover acknowledgement: require the original Rust load
+      owner's one-shot resume receipt after an actually acknowledged command
+      in the new release; a caller counter, read completion or generation
+      publication supplies no first-write proof. Allow observer-first pause
+      while preserving active load until restart, then require both original
+      workers to drain for shared release handover. Rotation validates the
+      exact quiesced witness prefix and actual current ticket revision while
+      retaining revoked-bearer refusal and original-identity replay. The
+      preceding worker fails the missing-receipt regression; 37 TicketDesk
+      tests, 194 lifecycle harness tests, formatting, Clippy and scoped metadata
+      acceptance pass on C3D. Full integrated faults, process replacement and
+      resource reconciliation remain unproved; this is not a complete runner.
+    - >-
+      D-007 accounting-repaired preparation: frozen 2bc25f14 completes all
+      150,000 commands and 600,000 reads with zero retries or post-duration
+      operations and reconciles 65,536 tickets. Twenty-five exact source-byte
+      observations cover all five windows with a maximum gap of 66.8 seconds;
+      logical and physical accounting also cover every window. Preparation
+      still refuses probe_latency in both normal windows after actual sink
+      recovery near second 607.8. Preserve the workload and latency gates;
+      the native performance limitation remains unresolved. Complete resource
+      qualification, populated restore, full CI and the full short campaign
+      remain required. WP-825 stays open and no 24-hour run starts.
+    - >-
+      D-005 pending source accounting custody: frozen 912f974a builds normally,
+      then unchanged preparation fails source_bytes_sample_gap. The last exact
+      source observation is at load second 867.6 and load stops at 962.7;
+      the observer and server exit cleanly, with no restore or full CI result.
+      A corrected deterministic native schedule completes an older mutation
+      proof while newer accounting is unfinished and reproduces its discard
+      through the existing fail-closed snapshot-sharing rule. Finish captured
+      bounded accounting pages before offering that completed proof's pin.
+      Preserve both existing pins, every sharing validator, cadence, freshness,
+      writer admission, rest, deletion authority, formats and workload gates.
+      All 34 accounting tests, five license tests, 24 worker tests, 59
+      architecture tests, Clippy, formatting and scoped metadata acceptance
+      pass on C3D. Unchanged preparation remains pending.
+      This defect does not establish the sole cause of the observed accounting
+      gap or latency refusal. WP-825 remains open; no 24-hour run starts.
+    - >-
+      D-006 controller quiescence component: require both original worker
+      acknowledgements before publishing the canonical shared release file.
+      Preserve acknowledgement files until the observer reports the new
+      generation and a subsequent load command completes; retain the restore
+      marker until that confirmation. Permit only one declared incarnation
+      advance and refuse stale identity, duplicate events, unbounded records,
+      clock rewind and timeout. Seventeen focused controller tests pass on C3D.
+      This component does not implement or qualify the complete seven-fault
+      campaign, process replacement or resource reconciliation.
+    - >-
+      D-004 immutable reactive-module reader: frozen source-paced preparation
+      builds but stops during seed archive drain with observer_consumer and
+      TRANSPORT_UNAVAILABLE, before measured load. A separate diagnostic replay
+      makes progress and captures a reactive-module read waiting on the broad
+      operational cell; this does not establish the entire fatal or latency cause.
+      Add a real-storage barrier regression for read progress while that cell is
+      occupied and a poison-refusal assertion. Delegate the unchanged native
+      immutable repository read through the existing least-authority shared
+      reader under ADR-0060, with poison checks before and after and on unwind.
+      Preserve native validation, authorization, ordering, durable formats,
+      fixtures, request deadlines, workload rates and fatal refusal. The original
+      locked reader fails the barrier regression on C3D; repaired bridge, exact
+      native module/absence/nonmutation tests, architecture, Clippy, formatting
+      and scoped metadata acceptance pass. The separate 300-second diagnostic
+      refuses latency despite completing all 30,000 commands and 120,000 reads
+      without retries or post-duration work. Unchanged preparation, populated
+      public restore, final-source CI and the actual complete short rehearsal
+      remain required. WP-825 stays open and no 24-hour run starts.
+    - >-
+      D-003 native pending-proof rest observation: paused-consumer and
+      retention-disabled controls pass later normal windows while the unchanged
+      retention-enabled baseline refuses latency. Neither control qualifies the
+      milestone or establishes a single cause. The baseline also records more
+      than 800,000 idle/fenced attempts: pending proof selects zero worker delay
+      while the shared source scheduler is still resting. The deterministic
+      worker assertion and actual native rest observation both fail before repair
+      on C3D. Report the existing charged rest in native phases and observe at most
+      the existing 100-ms poll slice on idle/fenced pending-proof rechecks.
+      Captured read-only pages continue inside the wait. Ready proof work and
+      actual committed source deletion keep immediate progress rechecks; preserve
+      writer-residence rest, source pacing charge, FIFO admission, validators,
+      budgets, cancellation, interfaces, reviewed fixtures and durability.
+      Worker/source/architecture tests, Clippy and scoped metadata acceptance pass
+      on C3D. Final-source edits, unchanged preparation, populated public restore,
+      full CI and the actual complete short rehearsal remain required; no 24-hour
+      campaign starts and WP-825 remains open.
+    - >-
+      D-003 observer failure diagnostics: a frozen consumer-isolation replay
+      fails during seed with observer_consumer before measured load or its
+      planned pause. Preserve the failure and keep the original fatal return
+      codes. Emit only a bounded closed call stage and validated registry code
+      or closed client variant; never render peer text, payloads, context or
+      incident identifiers. Both diagnostic tests fail before classification
+      is implemented and pass after repair with TicketDesk tests and Clippy
+      on C3D. No retries, workload gates, public interfaces, fixtures, ordering
+      or durability change. The native seed failure remains unexplained until
+      a new diagnostic replay supplies its class; preparation and full campaign
+      qualification remain pending.
+    - >-
+      D-003 native consumer checkpoint admission: an explicitly paused checkpoint
+      prevents another durable audit while the original consumer admission holds
+      the writer gate. The original production consumer bridge separately holds
+      the shared operational-port cell; its real-database exclusion test fails.
+      Both negatives release their pauses before asserting. Prepare oversized
+      consumer prefixes through the same existing asynchronous checkpoint and
+      bounded 256-transition, 1-MiB closing scanner as outbox admission, waiting
+      outside the sole FIFO gate. Forward consumer transitions, protected lease
+      coordination, validation, resolution and replay through the original native
+      implementation using a move-only capability in a separate sharing cell.
+      Preserve shared poison refusal, transaction-current authority, lease CAS,
+      source holds, Immediate profiles, canonical receipts and uncertainty fencing.
+      Both consumer checkpoint tests, three production consumer bridge tests, both
+      outbox checkpoint tests, four existing outbox bridge tests, the move-only
+      compile-fail proof, 59 architecture checks and storage/server Clippy pass
+      on C3D. The separate recovered-load latency spike still needs measurement
+      on frozen final source. No workload, deadline, protocol or fixture changes.
+    - >-
+      D-003 licensed source-byte capture under ADR-0279 decision 6: the ordinary
+      release candidate a605ec69 clears initial archive drain and observer
+      acknowledgement, but unchanged preparation fails source_bytes_sample_gap
+      after 1,510.8 seconds without recorded competing host activity. Eligibility
+      grows beyond the completed accounting ceiling and reclamation consumes
+      that old interval. Permit a paced bounded read-only capture below the
+      existing finite checkpoint license without waiting for unrelated tail
+      proof, including when the previous accounting certificate is absent.
+      Reuse only a qualified completed prefix covered by current eligibility;
+      canonically validate newly eligible receipts or the entire missing count.
+      Incomplete accounting remains unknown. Preserve current holds, license
+      coverage, mutation authority, two validation pins, original freshness,
+      cadence and workload gates. Four real native regressions fail before
+      repair under both commit profiles and pass afterward; all nineteen
+      source-byte, twelve continuation and five checkpoint-license tests pass
+      on C3D. The accounting candidate passes all 1,334 active storage tests
+      with two unchanged ignored tests, including 59 architecture checks, and
+      storage/server Clippy. Final-source acceptance and qualification remain
+      required. The recovery latency spike remains unexplained.
+    - >-
+      D-003 native outbox admission under ADR-0273: prepare oversized published
+      prefixes with the existing asynchronous checkpoint and wait outside the
+      writer gate and checkpoint state lock, then reenter the unchanged FIFO
+      writer. Close at most 256 transitions and 1 MiB through the existing bounded
+      scanner. Preserve selected Immediate profiles, individual claims, checked
+      sixteen-success groups, reciprocal validation, CAS, captured receipts,
+      post-commit membership and uncertainty fencing. Mandatory Statistics audits
+      remain durable. The large-prefix regression fails before repair and passes
+      afterward, as does a separate unfinished-spare regression. All 1,330 active
+      storage tests, 59 architecture checks, storage/server Clippy and thirteen
+      metadata gates pass on the required host. Restrict the unused full-drain
+      convenience wrapper to tests and repeat focused checks and Clippy.
+      Unchanged measured preparation, populated recovery and final-source CI
+      remain pending. The separate source-byte gap stays open.
+    - >-
+      D-003 production bridge completion: the first bounded-admission shipping
+      candidate builds normally but fails initial archive drain before measured
+      load, with observer_ack and no server panic. The production bridge retains
+      its operational-port cell during off-gate outbox checkpoint waits, excluding
+      event consumer acknowledgements. A real-database bridge regression fails
+      against that composition. Forward all six mutations through a restricted
+      native outbox capability over the same activated database, retaining the
+      existing FIFO gate, captured Immediate transactions and uncertainty fencing.
+      Keep the outbox capability move-only behind its own sharing cell and preserve
+      one fail-closed poison flag across both cells, with deterministic tests in
+      both directions. The initial bridge repair passes the full required-host
+      server suite, architecture, Clippy and metadata; final capability and poison
+      composition passes all four bridge tests, both checkpoint regressions, the
+      full server suite, compile-fail move-only proof, architecture, Clippy and
+      scoped metadata acceptance on C3D. Unchanged preparation, populated restore,
+      source-byte freshness and final-source full CI remain pending.
+    - >-
+      D-003 completion of fixed-prefix observation lifecycle: a newer completed
+      observation keeps its actual identity and deadline when an older qualified
+      proof is offered; pending candidates retain fail-closed sharing. Finish
+      exact zero-row reuse before another checkpoint capture to preserve two
+      validation pins. Run the same read-only refresh before proof continuation
+      for both existing commit profiles. Separate native regressions fail before
+      repair. Fifteen source-byte, twelve continuation, five license and 23 worker
+      tests, 59 architecture tests and storage/server Clippy pass on the required
+      host. Final-document metadata and final-source qualification remain open.
+    - >-
+      Tests-only custody-fixture isolation: the broad storage suite reports an
+      offline-upgrade refusal after parent descriptor close, while the fixture
+      passes alone. An explicit-pipe required-host check proves inherited file
+      descriptions can retain custody until the final child exits. Run the
+      original complete custody proof after exec in one child; preserve all
+      assertions, native fail-closed locking and original suite concurrency.
+      Preserve the failed suite and repeat concurrent/process checks.
+    - >-
+      D-003 implementation choices under ADR-0279 decisions 2 and 6: refresh an
+      already exact fixed byte prefix on the original cadence using a current
+      qualified pin, finite coverage and identical current eligibility, without
+      waiting for unrelated tail proof. Admit classified checkpoint replacement
+      through the existing exact coverage validator rather than root equality.
+      Preserve full source/audit proof, holds, writer pacing, two validation pins
+      and all original bounds. Corrected native regressions fail before repair;
+      positive scoped checks, unchanged preparation and final CI remain pending.
+    - >-
+      D-003 implementation choice under ADR-0279 decision 6: distinguish ready
+      captured read-only pages from source proof awaiting budget. Avoid a
+      checkpoint poll per ready read-only page, preserving cancellation, exact
+      page bounds, full writer rest and shared source-proof pacing. A required-host
+      candidate still fails the observation gap; its separate diagnostic checks
+      61,440 rows before a larger capture expires. The 77,103-row interval needs
+      302 pages, so mandatory 100-ms polls alone exceed 30-second freshness.
+      Both explicit-clock worker regressions fail before this further repair.
+      Twelve source-byte tests, 23 worker tests, storage/server Clippy, 59
+      architecture tests and twelve metadata gates pass. The unchanged preparation
+      completes two load windows and ten source-byte samples before a later gap;
+      its largest capture checks 78,373 rows in 2.217 seconds. Diagnose that later
+      native stall; preparation, populated recovery and final CI remain open.
+    - >-
+      D-003 implementation choice under ADR-0279 decision 6: captured byte
+      observations continue beside logical/physical observations during shared
+      source-proof rest. They grant no mutation authority. Preserve source-proof
+      preparation and writer pacing, all validation and the original observation
+      limits. A deterministic production-lane regression fails before repair and
+      checks exact completion with unchanged proof/rest/writer/history afterward.
+      Targeted checks, 1,322 active storage tests, 19 retention-worker tests and
+      storage Clippy pass. Correct a decision-note YAML syntax error before
+      metadata acceptance. Measured preparation and final-source CI remain
+      required. No 24-hour run starts.
+    - A separate unchanged-load numeric diagnostic repeats the source-byte gap.
+      Its new eligible interval has 10,631 receipts after a checked cut; only
+      2,560 are scanned before the 30-second accounting candidate expires.
+      Establish bounded native progress before further campaign integration;
+      diagnostic source qualifies no release performance and no repair is proven.
+    - Frozen native source 0d26ff43 passes all 12 full-acceptance gates and the
+      complete CI battery on the required host, with source clean. The locked
+      release build passes. Unchanged preparation seeds 64 organizations and
+      65,536 tickets, then fails source_bytes_sample_gap before the first complete
+      five-minute load window. Native diagnostics report 4,887 receipts removed
+      but no deleted or recycled extents. Preserve the failed population and
+      observations; throughput, latency and populated recovery remain unqualified.
+      Diagnose the native accounting/progress blocker before campaign integration.
+      WP-825 remains open; no 24-hour run starts.
+    - A deterministic real receipt-source ownership schedule fails before repair
+      with 33 nested cleanup calls. Replace failed Arc::try_unwrap disposal with
+      atomic Arc::into_inner handoff; the regression and source-cursor module pass.
+      Preserve the original 384-KiB production stack reservation. The preceding
+      stack-increase trial is excluded. Source-cursor, columnar and four-crate Clippy
+      checks and the unchanged whole 26-case process suite pass on the required
+      host. No exclusive process-abort diagnosis or final-source qualification is
+      claimed. The existing cursor architecture guard fails on its obsolete unwrap
+      assertion, which is updated after recording the exact consequence-test path
+      under the standing native-fix scope. All 59 architecture tests and the scope,
+      acceptance-commit, coverage, obligation, file-size and performance checks
+      pass against the recorded scope commit. WP-825 remains open.
+    - Bootstrap decision (originally ADR-0281, currently ADR-0288) accepted in session on
+      2026-10-07. Read-only bootstrap custody now has an authored closed native
+      preparation using the existing shared proof owner and unchanged deadlines.
+      Three named oracle/refusal/cancellation proofs and an additional actual
+      page-I/O interleaving pass on the required host. All eleven metadata gates
+      pass after separating acceptance from documentation. Custody, acknowledgement,
+      coordinator, server bootstrap and four-crate Clippy checks pass. The original
+      process suite passes 25 of 26; a private diagnostic captures an actual
+      riffdb-columnar stack overflow during concurrent fencing and two existing
+      replication deadline failures. Preserve failed evidence; native investigation
+      and final-source validation remain required. WP-825 remains open.
+    - Correct graph-owned scheduler binding after three native explicit-step
+      retention regressions. Preserve their unchanged assertions and operation
+      counts. All three pass with mandatory monotonic production/acknowledgement
+      scheduler binding; 14 acknowledgement tests, 21 admission tests, production
+      graph/bridge, pacing, coordinator tests and four-crate Clippy also pass.
+      The original process suite remains 25 passing with bootstrap held attachment
+      failing. The interrupted prior test stage stays failed; corrected-source
+      scoped acceptance subsequently passes all 14 checks and 2,855 tests under
+      the stock CI profile. The bootstrap decision, currently ADR-0288, is accepted separately; its later source is
+      not qualified by that earlier receipt. WP-825 remains open.
+    - ADR-0286 native development passes all 13 acknowledgement tests, existing
+      source-admission schedules, shared pacing, the production bridge, three
+      coordinator tests and four-crate all-target Clippy on the required host.
+      The unchanged process suite passes 25 and fails the initial bootstrap
+      held-attachment deadline. Permanent source admission retirement is now
+      a typed refusal, preserving durable holds and allowing shutdown to drain.
+      Preserve failed snapshots; separate bootstrap diagnostics and clean
+      final-source CI remain required. No rehearsal qualification is claimed.
+    - Preserve the failed c59c42a0 required-host full CI and isolated follower
+      frontier failure. Timing-only native diagnostics measure 60.356 seconds
+      in 24 source acknowledgements; the general control barrier repeatedly
+      validates full retained history while holding the writer. ADR-0286 exact
+      text was accepted in session on 2026-10-07; acceptance and approved
+      commit-layer scope are recorded in separate preceding commits. Native
+      implementation and its independent proof tests are in progress, without
+      final-source qualification. Host prerequisites are repaired, tests stay on the required
+      host, and no 24-hour run starts. WP-825 remains open.
+    - Repair the b7d42046 exact-checkpoint starvation exposed by the unchanged
+      interleaved durable-command recovery regression. Share the qualified
+      accounting and source-validation pins before actual checkpoint reads and
+      at admission; release completed validation pins before successor adoption.
+      Preserve bounded pacing, current holds, complete validation and the finite
+      ceiling. The unchanged progress regression and exact shared-pin oracle
+      pass; five scoped native checks pass. Preserve the incomplete CI launch
+      with no completion receipt and unqualified host build. Require isolated
+      clean final-source CI and measured qualification. WP-825 remains open.
+    - Preserve the broad native unit run's archive-replay Unavailable refusal
+      as unexplained native evidence; an isolated unchanged pass does not close
+      it or qualify full CI. Correct the above-limit byte fixture to measure
+      actual canonical receipts, whose replacement before-images retain hashes.
+      Both profiles pass finite completion and the 32-MiB quantum bound; actual
+      V1/V2 emitter-reader checks, 184 lifecycle tests, all-target Clippy and all
+      14 scoped non-test gates pass. Full configured native CI remains pending.
+    - Implement ADR-0279 finite licensing for both online native write profiles,
+      with unchanged offline validation, atomic writers and durable formats.
+      Issue a fixed independently covered ceiling once; consume only checked
+      acknowledged cuts and revoke lost evidence. Continue exact V2 read-only
+      source bytes through qualified reuse and removed canonical preimages,
+      disclose actual new scan pages and exact numeric publication identity,
+      preserve V1 readers and freeze the observation basis. Preserve the failed
+      baseline and measured host attempt; final-source CI and rehearsal remain
+      required. Annotate the existing ADR proofs with their declared WP-825 owner
+      without changing accepted decisions. WP-825 remains open.
+    - Record the maintainer's exact acceptance of ADR-0279 ("i accept")
+      in its standalone acceptance commit. Its finite checkpoint licensing and
+      exact V2 accounting continuation are authorized; implementation and
+      final-source qualification remain outstanding. WP-825 remains open.
+    - Preserve the intentional Health-only native initializing stage and strict
+      storage-failure visibility. After a real failed transport submission,
+      the small restart preparation waits for the controller's actual-readiness
+      barrier before replaying its original input. Bound the delay by the
+      original 60-second deadline. Successful local restart, kill and rotation
+      fixtures do not qualify continuous load or the required-host campaign.
+    - Propose ADR-0279 after the actual native checkpoint regression removes
+      only 256 of 1030 independently covered receipts and the unchanged host
+      preparation fails source-byte coverage. Preserve the failed evidence;
+      licensing and V2 accounting continuation remain unimplemented pending
+      exact human acceptance. No runtime or durable fixture change is made by
+      the proposal, and final-source measured gates remain required.
+    - Enforce the existing 95-second native byte-observation gap on every
+      source, logical and physical log poll, including silence before the first
+      sample. Preserve unknown values and failed host evidence; this detects
+      the native failure promptly and does not repair or qualify reclamation.
+      Preserve the interrupted local CI attempt as incomplete with no exit
+      receipt; final-source CI and the actual campaign remain required.
+    - Extend only the proposal path for ADR-0279 under the maintainer's
+      existing authorization to cover any necessary native fixes. The failed
+      required-host preparation and deterministic checkpoint-license regression
+      warrant architecture review; do not implement changed licensing before
+      exact human acceptance. WP-825 remains open.
+    - Correct the private process bound's scope. Separate the worker's enforced
+      ceiling from the full child-lifetime bound; the latter remains unknown
+      with an unconstrained parent. A finite inherited limit and the parent's
+      existing mapped image bound birth. Preserve the unknown actual allocator
+      measurement, invocation refusals and incomplete qualification status.
+    - Restrict the generated workload's interruption recovery to actual
+      transport unavailability or uncertain outcomes. Generic Retry metadata
+      must not hide native storage, capacity, projection, freshness or deadline
+      failures during a planned fault or an already recovering invocation.
+      Retain only the closed registered refusal code for native diagnostics.
+      Preserve immutable inputs, exact attempts and the existing 60-second,
+      240-attempt ceilings; require actual final-worker fault measurements.
+    - Give the actual campaign a separate exact-window bounded load reader with
+      one readiness record, 73-288 contiguous windows, reconciled terminal
+      totals and EOF. Preserve the 4 KiB line ceiling, native request slots,
+      actual retries and overflow, and smaller preparation/recovery limits.
+      Parsing evidence does not establish native success or qualification.
+    - Record the maintainer's ADR-0278 fixture approval and index its review
+      note in the handbook. Correct the server startup refusal test to the
+      accepted writer-4 identity while preserving untouched-source assertions.
+      Retain the failed frozen full CI and require a fresh complete pass.
+    - Permit private observed-process calls to freeze a Linux hard RLIMIT_AS
+      before same-PID worker execution, verifying launcher virtual high water
+      after enforcement. Record a conservative exit allocator upper bound
+      separately from the unknown allocator measurement; preserve failures,
+      exact child ownership and incomplete qualification status. Final limits,
+      all incarnations and descendants still require campaign reconciliation.
     - Retire uniquely owned publication-lineage predecessors iteratively with
       Arc::into_inner, preserving shared snapshot ancestry under concurrent owner
       release, supported overlay limits and the 384 KiB maintenance stack.
@@ -28711,6 +29317,73 @@ work_packages:
       Preserve complete validation and stale-candidate refusal; deterministic
       writer-admission and intervening-publication regressions prove the boundary.
       This implementation repair grants no new checkpoint or recovery authority.
+    - Implement ADR-0275 with one central semantic registry value and a private
+      full structural/catalog completion token. Publish completion in the existing
+      Immediate checkpoint receipt, preserving frozen V2 codecs and role order.
+    - Permit successor checkpoint genesis only under that exact sealed full proof
+      when a copied checkpoint belongs to an earlier incarnation of the same
+      database. Generic prefix refresh retains its existing exact-binding refusal.
+      Archive comparison folds only bounded startup certificate transitions,
+      preserving initial preimages, every intermediate edge and all other rows.
+    - Apply ADR-0276 through the existing exclusive offline owner, retaining both
+      engine custody locks until marker and Complete receipt publication. Reuse
+      exact predecessor backups without rewriting or promoting their identity.
+    - Observe each serialized native sealer job's successful durable extent
+      publication separately from future spare preparation. Preserve full joins
+      for ordinary rotation and shutdown, fail-closed sealing errors, exact
+      source drain bounds, validation and independent checkpoint authority.
+    - Include incomplete captured logical and source byte probes in the native
+      maintenance worker's off-gate progress checks, preserving validation-only
+      flags, complete writer rest, deadlines, page bounds and freshness. A
+      completed-publication wake advances one existing page before returning;
+      this creates no root, census, checkpoint or reclamation authority.
+    - Continue an existing complete source certificate onto a newer qualified
+      installed checkpoint before requesting drained writer admission. Keep
+      incomplete work on its original pin, recheck actual-mutation qualification,
+      and preserve exact-end validation, pin bounds, current fencing, writer
+      rest and every drain or deletion limit. This is off-gate proof preparation
+      within ADR-0268, not new reclamation or checkpoint authority.
+    - Apply ADR-0277 with safe principal-available fstatvfs on the source directory
+      and a streamed logical-length inventory. Include retained lifecycle working
+      and publication staging files, reject nonregular artifacts before receipt
+      open, and keep deterministic space observations private to native tests.
+    - Implement ADR-0278 with a closed V5 SourceReclamation frame and exact
+      writer-3 to writer-4 backup-bound transition. Pin one immutable published
+      composite for complete source and continuation validation; separately
+      capture the actual installed checkpoint licensing a deletion. Retain the
+      checked cut proof in live descriptors, rebase only its own publication,
+      and preserve independent progress, current holds and physical references.
+    - Keep registration evidence as bounded per-hold ordinal flags and reborrow
+      canonical policies from the same immutable pin. Index the bounded source
+      chain with weak binary ancestors and retire uniquely owned nodes iteratively.
+    - Stream V3 recovery in two exact journal passes with no suffix-sized decoded
+      frame vector or unrelated source-population walk. Preserve actual referenced
+      overlap and preimage checks, complete scrub and first-access validation.
+    - Use the existing canonical receipt owner for borrowed source-chain checks,
+      streaming history hashes and byte-exact comparison. Fold immutable original
+      sources through bounded sorted indices, preserving every intermediate
+      expected-state edge and copying final net values once. Stub preparation
+      retains all root checks without creating unused canonical encoding scratch.
+    - Require a new exact immutable backup for each successive offline edge;
+      recognize a prior Complete receipt only when it matches the exact current
+      predecessor marker and supported historical transition. Preserve incomplete
+      retry binding and refusal before mutation.
+    - Admit legacy retained journal ownership before cloning frames or building
+      the exact-overlap map; drop original suffix owners before resolving actual
+      rows. Refuse oversized recovery state with the existing typed capacity
+      defect before mutation. Verify actual over-budget suffix refusal and a
+      legal maximum-size frame, without changing the compiled 64 MiB ceiling.
+    - Reserve the CI runner for the repeated bootstrap-publication crash campaign
+      after concurrent durable-copy work exhausted its watchdog. Its isolated
+      rerun passes in 24 seconds; preserve the 120-second deadline and every
+      crash schedule, assertion and production qualification bound.
+    - Include original frame descriptors, indexed fold, canonical scratch and
+      one nested terminal/preimage reconstruction in compiled native admission.
+      Apply the same conservative bound before live buffered publication and
+      before recorded-frame decode or replay; preserve typed limit refusal and
+      the 64 MiB ceiling. Bound native resolver inventory before collection.
+      Large wire-valid work can refuse before acknowledgement; no public bypass
+      is added. Actual maximum canonical source preimages remain reclaimable.
 
 - id: WP-826
   name: Twenty-four-hour sustainable TicketDesk qualification

@@ -60,6 +60,21 @@ engine blocks and cache memory are additional resources. There is no automatic
 archive deletion. Preserve the archive across restart and account for this
 intentionally retained destination separately from reclaimable source history.
 
+## Live delivery counts
+
+The primary's `riffdb server stats` response reports
+`pending_outbox_deliveries` from the existing commit-coupled undelivered index.
+It requires a global capability with `read_statistics`. The count includes
+initial pending events, scheduled retries, active deliveries and dead letters;
+successful source completion removes an event from the count. Reading it does
+not scan history, rebuild an index, drain a journal or change a retention hold.
+
+`null` means the count is unavailable, including while the index is unbuilt or
+degraded. It cannot establish an empty backlog. The count is a current index
+observation, sampled separately from the response's publication frontier, and
+does not authorize reclamation. Destination readiness still has its own health
+classification: an empty source backlog alone cannot prove archive custody.
+
 ## Offline inspection
 
 Stop the owning server before inspection; the archive requires exclusive engine

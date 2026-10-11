@@ -12,7 +12,7 @@ use riffdb_storage_api::{
     ChangelogReceiptCursorV3, ChangelogTransactionSequence, CompositeMutationV1, StorageError,
     StorageErrorKind,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use crate::{
     changelog_v3_activation::HISTORY,
@@ -30,25 +30,41 @@ struct Source {
     history: ChangelogHistoryStateV3,
     mutations: Arc<[CompositeMutationV1]>,
     encoded_bytes: usize,
+    reclaimed_resume: Option<ChangelogHistoryPointV3>,
 }
 
 struct SourceNode {
     predecessor: Option<Arc<SourceNode>>,
     source: Arc<Source>,
+    // Weak binary ancestors index the immutable source chain without retaining
+    // retired ancestry or copying a population-sized cursor vector per pin.
+    ancestors: Box<[Weak<SourceNode>]>,
 }
 
 // A full bounded suffix can contain thousands of nodes. Release uniquely owned
 // ancestry iteratively, not recursively on a production thread's small stack.
 impl Drop for SourceNode {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let _depth = tests::enter_source_node_drop();
         let mut predecessor = self.predecessor.take();
         while let Some(node) = predecessor {
-            match Arc::try_unwrap(node) {
-                Ok(mut node) => predecessor = node.predecessor.take(),
-                Err(_) => break,
+            match take_source_predecessor(node) {
+                Some(mut node) => predecessor = node.predecessor.take(),
+                None => break,
             }
         }
     }
+}
+
+fn take_source_predecessor(node: Arc<SourceNode>) -> Option<SourceNode> {
+    // into_inner releases this reference atomically with the ownership decision.
+    // A failed try_unwrap instead retains an Arc that can become the last owner
+    // before it is dropped, recursively destroying the remaining ancestry.
+    let result = Arc::into_inner(node);
+    #[cfg(test)]
+    tests::after_predecessor_ownership_decision();
+    result
 }
 
 /// Constant-time private successor construction; payloads are shared with the
@@ -63,6 +79,12 @@ pub(crate) struct ChangelogSuffix {
 }
 
 impl ChangelogSuffix {
+    pub(crate) fn history_state(&self) -> Option<ChangelogHistoryStateV3> {
+        self.history
+    }
+    pub(crate) fn has_sources(&self) -> bool {
+        self.head.is_some()
+    }
     pub(crate) fn from_checkpoint(root: &CheckpointRoot) -> Result<Self, StorageError> {
         // Transitional routing only. A V3 cursor never serves an inactive view;
         // full startup owns receipted activation and the exact registry decision.
@@ -99,6 +121,7 @@ impl ChangelogSuffix {
             history,
             mutations,
             encoded_bytes,
+            reclaimed_resume: None,
         }))
     }
 
@@ -107,7 +130,14 @@ impl ChangelogSuffix {
         let binding = source.binding;
         if source.history.lineage() != previous.lineage()
             || source.history.anchor() != previous.anchor()
-            || source.history.minimum_resume() != previous.minimum_resume()
+            || (source.history.minimum_resume() != previous.minimum_resume()
+                && !(source.attribution == ChangelogAttributionV3::HistoryReclamation
+                    && source.reclaimed_resume == Some(source.history.minimum_resume())
+                    && source.history.minimum_resume().sequence()
+                        > previous.minimum_resume().sequence()
+                    && source.history.minimum_resume().sequence().get()
+                        - previous.minimum_resume().sequence().get()
+                        <= 256))
             || binding.database_id != previous.lineage().database_id()
             || binding.history_incarnation != previous.lineage().history_incarnation()
             || binding.predecessor != Some(previous.tail().sequence())
@@ -132,13 +162,120 @@ impl ChangelogSuffix {
             return Err(limit());
         }
         self.history = Some(source.history);
+        let mut ancestors = Vec::with_capacity(17);
+        if let Some(predecessor) = self.head.as_ref() {
+            ancestors.push(Arc::downgrade(predecessor));
+            for index in 1..17 {
+                let previous = ancestors[index - 1].upgrade().ok_or_else(corrupt)?;
+                let Some(ancestor) = previous.ancestors.get(index - 1) else {
+                    break;
+                };
+                ancestors.push(ancestor.clone());
+            }
+        }
         self.head = Some(Arc::new(SourceNode {
             predecessor: self.head.clone(),
             source,
+            ancestors: ancestors.into_boxed_slice(),
         }));
         self.frames = frames;
         self.bytes = bytes;
         Ok(())
+    }
+
+    pub(crate) fn apply_source_cut(
+        &mut self,
+        proof: &crate::journal::SourceReclamationProof,
+    ) -> Result<(), StorageError> {
+        let history = self.history.ok_or_else(corrupt)?;
+        let predecessor = proof.predecessor();
+        if history.lineage() != predecessor.lineage()
+            || history.anchor() != predecessor.anchor()
+            || history.minimum_resume() != predecessor.minimum_resume()
+            || predecessor.tail().sequence().checked_next() != Some(history.tail().sequence())
+            || history.tail().frontier() != predecessor.tail().frontier()
+        {
+            return Err(corrupt());
+        }
+        let successor = ChangelogHistoryStateV3::new(
+            history.lineage(),
+            history.anchor(),
+            history.tail(),
+            proof.retained().minimum_resume(),
+        )
+        .map_err(value_error)?;
+        let head = self
+            .head
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .ok_or_else(corrupt)?;
+        let source = Arc::get_mut(&mut head.source).ok_or_else(corrupt)?;
+        if source.attribution != ChangelogAttributionV3::HistoryReclamation {
+            return Err(corrupt());
+        }
+        source.history = successor;
+        source.reclaimed_resume = Some(successor.minimum_resume());
+        self.history = Some(successor);
+        Ok(())
+    }
+
+    pub(crate) fn read_receipt(
+        &self,
+        root: &CheckpointRoot,
+        sequence: ChangelogTransactionSequence,
+    ) -> Result<Option<AuthoritativeTransactionV3>, StorageError> {
+        let history = self.history.ok_or_else(corrupt)?;
+        if sequence < history.minimum_resume().sequence() || sequence > history.tail().sequence() {
+            return Ok(None);
+        }
+        let mut node = self.head.clone();
+        while let Some(current) = node {
+            if current.source.binding.sequence == sequence {
+                let source = &current.source;
+                let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+                    source.binding,
+                    source.attribution,
+                    &source.mutations,
+                    source.history.lineage().catalog_digest(),
+                )
+                .map_err(value_error)?;
+                source
+                    .history
+                    .validate_terminal_receipt(&receipt)
+                    .map_err(value_error)?;
+                return Ok(Some(receipt));
+            }
+            if current.source.binding.sequence < sequence {
+                return Err(corrupt());
+            }
+            let mut next = current.predecessor.clone();
+            for ancestor in current.ancestors.iter().rev() {
+                let ancestor = ancestor.upgrade().ok_or_else(corrupt)?;
+                if ancestor.source.binding.sequence >= sequence {
+                    next = Some(ancestor);
+                    break;
+                }
+            }
+            node = next;
+        }
+        let table = root.open_table(HISTORY).map_err(table_error)?;
+        let Some(row) = table
+            .get(sequence.get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(None);
+        };
+        let receipt = AuthoritativeTransactionV3::decode(
+            &crate::history_stub::resolve_history_value(row.value())?,
+        )
+        .map_err(value_error)?;
+        if receipt.binding().sequence != sequence
+            || receipt.binding().database_id != history.lineage().database_id()
+            || receipt.binding().history_incarnation != history.lineage().history_incarnation()
+        {
+            return Err(corrupt());
+        }
+        Ok(Some(receipt))
     }
 
     fn sources(&self) -> Result<Vec<Arc<Source>>, StorageError> {

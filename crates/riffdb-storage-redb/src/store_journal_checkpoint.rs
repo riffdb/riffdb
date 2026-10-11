@@ -62,6 +62,13 @@ impl SharedRedb {
             None
         };
         for frame in &batch.frames {
+            let source_proof = frame.source_reclamation.as_deref();
+            if (frame.encoded.kind() == crate::journal::JournalFrameKind::SourceReclamation)
+                != source_proof.is_some()
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            let mut source_successor = None;
             if frame.database_id != batch.database_id
                 || frame.predecessor_sequence != last_sequence
                 || frame.predecessor_administration_sequence != last_administration_sequence
@@ -104,6 +111,9 @@ impl SharedRedb {
                     crate::journal::JournalFrameKind::ServiceAudit => {
                         ChangelogAttributionV3::JournaledServiceAudit
                     }
+                    crate::journal::JournalFrameKind::SourceReclamation => {
+                        riffdb_storage_api::ChangelogAttributionV3::HistoryReclamation
+                    }
                     crate::journal::JournalFrameKind::RetentionPrune => {
                         ChangelogAttributionV3::RetentionPrune
                     }
@@ -119,11 +129,21 @@ impl SharedRedb {
                 if frame.changelog_binding != Some(binding) {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
-                Some(PreparedHistoryAdvance::prepare_chained(
-                    &transaction,
-                    history,
-                    &receipt,
-                )?)
+                if let Some(proof) = source_proof {
+                    crate::changelog_source_reclamation_journal::verify(&transaction, proof)?;
+                    // Submission already invalidated the old source epoch. This
+                    // independently checked materialization installs the same
+                    // acknowledged cut, not another source publication.
+                }
+                let advance = if frame.encoded.records_changelog() {
+                    PreparedHistoryAdvance::prepare_stub_chained(&transaction, history, &receipt)?
+                } else {
+                    PreparedHistoryAdvance::prepare_chained(&transaction, history, &receipt)?
+                };
+                if source_proof.is_some() {
+                    source_successor = Some(advance.successor());
+                }
+                Some(advance)
             } else {
                 if frame.changelog_binding.is_some() {
                     return Err(storage_error(StorageErrorKind::CorruptData));
@@ -205,6 +225,27 @@ impl SharedRedb {
                     // receipt, so any other keeps the receipt bytes.
                     advance.stage_within_batch(&transaction, None)?;
                 }
+            }
+            if let Some(proof) = source_proof {
+                let successor =
+                    source_successor.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                crate::changelog_source_reclamation_journal::stage(&transaction, proof, successor)?;
+                // A source cut changes the retained floor as well as advancing
+                // the receipt. Carry that exact staged state into the next
+                // frame, retaining the cut's complete physical root validation.
+                let retained = riffdb_storage_api::ChangelogHistoryStateV3::new(
+                    successor.lineage(),
+                    successor.anchor(),
+                    successor.tail(),
+                    proof.retained().minimum_resume(),
+                )
+                .map_err(value_error)?;
+                if crate::changelog_v3_roots::read_checkpoint_roots_for_write(&transaction)?
+                    != Some(retained)
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                chain = Some(retained);
             }
             transition_count = transition_count
                 .checked_add(usize::from(frame.transition_count))

@@ -44,6 +44,7 @@ async fn restricted_promotion_recovers_each_durable_cutover_boundary() {
 }
 
 async fn scenario(profile: &str, abort: Option<&str>) {
+    eprintln!("promotion-retry scenario: profile={profile}, boundary={abort:?}");
     let fixture = Fixture::new();
     set_profile(&fixture, "primary", profile);
     let mut primary = fixture.start("primary", None);
@@ -406,6 +407,8 @@ fn restricted(fixture: &Fixture, abort: Option<&str>) -> ChildProcessController 
     let mut spec = ChildProcessSpec::new(env!("CARGO_BIN_EXE_riffdbd-promotion-recovery-fixture"))
         .unwrap()
         .clear_environment()
+        .env("RIFFDB_TEST_DAEMON_FAILURE_EVIDENCE", "1")
+        .unwrap()
         .arg("--config")
         .unwrap()
         .arg(fixture.config("follower"))
@@ -421,10 +424,20 @@ fn restricted(fixture: &Fixture, abort: Option<&str>) -> ChildProcessController 
             spec.env("RIFFDB_PROMOTION_ABORT", point).unwrap()
         };
     }
-    let process = ChildProcessController::spawn(&spec).unwrap();
-    // No line may precede this: ordinary application readiness would fail.
-    process
-        .wait_for_readiness("riffdb-promotion-retry-fixture-v1", Duration::from_secs(60))
-        .unwrap();
+    let mut process = ChildProcessController::spawn(&spec).unwrap();
+    // Inspect exactly the first line. The daemon fixture can report only a
+    // bounded closed failure kind here; ordinary readiness still fails.
+    let readiness = process
+        .wait_for_readiness("riffdb", Duration::from_secs(60))
+        .unwrap_or_else(|error| {
+            let exit = process.wait_for_exit(Duration::from_secs(5));
+            panic!(
+                "restricted promotion readiness: boundary={abort:?}, error={error:?}, exit={exit:?}"
+            )
+        });
+    assert!(
+        readiness.starts_with("riffdb-promotion-retry-fixture-v1"),
+        "restricted promotion readiness: boundary={abort:?}, observation={readiness}"
+    );
     process
 }

@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_storage_api::*;
 use riffdb_types::{DigestKeyId, Timestamp};
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, atomic::AtomicBool};
 
 fn inputs() -> StartupValidationInputs {
     let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
@@ -434,3 +434,194 @@ mod publication;
 
 #[path = "archive_preparation_tests.rs"]
 mod preparation;
+
+// req: REC-001, REC-005, REC-006, REC-007, STO-032
+#[test]
+fn staged_normalization_preserves_backup_authority_and_configured_source() {
+    let scope = crate::test_path::ScopedDirectory::new("staged-normalization-authority");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let configured = scope.join("configured.redb");
+    fs::write(&configured, b"configured source remains untouched").unwrap();
+    let raw = scope.join("raw");
+    let normalized = scope.join("normalized");
+    let ordinary = crate::RedbOfflineRestore::bind(&backup, &raw)
+        .restore_offline_backup(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+        .unwrap();
+    let staged = crate::RedbOfflineRestore::bind(&backup, &normalized)
+        .restore_staged_backup(&configured)
+        .unwrap();
+    assert_eq!(ordinary, staged);
+    let OfflineRestoreResultV1::Restored { manifest } = staged else {
+        panic!("empty target must restore");
+    };
+    assert_eq!(*manifest, original.0);
+    assert_eq!(
+        authority(&raw.join(DATABASE_ARTIFACT_FILE_NAME), false),
+        authority(&normalized.join(DATABASE_ARTIFACT_FILE_NAME), false)
+    );
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+    assert_eq!(
+        fs::read(&configured).unwrap(),
+        b"configured source remains untouched"
+    );
+    // The public staged owner must still perform its complete physical,
+    // structural and catalog validation after the same private normalization.
+    let validated = materialize(&scope, &backup, "validated");
+    assert_eq!(
+        authority(validated.staged_database_file(), false),
+        authority(&normalized.join(DATABASE_ARTIFACT_FILE_NAME), false)
+    );
+    validated.discard().unwrap();
+}
+
+// req: REC-001, REC-007, STO-032
+#[test]
+fn staged_normalization_refuses_a_nonempty_private_target_without_overwrite() {
+    let scope = crate::test_path::ScopedDirectory::new("staged-normalization-no-overwrite");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let target = scope.join("occupied");
+    fs::create_dir(&target).unwrap();
+    let sentinel = target.join("sentinel");
+    fs::write(&sentinel, b"existing private target").unwrap();
+    let result = crate::RedbOfflineRestore::bind(&backup, &target)
+        .restore_staged_backup(&scope.join("configured.redb"))
+        .unwrap();
+    assert_eq!(result, OfflineRestoreResultV1::TargetNotEmpty);
+    assert_eq!(fs::read(&sentinel).unwrap(), b"existing private target");
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+}
+
+fn force_staged_allocator_repair(path: &Path) {
+    let mut bytes = std::fs::read(path).unwrap();
+    assert_eq!(&bytes[..9], b"redb\x1a\x0a\xa9\x0d\x0a");
+    assert_eq!(bytes[9] & 2, 0, "fixture must begin clean");
+    bytes[9] = (bytes[9] | 2) & !4;
+    std::fs::write(path, bytes).unwrap();
+}
+
+// req: REC-001, REC-002, REC-006, END-001
+#[test]
+fn staged_authorization_open_refuses_engine_repair_without_changing_private_bytes() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-auth-repair-refusal");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "auth-stage");
+    force_staged_allocator_repair(stage.staged_database_file());
+    let damaged = std::fs::read(stage.staged_database_file()).unwrap();
+    let error = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect_err("private authorization open must refuse engine repair");
+    assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+    assert_eq!(
+        std::fs::read(stage.staged_database_file()).unwrap(),
+        damaged
+    );
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
+}
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_authorization_open_preserves_native_exclusion_and_healthy_reopen() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-auth-native-exclusion");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "auth-stage");
+    let owner = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect("healthy private authorization open");
+    assert!(
+        stage
+            .open_authorization_store(
+                crate::RedbCommitProfile::Standard,
+                Arc::new(NoChangelogPublicationPort),
+            )
+            .is_err()
+    );
+    drop(owner);
+    let reopened = stage
+        .open_authorization_store(
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .expect("healthy stage reopens after the prior owner releases");
+    drop(reopened);
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
+}
+
+// req: REC-001, REC-002, REC-006, REC-008
+#[test]
+fn staged_seal_refuses_engine_repair_after_complete_validation() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-seal-repair-refusal");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "seal-stage");
+    let id = stage.manifest_identity().database_id();
+    force_staged_allocator_repair(stage.staged_database_file());
+    let result = stage.seal_after_validation(id).map(|_| ());
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
+    assert_eq!(
+        result
+            .expect_err("stage sealing must refuse engine repair")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+}
+
+// req: REC-001, REC-002, REC-006, REC-008
+#[test]
+fn staged_stamp_refuses_changed_bytes_after_sealing() {
+    let scope = crate::test_path::ScopedDirectory::new("stage-stamp-seal-refusal");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let original = std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap();
+    let stage = materialize(&scope, &backup, "stamp-stage");
+    let id = stage.manifest_identity().database_id();
+    let mut sealed = stage.seal_after_validation(id).unwrap();
+    sealed.apply_published_history_incarnation(2).unwrap();
+    sealed.apply_published_history_incarnation(2).unwrap();
+    force_staged_allocator_repair(&sealed.staged_database_file);
+    let damaged = std::fs::read(&sealed.staged_database_file).unwrap();
+    let result = sealed.apply_published_history_incarnation(3);
+    assert_eq!(
+        std::fs::read(backup.join(crate::backup::DATABASE_ARTIFACT_FILE_NAME)).unwrap(),
+        original
+    );
+    assert!(!scope.join("configured.redb").exists());
+    assert_eq!(
+        result
+            .expect_err("incarnation stamping must refuse changed sealed bytes")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        std::fs::read(&sealed.staged_database_file).unwrap(),
+        damaged
+    );
+    assert_eq!(sealed.staged_history_incarnation(), 2);
+}

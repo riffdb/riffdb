@@ -598,19 +598,34 @@ fn capsule_v5_from_proto(
     let base_envelope = encode_message(COMMAND_CAPSULE_V1, &require(value.base)?)?.into_bytes();
     let (base, _) =
         command_capsule::decode_command_capsule_v1(&base_envelope, events)?.into_parts();
-    let service_values = canonical_record_from_bytes(&value.canonical_service_values)?;
+    finish_flat_capsule(
+        base,
+        value.canonical_service_values,
+        value.index_generation_transitions,
+        value.entity_transitions,
+    )
+}
+
+fn finish_flat_capsule(
+    base: StoredCommandCapsuleV1,
+    canonical_service_values: Vec<u8>,
+    index_generation_transitions: Vec<wire::StoredIndexGenerationTransitionV1>,
+    entity_transitions: Vec<wire::StoredCommittedEntityTransitionV1>,
+) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
+    // Rebuild the remaining semantic views after base decoding has returned.
+    // Keeping these large by-value temporaries in its caller's frame reserves
+    // their stack space throughout the deeper base decoder as well.
+    let service_values = canonical_record_from_bytes(&canonical_service_values)?;
     let (outcome, provenance, commit, started, terminal) = base.into_parts();
     let outcome = storage_result(outcome.with_service_values(service_values))?;
     let base = storage_result(StoredCommandCapsuleV1::new(
         outcome, provenance, commit, started, terminal,
     ))?;
-    let generations = value
-        .index_generation_transitions
+    let generations = index_generation_transitions
         .into_iter()
         .map(transition_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
-    let entity_transitions = value
-        .entity_transitions
+    let entity_transitions = entity_transitions
         .into_iter()
         .map(super::entity_transition::entity_transition_from_proto)
         .collect::<Result<Vec<_>, _>>()?;
@@ -648,6 +663,21 @@ fn capsule_v7_from_proto(
         entity_transitions: value.entity_transitions,
     })?;
     storage_result(capsule.with_prefix_evidence(evidence))
+}
+
+fn decode_segment_commands<T>(
+    values: Vec<T>,
+    decode: fn(T) -> Result<StoredCommandCapsuleV2, DurableCodecError>,
+) -> Result<Vec<StoredCommandCapsuleV2>, DurableCodecError> {
+    // Each semantic capsule is large. Result collection through the generic
+    // iterator shunt keeps several capsule-sized temporaries on its call chain
+    // while the member decoder runs. Decode one member directly so the native
+    // journal reader leaves stack space for its caller and allocator.
+    let mut commands = Vec::with_capacity(values.len());
+    for value in values {
+        commands.push(decode(value)?);
+    }
+    Ok(commands)
 }
 
 fn base_with_entity_transition_provenance(
@@ -884,11 +914,7 @@ fn segment_from_body_v3(
             body.predecessor_segment_hash,
         )?))
     };
-    let commands = body
-        .commands
-        .into_iter()
-        .map(capsule_v4_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
+    let commands = decode_segment_commands(body.commands, capsule_v4_from_proto)?;
     let segment = storage_result(StoredCommandSegmentV1::new(
         DatabaseId::from_bytes(fixed(body.database_id)?)
             .map_err(|_| DurableCodecError::corrupt())?,
@@ -932,11 +958,7 @@ fn segment_from_body_v4(
             body.predecessor_segment_hash,
         )?))
     };
-    let commands = body
-        .commands
-        .into_iter()
-        .map(capsule_v5_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
+    let commands = decode_segment_commands(body.commands, capsule_v5_from_proto)?;
     let segment = storage_result(StoredCommandSegmentV1::new(
         DatabaseId::from_bytes(fixed(body.database_id)?)
             .map_err(|_| DurableCodecError::corrupt())?,
@@ -980,11 +1002,7 @@ fn segment_from_body_v5(
             body.predecessor_segment_hash,
         )?))
     };
-    let commands = body
-        .commands
-        .into_iter()
-        .map(capsule_v6_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
+    let commands = decode_segment_commands(body.commands, capsule_v6_from_proto)?;
     let segment = storage_result(StoredCommandSegmentV1::new(
         DatabaseId::from_bytes(fixed(body.database_id)?)
             .map_err(|_| DurableCodecError::corrupt())?,
@@ -1028,11 +1046,7 @@ fn segment_from_body_v6(
             body.predecessor_segment_hash,
         )?))
     };
-    let commands = body
-        .commands
-        .into_iter()
-        .map(capsule_v7_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
+    let commands = decode_segment_commands(body.commands, capsule_v7_from_proto)?;
     let segment = storage_result(StoredCommandSegmentV1::new(
         DatabaseId::from_bytes(fixed(body.database_id)?)
             .map_err(|_| DurableCodecError::corrupt())?,
@@ -1458,11 +1472,7 @@ pub fn decode_command_segment_v1(
                         body.predecessor_segment_hash,
                     )?))
                 };
-                let commands = body
-                    .commands
-                    .into_iter()
-                    .map(capsule_v3_from_proto)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let commands = decode_segment_commands(body.commands, capsule_v3_from_proto)?;
                 let segment = storage_result(StoredCommandSegmentV1::new(
                     DatabaseId::from_bytes(fixed(body.database_id)?)
                         .map_err(|_| DurableCodecError::corrupt())?,
@@ -1508,11 +1518,7 @@ pub fn decode_command_segment_v1(
                         body.predecessor_segment_hash,
                     )?))
                 };
-                let commands = body
-                    .commands
-                    .into_iter()
-                    .map(capsule_v2_from_proto)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let commands = decode_segment_commands(body.commands, capsule_v2_from_proto)?;
                 let segment = storage_result(StoredCommandSegmentV1::new(
                     DatabaseId::from_bytes(fixed(body.database_id)?)
                         .map_err(|_| DurableCodecError::corrupt())?,

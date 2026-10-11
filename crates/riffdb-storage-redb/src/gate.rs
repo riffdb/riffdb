@@ -10,6 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 
 mod source_admission;
+pub(crate) use source_admission::SourceDrainRefusal;
 
 #[derive(Default)]
 pub(crate) struct ExclusiveGate {

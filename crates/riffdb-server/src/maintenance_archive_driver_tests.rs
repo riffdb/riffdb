@@ -468,24 +468,28 @@ fn archive_driver_recovers_after_process_crash_in_fresh_validation() {
     let id = fixture.receipt.operation_id();
     let root = fixture._root.path().to_path_buf();
     drop(fixture.storage);
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "maintenance_driver::archive_tests::archive_driver_validation_crash_child",
-            "--nocapture",
-        ])
-        .env("RIFFDB_ARCHIVE_DRIVER_CRASH_ROOT", &root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        assert_eq!(status.signal(), Some(6));
+    // Repeated completed-validation crashes must preserve exact receipt
+    // preimages and the original published restore frontier.
+    for _ in 0..2 {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "maintenance_driver::archive_tests::archive_driver_validation_crash_child",
+                "--nocapture",
+            ])
+            .env("RIFFDB_ARCHIVE_DRIVER_CRASH_ROOT", &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(6));
+        }
+        #[cfg(not(unix))]
+        assert!(!status.success());
     }
-    #[cfg(not(unix))]
-    assert!(!status.success());
     let (mut storage, reconciliation) =
         RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
     assert_eq!(

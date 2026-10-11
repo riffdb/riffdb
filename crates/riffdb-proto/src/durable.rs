@@ -13,9 +13,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 115;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 116;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 92;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 93;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -2544,6 +2544,23 @@ readable_message!(
 );
 writable_message!(v1::StoredPromotionAdministrationV1);
 
+const REGISTRY_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredRecordRegistryV3",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-registry-v3-schema-hash.bin"
+    )),
+    u32::from_be_bytes({
+        let bounds = *include_bytes!("../fixtures/durable-registry-v3-record-bound.bin");
+        [bounds[0], bounds[1], bounds[2], bounds[3]]
+    }) as usize,
+    256,
+    preflight_payload::<110>,
+    validate_payload::<110, v1::StoredRecordRegistryV3>,
+)
+.with_compact_identity(30, 2);
+readable_message!(v1::StoredRecordRegistryV3, REGISTRY_V3_RECORD_SCHEMA);
+writable_message!(v1::StoredRecordRegistryV3);
+
 /// Readable durable schemas in immutable compatibility order.
 pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHEMA_COUNT] = [
     CURRENT_V1_RECORD_SCHEMAS[0],
@@ -2661,6 +2678,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_BOOTSTRAP_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_ADMINISTRATION_RECORD_SCHEMA,
+    REGISTRY_V3_RECORD_SCHEMA,
 ];
 
 /// Writable durable schemas in immutable role order.
@@ -2757,6 +2775,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     REPLICATION_PRIMARY_ADMISSION_V1_RECORD_SCHEMA,
     PRIMARY_FENCE_ADMINISTRATION_V1_RECORD_SCHEMA,
     PROMOTION_ADMINISTRATION_V1_RECORD_SCHEMA,
+    REGISTRY_V3_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

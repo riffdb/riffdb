@@ -1,0 +1,87 @@
+{
+  "combined_source_ci": {
+    "four_language_remote_conformance_exit": 0,
+    "full_acceptance_exit": 0,
+    "native_transport_regression_payload_bytes": [
+      256,
+      16384,
+      56263,
+      131072
+    ],
+    "ordinary_release_build_exit": 0,
+    "receipt_sha256": "117aa984f4998f69b1abe39fa8622fb548e258060eb0da7303b87e7ed7c8dce1",
+    "status": "passed",
+    "whole_branch_paths": 317
+  },
+  "evidence_kind": "measured_prerequisites_with_failed_whole_restore",
+  "host_specifications": {
+    "durable_ssd": true,
+    "nominal_ram_bytes": 34359738368,
+    "vcpus": 8
+  },
+  "measured_eight_hour_run_started": false,
+  "measured_twenty_four_hour_run_started": false,
+  "observed_at_utc": "2026-10-11",
+  "ordinary_preparation": {
+    "archive_encoded_bytes": 53552209,
+    "archive_payloads_reconciled": true,
+    "archive_physical_bytes": 59596800,
+    "archive_policy_anchors_reconciled": true,
+    "archive_records_reconciled": 215536,
+    "commands": 150000,
+    "duration_s": 1500,
+    "enabled_optional_diagnostics": [],
+    "normal_windows": [
+      {
+        "end_s": 1200,
+        "p95_us": 69666,
+        "p99_us": 110096,
+        "start_s": 900
+      },
+      {
+        "end_s": 1500,
+        "p95_us": 97757,
+        "p99_us": 158655,
+        "start_s": 1200
+      }
+    ],
+    "post_duration_operations": 0,
+    "reads": 600000,
+    "receipt_sha256": "3f79225a553fe292d04d1376fce389d672daa77e55db6ad02b7dbb5f811fae74",
+    "retries": 0,
+    "sink_pause_ns": 300032588830,
+    "sink_recovery_ns": 298636890974,
+    "status": "passed",
+    "tickets_reconciled": 65536
+  },
+  "preserved_failures": [
+    "Earlier ordinary preparation failed its normal-window p95 limit; its failed receipt remains retained.",
+    "The restricted-promotion startup refusal from CI428 remains unexplained; later passes do not establish its cause.",
+    "Whole-restore attempt 471 exceeded its original 60-second recovery-admission deadline; downstream jobs refused and no 8-hour clock started."
+  ],
+  "qualifies_alpha_endurance": false,
+  "qualifies_wp825": false,
+  "qualifies_wp826": false,
+  "remaining_requirements": [
+    "Whole public backup, restore, readiness, first write, exact original replay and complete state reconciliation within 60 seconds",
+    "Retained TypeScript V1/V2 execution after the whole-restore gate passes",
+    "Fresh source, binary, host, workload, fault and resource bindings before the offered clock",
+    "Complete real 8-hour WP-825 rehearsal with all 19 checks, three physical retirements and final six quiet hours",
+    "WP-825 acceptance and merged dependency before a separate uninterrupted real 24-hour WP-826 campaign"
+  ],
+  "schema": "riffdb.ticketdesk-lifecycle-prerequisite-observations/v1",
+  "source_revision": "c24287363575aaf728dc3475c258312ecd20514a",
+  "whole_backup_restore": {
+    "backup_bytes": 2953236770,
+    "backup_create_ns": 54055069763,
+    "backup_inventory_entries": 100,
+    "backup_primary_bytes": 1191186432,
+    "failure_code": "recovery_admission_exceeded_whole_fault_deadline",
+    "phase": "empty_target_startup",
+    "receipt_sha256": "939ea765599703ee3a2e7545e00570698205e975c1ee7ca54611c7c180df8cf6",
+    "restore_submitted": false,
+    "status": "failed",
+    "whole_action_limit_ns": 60000000000,
+    "whole_backup_restore_fault_proved": false
+  }
+}

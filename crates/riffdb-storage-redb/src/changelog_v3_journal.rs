@@ -14,9 +14,7 @@ use crate::{
         journal_allocator_assignment, receipt_from_journal_for_catalog as receipt_from_journal,
     },
     changelog_v3_activation::HISTORY,
-    changelog_v3_roots::{
-        read_checkpoint_roots, read_checkpoint_roots_for_write, validate_retained_history,
-    },
+    changelog_v3_roots::{read_checkpoint_roots, read_checkpoint_roots_for_write},
     changelog_v3_write::{PreparedHistoryAdvance, table_inventory, value_error},
     error::{precommit_storage_error, storage_error, table_error},
     journal::JournalFrame,
@@ -83,7 +81,7 @@ fn has_metadata_roots(
         if registry.value().len() > 512 {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        if *riffdb_storage_api::proto_codec::decode_record_registry_v2(registry.value())
+        if *riffdb_storage_api::proto_codec::decode_record_registry_digest(registry.value())
             .map_err(crate::error::codec_error)?
             .value()
             == riffdb_storage_api::proto_codec::current_record_registry_digest()
@@ -120,31 +118,54 @@ pub(crate) fn recovery_crash_edge(edge: &str) {
     }
 }
 
-/// Runs before any recovery write or extent reset, under the existing exclusive
-/// startup owner. The complete retained chain and every original overlap are
-/// checked from one pin. Later direct writes may advance the root past the suffix;
-/// neither their rows nor their physical counter replace the original evidence.
+/// Bounded one-frame plan under the exclusive recovery owner. It validates
+/// the fixed roots, exact journal order and referenced overlap receipts. Full
+/// population validation remains with first access and the complete scrub.
+#[cfg(test)]
 pub(crate) fn plan_recovery(
     transaction: &ReadTransaction,
     frames: &[JournalFrame],
     physical_frontier: DualFrontier,
 ) -> Result<RecoveryPlan, StorageError> {
-    let corrupt = || storage_error(StorageErrorKind::CorruptData);
-    // An already-empty extent has no source to reclaim. Keep the clean-open
-    // path bounded; complete startup validation owns its full history scan.
-    let mut history = if frames.is_empty() {
-        read_checkpoint_roots(transaction)?
-    } else {
-        validate_retained_history(transaction)?
+    let mut walk = RecoveryWalk::new(transaction, physical_frontier)?;
+    for frame in frames {
+        walk.observe(frame)?;
     }
-    .ok_or_else(corrupt)?;
-    if history.tail().frontier() != physical_frontier {
-        return Err(corrupt());
+    Ok(walk.finish())
+}
+
+pub(crate) struct RecoveryWalk<'a> {
+    transaction: &'a ReadTransaction,
+    history: riffdb_storage_api::ChangelogHistoryStateV3,
+    original_tail: ChangelogTransactionSequence,
+    previous: Option<ChangelogTransactionSequence>,
+    replay_from: Option<usize>,
+    frames: usize,
+}
+
+impl<'a> RecoveryWalk<'a> {
+    pub(crate) fn new(
+        transaction: &'a ReadTransaction,
+        physical_frontier: DualFrontier,
+    ) -> Result<Self, StorageError> {
+        let history = read_checkpoint_roots(transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if history.tail().frontier() != physical_frontier {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(Self {
+            transaction,
+            original_tail: history.tail().sequence(),
+            history,
+            previous: None,
+            replay_from: None,
+            frames: 0,
+        })
     }
-    let original_tail = history.tail().sequence();
-    let mut replay_from = frames.len();
-    let mut previous: Option<ChangelogTransactionSequence> = None;
-    for (index, frame) in frames.iter().enumerate() {
+
+    pub(crate) fn observe(&mut self, frame: &JournalFrame) -> Result<(), StorageError> {
+        crate::journal::admit_native_recovery_frame(frame)?;
+        let corrupt = || storage_error(StorageErrorKind::CorruptData);
         let mut assignments = frame.mutations().iter().filter(|mutation| {
             AuthoritativeStateCatalogV1.lookup(mutation.table().label(), mutation.key())
                 == Some(N::NextChangelogTransaction)
@@ -152,46 +173,68 @@ pub(crate) fn plan_recovery(
         let sequence = journal_allocator_assignment(assignments.next().ok_or_else(corrupt)?)
             .map_err(value_error)?;
         if assignments.next().is_some()
-            || previous.is_some_and(|prior| prior.get().checked_add(1) != Some(sequence.get()))
+            || self
+                .previous
+                .is_some_and(|prior| prior.get().checked_add(1) != Some(sequence.get()))
         {
             return Err(corrupt());
         }
-        previous = Some(sequence);
-        if sequence <= original_tail {
-            verify_materialized_frame(transaction, frame)?;
+        self.previous = Some(sequence);
+        if sequence <= self.original_tail {
+            verify_materialized_frame(self.transaction, frame)?;
         } else {
-            replay_from = replay_from.min(index);
+            self.replay_from.get_or_insert(self.frames);
             let receipt = receipt_from_journal(
                 frame,
                 AuthoritativeTransactionBindingV3 {
-                    database_id: history.lineage().database_id(),
-                    history_incarnation: history.lineage().history_incarnation(),
-                    predecessor: Some(history.tail().sequence()),
+                    database_id: self.history.lineage().database_id(),
+                    history_incarnation: self.history.lineage().history_incarnation(),
+                    predecessor: Some(self.history.tail().sequence()),
                     sequence,
-                    predecessor_frontier: history.tail().frontier(),
+                    predecessor_frontier: self.history.tail().frontier(),
                     covered_frontier: DualFrontier::new(
                         frame.covered_sequence(),
                         frame.covered_administration_sequence(),
                     ),
-                    prior_history_hash: history.tail().history_hash(),
+                    prior_history_hash: self.history.tail().history_hash(),
                 },
-                history.lineage().catalog_digest(),
+                self.history.lineage().catalog_digest(),
             )
             .map_err(value_error)?;
             crate::primary_admission_roots::validate_write_receipt(
-                &transaction
+                &self
+                    .transaction
                     .open_table(crate::layout::META)
                     .map_err(table_error)?,
-                history,
+                self.history,
                 &receipt,
             )?;
-            history = history.advance(&receipt).map_err(value_error)?;
+            if let Some(proof) = frame.source_reclamation_proof()
+                && proof.predecessor() != self.history
+            {
+                return Err(corrupt());
+            }
+            self.history = self.history.advance(&receipt).map_err(value_error)?;
+            if let Some(proof) = frame.source_reclamation_proof() {
+                self.history = riffdb_storage_api::ChangelogHistoryStateV3::new(
+                    self.history.lineage(),
+                    self.history.anchor(),
+                    self.history.tail(),
+                    proof.retained().minimum_resume(),
+                )
+                .map_err(value_error)?;
+            }
+        }
+        self.frames = self.frames.checked_add(1).ok_or_else(corrupt)?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> RecoveryPlan {
+        RecoveryPlan {
+            replay_from: self.replay_from.unwrap_or(self.frames),
+            covered: self.history.tail().frontier(),
         }
     }
-    Ok(RecoveryPlan {
-        replay_from,
-        covered: history.tail().frontier(),
-    })
 }
 
 /// One standalone frame without a locator, for unit tests: roots validated in
@@ -326,6 +369,7 @@ fn materialize_native_frame(
     ),
     StorageError,
 > {
+    crate::journal::admit_native_recovery_frame(frame)?;
     let history = match chained {
         Some(Some(predecessor)) => predecessor,
         None | Some(None) => read_checkpoint_roots_for_write(transaction)?
@@ -357,9 +401,19 @@ fn materialize_native_frame(
     }
     let receipt = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
         .map_err(value_error)?;
-    let advance = match chained {
-        None => PreparedHistoryAdvance::prepare(transaction, &receipt)?,
-        Some(_) => PreparedHistoryAdvance::prepare_chained(transaction, history, &receipt)?,
+    if let Some(proof) = frame.source_reclamation_proof() {
+        crate::changelog_source_reclamation_journal::verify(transaction, proof)?;
+    }
+    let stub_only = locator.is_some() && frame.changelog().is_some();
+    let advance = match (chained, stub_only) {
+        (None, false) => PreparedHistoryAdvance::prepare(transaction, &receipt)?,
+        (None, true) => PreparedHistoryAdvance::prepare_stub(transaction, &receipt)?,
+        (Some(_), false) => {
+            PreparedHistoryAdvance::prepare_chained(transaction, history, &receipt)?
+        }
+        (Some(_), true) => {
+            PreparedHistoryAdvance::prepare_stub_chained(transaction, history, &receipt)?
+        }
     };
     let tables = table_inventory(transaction)?;
     // Refuse missing target tables before any write; redb's open_table would
@@ -371,7 +425,7 @@ fn materialize_native_frame(
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    let footprint = if qualify {
+    let footprint = if qualify && frame.source_reclamation_proof().is_none() {
         crate::source_continuation::SourceContinuationFootprint::captured_checked(
             history,
             receipt.mutations(),
@@ -403,6 +457,10 @@ fn materialize_native_frame(
                     })
             },
         )?
+    } else if qualify && frame.source_reclamation_proof().is_some() {
+        // The cut invalidated qualification at live submission. Materializing
+        // this exact checked source adds no second visible deletion.
+        crate::source_continuation::SourceContinuationFootprint::fresh()
     } else {
         crate::source_continuation::SourceContinuationFootprint::unknown()
     };
@@ -419,7 +477,7 @@ fn materialize_native_frame(
         crate::journal::apply_located_mutation(transaction, mutation, locator)
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     }
-    let successor = advance.successor();
+    let mut successor = advance.successor();
     let stub = match locator {
         // Only a frame that records its binding can re-derive its receipt.
         Some(locator) if frame.changelog().is_some() => Some(locator.receipt_stub()?),
@@ -429,6 +487,21 @@ fn materialize_native_frame(
         (None, Some(stub)) => advance.stage_stub(transaction, &stub)?,
         (None, None) => advance.stage(transaction)?,
         (Some(_), stub) => advance.stage_within_batch(transaction, stub.as_deref())?,
+    }
+    if let Some(proof) = frame.source_reclamation_proof() {
+        crate::changelog_source_reclamation_journal::stage(transaction, proof, successor)?;
+        // The checked cut changes the retained floor as well as the receipt
+        // tail. Carry that exact physical successor into the next frame.
+        successor = ChangelogHistoryStateV3::new(
+            successor.lineage(),
+            successor.anchor(),
+            successor.tail(),
+            proof.retained().minimum_resume(),
+        )
+        .map_err(value_error)?;
+        if read_checkpoint_roots_for_write(transaction)? != Some(successor) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
     }
     Ok((receipt, footprint, chained.map(|_| successor)))
 }
@@ -441,6 +514,7 @@ pub(crate) fn verify_materialized_frame(
     transaction: &ReadTransaction,
     frame: &JournalFrame,
 ) -> Result<AuthoritativeTransactionV3, StorageError> {
+    crate::journal::admit_native_recovery_frame(frame)?;
     let history = read_checkpoint_roots(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
     let assignment = frame
@@ -479,6 +553,7 @@ pub(crate) fn verify_materialized_frame(
     let materialized = read(sequence)?;
     let binding = materialized.binding();
     let point = ChangelogHistoryPointV3::from_receipt(&materialized).map_err(value_error)?;
+    drop(materialized);
     if sequence == history.minimum_resume().sequence() {
         if point != history.minimum_resume() {
             return Err(storage_error(StorageErrorKind::CorruptData));
@@ -508,8 +583,11 @@ pub(crate) fn verify_materialized_frame(
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     // A history stub is compared by the receipt it resolves to (ADR-0263 C3).
-    if recovered.encode().map_err(value_error)?.as_slice()
-        != &*crate::history_stub::resolve_history_value(original.value())?
+    if !recovered
+        .matches_canonical_v1(&crate::history_stub::resolve_history_value(
+            original.value(),
+        )?)
+        .map_err(value_error)?
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }

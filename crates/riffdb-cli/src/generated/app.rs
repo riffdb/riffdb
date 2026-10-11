@@ -12057,6 +12057,9 @@ fn storage_command(command: StorageCommand) -> Terminal {
                         | riffdb_storage_redb::RedbDurableFormatUpgradeError::UnsupportedAction => {
                             "run riffdb storage preflight and follow its exact safe action"
                         }
+                        riffdb_storage_redb::RedbDurableFormatUpgradeError::InsufficientSpace => {
+                            "provision sufficient space on the source filesystem, leave the database closed, and retry the same command with the same verified backup"
+                        }
                         riffdb_storage_redb::RedbDurableFormatUpgradeError::Storage(_)
                         | riffdb_storage_redb::RedbDurableFormatUpgradeError::Unavailable => {
                             "leave the database closed and retry the same command with the same verified backup"
@@ -12881,7 +12884,7 @@ mod tests {
         assert_eq!(value["command"], "storage.preflight");
         assert_eq!(value["result"]["status"], "initialize_current");
         assert_eq!(value["result"]["binary"]["alpha_epoch"], 1);
-        assert_eq!(value["result"]["binary"]["writer"], 2);
+        assert_eq!(value["result"]["binary"]["writer"], 4);
         assert_eq!(value["result"]["action"], "initialize_current");
         assert_eq!(value["result"]["next_command"], "start riffdbd");
         assert!(!path.exists());
@@ -12913,7 +12916,7 @@ mod tests {
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["current"], serde_json::Value::Null);
         assert_eq!(value["error"]["binary"]["alpha_epoch"], 1);
-        assert_eq!(value["error"]["binary"]["writer"], 2);
+        assert_eq!(value["error"]["binary"]["writer"], 4);
         assert_eq!(
             value["error"]["next_command"],
             "run the RiffDB binary matching the database format manifest"

@@ -5,8 +5,25 @@ pub(crate) mod follower;
 #[path = "transient_payload.rs"]
 mod payload;
 #[cfg(test)]
+pub(crate) use payload::PAYLOAD_COLD_DECODES;
+#[cfg(test)]
 pub(crate) use payload::PAYLOAD_SEED_VERIFY_EVERY;
+pub(crate) use payload::{CapturedCommandPayload, ResolvedCommandPayload};
 use payload::{PayloadCache, SegmentMetadata};
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PAYLOAD_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn before_payload_load() {
+    let hook = PAYLOAD_READ_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
@@ -60,7 +77,7 @@ pub(crate) struct CommandDerivedLocator {
 
 #[derive(Default)]
 struct CommandDerivedIndexes {
-    segments: BTreeMap<CommitSequence, SegmentMetadata>,
+    segments: BTreeMap<CommitSequence, Arc<SegmentMetadata>>,
     payloads: PayloadCache,
     idempotency: BTreeMap<Vec<u8>, CommandDerivedLocator>,
     provenance: BTreeMap<Vec<u8>, CommandDerivedLocator>,
@@ -246,6 +263,12 @@ impl TransientIndexes {
         page_event_index(self.undelivered_outbox.as_ref()?, after, limit)
     }
 
+    /// Cardinality of commit-coupled undelivered membership, without a scan.
+    /// Missing/degraded membership remains unknown rather than zero.
+    pub(crate) fn undelivered_outbox_count(&self) -> Option<u64> {
+        u64::try_from(self.undelivered_outbox.as_ref()?.len()).ok()
+    }
+
     pub(crate) fn pending_outbox_page(
         &self,
         after: Option<EventId>,
@@ -378,6 +401,55 @@ impl TransientIndexes {
             .is_some_and(|(_, metadata)| sequence <= metadata.last))
     }
 
+    pub(crate) fn capture_command_at(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<Option<CapturedCommandPayload>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        let Some((_, metadata)) = indexes.segments.range(..=sequence).next_back() else {
+            return Ok(None);
+        };
+        if sequence > metadata.last {
+            return Ok(None);
+        }
+        indexes.payloads.capture(Arc::clone(metadata)).map(Some)
+    }
+
+    pub(crate) fn capture_command_member(
+        &self,
+        kind: CommandDerivedIndexKindV1,
+        key: &[u8],
+    ) -> Result<Option<(CapturedCommandPayload, CommandDerivedLocator)>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        let Some(locator) = indexes.index(kind).get(key).copied() else {
+            return Ok(None);
+        };
+        let metadata = indexes
+            .segments
+            .get(&locator.segment_first)
+            .ok_or_else(corrupt)?;
+        Ok(Some((
+            indexes.payloads.capture(Arc::clone(metadata))?,
+            locator,
+        )))
+    }
+
+    pub(crate) fn retain_resolved_payload(
+        &self,
+        resolved: &mut ResolvedCommandPayload,
+    ) -> Result<(), StorageError> {
+        let Some(indexes) = &self.command_derived else {
+            return Ok(());
+        };
+        if let Some(metadata) = indexes
+            .segments
+            .get(&resolved.segment.first_commit_sequence())
+        {
+            indexes.payloads.retain_resolved(metadata, resolved)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn command_audit_record(
         &self,
         sequence: riffdb_types::AdministrationSequence,
@@ -463,6 +535,7 @@ impl TransientIndexes {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn command_at(
         &self,
         sequence: CommitSequence,
@@ -792,7 +865,7 @@ fn command_audit_from_segment(
     command_audit_from_locator(segment, locator, sequence)
 }
 
-fn command_audit_from_locator(
+pub(crate) fn command_audit_from_locator(
     segment: &StoredCommandSegmentV1,
     locator: CommandDerivedLocator,
     sequence: riffdb_types::AdministrationSequence,
@@ -922,7 +995,7 @@ impl CommandDerivedIndexes {
             .segments
             .insert(
                 segment.first_commit_sequence(),
-                SegmentMetadata::new(&segment)?,
+                Arc::new(SegmentMetadata::new(&segment)?),
             )
             .is_some()
         {
@@ -969,7 +1042,7 @@ impl CommandDerivedIndexes {
     }
 }
 
-fn expected_manifest_key(
+pub(crate) fn expected_manifest_key(
     command: &StoredCommandCapsuleV2,
     kind: CommandDerivedIndexKindV1,
     member: CommandDerivedMemberV1,

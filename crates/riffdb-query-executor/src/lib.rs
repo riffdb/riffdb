@@ -2,6 +2,7 @@
 
 //! Closed-program execution over one engine-owned authoritative read view.
 
+mod event_candidate_prefix;
 mod exact_result_set;
 mod storage_executor;
 #[doc(hidden)]

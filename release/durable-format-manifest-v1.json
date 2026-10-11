@@ -2,7 +2,7 @@
   "schema": "riffdb.durable-format-manifest/v1",
   "release": "0.1.0",
   "alpha_epoch": 1,
-  "writer": 2,
+  "writer": 4,
   "minimum_supported_source_release": "0.1.0-pre-format-manifest",
   "maximum_supported_source_release": "0.1.0",
   "readable_storage_versions": [1, 2],
@@ -11,8 +11,8 @@
   "writable_redb_layout_versions": [1],
   "readable_registry_versions": [2],
   "writable_registry_versions": [2],
-  "readable_journal_frame_versions": [2, 3, 4],
-  "writable_journal_frame_versions": [4],
+  "readable_journal_frame_versions": [2, 3, 4, 5],
+  "writable_journal_frame_versions": [5],
   "readable_journal_extent_versions": [3, 4],
   "writable_journal_extent_versions": [4],
   "readable_backup_versions": [1],
@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "a141b765c2d468a7c270461553aad6a56f9d2af3a0e4f63027151227ed4b40a3",
+  "record_registry_digest": "2bca7f169fdce97af9f32f62b321259edf40743636e3d1bfbd60d88499e6fa6c",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -143,7 +143,8 @@
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
     {"record_type":"riffdb.storage.v1.CapabilityBootstrapMarkerV1","tag":20,"revision":1,"schema_hash":"1204e270169688244bc489071db70c7d2481111a970d5a9da420ad7b9334e4ea"},
-    {"record_type":"riffdb.storage.v1.CapabilityAdministrationAuditV1","tag":21,"revision":1,"schema_hash":"28d4a9d5f63eb9f5bacb2042af50d47ea39532bc2ef60c3dc52a450cc7b49a46"}
+    {"record_type":"riffdb.storage.v1.CapabilityAdministrationAuditV1","tag":21,"revision":1,"schema_hash":"28d4a9d5f63eb9f5bacb2042af50d47ea39532bc2ef60c3dc52a450cc7b49a46"},
+    {"record_type":"riffdb.storage.v1.StoredRecordRegistryV3","tag":30,"revision":2,"schema_hash":"debb45889f4e4aecf77f4bf406c9c25e6b96eedac1771babdd59957456a62e5d"}
   ],
   "writable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
@@ -237,9 +238,10 @@
     {"record_type":"riffdb.storage.v1.StoredAuthoritativeStateCatalogV2","tag":69,"revision":2,"schema_hash":"b04857f5a178b2d106fef22126a59b7b355776d02448067d160f8ea56436c168"},
     {"record_type":"riffdb.storage.v1.ReplicationPrimaryAdmissionV1","tag":76,"revision":1,"schema_hash":"2877bc84f263b3c4667291484a59730570a727edfe6dda1b24786eed93482ea7"},
     {"record_type":"riffdb.storage.v1.StoredPrimaryFenceAdministrationV1","tag":77,"revision":1,"schema_hash":"65512bfab94d054534f7cadedd5b2dc8fabd4152125f565483eaf1f5348a92af"},
-    {"record_type":"riffdb.storage.v1.StoredPromotionAdministrationV1","tag":78,"revision":1,"schema_hash":"a94f474fa98024e74b298541dac061cf50c829604dd2876fc4a38db0d5ef3fa8"}
+    {"record_type":"riffdb.storage.v1.StoredPromotionAdministrationV1","tag":78,"revision":1,"schema_hash":"a94f474fa98024e74b298541dac061cf50c829604dd2876fc4a38db0d5ef3fa8"},
+    {"record_type":"riffdb.storage.v1.StoredRecordRegistryV3","tag":30,"revision":2,"schema_hash":"debb45889f4e4aecf77f4bf406c9c25e6b96eedac1771babdd59957456a62e5d"}
   ],
-  "compatibility_fixture_digest": "09b389c827da34e5527385ff743bde7a8a8bd6101fc620191c9b6842b77fadc0",
+  "compatibility_fixture_digest": "baf2b4b63728b1b42665cfc3f58c921d082dc7053c9a60fd56fdf57fda09998c",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

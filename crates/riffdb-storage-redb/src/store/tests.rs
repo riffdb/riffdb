@@ -220,7 +220,7 @@ fn pre_export_registry_installs_operation_table_before_publication() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -291,7 +291,7 @@ fn pre_vector_registry_installs_evidence_table_before_publication() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -367,7 +367,7 @@ fn pre_vector_observation_registry_installs_table_before_publication() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -430,7 +430,7 @@ fn pre_vector_health_registry_publishes_only_after_health_backfill() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -496,7 +496,7 @@ fn pre_vector_projection_control_registry_installs_table_before_publication() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -563,7 +563,7 @@ fn pre_columnar_control_registry_installs_table_before_publication() {
         .expect("registry read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -880,7 +880,7 @@ fn assert_generation_fixture_migrated(store: &RedbStore) {
         .expect("read registry")
         .expect("registry exists");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1037,7 +1037,7 @@ fn mixed_v1_v2_framing_resumes_and_publishes_registry_last() {
         .expect("read registry")
         .expect("registry published");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1150,7 +1150,7 @@ fn wp373_event_copies_migrate_to_exact_references_before_registry_publication() 
         .expect("read registry")
         .expect("registry remains");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1251,7 +1251,7 @@ fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
         .expect("read registry")
         .expect("registry remains");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1276,7 +1276,7 @@ fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
         .expect("read")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1323,7 +1323,7 @@ fn entity_reference_migration_from_pre_audit_request_index_converges() {
         .expect("get")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1371,7 +1371,7 @@ fn entity_reference_migration_survives_damaged_events_row() {
         .expect("get")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1437,7 +1437,7 @@ fn entity_reference_migration_splits_501_rows_and_crash_restarts() {
         .expect("get")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1484,7 +1484,7 @@ fn entity_reference_migration_empty_database_path_converges() {
         .expect("get")
         .expect("registry");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1572,7 +1572,7 @@ fn event_routes_rebuild_idempotently_before_registry_publication() {
         .expect("read registry")
         .expect("registry remains");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1788,7 +1788,7 @@ fn history_incarnation_migration_inserts_initial_and_is_idempotent() {
         .expect("registry get")
         .expect("registry present");
     assert_eq!(
-        *decode_record_registry_v2(registry.value())
+        *decode_record_registry_digest(registry.value())
             .expect("decode registry")
             .value(),
         crate::changelog_v3_activation::PRE_V3_REGISTRY
@@ -1901,7 +1901,7 @@ fn current_digest_still_runs_index_generation_row_repair() {
             .expect("get")
             .expect("registry");
         assert_eq!(
-            *decode_record_registry_v2(registry.value())
+            *decode_record_registry_digest(registry.value())
                 .expect("decode")
                 .value(),
             crate::changelog_v3_activation::PRE_V3_REGISTRY

@@ -37,7 +37,23 @@ pub(super) fn validate_receipt_catalog(
     receipt: &AuthoritativeTransactionV3,
     catalog: [u8; 32],
 ) -> Result<(), ChangelogV3Error> {
-    validate_receipt_count(receipt, catalog_source_count(catalog)?)
+    validate_receipt_shape(receipt.attribution(), receipt.encoded_len()?, catalog)
+}
+
+pub(super) fn validate_receipt_shape(
+    attribution: super::ChangelogAttributionV3,
+    bytes: usize,
+    catalog: [u8; 32],
+) -> Result<(), ChangelogV3Error> {
+    let count = catalog_source_count(catalog)?;
+    if attribution as usize > count {
+        return Err(ChangelogV3Error::InvalidEncoding);
+    }
+    let maximum = MAX_CHANGELOG_FRAME_BYTES - (166 + 4 * count + FOOTER_BYTES) - 4;
+    if bytes > maximum {
+        return Err(ChangelogV3Error::LimitExceeded);
+    }
+    Ok(())
 }
 
 fn validate_receipt_count(

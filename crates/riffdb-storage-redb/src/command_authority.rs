@@ -300,9 +300,9 @@ type RememberedSegment = (Box<[u8]>, std::sync::Arc<StoredCommandSegmentV1>);
 /// segment, so its memory is bounded by the largest segment.
 #[derive(Default)]
 pub(crate) struct SegmentMemo {
-    last: std::cell::RefCell<Option<RememberedSegment>>,
+    last: std::sync::Mutex<Option<RememberedSegment>>,
     #[cfg(test)]
-    decodes: std::cell::Cell<usize>,
+    decodes: std::sync::atomic::AtomicUsize,
 }
 
 impl SegmentMemo {
@@ -313,26 +313,35 @@ impl SegmentMemo {
         &self,
         row: &[u8],
     ) -> Result<std::sync::Arc<StoredCommandSegmentV1>, riffdb_storage_api::DurableCodecError> {
-        if let Some((bytes, segment)) = self.last.borrow().as_ref()
+        // One session owns one entry even when its bounded offline inspectors
+        // run concurrently. Keep admission, decode and publication under the
+        // same lock so workers cannot retain competing replacement entries.
+        let mut last = self.last.lock().map_err(|_| {
+            riffdb_storage_api::DurableCodecError::new(
+                riffdb_storage_api::DurableCodecErrorKind::InvariantViolation,
+            )
+        })?;
+        if let Some((bytes, segment)) = last.as_ref()
             && **bytes == *row
         {
             return Ok(std::sync::Arc::clone(segment));
         }
         #[cfg(test)]
-        self.decodes.set(self.decodes.get() + 1);
+        self.decodes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let segment = std::sync::Arc::new(
             crate::history_stub::decode_segment_value(row)?
                 .into_parts()
                 .0,
         );
-        *self.last.borrow_mut() = Some((row.into(), std::sync::Arc::clone(&segment)));
+        *last = Some((row.into(), std::sync::Arc::clone(&segment)));
         Ok(segment)
     }
 
     /// Segment decodes this memo has performed.
     #[cfg(test)]
     pub(crate) fn decodes(&self) -> usize {
-        self.decodes.get()
+        self.decodes.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 

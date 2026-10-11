@@ -2,7 +2,7 @@
 use super::engine_compatibility::restore_fixture_bytes;
 use super::*;
 
-// req: STO-030, STO-032, END-008, REC-001
+// req: STO-030, STO-032, END-007, END-008, REC-001
 #[test]
 fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     use riffdb_storage_api::{
@@ -26,6 +26,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
             "expected-outcomes.hex",
         ],
     );
+    super::native_source_admission::upgrade_fixture(&directory.join(""));
     let path = directory.join("db.redb");
     let store =
         RedbStore::open_with_commit_profile(&path, crate::RedbCommitProfile::Standard).unwrap();
@@ -114,6 +115,26 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     )
     .unwrap()
     .unwrap();
+    ports.emit_logical_bytes_for_test(NonZeroU64::MIN).unwrap();
+    let measured_before = ports
+        .measure_logical_bytes_for_test(NonZeroU64::MIN)
+        .unwrap();
+    let tables = [
+        crate::journal::JournalTable::Commits,
+        crate::journal::JournalTable::Events,
+        crate::journal::JournalTable::Outbox,
+        crate::journal::JournalTable::OutboxStatus,
+        crate::journal::JournalTable::Idempotency,
+        crate::journal::JournalTable::Provenance,
+        crate::journal::JournalTable::Audit,
+        crate::journal::JournalTable::IdempotencyLocators,
+        crate::journal::JournalTable::ProvenanceLocators,
+        crate::journal::JournalTable::AuditByRequestLocators,
+    ];
+    let prior_rows = {
+        let read = ports.begin_composite_read().unwrap();
+        tables.map(|table| read.read_range_to(table, &[], None, 32).unwrap())
+    };
     let pruned = ports
         .online_retention_step(NonZeroU64::new(1).unwrap(), NonZeroU64::new(1).unwrap())
         .unwrap();
@@ -124,6 +145,49 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
             sequences: 1
         }
     ));
+    let after_read = ports.begin_composite_read().unwrap();
+    let mut removed_values = 0_u64;
+    let mut removed_keys = 0_u64;
+    for (table, rows) in tables.into_iter().zip(prior_rows) {
+        for (key, original) in rows {
+            let after = after_read.read_value(table, &key).unwrap();
+            if after.as_deref() == Some(original.as_ref()) {
+                continue;
+            }
+            if after.is_none() {
+                let length = if table == crate::journal::JournalTable::Commits {
+                    crate::history_stub::resolve_commits_value(&original)
+                        .unwrap()
+                        .len()
+                } else {
+                    original.len()
+                };
+                removed_values += u64::try_from(length).unwrap();
+                removed_keys += u64::try_from(key.len()).unwrap();
+            } else if match table {
+                crate::journal::JournalTable::Idempotency
+                | crate::journal::JournalTable::Provenance => {
+                    riffdb_storage_api::decode_command_locator_v1(&original).is_ok()
+                }
+                crate::journal::JournalTable::Audit => {
+                    riffdb_storage_api::decode_command_audit_locator_v1(&original).is_ok()
+                }
+                _ => false,
+            } {
+                removed_values += u64::try_from(original.len()).unwrap();
+            }
+        }
+    }
+    drop(after_read);
+    assert!(removed_values > 0 && removed_keys > 0);
+    assert_eq!(measured_before, (removed_values, removed_keys));
+    assert_eq!(
+        ports
+            .measure_logical_bytes_for_test(NonZeroU64::MIN)
+            .unwrap(),
+        (0, 0),
+        "native pruning empties the delivered eligible prefix, while retained evidence remains"
+    );
     assert_eq!(
         ports
             .shared
@@ -184,7 +248,7 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
     }
 }
 
-// req: STO-030, STO-031, STO-032, END-008, REC-001
+// req: STO-030, STO-031, STO-032, END-007, END-008, REC-001
 #[test]
 fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_generation_holes() {
     for blocker in ["reader", "scrub", "writer", "source"] {
@@ -208,6 +272,7 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
                 "expected-outcomes.hex",
             ],
         );
+        super::native_source_admission::upgrade_fixture(&directory.join(""));
         let path = directory.join("db.redb");
         let store =
             RedbStore::open_with_commit_profile(&path, crate::RedbCommitProfile::Standard).unwrap();
@@ -338,6 +403,19 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             crate::store::extent_reclamation::reserve_writer_for_test(&ports.shared).unwrap()
         });
         let held = ports.shared.reclaim_one_extent().unwrap();
+        assert!(held.retired_generation.is_none());
+        let physical = ports.shared.measure_physical_bytes_for_test().unwrap();
+        if blocker == "writer" {
+            assert!(
+                physical.is_none(),
+                "a busy writer makes the capture unknown"
+            );
+        } else {
+            let physical = physical.unwrap();
+            assert_eq!(physical.eligible_allocated_bytes, 0);
+            assert_eq!(physical.sealed_extents, 1);
+            assert!(physical.protected_allocated_bytes > 0);
+        }
         assert_eq!(
             (
                 held.deleted,
@@ -373,7 +451,37 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
             .unwrap();
             epoch = ports.shared.durable_commit_epoch();
         }
+        let mut refused_probes = Vec::new();
+        for mode in ["expiry", "directory"] {
+            let (kind, refused) =
+                crate::store::extent_reclamation::physical_bytes::forced_refusal_for_test(
+                    &ports.shared,
+                    mode,
+                )
+                .unwrap();
+            assert_eq!(kind, StorageErrorKind::LimitExceeded);
+            refused_probes.push(refused);
+        }
+        use std::os::unix::fs::MetadataExt;
+        let expected_allocated = std::fs::metadata(&sealed).unwrap().blocks() * 512;
+        let (physical, completed_probe) = ports
+            .shared
+            .finished_physical_probe_for_test()
+            .unwrap()
+            .unwrap();
+        assert_eq!(physical.eligible_allocated_bytes, expected_allocated);
+        assert_eq!(physical.protected_allocated_bytes, 0);
+        assert_eq!(physical.sealed_extents, 1);
+        // Exercise the actual production emitter as well as the measurement
+        // helper. The independent collector parses these real numeric records
+        // in the native producer/collector integration check.
+        let mut physical_observer =
+            crate::store::extent_reclamation::physical_bytes::Observer::default();
+        for _ in 0..32 {
+            physical_observer.tick(&ports.shared);
+        }
         let reclaimed = ports.shared.reclaim_one_extent().unwrap();
+        assert_eq!(reclaimed.retired_generation, Some(footer.generation));
         assert_eq!(
             reclaimed.deleted + reclaimed.recycled,
             1,
@@ -381,6 +489,17 @@ fn eligible_native_extent_retries_after_global_barrier_release_without_scanning_
         );
         assert_eq!(reclaimed.held_readers + reclaimed.held_references, 0);
         assert!(!sealed.exists());
+        drop(completed_probe); // Completion must release protection before owner drop.
+        drop(refused_probes); // Refusals also release protection while owners remain alive.
+        assert_eq!(
+            ports
+                .shared
+                .measure_physical_bytes_for_test()
+                .unwrap()
+                .unwrap()
+                .sealed_extents,
+            0
+        );
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         assert_eq!(
             crate::changelog_v3_roots::validate_retained_history(

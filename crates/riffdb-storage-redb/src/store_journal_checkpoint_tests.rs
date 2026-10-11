@@ -97,6 +97,7 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     let extent_generation = lane.generation();
     drop(lane);
     let frame = ValidatedCheckpointFrame {
+        source_reclamation: None,
         segment_summaries: Arc::from(Vec::new()),
         extent_generation,
         placement: crate::journal::frame_placement_after(0, &encoded).unwrap(),
@@ -325,6 +326,21 @@ fn chained_audit_batch(
     Vec<JournalFrame>,
     Vec<riffdb_storage_api::AuthoritativeTransactionV3>,
 ) {
+    chained_audit_batch_with_source_cut(store, path, database_id, history, count, false)
+}
+
+fn chained_audit_batch_with_source_cut(
+    store: &RedbStore,
+    path: &std::path::Path,
+    database_id: DatabaseId,
+    history: riffdb_storage_api::ChangelogHistoryStateV3,
+    count: u64,
+    include_source_cut: bool,
+) -> (
+    JournalCheckpointBatch,
+    Vec<JournalFrame>,
+    Vec<riffdb_storage_api::AuthoritativeTransactionV3>,
+) {
     let catalog_digest = history.lineage().catalog_digest();
     let origin_hash = [0x42; 32];
     let scratch = store.shared.database.begin_write().unwrap();
@@ -395,6 +411,59 @@ fn chained_audit_batch(
         allocator = next_allocator;
         sources.push(source);
         expected.push(receipt);
+        if include_source_cut && index == 2 {
+            use crate::journal::{SourceReceiptPreimage, SourceReclamationProof};
+            use riffdb_storage_api::{
+                AuthoritativeTransactionV3, ChangelogHistoryPointV3 as Point,
+                ChangelogHistoryStateV3 as History,
+            };
+            let predecessor = crate::changelog_v3_roots::read_checkpoint_roots_for_write(&scratch)
+                .unwrap()
+                .unwrap();
+            let table = scratch
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap();
+            let first = predecessor.minimum_resume().sequence().get();
+            let canonical = |sequence: u64| {
+                crate::history_stub::resolve_history_value(
+                    table
+                        .get(sequence.to_be_bytes().as_slice())
+                        .unwrap()
+                        .unwrap()
+                        .value(),
+                )
+                .unwrap()
+                .to_vec()
+            };
+            let removed = SourceReceiptPreimage::capture(&canonical(first)).unwrap();
+            let floor = Point::from_receipt(
+                &AuthoritativeTransactionV3::decode(&canonical(first + 1)).unwrap(),
+            )
+            .unwrap();
+            let retained = History::new(
+                predecessor.lineage(),
+                predecessor.anchor(),
+                predecessor.tail(),
+                floor,
+            )
+            .unwrap();
+            drop(table);
+            let source = JournalFrame::source_reclamation(
+                SourceReclamationProof::new(predecessor, retained, vec![removed]).unwrap(),
+                previous_hash,
+            )
+            .unwrap();
+            let receipt =
+                crate::changelog_v3_journal::materialize_recovered_frame(&scratch, &source)
+                    .unwrap();
+            previous_hash = source.encode().unwrap().frame_hash();
+            allocator = crate::changelog_v3_roots::read_checkpoint_roots_for_write(&scratch)
+                .unwrap()
+                .unwrap()
+                .expected_allocator();
+            sources.push(source);
+            expected.push(receipt);
+        }
     }
     scratch.abort().unwrap();
 
@@ -413,6 +482,7 @@ fn chained_audit_batch(
         used += placement.padded_len;
         encoded_bytes += encoded.as_bytes().len();
         frames.push(ValidatedCheckpointFrame {
+            source_reclamation: source.source_reclamation_proof().cloned().map(Arc::new),
             segment_summaries: Arc::from(Vec::new()),
             extent_generation: lane.generation(),
             placement,
@@ -424,9 +494,9 @@ fn chained_audit_batch(
             covered_administration_sequence: source.covered_administration_sequence(),
             previous_hash: source.previous_hash(),
             frame_hash: encoded.frame_hash(),
-            transition_count: 1,
-            command_count: 0,
-            audit_count: 1,
+            transition_count: source.transition_count(),
+            command_count: source.command_count(),
+            audit_count: source.audit_count(),
             encoded,
             mutations: Arc::from(
                 source
@@ -447,7 +517,7 @@ fn chained_audit_batch(
         last_sequence: None,
         last_administration_sequence: frames.last().unwrap().covered_administration_sequence,
         last_hash: frames.last().unwrap().frame_hash,
-        transition_count: count,
+        transition_count: frames.len(),
         command_count: 0,
         audit_count: count,
         encoded_bytes,
@@ -525,6 +595,81 @@ fn multi_frame_checkpoint_validates_roots_once_per_batch_and_matches_sequential_
     assert_eq!(
         crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
         Some(advanced)
+    );
+}
+
+// req: REC-001, STO-030, STO-031, STO-032
+#[test]
+fn chained_checkpoint_carries_a_source_cut_floor_into_later_audit_frames() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-chained-source-cut");
+    let path = scope.join("db.redb");
+    let mut store = RedbStore::open(&path).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
+    let history = crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        lineage,
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let (batch, sources, receipts) =
+        chained_audit_batch_with_source_cut(&store, &path, database_id, history, 3, true);
+    assert_eq!(sources.len(), 4);
+    assert!(sources[2].source_reclamation_proof().is_some());
+    let original = store.shared.database.begin_read().unwrap();
+    let epoch = store.shared.durable_commit_epoch.load(Ordering::Acquire);
+    let mut missing_proof = batch.clone();
+    missing_proof.frames[2].source_reclamation = None;
+    assert!(
+        store
+            .shared
+            .materialize_checkpoint_batch(&missing_proof)
+            .is_err()
+    );
+    assert_eq!(
+        store.shared.durable_commit_epoch.load(Ordering::Acquire),
+        epoch
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &store.shared.database.begin_read().unwrap()
+        )
+        .unwrap(),
+        Some(history)
+    );
+
+    store.shared.materialize_checkpoint_batch(&batch).unwrap();
+    let current = store.shared.database.begin_read().unwrap();
+    let mut expected = history;
+    for (source, receipt) in sources.iter().zip(&receipts) {
+        expected = expected.advance(receipt).unwrap();
+        if let Some(proof) = source.source_reclamation_proof() {
+            expected = riffdb_storage_api::ChangelogHistoryStateV3::new(
+                expected.lineage(),
+                expected.anchor(),
+                expected.tail(),
+                proof.retained().minimum_resume(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            crate::changelog_v3_journal::verify_materialized_frame(&current, source).unwrap(),
+            *receipt
+        );
+    }
+    assert_eq!(
+        store.shared.durable_commit_epoch.load(Ordering::Acquire),
+        epoch + 1
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&current).unwrap(),
+        Some(expected)
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&original).unwrap(),
+        Some(history)
     );
 }
 
@@ -676,4 +821,166 @@ fn published_suffix_drain_validates_roots_once_per_transaction_and_matches_seque
     transaction.commit().unwrap();
     drop(runtime);
     assert_materialized_as_sequential(&store.shared.database, history, &sources, &expected);
+}
+
+fn store_with_journaled_source_cut(
+    label: &str,
+) -> (
+    crate::test_path::ScopedDirectory,
+    std::path::PathBuf,
+    RedbStore,
+    DatabaseId,
+    riffdb_storage_api::ChangelogHistoryStateV3,
+    JournalCheckpointBatch,
+    Vec<JournalFrame>,
+    Vec<riffdb_storage_api::AuthoritativeTransactionV3>,
+) {
+    let scope = crate::test_path::ScopedDirectory::new(label);
+    let path = scope.join("db.redb");
+    let mut store = RedbStore::open(&path).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10]).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
+    let history = crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        lineage,
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let (batch, sources, expected) =
+        chained_audit_batch_with_source_cut(&store, &path, database_id, history, 3, true);
+    (
+        scope,
+        path,
+        store,
+        database_id,
+        history,
+        batch,
+        sources,
+        expected,
+    )
+}
+
+fn assert_source_cut_materialized_as_sequential(
+    database: &redb::Database,
+    history: riffdb_storage_api::ChangelogHistoryStateV3,
+    sources: &[JournalFrame],
+    expected: &[riffdb_storage_api::AuthoritativeTransactionV3],
+) {
+    let pin = database.begin_read().unwrap();
+    let mut advanced = history;
+    for (source, receipt) in sources.iter().zip(expected) {
+        assert_eq!(
+            crate::changelog_v3_journal::verify_materialized_frame(&pin, source).unwrap(),
+            *receipt
+        );
+        advanced = advanced.advance(receipt).unwrap();
+        if let Some(proof) = source.source_reclamation_proof() {
+            advanced = riffdb_storage_api::ChangelogHistoryStateV3::new(
+                advanced.lineage(),
+                advanced.anchor(),
+                advanced.tail(),
+                proof.retained().minimum_resume(),
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        Some(advanced)
+    );
+}
+
+// req: REC-001, REP-003, STO-030, STO-031, STO-032
+#[test]
+fn recovery_replay_carries_a_source_cut_floor_into_later_audit_frames() {
+    let (_scope, path, store, database_id, history, _batch, sources, expected) =
+        store_with_journaled_source_cut("v3-chained-cut-recovery");
+    let shared = Arc::clone(&store.shared);
+    drop(store);
+    // A real open registers this before recovery; stubs resolve through it.
+    shared.register_history_resolver(database_id);
+    crate::changelog_v3_roots::WRITE_ROOT_READS.with(|reads| reads.set(0));
+    crate::journal::recover_journal_path(
+        &shared.database,
+        &crate::journal::journal_path(&path),
+        database_id,
+    )
+    .unwrap();
+    assert_source_cut_materialized_as_sequential(&shared.database, history, &sources, &expected);
+}
+
+// req: REC-001, REP-003, STO-030, STO-031, STO-032
+#[test]
+fn published_suffix_drain_carries_a_source_cut_floor_into_later_audit_frames() {
+    let (_scope, path, store, database_id, history, batch, sources, expected) =
+        store_with_journaled_source_cut("v3-chained-cut-drain");
+    let last = batch.frames.last().unwrap();
+    let runtime = crate::store::JournalRuntime {
+        changelog_history: Some(expected.iter().zip(&sources).fold(
+            history,
+            |state, (receipt, source)| {
+                let successor = state.advance(receipt).unwrap();
+                match source.source_reclamation_proof() {
+                    None => successor,
+                    Some(proof) => riffdb_storage_api::ChangelogHistoryStateV3::new(
+                        successor.lineage(),
+                        successor.anchor(),
+                        successor.tail(),
+                        proof.retained().minimum_resume(),
+                    )
+                    .unwrap(),
+                }
+            },
+        )),
+        lane: Arc::new(
+            crate::journal::JournalLane::open(
+                &crate::journal::journal_path(&path),
+                &crate::journal::JournalFileHeader::with_frontiers(
+                    database_id,
+                    None,
+                    None,
+                    batch.checkpoint_hash,
+                ),
+            )
+            .unwrap(),
+        ),
+        database_id,
+        last_sequence: None,
+        last_administration_sequence: last.covered_administration_sequence,
+        last_hash: last.frame_hash,
+        published_sequence: None,
+        published_administration_sequence: last.covered_administration_sequence,
+        published_hash: last.frame_hash,
+        suffix_transitions: batch.transition_count,
+        suffix_commands: 0,
+        suffix_audits: batch.audit_count,
+        suffix_bytes: batch.encoded_bytes,
+        suffix_physical_bytes: batch
+            .frames
+            .iter()
+            .map(|frame| frame.placement.padded_len)
+            .sum(),
+        suffix_frames: batch.frames.clone(),
+        unpublished_transitions: 0,
+        unpublished_commands: 0,
+        unpublished_audits: 0,
+        unpublished_bytes: 0,
+        reanchor_required: false,
+    };
+    let transaction = store.shared.database.begin_write().unwrap();
+    crate::changelog_v3_roots::WRITE_ROOT_READS.with(|reads| reads.set(0));
+    store
+        .shared
+        .apply_published_journal_suffix(&transaction, &runtime)
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(runtime);
+    assert_source_cut_materialized_as_sequential(
+        &store.shared.database,
+        history,
+        &sources,
+        &expected,
+    );
 }

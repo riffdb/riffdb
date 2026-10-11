@@ -1,11 +1,10 @@
 //! Same-pin registration/retirement evidence for the bounded source hold set.
-
-use std::collections::BTreeMap;
+use crate::source_validation_read::ReceiptRead;
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogHistoryPointV3 as Point, ChangelogHistoryStateV3 as History, DurableCodecErrorKind,
+    AuthoritativeNamespaceV1 as N, ChangelogAttributionV3, ChangelogHistoryPointV3 as Point,
+    ChangelogHistoryStateV3 as History, DurableCodecErrorKind,
     FollowerRegistrationPhaseV1 as Phase, MAX_REPLICATION_SOURCE_HOLDS_V1,
     ReplicationAdministrationActionV1 as Action, ReplicationSourceHoldStateV1 as State,
     ReplicationSourceHoldV2 as Policy, StorageError, StorageErrorKind,
@@ -16,25 +15,26 @@ use riffdb_storage_api::{
 use crate::error::{codec_error, precommit_storage_error, storage_error};
 
 struct Evidence {
-    current: Policy,
+    tracked: bool,
     registered: bool,
     released: bool,
+    retired: bool,
 }
 
 /// Complete source-only cross-link pass, after retained-chain validation. This
-/// streams audit history to its exact end, retaining at most the existing 4096
-/// holds and two flags per registration. It is not a checkpoint shortcut, does
+/// streams audit history to its exact end, retaining four flags for each of the existing 4096
+/// holds. Policies remain borrowed from the same immutable source pin. It is not a checkpoint shortcut, does
 /// not run on follower images, and grants no authorization or release capability.
 pub(crate) fn validate(
     holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
     audit: &impl ReadableTable<&'static [u8], &'static [u8]>,
     history: History,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     let mut validation = RegistrationLinksValidation::new(holds, history)?;
     for row in audit.iter().map_err(precommit_storage_error)? {
         let (key, value) = row.map_err(precommit_storage_error)?;
-        validation.observe(key.value(), value.value(), receipts)?;
+        validation.observe(key.value(), value.value(), holds, receipts)?;
     }
     validation.finish()
 }
@@ -43,7 +43,7 @@ pub(crate) fn validate(
 /// Only finish at the caller's exact audit end; partial pages prove nothing.
 pub(crate) struct RegistrationLinksValidation {
     history: History,
-    evidence: BTreeMap<[u8; 17], Evidence>,
+    evidence: Box<[Evidence]>,
 }
 
 impl RegistrationLinksValidation {
@@ -54,7 +54,10 @@ impl RegistrationLinksValidation {
         if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let mut evidence = BTreeMap::new();
+        let mut evidence = Vec::with_capacity(
+            usize::try_from(holds.len().map_err(precommit_storage_error)?)
+                .map_err(|_| corrupt())?,
+        );
         for row in holds.iter().map_err(precommit_storage_error)? {
             let (key, value) = row.map_err(precommit_storage_error)?;
             let decoded = decode_replication_source_hold(value.value()).map_err(codec_error)?;
@@ -65,27 +68,27 @@ impl RegistrationLinksValidation {
             if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
                 return Err(corrupt());
             }
-            if let Some(current) = registered {
-                if !current.registered_at().precedes_or_equals(history.tail())
+            if let Some(current) = registered
+                && (!current.registered_at().precedes_or_equals(history.tail())
                     || current.generation() > history.tail().sequence()
                     || !hold.fence().precedes_or_equals(history.tail())
                     || current
                         .degraded_at()
-                        .is_some_and(|p| !p.precedes_or_equals(history.tail()))
-                {
-                    return Err(corrupt());
-                }
-                evidence.insert(
-                    hold.storage_key(),
-                    Evidence {
-                        current,
-                        registered: false,
-                        released: false,
-                    },
-                );
+                        .is_some_and(|p| !p.precedes_or_equals(history.tail())))
+            {
+                return Err(corrupt());
             }
+            evidence.push(Evidence {
+                tracked: registered.is_some(),
+                registered: false,
+                released: false,
+                retired: registered.is_some_and(|current| current.phase() == Phase::Retired),
+            });
         }
-        Ok(Self { history, evidence })
+        Ok(Self {
+            history,
+            evidence: evidence.into_boxed_slice(),
+        })
     }
 
     /// Only after the storage publication owner proved the current hold rows
@@ -102,7 +105,8 @@ impl RegistrationLinksValidation {
         &mut self,
         key: &[u8],
         encoded: &[u8],
-        receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        receipts: &impl ReceiptRead,
     ) -> Result<(), StorageError> {
         let history = self.history;
         let decoded = match decode_replication_administration_v1(encoded) {
@@ -138,16 +142,41 @@ impl RegistrationLinksValidation {
         }
         validate_point(record.observed(), history, receipts)?;
         validate_physical_record(record, encoded, history, receipts)?;
-        let entry = self
-            .evidence
-            .get_mut(&record.after().hold().storage_key())
-            .ok_or_else(corrupt)?;
+        // The canonical row ordinal is stable only on this immutable source
+        // (or its owner-qualified unchanged-hold successor). Keep no policy
+        // copies or map nodes in the continuation's bounded bookkeeping.
+        let target = record.after().hold().storage_key();
+        let mut found = None;
+        for (ordinal, row) in holds
+            .range::<&[u8]>(..=target.as_slice())
+            .map_err(precommit_storage_error)?
+            .enumerate()
+        {
+            if ordinal >= self.evidence.len() {
+                return Err(corrupt());
+            }
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            if key.value() == target {
+                let decoded = decode_replication_source_hold(value.value()).map_err(codec_error)?;
+                let State::Registered(current) = *decoded.value() else {
+                    return Err(corrupt());
+                };
+                if current.hold().storage_key() != target
+                    || current.hold().lineage() != history.lineage()
+                {
+                    return Err(corrupt());
+                }
+                found = Some((ordinal, current));
+            }
+        }
+        let (ordinal, current) = found.ok_or_else(corrupt)?;
+        let entry = self.evidence.get_mut(ordinal).ok_or_else(corrupt)?;
+        if !entry.tracked || entry.retired != (current.phase() == Phase::Retired) {
+            return Err(corrupt());
+        }
         match record.action() {
             Action::RegisterFollower => {
-                if entry.registered
-                    || entry.released
-                    || !matches_registration(record, entry.current)
-                {
+                if entry.registered || entry.released || !matches_registration(record, current) {
                     return Err(corrupt());
                 }
                 entry.registered = true;
@@ -156,7 +185,7 @@ impl RegistrationLinksValidation {
                 // The checked receipt preserves the exact before policy and
                 // validates configured expiry's original registration sequence.
                 // Requiring its exact after-image also preserves degradation.
-                if !entry.registered || entry.released || record.after() != entry.current {
+                if !entry.registered || entry.released || record.after() != current {
                     return Err(corrupt());
                 }
                 entry.released = true;
@@ -166,9 +195,11 @@ impl RegistrationLinksValidation {
     }
 
     pub(crate) fn finish(&self) -> Result<(), StorageError> {
-        if self.evidence.values().any(|entry| {
-            !entry.registered || entry.released != (entry.current.phase() == Phase::Retired)
-        }) {
+        if self
+            .evidence
+            .iter()
+            .any(|entry| entry.tracked && (!entry.registered || entry.released != entry.retired))
+        {
             return Err(corrupt());
         }
         Ok(())
@@ -180,7 +211,7 @@ impl RegistrationLinksValidation {
 pub(crate) fn validate_point(
     point: Point,
     history: History,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     validate_point_with_admission(point, history, receipts, None)
 }
@@ -188,7 +219,7 @@ pub(crate) fn validate_point(
 pub(crate) fn validate_point_with_admission(
     point: Point,
     history: History,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
     budget: Option<&riffdb_types::exact_provider_budget_v1::ProviderBudget>,
 ) -> Result<(), StorageError> {
     if point.sequence() < history.minimum_resume().sequence() {
@@ -201,21 +232,9 @@ pub(crate) fn validate_point_with_admission(
     if !point.precedes_or_equals(history.tail()) {
         return Err(corrupt());
     }
-    let row = receipts
-        .get(point.sequence().get().to_be_bytes().as_slice())
-        .map_err(precommit_storage_error)?
+    let receipt = receipts
+        .receipt(point.sequence(), budget)?
         .ok_or_else(corrupt)?;
-    if let Some(budget) = budget {
-        let candidate = crate::history_stub::provider_receipt_from_value_v1(row.value(), budget)?;
-        if Point::from_receipt(&candidate.receipt).map_err(|_| corrupt())? != point {
-            return Err(corrupt());
-        }
-        return Ok(());
-    }
-    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-        row.value(),
-    )?)
-    .map_err(|_| corrupt())?;
     if Point::from_receipt(&receipt).map_err(|_| corrupt())? != point {
         return Err(corrupt());
     }
@@ -226,7 +245,7 @@ fn validate_physical_record(
     record: &Record,
     encoded: &[u8],
     history: History,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl ReceiptRead,
 ) -> Result<(), StorageError> {
     let sequence = record
         .observed()
@@ -236,14 +255,7 @@ fn validate_physical_record(
     if sequence < history.minimum_resume().sequence() {
         return Ok(());
     }
-    let row = receipts
-        .get(sequence.get().to_be_bytes().as_slice())
-        .map_err(precommit_storage_error)?
-        .ok_or_else(corrupt)?;
-    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-        row.value(),
-    )?)
-    .map_err(|_| corrupt())?;
+    let receipt = receipts.receipt(sequence, None)?.ok_or_else(corrupt)?;
     let binding = receipt.binding();
     if binding.sequence != sequence
         || binding.database_id != history.lineage().database_id()

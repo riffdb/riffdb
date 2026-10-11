@@ -1114,7 +1114,10 @@ shape!(PROMOTION_ADMINISTRATION_V1 [
     message(8, &PRIMARY_FENCE_ADMINISTRATION_V1), message(9, &CHANGELOG_POSITION_V3),
     message(10, &CHANGELOG_HISTORY_STATE_V3), nonempty_bytes(14, 16),
 ]);
-const ROOTS: [&Shape; 110] = [
+shape!(RECORD_REGISTRY_COMPLETED_V3 [fixed_bytes(1, 16), fixed_bytes(3, 32)]);
+shape!(RECORD_REGISTRY_V3 [fixed_bytes(1, 32), message(2, &ROOT_EMPTY), message(3, &RECORD_REGISTRY_COMPLETED_V3)]);
+
+const ROOTS: [&Shape; 111] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1236,6 +1239,7 @@ const ROOTS: [&Shape; 110] = [
     &REPLICATION_PRIMARY_ADMISSION_V1,
     &PRIMARY_FENCE_ADMINISTRATION_V1,
     &PROMOTION_ADMINISTRATION_V1,
+    &RECORD_REGISTRY_V3,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

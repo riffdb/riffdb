@@ -791,4 +791,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "replication_projection_recovery_tests.rs"]
-mod projection_recovery_tests;
+pub(crate) mod projection_recovery_tests;

@@ -2291,6 +2291,7 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-types",
+ "rustix",
  "sha2",
  "tempfile",
 ]
@@ -2363,6 +2364,7 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-types",
+ "rustix",
  "tokio",
  "tonic",
 ]

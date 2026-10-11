@@ -3,6 +3,8 @@
 // The complete component graph consumes these private values during WP-130 composition.
 #![allow(dead_code)]
 
+#[path = "startup_archive_evidence.rs"]
+mod archive_evidence;
 #[path = "startup_promotion.rs"]
 pub(crate) mod promotion;
 
@@ -13,7 +15,7 @@ use std::path::Path;
 use riffdb_catalog::{
     CatalogError, CatalogHistoryOutcome, CatalogIndexMigrationContext,
     CatalogIndexMigrationDriveError, CatalogIndexMigrationDriver, ValidatedCatalogHistory,
-    ValidatedContractBundle, validate_catalog_history,
+    ValidatedContractBundle,
 };
 use riffdb_commit::{
     DatabaseInitializationDecision, DatabaseInitializationExecutor, InitializedDatabase,
@@ -105,44 +107,9 @@ impl CheckedRedbStartup {
     /// remain exact. Both cursors retain at most one bounded item at a time.
     pub(crate) fn matches_archive_restore_evidence(
         &self,
-        mut expected: Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
+        expected: Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
     ) -> Result<bool, ()> {
-        let snapshot = self
-            .operational_ports
-            .published_changelog_snapshot_v3()
-            .map_err(|_| ())?;
-        let mut actual = snapshot.authoritative_state_v3().map_err(|_| ())?;
-        let before = expected.history();
-        let after = actual.history();
-        if before.lineage() != after.lineage()
-            || before.anchor() != after.anchor()
-            || before.minimum_resume() != after.minimum_resume()
-            || before.tail().frontier() != after.tail().frontier()
-        {
-            return Ok(false);
-        }
-        let mut receipts = snapshot
-            .changelog_receipts_v3(before.lineage(), before.tail())
-            .map_err(|_| ())?;
-        while let Some(receipt) = receipts.next_receipt().map_err(|_| ())? {
-            if receipt.attribution() != riffdb_storage_api::ChangelogAttributionV3::DirtyActivation
-                || !receipt.mutations().is_empty()
-                || receipt.binding().predecessor_frontier != before.tail().frontier()
-                || receipt.binding().covered_frontier != before.tail().frontier()
-            {
-                return Ok(false);
-            }
-        }
-        loop {
-            let left = expected.next_item().map_err(|_| ())?;
-            let right = actual.next_item().map_err(|_| ())?;
-            if left != right {
-                return Ok(false);
-            }
-            if left.is_none() {
-                return Ok(true);
-            }
-        }
+        archive_evidence::matches(&self.operational_ports, expected)
     }
 
     /// Immutable original control, retained only after complete source validation
@@ -372,6 +339,33 @@ pub(crate) fn open_redb_startup_with_commit_profile(
         preflight_redb_startup_format(path)?;
         open_redb_store(path, application_commit_profile, publication.clone())
     })?;
+    complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
+}
+
+/// Preserves the ordinary startup proof joins while refusing private-stage repair.
+pub(crate) fn open_staged_redb_startup_with_commit_profile(
+    stage: &riffdb_storage_redb::RedbStagedRestore,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
+    let (publication, reader) = crate::replication_publication::ReplicationPublication::channel();
+    let store = timed(StartupStage::StoreOpen, || {
+        preflight_redb_startup_format(stage.staged_database_file())?;
+        stage
+            .open_authorization_store(application_commit_profile, publication.clone())
+            .map_err(RedbStartupError::from)
+    })?;
+    complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
+}
+
+fn complete_redb_startup_with_publication(
+    store: RedbStore,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    publication: std::sync::Arc<crate::replication_publication::ReplicationPublication>,
+    reader: crate::replication_publication::ReplicationPublishedSnapshots,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
     let mut checked = complete_redb_startup(store, inputs, || database_ids.next_database_id())?;
     // Seed after the unchanged startup proof join and V3 activation. Restart
     // serves retained history immediately even if no new command arrives.
@@ -518,7 +512,7 @@ fn run_redb_evidence_session(
         drive_structural_evidence(&mut session)
     })?;
     let validation = timed(StartupStage::CatalogHistory, || {
-        validate_catalog_history(&mut session)
+        session.validate_startup_catalog_history()
     })?;
     let (catalog_outcome, historical_end) = validation.into_parts();
     crate::startup_census::record_recovery_owned_bytes(session.recovery_owned_peak_bytes());
@@ -1030,7 +1024,7 @@ mod tests {
         };
         assert_eq!(current.epoch().get(), binary.epoch().get());
         assert_eq!(current.writer().get(), 0);
-        assert_eq!(binary.writer().get(), 2);
+        assert_eq!(binary.writer().get(), 4);
         assert!(matches!(
             action,
             DurableFormatAction::OfflineInPlace {
@@ -1050,7 +1044,7 @@ mod tests {
             action,
         })
         .to_string();
-        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.2"));
+        assert!(rendered.contains("current=alpha-1.0 binary=alpha-1.4"));
         assert!(rendered.contains("backup_required=true"));
         assert!(rendered.contains("next: riffdb storage upgrade"));
         assert!(rendered.ends_with("no data was changed"));

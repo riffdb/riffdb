@@ -528,6 +528,29 @@ pub(crate) fn write_validated_prefix_checkpoint(
     retained: &riffdb_storage_api::RetainedMetadataV1,
     purpose: CheckpointPurpose,
 ) -> Result<(), StorageError> {
+    write_checkpoint_with_completion(shared, retained, purpose, None)
+}
+
+pub(crate) fn write_completed_registry_checkpoint(
+    shared: &SharedRedb,
+    retained: &riffdb_storage_api::RetainedMetadataV1,
+    proof: crate::startup::CompleteRegistryValidation,
+) -> Result<(), StorageError> {
+    proof.check_epoch(shared)?;
+    write_checkpoint_with_completion(
+        shared,
+        retained,
+        CheckpointPurpose::StartupValidation,
+        Some(&proof),
+    )
+}
+
+fn write_checkpoint_with_completion(
+    shared: &SharedRedb,
+    retained: &riffdb_storage_api::RetainedMetadataV1,
+    purpose: CheckpointPurpose,
+    completion: Option<&crate::startup::CompleteRegistryValidation>,
+) -> Result<(), StorageError> {
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
     // Transitional routing, not an activation permit. Any V3 control requires
     // strict roots even when the test-only exact-checkpoint path is a no-op.
@@ -562,10 +585,15 @@ pub(crate) fn write_validated_prefix_checkpoint(
         shared.note_checkpoint_count_rows_walked(rows_walked);
         return Ok(());
     }
-    let checkpoint =
-        build_checkpoint_from_snapshot(&transaction, retained, source, &mut rows_walked)?;
+    let checkpoint = build_checkpoint_from_snapshot_with_completion(
+        &transaction,
+        retained,
+        source,
+        &mut rows_walked,
+        completion,
+    )?;
     let receipt = if v3 {
-        plan_checkpoint_receipt(&transaction, &checkpoint)?
+        plan_checkpoint_receipt_with_completion(&transaction, &checkpoint, completion)?
     } else {
         None
     };
@@ -843,6 +871,14 @@ pub(crate) fn plan_checkpoint_receipt(
     transaction: &ReadTransaction,
     checkpoint: &StoredValidatedPrefixCheckpointV2,
 ) -> Result<Option<riffdb_storage_api::AuthoritativeTransactionV3>, StorageError> {
+    plan_checkpoint_receipt_with_completion(transaction, checkpoint, None)
+}
+
+fn plan_checkpoint_receipt_with_completion(
+    transaction: &ReadTransaction,
+    checkpoint: &StoredValidatedPrefixCheckpointV2,
+    completion: Option<&crate::startup::CompleteRegistryValidation>,
+) -> Result<Option<riffdb_storage_api::AuthoritativeTransactionV3>, StorageError> {
     use riffdb_storage_api::{
         AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N, AuthoritativeTransactionBindingV3,
         AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error,
@@ -871,6 +907,12 @@ pub(crate) fn plan_checkpoint_receipt(
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     let mut changes = plan_checkpoint_head_changes(transaction, checkpoint)?;
+    if let Some(completion) = completion
+        && let Some(mutation) = completion.plan_registry_mutation(transaction, checkpoint)?
+    {
+        // RecordRegistry namespace 106 follows heads and precedes checkpoint 109.
+        changes.push(mutation);
+    }
     let encoded =
         encode_validated_prefix_checkpoint_v2(checkpoint).map_err(crate::error::codec_error)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
@@ -895,7 +937,20 @@ pub(crate) fn plan_checkpoint_receipt(
         match decode_validated_prefix_checkpoint_v2(prior.value()) {
             Ok(previous) => {
                 let previous = previous.value().base();
-                if base.previous_checkpoint_hash() != Some(previous.checkpoint_hash())
+                let reset = completion.is_some_and(|proof| {
+                    proof.permits_checkpoint_incarnation_reset(
+                        previous,
+                        base.database_id(),
+                        base.history_incarnation(),
+                    )
+                });
+                if reset {
+                    // Full successor validation replaces the exact stale bytes,
+                    // never carries predecessor-incarnation proof authority.
+                    if base.previous_checkpoint_hash().is_some() {
+                        return Err(storage_error(StorageErrorKind::InvariantViolation));
+                    }
+                } else if base.previous_checkpoint_hash() != Some(previous.checkpoint_hash())
                     || previous.database_id() != base.database_id()
                     || previous.history_incarnation() != base.history_incarnation()
                     || previous.checkpoint_commit_sequence() > base.checkpoint_commit_sequence()
@@ -995,6 +1050,16 @@ pub(crate) fn build_checkpoint_from_snapshot(
     source: CheckpointCountSource,
     rows_walked: &mut u64,
 ) -> Result<StoredValidatedPrefixCheckpointV2, StorageError> {
+    build_checkpoint_from_snapshot_with_completion(transaction, retained, source, rows_walked, None)
+}
+
+fn build_checkpoint_from_snapshot_with_completion(
+    transaction: &ReadTransaction,
+    retained: &riffdb_storage_api::RetainedMetadataV1,
+    source: CheckpointCountSource,
+    rows_walked: &mut u64,
+    completion: Option<&crate::startup::CompleteRegistryValidation>,
+) -> Result<StoredValidatedPrefixCheckpointV2, StorageError> {
     let database_id = retained.database_id();
     let history_incarnation = retained.history_incarnation();
     let registry_digest = current_record_registry_digest();
@@ -1029,7 +1094,7 @@ pub(crate) fn build_checkpoint_from_snapshot(
     let entity_chain_fingerprint = entity_chain_fingerprint_from_entities(transaction)?;
     let retained_snap = retained_snapshot(retained);
 
-    let previous = load_previous_hash(transaction)?;
+    let previous = load_previous_hash(transaction, retained, completion)?;
 
     let retention_watermark_sequence = load_retention_watermark_sequence(transaction)?;
 
@@ -1307,6 +1372,8 @@ fn allocator_snapshot(
 
 fn load_previous_hash(
     transaction: &ReadTransaction,
+    retained: &riffdb_storage_api::RetainedMetadataV1,
+    completion: Option<&crate::startup::CompleteRegistryValidation>,
 ) -> Result<Option<riffdb_storage_api::ValidatedPrefixCheckpointHash>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let Some(value) = meta
@@ -1316,7 +1383,20 @@ fn load_previous_hash(
         return Ok(None);
     };
     match decode_validated_prefix_checkpoint_v2(value.value()) {
-        Ok(item) => Ok(Some(item.into_parts().0.base().checkpoint_hash())),
+        Ok(item) => {
+            let prior = item.value().base();
+            if completion.is_some_and(|proof| {
+                proof.permits_checkpoint_incarnation_reset(
+                    prior,
+                    retained.database_id(),
+                    retained.history_incarnation(),
+                )
+            }) {
+                Ok(None)
+            } else {
+                Ok(Some(prior.checkpoint_hash()))
+            }
+        }
         Err(_) => Ok(None),
     }
 }

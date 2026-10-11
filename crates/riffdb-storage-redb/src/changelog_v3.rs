@@ -4,10 +4,10 @@ use riffdb_storage_api::proto_codec::{
     decode_changelog_transaction_allocator_v3, encode_changelog_transaction_allocator_v3,
 };
 use riffdb_storage_api::{
-    AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1,
-    AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
-    ChangelogAttributionV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
-    ChangelogV3Error, CompositeMutationV1, ReplicationAuthorityClassV1,
+    AuthoritativeMutationAccumulatorV3, AuthoritativeNamespaceV1, AuthoritativeStateCatalogV1,
+    AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
+    ChangelogTransactionAllocator, ChangelogTransactionSequence, ChangelogV3Error,
+    CompositeMutationV1, ReplicationAuthorityClassV1,
 };
 use riffdb_types::DualFrontier;
 use sha2::{Digest, Sha256};
@@ -98,20 +98,16 @@ pub(crate) fn receipt_from_journal_for_catalog(
         JournalFrameKind::Command => ChangelogAttributionV3::JournaledApplicationGroup,
         JournalFrameKind::ServiceAudit => ChangelogAttributionV3::JournaledServiceAudit,
         JournalFrameKind::RetentionPrune => ChangelogAttributionV3::RetentionPrune,
+        JournalFrameKind::SourceReclamation => ChangelogAttributionV3::HistoryReclamation,
     };
-    receipt_from_sources(
-        binding,
-        source,
-        catalog,
-        frame.mutations().iter().map(|mutation| {
-            Ok((
-                mutation.table(),
-                mutation.key(),
-                mutation.expected_hash(),
-                mutation.value(),
-            ))
-        }),
-    )
+    receipt_from_sources(binding, source, catalog, frame.mutations(), |mutation| {
+        Ok((
+            mutation.table(),
+            mutation.key(),
+            mutation.expected_hash(),
+            mutation.value(),
+        ))
+    })
 }
 
 /// Same receipt fold for the live checkpoint's retained validated mutations.
@@ -123,34 +119,28 @@ pub(crate) fn receipt_from_validated_mutations_for_catalog(
     mutations: &[CompositeMutationV1],
     catalog: [u8; 32],
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
-    receipt_from_sources(
-        binding,
-        source,
-        catalog,
-        mutations.iter().map(|mutation| {
-            // Invert the existing exhaustive journal-to-composite mapping instead
-            // of maintaining a second physical table inventory.
-            let table = JournalTable::ALL
-                .into_iter()
-                .find(|table| table.composite() == mutation.table())
-                .ok_or(ChangelogV3Error::InvalidNamespace)?;
-            Ok((
-                table,
-                mutation.key(),
-                mutation.expected_hash(),
-                mutation.value(),
-            ))
-        }),
-    )
+    receipt_from_sources(binding, source, catalog, mutations, |mutation| {
+        let table = JournalTable::ALL
+            .into_iter()
+            .find(|table| table.composite() == mutation.table())
+            .ok_or(ChangelogV3Error::InvalidNamespace)?;
+        Ok((
+            table,
+            mutation.key(),
+            mutation.expected_hash(),
+            mutation.value(),
+        ))
+    })
 }
 
 type MutationSource<'a> = (JournalTable, &'a [u8], Option<[u8; 32]>, Option<&'a [u8]>);
 
-fn receipt_from_sources<'a>(
+fn receipt_from_sources<'a, T>(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,
     catalog: [u8; 32],
-    mutations: impl IntoIterator<Item = Result<MutationSource<'a>, ChangelogV3Error>>,
+    mutations: &'a [T],
+    get: impl Fn(&'a T) -> Result<MutationSource<'a>, ChangelogV3Error>,
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
     if binding.predecessor.is_none()
         || !matches!(
@@ -158,14 +148,14 @@ fn receipt_from_sources<'a>(
             ChangelogAttributionV3::JournaledApplicationGroup
                 | ChangelogAttributionV3::JournaledServiceAudit
                 | ChangelogAttributionV3::RetentionPrune
+                | ChangelogAttributionV3::HistoryReclamation
         )
     {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
     let mut allocator_seen = false;
-    let mut changes = AuthoritativeMutationAccumulatorV3::default();
     for mutation in mutations {
-        let (table, key, expected_hash, value) = mutation?;
+        let (table, key, expected_hash, value) = get(mutation)?;
         let namespace = AuthoritativeStateCatalogV1
             .lookup(table.label(), key)
             .ok_or(ChangelogV3Error::InvalidNamespace)?;
@@ -179,24 +169,30 @@ fn receipt_from_sources<'a>(
             }
             continue;
         }
+        if source == ChangelogAttributionV3::HistoryReclamation {
+            return Err(ChangelogV3Error::InvalidNamespace);
+        }
         if namespace.class() != ReplicationAuthorityClassV1::ReplicatedAuthoritative {
             // The closed journal table set has no derived projection payloads.
             // Its only V3 control mutation is the checked allocator above.
             return Err(ChangelogV3Error::InvalidNamespace);
         }
-        changes.record(match value {
-            Some(value) => AuthoritativeMutationV3::put(namespace, key, expected_hash, value)?,
-            None => AuthoritativeMutationV3::delete(
-                namespace,
-                key,
-                expected_hash.ok_or(ChangelogV3Error::InvalidEncoding)?,
-            )?,
-        })?;
     }
     if !allocator_seen {
         return Err(ChangelogV3Error::InvalidEncoding);
     }
-    AuthoritativeTransactionV3::new_for_catalog(binding, source, changes.finish()?, catalog)
+    let changes =
+        AuthoritativeMutationAccumulatorV3::fold_borrowed_indexed_v1(mutations.len(), |index| {
+            let (table, key, expected, value) = get(&mutations[index])?;
+            let namespace = AuthoritativeStateCatalogV1
+                .lookup(table.label(), key)
+                .ok_or(ChangelogV3Error::InvalidNamespace)?;
+            Ok(
+                (namespace != AuthoritativeNamespaceV1::NextChangelogTransaction)
+                    .then_some((namespace, key, expected, value)),
+            )
+        })?;
+    AuthoritativeTransactionV3::new_for_catalog(binding, source, changes, catalog)
 }
 
 // Frozen V1 fixture entry points; production always passes its checked lineage.

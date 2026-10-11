@@ -16,11 +16,37 @@ fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
+/// One decoded direct bundle for one complete structural page. Never retain
+/// independent mutation overlays or resolved migration plans across row checks.
+/// The caller creates this only after pin continuity validation and drops it
+/// before returning the page, so it cannot outlive or cross that snapshot.
+#[derive(Default)]
+pub(crate) struct CatalogImageCache {
+    bundle: Option<ValidatedContractBundle>,
+    #[cfg(test)]
+    loads: u64,
+}
+
+impl CatalogImageCache {
+    #[cfg(test)]
+    pub(crate) const fn loads(&self) -> u64 {
+        self.loads
+    }
+}
+
+pub(crate) fn validate_catalog_images_cached<'a>(
+    transaction: &redb::ReadTransaction,
+    commands: impl IntoIterator<Item = &'a StoredCommandCapsuleV2>,
+    cache: &mut CatalogImageCache,
+) -> Result<(), StorageError> {
+    validate_catalog_sequence(CatalogRead::Retained(transaction), commands, None, cache)
+}
+
 pub(crate) fn validate_catalog_images<'a>(
     transaction: &redb::ReadTransaction,
     commands: impl IntoIterator<Item = &'a StoredCommandCapsuleV2>,
 ) -> Result<(), StorageError> {
-    validate_catalog_sequence(CatalogRead::Retained(transaction), commands, None)
+    validate_catalog_images_cached(transaction, commands, &mut CatalogImageCache::default())
 }
 
 pub(super) fn validate_received_catalog_images<'a>(
@@ -32,6 +58,7 @@ pub(super) fn validate_received_catalog_images<'a>(
         CatalogRead::Received(transaction, tables),
         commands,
         Some((transaction, tables)),
+        &mut CatalogImageCache::default(),
     )
 }
 
@@ -39,11 +66,12 @@ fn validate_catalog_sequence<'a>(
     repository: CatalogRead<'_>,
     commands: impl IntoIterator<Item = &'a StoredCommandCapsuleV2>,
     physical: super::predecessor::PhysicalPrior<'_>,
+    cache: &mut CatalogImageCache,
 ) -> Result<(), StorageError> {
     let mut prior = super::predecessor::PriorImages::new();
     // Keep one direct bundle and at most one bounded resolved lineage. Load
     // the latter only when raw writer and executing schema bindings differ.
-    let mut cached: Option<ValidatedContractBundle> = None;
+    let cached = &mut cache.bundle;
     let mut resolved: Option<riffdb_catalog::ResolvedExecutablePlan> = None;
     for command in commands {
         let Some(prefix) = command.prefix_evidence() else {
@@ -65,7 +93,11 @@ fn validate_catalog_sequence<'a>(
             {
                 return Err(corrupt());
             }
-            cached = Some(bundle);
+            *cached = Some(bundle);
+            #[cfg(test)]
+            {
+                cache.loads = cache.loads.saturating_add(1);
+            }
         }
         let bundle = cached.as_ref().ok_or_else(corrupt)?;
         riffdb_catalog::validate_command_prefix_index_images_v1(bundle, command)

@@ -45,26 +45,44 @@ impl Barrier {
         Ok(Self::try_validation_capture(shared)?.map(|(root, _)| root))
     }
 
+    #[cfg(test)]
     pub(super) fn try_validation_capture(
         shared: &Arc<SharedRedb>,
     ) -> Result<Option<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError> {
+        Ok(match Self::try_validation_capture_observed(shared)? {
+            AdmissionAttempt::Admitted(captured) => Some(captured),
+            AdmissionAttempt::Yielded(_) => None,
+        })
+    }
+
+    pub(super) fn try_validation_capture_observed(
+        shared: &Arc<SharedRedb>,
+    ) -> Result<AdmissionAttempt<(Arc<crate::checkpoint_root::CheckpointRoot>, u64)>, StorageError>
+    {
         let Some(_lease) = shared.mutation_gate.acquire_source()? else {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(AdmissionYield::BusyWriter));
         };
         if shared.write_fenced.load(Ordering::Acquire) || shared.is_follower_mode() {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         if shared.source_continuation_epoch.load(Ordering::Acquire) == u64::MAX {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        if prepare_online_source_root(shared)?.is_some() {
-            return Ok(None);
+        if let Some(reason) = prepare_online_source_root(shared)? {
+            return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
         if epoch == u64::MAX {
-            return Ok(None);
+            return Ok(AdmissionAttempt::Yielded(
+                AdmissionYield::ChangedQualification,
+            ));
         }
-        Ok(Some((shared.capture_checkpoint_root()?, epoch)))
+        Ok(AdmissionAttempt::Admitted((
+            shared.capture_checkpoint_root()?,
+            epoch,
+        )))
     }
     pub(super) fn acquire(shared: Arc<SharedRedb>) -> Result<Self, StorageError> {
         let lease = shared.mutation_gate.acquire()?;
@@ -154,6 +172,7 @@ impl Barrier {
             return Ok(AdmissionAttempt::Yielded(reason));
         }
         let epoch = shared.source_continuation_epoch.load(Ordering::Acquire);
+        walk.release_completed_pin();
         let root = shared.capture_checkpoint_root()?;
         if walk.is_complete() && !walk.continue_on(Arc::clone(&root), epoch)? {
             return Ok(AdmissionAttempt::Yielded(
@@ -230,6 +249,157 @@ impl Barrier {
         }))
     }
 
+    /// Closed acknowledgement owner. This consumes the admitted barrier and
+    /// exposes no raw transaction or caller-selected mutation inventory.
+    pub(super) fn acknowledge_follower(
+        self,
+        hold: Hold,
+        expected_before: &[u8],
+    ) -> Result<Option<AcknowledgementPublication>, Refusal> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable).into());
+        }
+        if self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire)
+            >= u64::MAX - 1
+        {
+            return Err(storage_error(StorageErrorKind::SequenceExhausted).into());
+        }
+        if !self.paged_validation || hold.kind() != Kind::FollowerAcknowledgement {
+            return Err(Refusal::InvalidPosition);
+        }
+        drop(crate::changelog_v3_cursor::open(
+            &RedbReadAccess::Durable(Arc::clone(&self.root)),
+            hold.lineage(),
+            hold.fence(),
+        )?);
+
+        let before = self.root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let row = before
+            .get(hold.storage_key().as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or(Refusal::InvalidPosition)?;
+        if row.value() != expected_before {
+            return Ok(None);
+        }
+        let state = *decode_replication_source_hold(row.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let prior = match state {
+            State::Legacy(prior) => prior,
+            State::Registered(policy) if policy.phase() == Phase::Attached => policy.hold(),
+            State::Registered(_) => return Err(Refusal::InvalidPosition),
+        };
+        if prior.id() != hold.id() || prior.lineage() != hold.lineage() {
+            return Err(Refusal::InvalidPosition);
+        }
+        if prior == hold {
+            return Ok(Some(AcknowledgementPublication { successor: None }));
+        }
+        if prior.fence().sequence() >= hold.fence().sequence() {
+            return Err(Refusal::InvalidPosition);
+        }
+        let encoded = match state {
+            State::Legacy(_) => encode_replication_source_hold_v1(hold),
+            State::Registered(policy) => encode_replication_source_hold_v2(
+                registered_ack::advance(policy, hold, self.observation.history)
+                    .map_err(value_error)?,
+            ),
+        }
+        .map_err(crate::error::codec_error)?;
+
+        let validated = Arc::clone(&self.root);
+        let predecessor = self.observation.history;
+        drop(row);
+        drop(before);
+        let write = self.begin()?;
+
+        // `begin` has checked the transaction's exact predecessor roots. Only
+        // this owner writes: one hold, one canonical receipt and its roots.
+        let (receipt, successor) = prepare_control_receipt(
+            write.transaction()?,
+            predecessor,
+            Source::ReplicationSourceHold,
+        )?;
+
+        {
+            let mut table = write
+                .transaction()?
+                .open_table(SOURCE_HOLDS)
+                .map_err(table_error)?;
+            let row = table
+                .get(hold.storage_key().as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or(Refusal::InvalidPosition)?;
+            if row.value() != expected_before {
+                return Ok(None);
+            }
+            drop(row);
+            table
+                .insert(hold.storage_key().as_slice(), encoded.as_bytes())
+                .map_err(precommit_storage_error)?;
+        }
+        crash_edge("hold-staged");
+        receipt.stage(write.transaction()?)?;
+
+        // Compare the entire bounded hold set with its admitted pin. No
+        // registration, removal, generation or unrelated hold can ride along.
+        let before = validated.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        let after = write
+            .transaction()?
+            .open_table(SOURCE_HOLDS)
+            .map_err(table_error)?;
+        if before.len().map_err(precommit_storage_error)?
+            != after.len().map_err(precommit_storage_error)?
+            || after.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData).into());
+        }
+        for entry in before.iter().map_err(precommit_storage_error)? {
+            let (key, old) = entry.map_err(precommit_storage_error)?;
+            let actual = after
+                .get(key.value())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let expected = if key.value() == hold.storage_key() {
+                encoded.as_bytes()
+            } else {
+                old.value()
+            };
+            if actual.value() != expected {
+                return Err(storage_error(StorageErrorKind::CorruptData).into());
+            }
+        }
+        let receipts = write
+            .transaction()?
+            .open_table(HISTORY)
+            .map_err(table_error)?;
+        crate::changelog_v3_roots::validate_source_holds(&after, successor, &receipts)?;
+        drop(receipts);
+        drop(after);
+        let actual =
+            crate::changelog_v3_roots::read_checkpoint_roots_for_write(write.transaction()?)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if actual != successor {
+            return Err(storage_error(StorageErrorKind::CorruptData).into());
+        }
+        drop(before);
+        drop(validated);
+        crash_edge("hold-receipted");
+        let (_, root, qualification) = write.commit_published(None)?;
+        crash_edge("hold-committed");
+        Ok(Some(AcknowledgementPublication {
+            successor: Some(AcknowledgementSuccessor {
+                predecessor,
+                successor,
+                root,
+                qualification,
+            }),
+        }))
+    }
+
     pub(super) fn observation(&self) -> Observation {
         self.observation
     }
@@ -290,14 +460,40 @@ fn validation_drain_yield(shared: &SharedRedb) -> Result<Option<AdmissionYield>,
     // Materialization publication precedes off-gate extent sealing. Starting
     // a walk during that rename window can select a locator whose durable
     // filename is still being published. Yield rather than join under gate.
-    let sealer = shared
-        .journal_sealer
-        .lock()
-        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    Ok((!sealer
-        .as_ref()
-        .is_none_or(std::thread::JoinHandle::is_finished))
-    .then_some(AdmissionYield::CheckpointPublication))
+    Ok(shared
+        .journal_seal_publication_pending()?
+        .then_some(AdmissionYield::CheckpointPublication))
+}
+
+/// Constructed only after the closed acknowledgement owner durably commits
+/// its complete checked mutation set. Other control writes cannot mint this.
+struct AcknowledgementSuccessor {
+    predecessor: History,
+    successor: History,
+    root: Arc<crate::checkpoint_root::CheckpointRoot>,
+    qualification: u64,
+}
+pub(crate) struct AcknowledgementPublication {
+    successor: Option<AcknowledgementSuccessor>,
+}
+impl AcknowledgementPublication {
+    pub(crate) fn successor(
+        &self,
+    ) -> Option<(
+        History,
+        History,
+        &Arc<crate::checkpoint_root::CheckpointRoot>,
+        u64,
+    )> {
+        self.successor.as_ref().map(|checked| {
+            (
+                checked.predecessor,
+                checked.successor,
+                &checked.root,
+                checked.qualification,
+            )
+        })
+    }
 }
 
 pub(crate) struct ControlWrite {
@@ -442,6 +638,14 @@ mod tests {
     #[test]
     fn admission_observations_preserve_busy_writer_state_and_reset_per_step() {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        // Validate the fixed source FIFO at capture, before a certificate can
+        // bypass needless admission when no independent progress exists.
+        let mut first = ports.replication_source_control();
+        let lease = ports.shared.mutation_gate.acquire().unwrap();
+        assert_eq!(first.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(first.validation_phases()[3], 1);
+        assert_eq!(first.admission_yields(), [1, 0, 0, 0, 0]);
+        drop(lease);
         let mut control = ports.replication_source_control();
         for _ in 0..32 {
             control.reclaim_history_online().unwrap();
@@ -457,8 +661,8 @@ mod tests {
         let epoch = ports.shared.durable_commit_epoch();
         let lease = ports.shared.mutation_gate.acquire().unwrap();
         assert_eq!(control.reclaim_history_online().unwrap().0, 0);
-        assert_eq!(control.validation_phases()[3], 1);
-        assert_eq!(control.admission_yields(), [1, 0, 0, 0, 0]);
+        assert_eq!(control.validation_phases()[3], 0);
+        assert_eq!(control.admission_yields(), [0; 5]);
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         assert!(ports.shared.mutation_gate.is_held());
         drop(lease);
@@ -493,13 +697,30 @@ mod tests {
         let proof = walk.complete().unwrap();
         let (entered, entry) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
+        let finished = Arc::new(crate::store::CheckpointCompletion::default());
+        let completion = crate::store::CheckpointPublisher(Arc::clone(&finished));
         let worker = std::thread::spawn(move || {
             entered.send(()).unwrap();
             released.recv().unwrap();
+            completion.publish(Ok(()));
         });
-        *ports.shared.journal_sealer.lock().unwrap() = Some(worker);
+        *ports.shared.journal_sealer.lock().unwrap() = Some(crate::store::JournalSealer {
+            handle: worker,
+            publication_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finished,
+        });
         entry.recv().unwrap();
         let epoch = ports.shared.durable_commit_epoch();
+        let mut initial = ports.replication_source_control();
+        assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(initial.admission_yields(), [0, 0, 1, 0, 0]);
+        assert!(!initial.receipt_validation_pending());
+        assert!(
+            ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap()
+        );
         assert_eq!(
             validation_drain_yield(&ports.shared).unwrap(),
             Some(AdmissionYield::CheckpointPublication)
@@ -518,6 +739,15 @@ mod tests {
         assert_eq!(ports.shared.durable_commit_epoch(), epoch);
         release.send(()).unwrap();
         ports.shared.join_journal_sealer();
+        assert!(
+            !ports
+                .shared
+                .source_checkpoint_publication_pending()
+                .unwrap()
+        );
+        assert_eq!(initial.reclaim_history_online().unwrap().0, 0);
+        assert_eq!(initial.admission_yields(), [0; 5]);
+        assert!(initial.receipt_validation_pending());
         assert_eq!(validation_drain_yield(&ports.shared).unwrap(), None);
         assert!(
             Barrier::try_validation_root(&ports.shared)
@@ -525,6 +755,47 @@ mod tests {
                 .is_some()
         );
         assert!(!ports.shared.mutation_gate.is_held());
+    }
+
+    // req: STO-030, STO-031, STO-032, REC-001
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn validated_source_admission_uses_publication_without_waiting_for_spare() {
+        use crate::hooks::RedbCheckpointTestPoint as Point;
+        let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+        let (_scope, ports, states) =
+            crate::changelog_v3_control_tests::fixture_with_controller(controller);
+        let mut walk = crate::changelog_v3_retained_validation::RetainedHistoryValidation::new(
+            Barrier::try_validation_root(&ports.shared)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        while !walk
+            .advance(riffdb_storage_api::EvidencePageLimit::new(1).unwrap())
+            .unwrap()
+        {}
+        let proof = walk.complete().unwrap();
+        schedule.arm(Point::BeforeSparePreparation);
+        ports
+            .shared
+            .start_journal_sealer(crate::journal::JournalFileHeader::new(
+                states[0].lineage().database_id(),
+                None,
+                [0; 32],
+            ))
+            .unwrap();
+        schedule.wait(Point::BeforeSparePreparation);
+        let epoch = ports.shared.durable_commit_epoch();
+        let drained = drained_for_validation(&ports.shared);
+        let admitted = Barrier::try_from_validated(Arc::clone(&ports.shared), proof);
+        let epoch_after = ports.shared.durable_commit_epoch();
+        schedule.release(Point::BeforeSparePreparation);
+        ports.shared.join_journal_sealer();
+        assert!(drained.unwrap());
+        assert!(admitted.unwrap().is_some());
+        assert_eq!(epoch_after, epoch);
     }
 
     // req: STO-030, STO-031, STO-032, REC-001

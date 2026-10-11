@@ -85,9 +85,63 @@ generated artifact. A release bundle is rejected if the manifest, upgrade
 table, fixture digest, export posture, downgrade posture, or known limitations
 are absent or stale.
 
-The current pre-alpha identity is alpha epoch `1`, writer `1`. Downgrade is
+The current pre-alpha identity is alpha epoch `1`, writer `4`. Downgrade is
 unsupported. A format marker from another epoch or writer is not evidence that
 its bytes are readable merely because a decoder accepts some records.
+
+ADR-0278 retains explicit backup-bound offline upgrades from writers 0, 1,
+2 and 3. Writers 2 and 3 are accepted only with their exact frozen registry and
+compatibility inventory; an epoch or writer number alone grants no transition. Use the
+existing `riffdb storage upgrade` operation with a verified matching backup,
+downtime and free space of at least twice the source size. The native upgrade
+checks this floor before any mutation on initial admission and every retry. It
+counts logical lengths of the database and its retained journal, extent, marker,
+receipt and lifecycle working files, excluding the immutable backup and unrelated
+siblings. Directory discovery is limited to 16,384 entries; missing, ambiguous,
+nonregular or unreadable source artifacts and arithmetic overflow refuse.
+An insufficient-space refusal requires provisioning space and retrying with the
+same immutable backup. Availability is observed for the invoking principal on
+the target filesystem; it reserves no space, and later I/O failures still use
+existing fenced recovery. The backup remains immutable. Ordinary startup and older binaries refuse incompatible markers
+before opening storage; downgrade remains unsupported.
+
+A predecessor physical backup remains valid as immutable upgrade evidence,
+but current-binary physical restore requires its declared format range to
+include writer 4. Upgrade the source and create a new verified backup, or use
+the matching predecessor binary for restoration before its supported offline
+upgrade. A successor restore refuses an incompatible backup before creating
+or changing the target. It never promotes or rewrites the frozen backup.
+
+The writer-3 registry adds private `StoredRecordRegistryV3` metadata with
+Pending or Completed state at the existing metadata key. Upgrade reconciles
+the acknowledged journal and installs Pending through a durable migration
+receipt. It grants no readiness shortcut. Only complete native structural and
+catalog-semantic validation can publish a Completed binding for the exact
+database, history incarnation and current registry, atomically with its
+validated-prefix completion receipt. Legacy V2 registry bytes remain readable
+and contain no independent completion witness.
+
+Writer 4 adds logical journal frame V5 and its closed SourceReclamation kind
+under ADR-0278. V2, V3 and V4 remain readable with their frozen semantics;
+only V5 may encode the new kind. The physical extent format, canonical V3
+receipts and application interfaces are unchanged. Online Standard-profile
+source reclamation publishes a bounded source-prefix cut without first draining
+the active suffix. The cut preserves application and administration frontiers
+and remains subject to complete validation, all holds and an independent durable
+checkpoint. Replay validates its actual preimages and applies it atomically.
+
+The native writer admits frame ownership against the compiled 64-MiB recovery
+ceiling before publication. Its conservative bound includes nested terminal
+receipt reconstruction and can refuse work below the 16-MiB wire ceiling with
+the existing typed limit failure. Recovery checks the same bound before decoding
+recorded frames or applying mutations. There is no memory-limit override.
+
+A writer-3 source requires a newly verified matching immutable backup for its
+own upgrade. A completed older upgrade receipt can establish only that exact
+previous transition; it never substitutes for the new backup or permits a
+marker-only override. Upgrade preserves acknowledged commands, outcomes and
+provenance. Writer-3 binaries refuse the successor marker before opening the
+engine or replaying V5. Downgrade remains unsupported.
 
 Capability records follow a least-successor rule: ordinary grants remain V1,
 migration authority uses migration-only V2, installation authority uses V3,
@@ -148,7 +202,8 @@ Clean-close compatibility is exact rather than best effort:
 Only an unchanged, completely and gracefully stopped lifecycle unit can reuse a
 matching record. A dirty startup recovers the journal suffix and validates the
 bounded roots without a population walk when a validated-prefix checkpoint
-loads, and otherwise performs complete validation; see [Startup
+loads or an exact Completed registry binding is present, and otherwise
+performs complete validation; see [Startup
 Integrity](operations/STARTUP-INTEGRITY.md). The offline storage scrub is the
 authorized maintenance operation described there, and its receipt is the
 version-4 maintenance receipt.
@@ -387,7 +442,7 @@ riffdb storage preflight --database-path "$HOME/.local/share/riffdb/riffdb.redb"
 ```
 
 The supported alpha-1 predecessor edges are offline, backup-required,
-one-way transitions from writer 0 or writer 1 to writer 2:
+one-way transitions from writers 0, 1, 2 or 3 to writer 4:
 
 ```bash
 riffdb storage upgrade \

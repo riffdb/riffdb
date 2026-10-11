@@ -7,6 +7,7 @@ Artifacts, credentials and diagnostic logs remain in the private supplied root.
 """
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -19,9 +20,16 @@ import sys
 import threading
 import time
 
+from lib.ticketdesk_lifecycle_transient_usage import run_transient_observed
+from lib.ticketdesk_lifecycle_persistent_usage import ObservedProcess
 from lib.ticketdesk_lifecycle_inventory import InventoryError, InventoryMonitor
 from lib.ticketdesk_lifecycle_faults import FaultError, LocalArchiveOutage
 from lib.ticketdesk_lifecycle_observations import ObservationError, health_head, projection_backlog
+from lib.ticketdesk_lifecycle_provider_budget import ProviderBudgetError, ProviderLog
+from lib.ticketdesk_lifecycle_source_bytes import SourceBytesLog
+from lib.ticketdesk_lifecycle_logical_bytes import LogicalBytesLog
+from lib.ticketdesk_lifecycle_physical_bytes import PhysicalBytesLog
+from lib.ticketdesk_lifecycle_native_observer import NativeObserverProcess, NativeObservationError
 from lib.ticketdesk_lifecycle_resources import (
     MAX_PREPARATION_SAMPLE_SECONDS, ResourceError, PreparationMemorySamples,
 )
@@ -90,24 +98,41 @@ def drain_archive(root, stage, base, server, observer=None, maximum=900):
 def invoke(root, name, arguments, *, environment=None, timeout=60):
     with (root / (name + ".stdout")).open("xb") as output, \
             (root / (name + ".stderr")).open("xb") as errors:
-        result = subprocess.run(arguments, stdout=output, stderr=errors,
-                                env=environment, timeout=timeout, check=False)
-    require(result.returncode == 0, name)
+        status = run_transient_observed(arguments, output=output, errors=errors,
+            environment=environment, timeout=timeout,
+            observation=root / (name + ".process-usage.json"))
+    require(status == 0, name)
 
 
-def pump_ready(server, root, ready):
+MAX_SERVER_OUTPUT_BYTES = 16 * 1024**2
+MAX_WRITER_CENSUS_LINE_BYTES = 128 * 1024
+WRITER_CENSUS_PREFIX = b"riffdb-writer-batch-stages-v1\t"
+
+
+def pump_ready(server, root, ready, failed=None):
+    """Retain bounded shutdown diagnostics and report every incomplete capture."""
+    failed = threading.Event() if failed is None else failed
     sent = False
-    with (root / "server.stdout").open("xb") as output:
-        while line := server.stdout.readline(4097):
-            output.write(line)
-            output.flush()
-            if not sent and line.startswith(b"riffdbd-ready-v1"):
-                ready.put_nowait(True)
-                sent = True
-            if len(line) > 4096:
-                if not sent:
-                    ready.put_nowait(False)
-                return
+    total = 0
+    try:
+        with (root / "server.stdout").open("xb") as output:
+            while line := server.stdout.readline(4097):
+                if len(line) > 4096:
+                    require(sent and line.startswith(WRITER_CENSUS_PREFIX), "server_output_line")
+                    if not line.endswith(b"\n"):
+                        line += server.stdout.readline(MAX_WRITER_CENSUS_LINE_BYTES + 1 - len(line))
+                    require(len(line) <= MAX_WRITER_CENSUS_LINE_BYTES, "server_output_line")
+                require(line.endswith(b"\n"), "server_output_incomplete")
+                total += len(line)
+                require(total <= MAX_SERVER_OUTPUT_BYTES, "server_output_bound")
+                output.write(line)
+                output.flush()
+                if not sent and line.startswith(b"riffdbd-ready-v1"):
+                    ready.put_nowait(True)
+                    sent = True
+            require(sent, "server_output_readiness")
+    except (OSError, ValueError, SmokeError):
+        failed.set()
         if not sent:
             ready.put_nowait(False)
 
@@ -139,13 +164,14 @@ def pump_observer(observer, root, ready, latest):
             ready.put_nowait(False)
 
 
-def interrupted_update(root, kind, worker, environment, server, pump, server_binary, config):
+def interrupted_update(root, kind, worker, environment, server, pump, server_binary, config, server_output_failed):
     """Interrupt an admitted generated client and resolve its original update."""
     write(root, "load.recover", kind + " 1\n")
     environment = dict(environment, RIFFDB_LIFECYCLE_LOAD_CONTROL=str(root))
     messages = queue.Queue(maxsize=256)
     with (root / "recovery.stdout").open("xb") as output, (root / "recovery.stderr").open("xb") as errors:
-        process = subprocess.Popen([worker, "recovery-smoke"], env=environment,
+        process = ObservedProcess([worker, "recovery-smoke"], env=environment,
+                                   observation=root / "recovery.process-usage.json",
                                    stdout=subprocess.PIPE, stderr=errors)
         reader = threading.Thread(target=pump_load, args=(process, output, messages), daemon=True)
         reader.start()
@@ -160,7 +186,8 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
             server.wait(timeout=30)
             server.stdin.close()
             pump.join(timeout=5)
-            require(not pump.is_alive() and server.returncode == (-9 if kind == "process_kill" else 0),
+            require(not pump.is_alive() and not server_output_failed.is_set()
+                    and server.returncode == (-9 if kind == "process_kill" else 0),
                     "recovery_shutdown")
             write(root, "recovery.start", "start\n")
             failed = messages.get(timeout=15)
@@ -170,11 +197,16 @@ def interrupted_update(root, kind, worker, environment, server, pump, server_bin
             restarted.mkdir(mode=0o700)
             ready = queue.Queue(maxsize=1)
             with (restarted / "server.stderr").open("xb") as errors:
-                server = subprocess.Popen([server_binary, "--config", str(config)],
+                server = ObservedProcess([server_binary, "--config", str(config)],
+                    observation=restarted / "server.process-usage.json",
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
-            pump = threading.Thread(target=pump_ready, args=(server, restarted, ready), daemon=True)
+            pump = threading.Thread(target=pump_ready, args=(server, restarted, ready, server_output_failed), daemon=True)
             pump.start()
             require(ready.get(timeout=30) is True, "recovery_readiness")
+            # The native initializing route is Health-only. Resume the same
+            # input only after actual activation, retaining the prior failed
+            # transport submission and the original interruption deadline.
+            write(root, "recovery.resume", "ready\n")
             retries = 1
             while True:
                 require(time.monotonic() - started < 60 and process.poll() in (None, 0),
@@ -453,7 +485,7 @@ class ProjectionSampler:
                         self.coverage[elapsed_ns // 300000000000] += 1
                     index += 1
                     self.stopped.wait(5)
-        except (SmokeError, ObservationError, OSError, ValueError, TypeError, KeyError,
+        except (SmokeError, NativeObservationError, ObservationError, OSError, ValueError, TypeError, KeyError,
                 subprocess.SubprocessError):
             self.errors.put_nowait("projection_sample_failed")
 
@@ -471,8 +503,34 @@ class ProjectionSampler:
         require(all(count > 0 for count in self.coverage), "projection_sample_coverage")
 
 
+
+class NativeProjectionSampler(ProjectionSampler):
+    """Same reserved slot, with a persistent native child instead of query CLI children."""
+
+    def __init__(self, root, worker, environment, identity, duration):
+        require(type(duration) is int and 1 <= duration <= 86400, "projection_sample_bound")
+        self.root, self.identity, self.duration = root, identity, duration
+        self.coverage = [0] * ((duration + 299) // 300)
+        self.stopped = threading.Event()
+        self.errors = queue.Queue(maxsize=1)
+        self.thread = None
+        self.native = NativeObserverProcess(root, [worker, "native-observer"], environment,
+            {"projection_id": identity["projection_id"], "projection_plan_hash": identity["projection_plan_hash"]})
+
+    def sample(self, index, elapsed_ns):
+        value = self.native.sample(elapsed_ns)
+        require(value["index"] == index, "native_sample_continuity")
+        return value
+
+    def stop(self):
+        try:
+            super().stop()
+        finally:
+            self.native.close(failed=not self.errors.empty())
+
+
 def observed_load(root, worker, environment, duration, observer, latest, consumer_outage, *, sink=None,
-                  projection=None, server=None):
+                  projection=None, server=None, collect_source_bytes=False):
     """Monitor child liveness and time a real outage against the offered clock."""
     messages = queue.Queue(maxsize=256)
     oracle = ConsumerOutageOracle()
@@ -483,9 +541,14 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
     recovered_at = None
     pause_finished = False
     memory = None
+    providers = None
+    source_bytes = None
+    logical_bytes = None
+    physical_bytes = None
     deadline = time.monotonic() + duration + 120
     with (root / "load.stdout").open("xb") as output, (root / "load.stderr").open("xb") as errors:
-        process = subprocess.Popen([worker, "probe"], env=environment,
+        process = ObservedProcess([worker, "probe"], env=environment,
+                                   observation=root / "load.process-usage.json",
                                    stdout=subprocess.PIPE, stderr=errors)
         pump = threading.Thread(target=pump_load, args=(process, output, messages), daemon=True)
         pump.start()
@@ -506,10 +569,26 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                         started = time.monotonic()
                         if server is not None:
                             require(observer is not None, "resource_process_inventory")
-                            memory = PreparationMemorySamples(root, {
-                                "controller": os.getpid(), "server": server.pid,
-                                "load": process.pid, "observer": observer.pid}, duration)
+                            owners = {"controller": os.getpid(), "server": server.pid,
+                                      "load": process.pid, "observer": observer.pid}
+                            if isinstance(projection, NativeProjectionSampler):
+                                owners["native_sampler"] = projection.native.process.pid
+                            memory = PreparationMemorySamples(root, owners, duration)
                             memory.__enter__()
+                            providers = ProviderLog(root, duration)
+                            providers.__enter__()
+                            if collect_source_bytes:
+                                require(isinstance(projection, NativeProjectionSampler),
+                                        "source_bytes_sampler")
+                                def incarnation():
+                                    sample = projection.native.samples.last
+                                    return None if sample is None else sample["history_incarnation"]
+                                source_bytes = SourceBytesLog(root, duration, incarnation)
+                                source_bytes.__enter__()
+                                logical_bytes = LogicalBytesLog(root, duration, incarnation)
+                                logical_bytes.__enter__()
+                                physical_bytes = PhysicalBytesLog(root, duration, incarnation)
+                                physical_bytes.__enter__()
                         if projection is not None:
                             projection.start(started)
                 except queue.Empty:
@@ -517,8 +596,16 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                 now = time.monotonic()
                 if memory is not None:
                     memory.poll(int((now - started) * 1000000000))
+                if providers is not None:
+                    providers.poll(int((now - started) * 1000000000))
+                if source_bytes is not None:
+                    source_bytes.poll(int((now - started) * 1000000000))
+                if logical_bytes is not None:
+                    logical_bytes.poll(int((now - started) * 1000000000))
                 if projection is not None:
                     projection.poll()
+                if physical_bytes is not None:
+                    physical_bytes.poll(int((now - started) * 1000000000))
                 if sink is not None and started is not None:
                     sink.poll(started, latest)
                 if not consumer_outage or started is None:
@@ -546,6 +633,18 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
             process.wait(timeout=5)
             pump.join(timeout=5)
             require(process.returncode == 0 and not pump.is_alive(), "load")
+            if providers is not None:
+                summary = providers.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "provider-budget-observation.json", json.dumps(summary, sort_keys=True) + "\n")
+            if source_bytes is not None:
+                summary = source_bytes.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "source-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
+            if logical_bytes is not None:
+                summary = logical_bytes.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "logical-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
+            if physical_bytes is not None:
+                summary = physical_bytes.finish(int((time.monotonic() - started) * 1000000000))
+                write(root, "physical-byte-observation.json", json.dumps(summary, sort_keys=True) + "\n")
             if memory is not None:
                 memory.finish()
             if projection is not None:
@@ -565,7 +664,22 @@ def observed_load(root, worker, environment, duration, observer, latest, consume
                     "start_elapsed_ns": int((paused_at - started) * 1000000000),
                     "paused_events": oracle.first["events_checked"], "drained_events": 2048,
                     "observed_samples": oracle.samples, "live_progress_during_pause": True}))
+        except ResourceError as error:
+            # Preserve the closed original refusal before cleanup can raise a
+            # second error. This record is diagnostic and never qualifies a run.
+            encoded = json.dumps(error.observation(), sort_keys=True) + "\n"
+            require(len(encoded) <= 512, "resource_refusal_bound")
+            write(root, "resource-refusal.json", encoded)
+            raise
         finally:
+            if logical_bytes is not None:
+                logical_bytes.__exit__(None, None, None)
+            if physical_bytes is not None:
+                physical_bytes.__exit__(None, None, None)
+            if source_bytes is not None:
+                source_bytes.__exit__(None, None, None)
+            if providers is not None:
+                providers.__exit__(None, None, None)
             if memory is not None:
                 memory.__exit__(None, None, None)
             if process.poll() is None:
@@ -612,6 +726,46 @@ def other_language_smokes(root, repository, python_native, port):
             "named_read": True, "partition_isolation": True, "caller_fence": True,
             "idempotency": True, "state_unchanged": True, "live_query_snapshot": True},
             language + "_observation")
+
+
+def stop_driver(root, driver):
+    """Keep the existing deadline/refusal; retain the actual failure class."""
+    started = time.monotonic_ns()
+    timed_out = False
+    if driver.poll() is None:
+        driver.terminate()
+    try:
+        driver.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        driver.kill()
+        driver.wait(timeout=5)
+    elapsed = time.monotonic_ns() - started
+    require(type(driver.returncode) is int and -255 <= driver.returncode <= 255
+            and 0 <= elapsed <= 60000000000, "driver_shutdown_observation")
+    write(root, "driver-shutdown.json", json.dumps({
+        "schema": "riffdb.ticketdesk-lifecycle-driver-shutdown/v1",
+        "timed_out": timed_out, "exit_code": driver.returncode,
+        "elapsed_ns": elapsed}, sort_keys=True) + "\n")
+    require(not timed_out and driver.returncode == 0, "driver_shutdown")
+
+
+@contextmanager
+def owned_driver(root, driver):
+    """Always join the child; preserve a primary failure and record cleanup failure."""
+    failed = False
+    try:
+        yield driver
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        try:
+            stop_driver(root, driver)
+        except SmokeError as error:
+            if not failed:
+                raise
+            print("ticketdesk-lifecycle-smoke: cleanup_" + str(error), file=sys.stderr)
 
 
 def typescript_smoke(root, repository, driver_binary, port, python_native=None):
@@ -661,8 +815,9 @@ pool_connections = 1
 streams_per_connection = 4
 ''')
     with (root / "driver.stdout").open("xb") as output, (root / "driver.stderr").open("xb") as errors:
-        driver = subprocess.Popen([str(driver_binary), str(config)], stdout=output, stderr=errors)
-        try:
+        driver = ObservedProcess([str(driver_binary), str(config)],
+            observation=root / "driver.process-usage.json", stdout=output, stderr=errors)
+        with owned_driver(root, driver):
             deadline = time.monotonic() + 30
             while not (root / "application.sock").is_socket() and driver.poll() is None:
                 require(time.monotonic() < deadline, "driver_startup")
@@ -677,16 +832,6 @@ streams_per_connection = 4
                 "state_unchanged": True, "live_query_snapshot": True}, "typescript_observation")
             if python_native:
                 other_language_smokes(root, repository, python_native, port)
-        finally:
-            if driver.poll() is None:
-                driver.terminate()
-            try:
-                driver.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                driver.kill()
-                driver.wait(timeout=5)
-                raise SmokeError("driver_shutdown")
-            require(driver.returncode == 0, "driver_shutdown")
 
 
 def validate_projection(projection, projection_id, frontier, updates, plan_hash):
@@ -717,6 +862,8 @@ def main():
     parser.add_argument("--server", required=True, type=Path)
     parser.add_argument("--cli", required=True, type=Path)
     parser.add_argument("--worker", required=True, type=Path)
+    parser.add_argument("--prepare-campaign-control", action="store_true",
+                        help="prepare fresh campaign controls; the controller must start its original observer before seeding")
     parser.add_argument("--prepare-successor", action="store_true", help="generate the exact-parent V2 closure in the private root")
     parser.add_argument("--additive-deploy", action="store_true", help="deploy exact-parent V2 before exercising retained V1 bindings")
     parser.add_argument("--observe", action="store_true", help="register consumer and live query before seeding")
@@ -734,10 +881,21 @@ def main():
                         help="time a five-minute consumer pause in an observed preparation of 900 or 1500 seconds")
     parser.add_argument("--sink-outage", action="store_true",
                         help="deny archive access for five minutes under an observed load of 900 or 1500 seconds")
+    parser.add_argument("--native-observations", action="store_true",
+                        help="use one persistent Rust health/statistics/projection sampler during population preparation")
     parser.add_argument("--driver", type=Path, help="also exercise retained TypeScript bindings through native Rust driver")
     parser.add_argument("--population-probe-seconds", type=int, default=0,
                         help="fresh 65536-ticket load preparation; never a campaign receipt")
     args = parser.parse_args()
+    require(not args.prepare_campaign_control or args.online_retention and not any((
+        args.observe, args.archive_witness, args.population_probe_seconds, args.additive_deploy,
+        args.prepare_successor, args.restart_recovery, args.capability_rotation, args.driver,
+        args.python_native, args.consumer_outage, args.sink_outage, args.native_observations)),
+        "campaign_population_mode")
+    lifetime = 100800 if args.prepare_campaign_control else 3600
+    archive_quota = 8 * 1024**3 if args.prepare_campaign_control else 1024**3
+    require(not args.native_observations or args.population_probe_seconds and args.observe,
+            "native_sample_mode")
     outage_mode = args.consumer_outage or args.sink_outage
     outage_durations = (900, MAX_PREPARATION_SAMPLE_SECONDS)
     require(not (args.consumer_outage and args.sink_outage), "separate_outage_preparations")
@@ -751,7 +909,8 @@ def main():
                                              or args.prepare_successor or args.driver), "restart_recovery_mode")
     require(not args.archive_witness or not (args.additive_deploy or args.restart_recovery or args.prepare_successor),
             "archive_witness_mode")
-    require(not args.online_retention or args.population_probe_seconds and args.observe or args.archive_witness,
+    require(not args.online_retention or args.population_probe_seconds and args.observe
+            or args.archive_witness or args.prepare_campaign_control,
             "retention_mode")
     require(not args.capability_rotation or args.archive_witness and not
             (args.population_probe_seconds or args.observe or args.additive_deploy or args.restart_recovery
@@ -812,7 +971,7 @@ environment = "development"
 [databases.default.outbox]
 kind = "durable_local"
 directory = {quote("archive")}
-quota_encoded_bytes = 1073741824
+quota_encoded_bytes = {archive_quota}
 {retention_document}
 ''')
     client = write(root, "client.toml", f'''[client]
@@ -830,13 +989,13 @@ tls_server_name = "127.0.0.1"
             and type(descriptor.get("projection_id")) is int and descriptor["projection_id"] > 0, "descriptor")
     bootstrap = write(root, "bootstrap.json", json.dumps({
         "principal_id": "lifecycle-smoke-operator", "actor_kind": "human",
-        "requested_lifetime_seconds": 3600, "audiences": ["riffdb-ticketdesk-lifecycle"],
+        "requested_lifetime_seconds": lifetime, "audiences": ["riffdb-ticketdesk-lifecycle"],
         "grant": {"tenant_scope": {"type": "global"}, "partition_scope": {"type": "all"},
                   "permissions": [{"type": permission} for permission in (
                       "validate_contract", "read_contract", "deploy_contract")] + [
                       {"type": "query_projection", "contract_lineage": "TicketDeskLifecycle",
                        "stable_id": descriptor["projection_id"]}] + [
-                      {"type": permission} for permission in ("read_health", "create_capability",
+                      {"type": permission} for permission in ("read_health", "read_statistics", "create_capability",
                                                                "revoke_capability", "administer_capabilities")] + [
                       {"type": "seek_event_stream_consumer", "contract_lineage": "TicketDeskLifecycle",
                        "reactive_module_hash": module, "operation_name": "TicketEvents"}
@@ -844,14 +1003,16 @@ tls_server_name = "127.0.0.1"
                   "field_visibility": [], "max_scan_rows": 50, "approval_required": []},
     }))
     ready = queue.Queue(maxsize=1)
+    server_output_failed = threading.Event()
     observer = None
     observer_pump = None
     latest = queue.Queue(maxsize=1)
     inventory = InventoryMonitor(root / "data") if args.online_retention else None
     with (root / "server.stderr").open("xb") as errors:
-        server = subprocess.Popen([server_binary, "--config", str(config)],
+        server = ObservedProcess([server_binary, "--config", str(config)],
+                                  observation=root / "server.process-usage.json",
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)
-        pump = threading.Thread(target=pump_ready, args=(server, root, ready), daemon=True)
+        pump = threading.Thread(target=pump_ready, args=(server, root, ready, server_output_failed), daemon=True)
         pump.start()
         try:
             require(ready.get(timeout=30) is True, "startup")
@@ -869,16 +1030,17 @@ tls_server_name = "127.0.0.1"
                                ("TicketDeskLifecycleApplication", "application")):
                 invoke(root, "bind-" + name, base + ["role", "bind", str(source), "--role", role,
                        "--principal", "lifecycle-smoke-" + name, "--actor-kind", "service",
-                       "--audience", "riffdb-ticketdesk-lifecycle", "--lifetime-seconds", "3600",
+                       "--audience", "riffdb-ticketdesk-lifecycle", "--lifetime-seconds", str(lifetime),
                        "--credential-output", str(root / (name + ".credential"))])
             environment = dict(os.environ,
                 RIFFDB_LIFECYCLE_ENDPOINT=f"https://127.0.0.1:{port}",
                 RIFFDB_LIFECYCLE_CA=str(root / "ca.pem"),
                 RIFFDB_LIFECYCLE_SEED_CREDENTIAL=str(root / "seed.credential"),
-                RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"))
-            if args.archive_witness:
+                RIFFDB_LIFECYCLE_APPLICATION_CREDENTIAL=str(root / "application.credential"),
+                RIFFDB_LIFECYCLE_OPERATOR_CREDENTIAL=str(root / "operator.credential"))
+            if args.archive_witness or args.prepare_campaign_control:
                 environment["RIFFDB_LIFECYCLE_WITNESS_ROOT"] = str(root)
-            if args.prepare_successor:
+            if args.prepare_successor or args.prepare_campaign_control:
                 successor = root / "successor"
                 shutil.copytree(root / "application", successor)
                 (successor / "riffdb.application.lock.json").unlink()
@@ -893,7 +1055,34 @@ tls_server_name = "127.0.0.1"
                        str(manifest_path), "--lock", "riffdb.application.lock.json"])
                 invoke(root, "successor-check", base + ["application", "lock", "--check",
                        str(manifest_path), "--lock", "riffdb.application.lock.json"])
-                print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
+                if args.prepare_successor:
+                    print("Exact-parent successor closure generated privately; no campaign qualification claimed.")
+                    return 0
+            if args.prepare_campaign_control:
+                maintenance_request = write(root, "maintenance-principal.json", json.dumps({
+                    "principal_id": "lifecycle-campaign-maintenance", "actor_kind": "human",
+                    "requested_lifetime_seconds": lifetime,
+                    "audiences": ["riffdb-ticketdesk-lifecycle"],
+                    "grant": {"tenant_scope": {"type": "global"}, "partition_scope": {"type": "all"},
+                              "permissions": [{"type": "administer_capabilities"}],
+                              "field_visibility": [], "max_scan_rows": 1, "approval_required": []},
+                }))
+                invoke(root, "maintenance-principal-create", base + ["capability", "create",
+                    "--request", str(maintenance_request), "--credential-output",
+                    str(root / "maintenance.credential")])
+                created = read_json(root / "maintenance-principal-create.stdout", 4096)
+                require(created.get("schema") == "riffdb.cli.output/v1"
+                        and created.get("command") == "capability.create"
+                        and created.get("ok") is True and created["result"]["status"] == "created",
+                        "campaign_maintenance_principal")
+                require(not (root / "seed.witness").exists()
+                        and not (root / "updates.witness").exists(), "campaign_controls_fresh")
+                write(root, "campaign-control.json", json.dumps({
+                    "schema": "riffdb.ticketdesk-lifecycle-control-preparation/v1",
+                    "seeded_tickets": 0, "offered_updates": 0,
+                    "capability_lifetime_seconds": lifetime, "archive_quota_encoded_bytes": archive_quota,
+                    "qualifies_campaign": False}, sort_keys=True) + "\n")
+                print("Fresh campaign controls prepared; the original observer must precede seeding.")
                 return 0
             if args.observe:
                 if args.population_probe_seconds:
@@ -901,7 +1090,8 @@ tls_server_name = "127.0.0.1"
                 environment["RIFFDB_LIFECYCLE_OBSERVER_STOP"] = str(root / "observer.stop")
                 observer_ready = queue.Queue(maxsize=1)
                 with (root / "observer.stderr").open("xb") as observer_errors:
-                    observer = subprocess.Popen([worker, "observe"], env=environment,
+                    observer = ObservedProcess([worker, "observe"], env=environment,
+                                                observation=root / "observer.process-usage.json",
                                                 stdout=subprocess.PIPE, stderr=observer_errors)
                 observer_pump = threading.Thread(target=pump_observer,
                     args=(observer, root, observer_ready, latest), daemon=True)
@@ -923,21 +1113,27 @@ tls_server_name = "127.0.0.1"
                             break
                 environment["RIFFDB_LIFECYCLE_DURATION_SECONDS"] = str(args.population_probe_seconds)
                 environment["RIFFDB_LIFECYCLE_LOAD_CONTROL"] = str(root)
-                projection_sampler = ProjectionSampler(root, base, {
-                    "contract_lineage": "TicketDeskLifecycle",
+                projection_identity = {"contract_lineage": "TicketDeskLifecycle",
                     "projection_id": descriptor["projection_id"],
-                    "projection_plan_hash": descriptor["projection_plan_hash"]},
-                    args.population_probe_seconds)
-                if args.sink_outage:
-                    with LocalArchiveOutage(root / "archive") as custody:
-                        sink = SinkOutagePreparation(root, base, custody)
+                    "projection_plan_hash": descriptor["projection_plan_hash"]}
+                projection_sampler = (NativeProjectionSampler(root, worker, environment, projection_identity,
+                    args.population_probe_seconds) if args.native_observations else
+                    ProjectionSampler(root, base, projection_identity, args.population_probe_seconds))
+                try:
+                    if args.sink_outage:
+                        with LocalArchiveOutage(root / "archive") as custody:
+                            sink = SinkOutagePreparation(root, base, custody)
+                            observed_load(root, worker, environment, args.population_probe_seconds,
+                                          observer, latest, False, sink=sink, projection=projection_sampler,
+                                          server=server,
+                                          collect_source_bytes=args.online_retention and args.native_observations)
+                    else:
                         observed_load(root, worker, environment, args.population_probe_seconds,
-                                      observer, latest, False, sink=sink, projection=projection_sampler,
-                                      server=server)
-                else:
-                    observed_load(root, worker, environment, args.population_probe_seconds,
-                                  observer, latest, args.consumer_outage, projection=projection_sampler,
-                                  server=server)
+                                      observer, latest, args.consumer_outage, projection=projection_sampler,
+                                      server=server,
+                                      collect_source_bytes=args.online_retention and args.native_observations)
+                finally:
+                    projection_sampler.stop()
                 environment["RIFFDB_LIFECYCLE_COMPLETED_COMMANDS"] = str(args.population_probe_seconds * 100)
                 environment["RIFFDB_LIFECYCLE_RECONCILIATION_WITNESS"] = str(root / "updates.witness")
                 invoke(root, "reconciliation", [worker, "reconcile"], environment=environment, timeout=900)
@@ -1013,7 +1209,7 @@ tls_server_name = "127.0.0.1"
                         break
             if args.restart_recovery:
                 server, pump = interrupted_update(root, args.restart_recovery, worker, environment,
-                    server, pump, server_binary, config)
+                    server, pump, server_binary, config, server_output_failed)
             if args.capability_rotation:
                 original = read_json(root / "bind-application.stdout")
                 capability = original["result"]["transition"]["identity"]["capability_id"]
@@ -1171,6 +1367,8 @@ tls_server_name = "127.0.0.1"
             pump.join(timeout=5)
             if pump.is_alive() or server.returncode != 0:
                 cleanup_failures.append("shutdown")
+            if server_output_failed.is_set():
+                cleanup_failures.append("server_output")
             if observer_failed:
                 cleanup_failures.append("observer_shutdown")
             if inventory_failed:
@@ -1200,7 +1398,7 @@ tls_server_name = "127.0.0.1"
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (SmokeError, InventoryError, FaultError, ResourceError) as error:
+    except (SmokeError, NativeObservationError, InventoryError, FaultError, ResourceError, ProviderBudgetError) as error:
         print("ticketdesk-lifecycle-smoke: " + str(error), file=sys.stderr)
         sys.exit(1)
     except (OSError, ValueError, TypeError, KeyError, queue.Empty, subprocess.SubprocessError):

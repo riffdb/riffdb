@@ -1,6 +1,37 @@
 use super::*;
 use std::sync::mpsc;
 
+// req: STO-030, STO-031, STO-032, END-008
+#[test]
+fn retirement_discards_checkpoint_requests_in_both_held_source_turn_schedules() {
+    for requested_before in [true, false] {
+        let gate = Arc::new(ExclusiveGate::default());
+        let worker_gate = Arc::clone(&gate);
+        let (entered, ready) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let source = worker_gate.acquire_source().unwrap().unwrap();
+            if requested_before {
+                worker_gate.note_source_publication_request().unwrap();
+            }
+            entered.send(()).unwrap();
+            released.recv().unwrap();
+            if !requested_before {
+                worker_gate.note_source_publication_request().unwrap();
+            }
+            drop(source);
+        });
+        ready.recv().unwrap();
+        gate.retire_source_admission();
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!gate.source_checkpoint_requested().unwrap());
+        assert!(!gate.source_publication_requested().unwrap());
+        assert!(gate.acquire_source().unwrap().is_none());
+        drop(gate.acquire().unwrap());
+    }
+}
+
 // req: STO-030, STO-031, END-008
 #[test]
 fn source_gate_bookkeeping_has_one_population_independent_fixed_capacity() {
@@ -90,6 +121,7 @@ fn deadline_keeps_one_cancelled_slot_until_consumed_without_stranding_a_writer()
 fn cancellation_and_grant_linearize_both_ways_and_retirement_never_reopens() {
     for retire_first in [true, false] {
         let gate = ExclusiveGate::default();
+        assert!(!gate.source_admission_retired().unwrap());
         let now = Instant::now();
         let mut request = gate.source_request_at(now).unwrap().unwrap();
         if retire_first {
@@ -106,6 +138,7 @@ fn cancellation_and_grant_linearize_both_ways_and_retirement_never_reopens() {
             drop(lease);
             assert_eq!(&gate.source_census().unwrap()[..4], &[1, 1, 0, 0]);
         }
+        assert!(gate.source_admission_retired().unwrap());
         assert!(gate.acquire_source().unwrap().is_none());
         drop(gate.acquire().unwrap());
         assert!(!gate.is_held());
@@ -180,4 +213,24 @@ fn source_ticket_exhaustion_changes_no_gate_ownership_or_pending_slot() {
     assert!(state.source.slot.is_none());
     assert_eq!(state.next_ticket, u128::MAX);
     assert_eq!(state.source.census, [0; 8]);
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn publication_handoff_survives_checkpoint_consumption_until_drained_capture_or_retirement() {
+    let gate = ExclusiveGate::default();
+    gate.note_source_publication_request().unwrap();
+    assert!(gate.source_checkpoint_requested().unwrap());
+    assert!(gate.source_publication_requested().unwrap());
+    gate.clear_source_checkpoint_request().unwrap();
+    assert!(!gate.source_checkpoint_requested().unwrap());
+    assert!(gate.source_publication_requested().unwrap());
+    gate.clear_source_publication_request().unwrap();
+    assert!(!gate.source_publication_requested().unwrap());
+    gate.note_source_publication_request().unwrap();
+    gate.retire_source_admission();
+    gate.note_source_publication_request().unwrap();
+    assert!(!gate.source_checkpoint_requested().unwrap());
+    assert!(!gate.source_publication_requested().unwrap());
+    drop(gate.acquire().unwrap());
 }

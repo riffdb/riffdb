@@ -229,6 +229,7 @@ impl BackgroundScrubStatus {
 struct ScrubStopState {
     requested: Mutex<bool>,
     changed: Condvar,
+    cancellation: Arc<AtomicBool>,
 }
 
 impl ScrubStopState {
@@ -238,6 +239,9 @@ impl ScrubStopState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *requested = true;
+        // Publish the outer stop state before interrupting a native page so
+        // its error is classified as cancellation, never a scrub incident.
+        self.cancellation.store(true, Ordering::Release);
         self.changed.notify_all();
     }
 
@@ -249,8 +253,7 @@ impl ScrubStopState {
     }
 }
 
-/// A running background scrub owner. Dropping the handle does not cancel the
-/// scrub; shutdown does.
+/// A running background scrub owner. Shutdown and drop cancel and join it.
 pub(crate) struct RunningScrubWorker {
     status: BackgroundScrubStatus,
     stop: Arc<ScrubStopState>,
@@ -306,11 +309,11 @@ impl RunningScrubWorker {
         let stop = Arc::new(ScrubStopState {
             requested: Mutex::new(shutdown_requested),
             changed: Condvar::new(),
+            cancellation: Arc::new(AtomicBool::new(shutdown_requested)),
         });
-        let cancellation = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_status = status.clone();
-        let worker_cancellation = Arc::clone(&cancellation);
+        let worker_cancellation = Arc::clone(&stop.cancellation);
         let thread = thread::Builder::new()
             .name("riffdb-scrub".to_owned())
             .spawn(move || {
@@ -370,8 +373,7 @@ impl RunningScrubWorker {
 
 impl Drop for RunningScrubWorker {
     fn drop(&mut self) {
-        // Dropping the handle does not cancel a running scrub; only shutdown
-        // does. A leaked thread cannot outlive the process's storage handle.
+        // Cancel and join before releasing the process's storage handle.
         if self.thread.is_some() {
             self.stop.request();
             if let Some(thread) = self.thread.take() {
@@ -465,9 +467,8 @@ fn run_scrub(
         cancel();
         return;
     }
-    // The scrub is running from its first instruction: the session open
-    // itself performs the retained-history validation, which is
-    // population-proportional work the state must not hide as pending.
+    // The scrub is running from its first instruction, including session open
+    // and the population-proportional retained-history validation below.
     status.note_running();
     if !status.transition(STATE_RUNNING) {
         return;
@@ -756,6 +757,79 @@ mod tests {
             ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
             ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
         )
+    }
+
+    // req: REC-001, REC-002, REC-007
+    #[test]
+    fn scrub_shutdown_cancels_native_retained_history_before_joining() {
+        // Both owner-exit schedules stop a native session already holding its
+        // original MVCC/extent pin. The condition variable orders shutdown
+        // before the next native page without sleeps or population timing.
+        for drop_owner in [false, true] {
+            let scratch = scratch_source(if drop_owner {
+                "scrub-drop-native-cancel"
+            } else {
+                "scrub-shutdown-native-cancel"
+            });
+            let storage = scratch_shared(&scratch);
+            let status = BackgroundScrubStatus::new();
+            let stop = Arc::new(ScrubStopState {
+                requested: Mutex::new(false),
+                changed: Condvar::new(),
+                cancellation: Arc::new(AtomicBool::new(false)),
+            });
+            let worker_stop = Arc::clone(&stop);
+            let worker_status = status.clone();
+            let (ready, entered) = std::sync::mpsc::sync_channel(1);
+            let task = thread::spawn(move || {
+                let mut session = storage
+                    .begin_background_scrub(test_inputs())
+                    .expect("open native scrub session");
+                session.set_cancellation(Arc::clone(&worker_stop.cancellation));
+                worker_status.note_running();
+                assert!(worker_status.transition(STATE_RUNNING));
+                ready.send(()).expect("report pinned native session");
+                let requested = worker_stop.requested.lock().unwrap();
+                let requested = worker_stop
+                    .changed
+                    .wait_while(requested, |requested| !*requested)
+                    .unwrap();
+                drop(requested);
+                assert_eq!(
+                    session
+                        .validate_retained_history()
+                        .expect_err("shutdown must interrupt native retained-history validation")
+                        .kind(),
+                    StorageErrorKind::Unavailable,
+                );
+                worker_status.note_finished();
+                assert!(worker_status.transition(STATE_CANCELLED));
+            });
+            let mut worker = RunningScrubWorker {
+                status: status.clone(),
+                stop: Arc::clone(&stop),
+                thread: Some(task),
+            };
+            entered
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker must register its pinned session before shutdown");
+            if drop_owner {
+                drop(worker);
+            } else {
+                assert_eq!(worker.shutdown(), ScrubStopObservation::Cancelled);
+            }
+            assert_eq!(status.state(), BackgroundScrubState::Cancelled);
+            assert!(stop.cancellation.load(Ordering::Acquire));
+            assert_eq!(status.rows_walked(), 0);
+            assert_eq!(status.incident(), None);
+            // Cancellation releases the session; it does not repair or modify
+            // authority, and a fresh native validation still succeeds.
+            scratch_shared(&scratch)
+                .begin_background_scrub(test_inputs())
+                .expect("open a fresh native session after cancellation")
+                .validate_retained_history()
+                .expect("the original source remains valid");
+        }
     }
 
     // req: REC-007, REC-008

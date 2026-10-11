@@ -115,16 +115,43 @@ impl SharedRedb {
                 tail.last_administration_sequence,
                 tail.last_hash,
             );
-            let lane = Arc::new(
-                crate::journal::JournalLane::open_with_media(
-                    self.journal_media.as_ref(),
-                    &path,
-                    &header,
-                    #[cfg(feature = "test-fixtures")]
-                    self.test_controller.clone(),
-                )
-                .map_err(journal_io_error)?,
-            );
+            let idle = self
+                .idle_journal_lane
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .take();
+            let physical_bytes = crate::journal::extent_used_bytes(tail.complete_bytes);
+            let lane = match idle {
+                Some(idle)
+                    if idle.database_id == database_id
+                        && idle.physical_bytes == physical_bytes
+                        && Arc::strong_count(&idle.lane) == 1
+                        && idle
+                            .lane
+                            .can_reuse_cursor(
+                                self.journal_media.as_ref(),
+                                &path,
+                                &header,
+                                physical_bytes,
+                            )
+                            .map_err(journal_io_error)? =>
+                {
+                    idle.lane
+                }
+                other => {
+                    drop(other);
+                    Arc::new(
+                        crate::journal::JournalLane::open_with_media(
+                            self.journal_media.as_ref(),
+                            &path,
+                            &header,
+                            #[cfg(feature = "test-fixtures")]
+                            self.test_controller.clone(),
+                        )
+                        .map_err(journal_io_error)?,
+                    )
+                }
+            };
             // Refresh an existing spare's generation now; a missing one (the
             // last install consumed it) is zero-filled off the writer's path.
             let spare_path = crate::journal::spare_journal_path(&self.path);
@@ -147,7 +174,7 @@ impl SharedRedb {
                 drop(spare_guard);
             } else {
                 drop(spare_guard);
-                self.start_journal_sealer(spare_header)?;
+                self.ensure_journal_spare(spare_header)?;
             }
             *runtime = Some(JournalRuntime {
                 changelog_history,
@@ -178,6 +205,21 @@ impl SharedRedb {
     }
 
     pub(super) fn maybe_start_async_checkpoint(self: &Arc<Self>) -> Result<(), StorageError> {
+        self.start_async_checkpoint(false)
+    }
+
+    pub(super) fn start_async_checkpoint_for_direct_write(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        self.start_async_checkpoint(true)
+    }
+
+    fn start_async_checkpoint(self: &Arc<Self>, direct_write: bool) -> Result<(), StorageError> {
+        if self.mutation_gate.source_publication_requested()? {
+            // The ordinary writer owns this lease. Complete only its existing
+            // submitted FIFO prefix, retaining results for original owners.
+            self.publish_pending_journal_prefix()?;
+        }
         let start_physical_bytes = journal_checkpoint_start_physical_bytes()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
 
@@ -206,6 +248,10 @@ impl SharedRedb {
                 .is_some_and(RedbTestController::take_checkpoint_test_request);
         #[cfg(not(feature = "test-fixtures"))]
         let requested = false;
+        let requested = requested
+            || (direct_write && runtime.suffix_transitions != 0)
+            || (runtime.suffix_transitions != 0
+                && self.mutation_gate.source_checkpoint_requested()?);
         if !requested
             && !runtime.reanchor_required
             && runtime.suffix_transitions < JOURNAL_CHECKPOINT_START_TRANSITIONS
@@ -353,7 +399,8 @@ impl SharedRedb {
                 reanchor_required: false,
             });
 
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let receiver = Arc::new(CheckpointCompletion::default());
+        let sender = CheckpointPublisher(Arc::clone(&receiver));
         *checkpoint_guard = Some(AsyncJournalCheckpoint {
             batch: batch.clone(),
             covered_view,
@@ -381,7 +428,7 @@ impl SharedRedb {
                 }
                 #[cfg(feature = "test-fixtures")]
                 let controller = worker_shared.test_controller.clone();
-                let _ = sender.send(result);
+                sender.publish(result);
                 drop(worker_shared);
                 #[cfg(feature = "test-fixtures")]
                 if let Some(controller) = controller {
@@ -400,6 +447,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(error);
         }
+        self.mutation_gate.clear_source_checkpoint_request()?;
         Ok(())
     }
 }

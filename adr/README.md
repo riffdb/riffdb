@@ -312,11 +312,17 @@ record with no front matter.
 | [0275](0275-retention-independent-bounded-startup-eligibility.md) | Retention Independent Bounded Startup Eligibility | Accepted | guarantee |
 | [0276](0276-registry-completion-writer-compatibility-edge.md) | Registry Completion Writer Compatibility Edge | Accepted | guarantee |
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
+| [0278](0278-journaled-bounded-source-reclamation.md) | Journaled Bounded Source Reclamation | Accepted | guarantee |
+| [0279](0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md) | Finite Checkpoint Licensing For Sustainable Source Reclamation | Accepted | guarantee |
 | [0280](0280-paced-journal-extent-zero-fill-and-writer-hash-deduplication.md) | Paced Journal Extent Zero Fill And Writer Hash Deduplication | Accepted | guarantee |
 | [0281](0281-changelog-root-validation-once-per-replay-transaction.md) | Changelog Root Validation Once Per Replay Transaction | Accepted | guarantee |
 | [0282](0282-derived-sidecar-absence-observed-once-per-handle.md) | Derived Sidecar Absence Observed Once Per Handle | Accepted | guarantee |
 | [0283](0283-validation-walks-decode-each-command-segment-once.md) | Validation Walks Decode Each Command Segment Once | Accepted | guarantee |
 | [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Accepted | guarantee |
+| [0285](0285-owned-private-restore-validation-custody.md) | Owned Private Restore Validation Custody | Accepted | guarantee |
+| [0286](0286-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
+| [0287](0287-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
+| [0288](0288-bounded-native-bootstrap-source-custody-validation.md) | Bounded Native Bootstrap Source Custody Validation | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

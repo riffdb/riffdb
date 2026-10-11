@@ -1437,11 +1437,19 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
         .0;
     assert_eq!(direct.matches("database.begin_write()").count(), 1);
     assert!(
-        direct.find("apply_published_journal_suffix(").unwrap()
+        direct
+            .find("apply_published_journal_suffix_with_limits(")
+            .unwrap()
             < direct
                 .find("OperationalWriteTransaction::from_checked_drain(")
                 .unwrap()
     );
+    assert!(direct.replace(",)", ")").contains(
+        "apply_published_journal_suffix_with_limits(&transaction,runtime,bounded_background)"
+    ));
+    assert!(direct.contains(
+        "letbounded_background=matches!(source,riffdb_storage_api::ChangelogAttributionV3::OutboxTransition|riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition);"
+    ));
     let commit = store
         .split_once("fncommit_with_observations(")
         .unwrap()
@@ -1790,15 +1798,17 @@ fn v3_prefix_checkpoint_plans_from_its_builder_pin_and_uses_one_sealed_commit() 
         .0;
     assert!(
         writer
-            .find("build_checkpoint_from_snapshot(&transaction")
+            .find("build_checkpoint_from_snapshot_with_completion(&transaction")
             .unwrap()
             < writer
-                .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+                .find(
+                    "plan_checkpoint_receipt_with_completion(&transaction,&checkpoint,completion)"
+                )
                 .unwrap()
     );
     assert!(
         writer
-            .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+            .find("plan_checkpoint_receipt_with_completion(&transaction,&checkpoint,completion)")
             .unwrap()
             < writer.find("drop(transaction)").unwrap()
     );
@@ -2189,7 +2199,8 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     assert!(source.contains("mutations: Arc<[CompositeMutationV1]>"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
-    assert!(source.contains("Arc::try_unwrap"));
+    assert!(source.contains("Arc::into_inner(node)"));
+    assert!(!source.contains("Arc::try_unwrap(node)"));
     let store = format!(
         "{}\n{}",
         production_source(crate_root().join("src/store.rs")),
@@ -2639,6 +2650,9 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("history_stub.rs", "hydrate_history_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
+        // Bounded V3 replay owns the same exclusive pre-readiness recovery
+        // transaction; no operational reader can select its intermediate root.
+        ("journal_recovery_stream.rs", "replay"),
         // Sidecar create for rebuildable derived state (ADR-0240). It is a
         // separate redb engine; operational readers of the primary never
         // select its roots, and command commits never wait on it.

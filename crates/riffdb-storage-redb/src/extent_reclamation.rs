@@ -9,6 +9,9 @@ use crate::journal;
 pub(super) const MAX_EXTENT_READ_ROOTS: usize = 4096;
 const DIRECTORY_ENTRIES_PER_PASS: usize = 64;
 
+#[path = "extent_reclamation/physical_bytes.rs"]
+pub(crate) mod physical_bytes;
+
 #[derive(Default)]
 pub(crate) struct Cursor {
     directory: Option<Box<dyn crate::media::JournalMediaDirectory>>,
@@ -83,6 +86,8 @@ impl Cursor {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Observation {
+    // Present only after namespace retirement and parent-directory durability.
+    pub(crate) retired_generation: Option<u64>,
     pub(crate) deleted: u64,
     pub(crate) recycled: u64,
     pub(crate) held_references: u64,
@@ -105,6 +110,49 @@ impl Drop for ScrubPin {
 }
 
 impl SharedRedb {
+    pub(crate) fn retire_stale_current_read_root_for_extent(&self) -> Result<(), StorageError> {
+        // A cached frontier-free root from an earlier durable publication can
+        // never be handed out again. Retire that internal owner before checking
+        // external pins; acquire cache locks before the capture reservation.
+        {
+            let mut cached = self.current_read_root.write().map_err(|_| integrity())?;
+            let current = self.durable_root_publication.load(Ordering::Acquire);
+            if current.is_multiple_of(2)
+                && cached
+                    .as_ref()
+                    .is_some_and(|(version, _)| *version != current)
+            {
+                *cached = None;
+                self.current_read_root_live.store(false, Ordering::Release);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn measure_physical_bytes_for_test(
+        self: &Arc<Self>,
+    ) -> Result<Option<physical_bytes::Measurement>, StorageError> {
+        Ok(self
+            .finished_physical_probe_for_test()?
+            .map(|(measured, _)| measured))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finished_physical_probe_for_test(
+        self: &Arc<Self>,
+    ) -> Result<Option<(physical_bytes::Measurement, physical_bytes::Probe)>, StorageError> {
+        let Some(mut probe) = physical_bytes::Probe::capture(self)? else {
+            return Ok(None);
+        };
+        for _ in 0..(8192 + 4096 + 1) {
+            if let Some(measured) = probe.advance()? {
+                return Ok(Some((measured, probe)));
+            }
+        }
+        Err(storage_error(StorageErrorKind::LimitExceeded))
+    }
+
     pub(crate) fn pin_extent_scrub(self: &Arc<Self>) -> Result<ScrubPin, StorageError> {
         let _roots = self.extent_roots.lock().map_err(|_| integrity())?;
         self.extent_scrubs.fetch_add(1, Ordering::AcqRel);
@@ -166,21 +214,7 @@ impl SharedRedb {
         if footer.generation != generation || footer != index {
             return Err(integrity());
         }
-        // A cached frontier-free root from an earlier durable publication can
-        // never be handed out again. Retire that internal owner before checking
-        // external pins; acquire cache locks before the capture reservation.
-        {
-            let mut cached = self.current_read_root.write().map_err(|_| integrity())?;
-            let current = self.durable_root_publication.load(Ordering::Acquire);
-            if current.is_multiple_of(2)
-                && cached
-                    .as_ref()
-                    .is_some_and(|(version, _)| *version != current)
-            {
-                *cached = None;
-                self.current_read_root_live.store(false, Ordering::Release);
-            }
-        }
+        self.retire_stale_current_read_root_for_extent()?;
         let mut roots = self.extent_roots.lock().map_err(|_| integrity())?;
         roots.retain(|root| root.strong_count() != 0);
         if self.extent_scrubs.load(Ordering::Acquire) != 0 {
@@ -227,39 +261,7 @@ impl SharedRedb {
         // The minimum resume is a source-controlled, cross-bound root. Check
         // the exact frame keys too; a lingering or malformed stub must refuse
         // rather than be hidden by an inconsistent floor.
-        let commits = read.open_table(COMMITS).map_err(table_error)?;
-        let receipts = read
-            .open_table(crate::changelog_v3_activation::HISTORY)
-            .map_err(table_error)?;
-        for entry in &footer.entries {
-            if let Some(binding) = entry.changelog
-                && receipts
-                    .get(binding.assigned_sequence().get().to_be_bytes().as_slice())
-                    .map_err(precommit_storage_error)?
-                    .is_some()
-            {
-                return Err(integrity());
-            }
-            if entry.covered_sequence > entry.predecessor_sequence {
-                let first = entry
-                    .predecessor_sequence
-                    .map_or(1, |sequence| sequence.get().saturating_add(1));
-                let last = entry.covered_sequence.ok_or_else(integrity)?.get();
-                for row in commits
-                    .range::<&[u8]>(first.to_be_bytes().as_slice()..=last.to_be_bytes().as_slice())
-                    .map_err(precommit_storage_error)?
-                {
-                    let (_, value) = row.map_err(precommit_storage_error)?;
-                    if let Some(stub) = crate::history_stub::HistoryStub::decode(value.value())?
-                        && stub.generation == generation
-                    {
-                        return Err(integrity());
-                    }
-                }
-            }
-        }
-        drop(receipts);
-        drop(commits);
+        validate_absent_extent_references(&read, &footer, generation)?;
         drop(read);
         let _spare = self.journal_spare.lock().map_err(|_| integrity())?;
         let recycled = journal::recycled_journal_path(&self.path);
@@ -288,8 +290,54 @@ impl SharedRedb {
         self.before_test_commit(RedbTestOperation::RetentionExtentDirectory)?;
         journal::sync_parent_directory_with_media(media, &path).map_err(journal_io_error)?;
         self.after_test_commit(RedbTestOperation::RetentionExtentDirectory)?;
+        observation.retired_generation = Some(generation);
+        if let Some(generation) = observation.retired_generation {
+            eprintln!(
+                "riffdb-retention-extent-retired-v1\troot={version}\tgeneration={generation}\tdeleted={}\trecycled={}",
+                observation.deleted, observation.recycled
+            );
+        }
         Ok(observation)
     }
+}
+
+fn validate_absent_extent_references(
+    read: &redb::ReadTransaction,
+    footer: &journal::SealedExtentFooter,
+    generation: u64,
+) -> Result<(), StorageError> {
+    let commits = read.open_table(COMMITS).map_err(table_error)?;
+    let receipts = read
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .map_err(table_error)?;
+    for entry in &footer.entries {
+        if let Some(binding) = entry.changelog
+            && receipts
+                .get(binding.assigned_sequence().get().to_be_bytes().as_slice())
+                .map_err(precommit_storage_error)?
+                .is_some()
+        {
+            return Err(integrity());
+        }
+        if entry.covered_sequence > entry.predecessor_sequence {
+            let first = entry
+                .predecessor_sequence
+                .map_or(1, |sequence| sequence.get().saturating_add(1));
+            let last = entry.covered_sequence.ok_or_else(integrity)?.get();
+            for row in commits
+                .range::<&[u8]>(first.to_be_bytes().as_slice()..=last.to_be_bytes().as_slice())
+                .map_err(precommit_storage_error)?
+            {
+                let (_, value) = row.map_err(precommit_storage_error)?;
+                if let Some(stub) = crate::history_stub::HistoryStub::decode(value.value())?
+                    && stub.generation == generation
+                {
+                    return Err(integrity());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn integrity() -> StorageError {

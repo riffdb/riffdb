@@ -154,6 +154,11 @@ older pinned snapshots, and an active background scrub keep the file alive. The
 lane never creates a source acknowledgement or discards a receipt to free space.
 One retired file can supply the next preallocated journal spare; excess eligible
 files are deleted. File work runs outside the ordered writer gate.
+Repeated requests for a missing spare share the unfinished preparation job and
+its completion signal. They do not queue additional waiting sealer threads or
+create new extent-publication obligations. Each actual extent publication keeps
+its own completion tracking. A completed failed preparation permits a fresh
+attempt; it does not certify a failed extent publication.
 The lane holds no exclusive lease and opens no second writer. A writer waits
 behind at most the one step in progress. After each attempt that took the writer gate, the lane rests
 nineteen times the time it held the gate, so it holds the writer at most about
@@ -199,6 +204,40 @@ idle reclamation loop. The separate `riffdb-retention-receipts-v1` shutdown line
 records `removed` receipts and `gate_us`; that time participates in the lane's
 existing writer-occupancy pacing. Receipt removal does not prove that an extent
 was deleted or reused.
+
+Follower acknowledgement preparation shares this source-proof owner and its
+maintenance rest deadline. Initial validation runs in bounded pages outside the
+writer; the closed acknowledgement enters the existing commit coordinator only
+after preparation. A completed candidate retains custody until admission,
+yield or cancellation. Ordinary queued writers keep their FIFO order. The
+32-frame report cadence and existing request deadlines are unchanged.
+The internal `riffdb-follower-ack-work-v1` diagnostic reports numeric `phase`
+(1 preparation, 2 admission), `result` (0 ready/completed, 1 yielded, 2 refused),
+`off_gate_us`, `writer_wait_us`, `gate_held_us`, `initial_rows` and
+`continued_rows`. Writer wait and gate residence come from the native FIFO
+census; off-gate elapsed work excludes both. Durations are
+elapsed observations, not CPU measurements or a latency promise; the maximum
+unsigned value means unknown. These observations contain no hold identity or
+payload and grant no authority to advance a hold.
+
+Held bootstrap manifest/page reads share that same source certificate through
+a closed native read protocol. The first complete proof advances in bounded
+pages outside the writer; subsequent checks use the qualified source pin or
+checked native successors. Each release rechecks current exact custody after
+bounded artifact I/O. Incomplete validation releases no bytes, and a reader
+cannot displace a prepared follower acknowledgement. These remain foreground
+reads under existing source-job capacity and deadlines; they create no control
+write, reclamation license or extra maintenance budget. Receiver startup and
+publication continue to use their complete validators.
+The internal `riffdb-bootstrap-custody-work-v1` diagnostic reports numeric
+`result` (0 ready, 1 yielded, 2 refused), `elapsed_us`, `initial_rows` and
+`continued_rows` for actual native proof work. It contains no hold identity,
+payload or endpoint. Elapsed observations are not CPU measurements; the maximum
+unsigned value means unknown.
+
+The runtime binds the shared source scheduler even when retention is held.
+Acknowledgement custody uses the same rest policy. Rebinding cannot reset
+already charged rest or clock-overflow refusal.
 
 After retention invalidates optional validated-prefix startup evidence, the
 maintenance lane can rebuild it from a complete structural, catalog-semantic,

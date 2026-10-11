@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -19,7 +19,7 @@ use riffdb_client_rust::{
     raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::catalog::{
     ApplicationCatalog, OperationKind, OperationSpec, ReactiveKind, VectorInspectionKind,
@@ -157,6 +157,35 @@ struct DriverHostInner {
 struct InflightRequest {
     cancel: watch::Sender<bool>,
     command: bool,
+}
+
+impl DriverHostInner {
+    fn inflight(&self) -> MutexGuard<'_, BTreeMap<String, InflightRequest>> {
+        // Only bounded local registration changes occur while this lock is held.
+        // Recover ownership during unwinding so cancellation can still release it.
+        self.inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+struct InflightRegistration {
+    inner: Arc<DriverHostInner>,
+    request_id: String,
+    cancel: watch::Sender<bool>,
+}
+
+impl Drop for InflightRegistration {
+    fn drop(&mut self) {
+        let mut inflight = self.inner.inflight();
+        // A stale owner must never remove a newer request with the same identity.
+        if inflight
+            .get(&self.request_id)
+            .is_some_and(|request| request.cancel.same_channel(&self.cancel))
+        {
+            inflight.remove(&self.request_id);
+        }
+    }
 }
 
 impl DriverHost {
@@ -324,7 +353,7 @@ impl DriverHost {
         };
         let (cancel, mut cancelled) = watch::channel(false);
         {
-            let mut inflight = self.inner.inflight.lock().await;
+            let mut inflight = self.inner.inflight();
             if inflight.contains_key(&request_id) {
                 return local_error(
                     Some(request_id),
@@ -339,11 +368,16 @@ impl DriverHost {
             inflight.insert(
                 request_id.clone(),
                 InflightRequest {
-                    cancel,
+                    cancel: cancel.clone(),
                     command: spec.kind() == OperationKind::Command,
                 },
             );
         }
+        let _registration = InflightRegistration {
+            inner: self.inner.clone(),
+            request_id: request_id.clone(),
+            cancel,
+        };
         let deadline = invocation_deadline(
             spec.kind(),
             spec.reactive_action(),
@@ -369,14 +403,13 @@ impl DriverHost {
                 local_error(Some(request_id.clone()), Some(operation.clone()), "RDB-APP-0002", "control", "application batch was cancelled", spec.kind() == OperationKind::Command, if spec.kind() == OperationKind::Command { "resolve_with_same_idempotency_key" } else { "none" })
             },
         };
-        self.inner.inflight.lock().await.remove(&request_id);
         response
     }
 
     /// Cancels one exact in-flight local request without claiming a command did not commit.
     pub async fn cancel(&self, request_id: String, target_request_id: String) -> DriverResponse {
         let (terminal, uncertain) = {
-            let inflight = self.inner.inflight.lock().await;
+            let inflight = self.inner.inflight();
             match inflight.get(&target_request_id) {
                 Some(target) => {
                     let _ = target.cancel.send(true);
@@ -454,7 +487,7 @@ impl DriverHost {
         };
         let (cancel, cancelled) = watch::channel(false);
         {
-            let mut inflight = self.inner.inflight.lock().await;
+            let mut inflight = self.inner.inflight();
             if inflight.contains_key(&request_id) {
                 return local_error(
                     Some(request_id),
@@ -469,11 +502,16 @@ impl DriverHost {
             inflight.insert(
                 request_id.clone(),
                 InflightRequest {
-                    cancel,
+                    cancel: cancel.clone(),
                     command: true,
                 },
             );
         }
+        let _registration = InflightRegistration {
+            inner: self.inner.clone(),
+            request_id: request_id.clone(),
+            cancel,
+        };
         let limit = Arc::new(Semaphore::new(usize::try_from(concurrency).unwrap_or(1)));
         let mut tasks = tokio::task::JoinSet::new();
         let prefix = request_id.chars().take(96).collect::<String>();
@@ -512,7 +550,6 @@ impl DriverHost {
                 completed.insert(index, response);
             }
         }
-        self.inner.inflight.lock().await.remove(&request_id);
         let mut next = usize::try_from(checkpoint).unwrap_or(0);
         while completed
             .get(&next)
@@ -2299,6 +2336,10 @@ mod tests {
     }
 
     fn host() -> DriverHost {
+        host_with_channel(Endpoint::from_static("http://127.0.0.1:9").connect_lazy())
+    }
+
+    fn host_with_channel(channel: tonic::transport::Channel) -> DriverHost {
         let catalog = ApplicationCatalog::from_exact_artifacts(
             include_bytes!("../../../examples/agent-alpha/riffdb.application.lock.json"),
             include_bytes!("../../../examples/agent-alpha/generated/riffdb.application.exact.json"),
@@ -2307,11 +2348,233 @@ mod tests {
             "AgentAlphaApplication",
         )
         .expect("catalog");
-        let channel = Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
         let pool =
             DriverPool::from_clients(vec![StableApplicationClient::from_channel(channel)], 1)
                 .expect("pool");
         DriverHost::new(catalog, pool, CallMetadata::default(), "00".repeat(32)).expect("host")
+    }
+
+    fn command_request(host: &DriverHost, request_id: &str) -> DriverRequest {
+        let spec = host
+            .inner
+            .catalog
+            .operation("agent_alpha_create_item")
+            .expect("command");
+        DriverRequest::Invoke {
+            request_id: request_id.to_owned(),
+            operation: spec.public_name().to_owned(),
+            input_schema_hash: spec.input_schema_hash(),
+            input: BTreeMap::from([
+                (
+                    "idempotency_key".to_owned(),
+                    DriverValue::String("drop-command".to_owned()),
+                ),
+                (
+                    "item_id".to_owned(),
+                    DriverValue::Uuid("018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10".to_owned()),
+                ),
+                (
+                    "title".to_owned(),
+                    DriverValue::String("Cancellation fixture".to_owned()),
+                ),
+            ]),
+            options: InvokeOptions {
+                deadline_millis: 30_000,
+                maximum_attempts: 1,
+                read_after_commit: None,
+                cursor: None,
+                query_consistency: None,
+                accept_compact_result: false,
+                accept_packed_result: false,
+            },
+        }
+    }
+
+    fn poll_once<F: std::future::Future>(
+        future: std::pin::Pin<&mut F>,
+    ) -> std::task::Poll<F::Output> {
+        std::future::Future::poll(
+            future,
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+    }
+
+    // req: DRV-010, DRV-011
+    #[tokio::test]
+    async fn dropped_invocation_releases_registration_and_admission_before_identity_reuse() {
+        let host = host();
+        for _ in 0..3 {
+            let mut invocation = Box::pin(host.invoke(command_request(&host, "dropped-invoke")));
+            assert!(poll_once(invocation.as_mut()).is_pending());
+            assert_eq!(host.inner.inflight().len(), 1);
+            assert_eq!(host.inner.pool.admission.available_permits(), 0);
+            drop(invocation);
+            assert!(
+                host.inner.inflight().is_empty(),
+                "aborted invocation retained its cancellation registration"
+            );
+            assert_eq!(host.inner.pool.admission.available_permits(), 1);
+            assert_eq!(
+                host.cancel("after-drop".to_owned(), "dropped-invoke".to_owned())
+                    .await,
+                DriverResponse::Cancelled {
+                    request_id: "after-drop".to_owned(),
+                    target_request_id: "dropped-invoke".to_owned(),
+                    terminal: true,
+                    outcome_uncertain: false,
+                },
+            );
+        }
+    }
+
+    // req: DRV-010, DRV-011, AAA-007
+    #[tokio::test]
+    async fn dropped_batch_releases_parent_cancellation_registration() {
+        let host = host();
+        let DriverRequest::Invoke {
+            operation,
+            input_schema_hash,
+            input,
+            options,
+            ..
+        } = command_request(&host, "batch-input")
+        else {
+            unreachable!()
+        };
+        let mut batch = Box::pin(host.batch(DriverRequest::Batch {
+            request_id: "dropped-batch".to_owned(),
+            operation,
+            input_schema_hash,
+            items: vec![input],
+            concurrency: 1,
+            checkpoint: 0,
+            options,
+        }));
+        // One poll registers the parent and queues its child; the single-thread
+        // schedule drops the parent before the child can start.
+        assert!(poll_once(batch.as_mut()).is_pending());
+        assert!(host.inner.inflight().contains_key("dropped-batch"));
+        drop(batch);
+        assert!(
+            host.inner.inflight().is_empty(),
+            "aborted batch retained its parent registration"
+        );
+        assert_eq!(host.inner.pool.admission.available_permits(), 1);
+    }
+
+    // req: DRV-010, DRV-011, AAA-007
+    #[tokio::test]
+    async fn dropped_batch_aborts_started_child_and_releases_its_registration() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let channel = Endpoint::from_shared(format!(
+            "http://{}",
+            listener.local_addr().expect("local address")
+        ))
+        .expect("endpoint")
+        .connect_lazy();
+        let host = host_with_channel(channel);
+        let DriverRequest::Invoke {
+            operation,
+            input_schema_hash,
+            input,
+            options,
+            ..
+        } = command_request(&host, "batch-input")
+        else {
+            unreachable!()
+        };
+        let mut batch = Box::pin(host.batch(DriverRequest::Batch {
+            request_id: "started-batch".to_owned(),
+            operation,
+            input_schema_hash,
+            items: vec![input],
+            concurrency: 1,
+            checkpoint: 0,
+            options,
+        }));
+        assert!(poll_once(batch.as_mut()).is_pending());
+        // Accepting the child's actual connection is the schedule barrier. Keep
+        // the transport open without replying so the ordinary RPC stays pending.
+        let (_connection, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("child connected")
+            .expect("accept");
+        assert!(host.inner.inflight().contains_key("started-batch"));
+        assert!(host.inner.inflight().contains_key("started-batch.0"));
+        assert_eq!(host.inner.pool.admission.available_permits(), 0);
+        drop(batch);
+        assert!(!host.inner.inflight().contains_key("started-batch"));
+        // Joining the child's released admission proves its abort was polled;
+        // the bound detects hangs and does not synchronize through a sleep.
+        let permit =
+            tokio::time::timeout(Duration::from_secs(5), host.inner.pool.admission.acquire())
+                .await
+                .expect("child released admission")
+                .expect("pool open");
+        assert!(host.inner.inflight().is_empty());
+        drop(permit);
+        assert_eq!(host.inner.pool.admission.available_permits(), 1);
+    }
+
+    // req: DRV-010, DRV-011
+    #[tokio::test]
+    async fn explicit_cancellation_releases_owned_registration_without_claiming_failure() {
+        let host = host();
+        let mut invocation = Box::pin(host.invoke(command_request(&host, "cancelled-invoke")));
+        assert!(poll_once(invocation.as_mut()).is_pending());
+        assert_eq!(
+            host.cancel("cancel".to_owned(), "cancelled-invoke".to_owned())
+                .await,
+            DriverResponse::Cancelled {
+                request_id: "cancel".to_owned(),
+                target_request_id: "cancelled-invoke".to_owned(),
+                terminal: false,
+                outcome_uncertain: true,
+            }
+        );
+        assert!(
+            matches!(invocation.await, DriverResponse::Error { code, outcome_uncertain: true, recovery_action, .. }
+            if code == "RDB-APP-0002" && recovery_action == "resolve_with_same_idempotency_key")
+        );
+        assert!(host.inner.inflight().is_empty());
+        assert_eq!(host.inner.pool.admission.available_permits(), 1);
+    }
+
+    // req: DRV-011
+    #[tokio::test]
+    async fn stale_registration_drop_preserves_the_new_exact_owner() {
+        let host = host();
+        let (old_cancel, _) = watch::channel(false);
+        let old = InflightRegistration {
+            inner: host.inner.clone(),
+            request_id: "reused".to_owned(),
+            cancel: old_cancel,
+        };
+        let (new_cancel, _) = watch::channel(false);
+        host.inner.inflight().insert(
+            "reused".to_owned(),
+            InflightRequest {
+                cancel: new_cancel.clone(),
+                command: true,
+            },
+        );
+        drop(old);
+        assert!(
+            host.inner
+                .inflight()
+                .get("reused")
+                .expect("new owner")
+                .cancel
+                .same_channel(&new_cancel)
+        );
+        drop(InflightRegistration {
+            inner: host.inner.clone(),
+            request_id: "reused".to_owned(),
+            cancel: new_cancel,
+        });
+        assert!(host.inner.inflight().is_empty());
     }
 
     #[tokio::test]
@@ -2320,7 +2583,7 @@ mod tests {
         let (command_cancel, _) = watch::channel(false);
         let (query_cancel, _) = watch::channel(false);
         {
-            let mut inflight = host.inner.inflight.lock().await;
+            let mut inflight = host.inner.inflight();
             inflight.insert(
                 "command-1".to_owned(),
                 InflightRequest {

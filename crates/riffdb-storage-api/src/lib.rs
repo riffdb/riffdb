@@ -64,6 +64,7 @@ pub mod query_module;
 pub mod reactive_module;
 pub mod records;
 pub mod replication_administration;
+mod replication_follower_acknowledgement;
 pub mod replication_primary_admission;
 mod replication_primary_fence_evidence;
 pub mod replication_promotion;
@@ -135,3 +136,6 @@ pub use snapshot::*;
 pub use startup::*;
 pub use validated_prefix_checkpoint::*;
 pub use vector_evidence::*;
+
+#[doc(hidden)]
+pub use replication_follower_acknowledgement::ReplicationFollowerAcknowledgementV3;

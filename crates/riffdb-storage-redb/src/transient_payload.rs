@@ -2,6 +2,7 @@
 use super::*;
 use riffdb_storage_api::CommandSegmentManifestV1;
 use riffdb_types::DatabaseId;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
@@ -9,6 +10,11 @@ const MAX_PAYLOAD_ENTRIES: usize = 64;
 /// One seeded segment in this many is decoded from its canonical bytes and
 /// compared with the writer's segment before it is retained.
 pub(crate) const PAYLOAD_SEED_VERIFY_EVERY: u64 = 64;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PAYLOAD_COLD_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 // Normalize through the canonical decoder before retention. Charge non-value
 // DTOs, shared scalar/key/string views and allocation headers conservatively at
 // 64 times their wire footprint, plus the complete fixed command layouts.
@@ -156,6 +162,7 @@ fn cached_payload_matches(
     }
 }
 
+#[derive(Clone)]
 struct CachedPayload {
     canonical: Arc<[u8]>,
     decoded: Arc<StoredCommandSegmentV1>,
@@ -165,7 +172,24 @@ struct CachedPayload {
 #[derive(Default)]
 struct PayloadEntries {
     entries: BTreeMap<CommitSequence, CachedPayload>,
+    recency: VecDeque<CommitSequence>,
     bytes: usize,
+}
+
+impl PayloadEntries {
+    fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
+        let entry = self.entries.remove(&first);
+        let position = self.recency.iter().position(|value| *value == first);
+        match (entry, position) {
+            (Some(entry), Some(position)) => {
+                self.recency.remove(position).ok_or_else(corrupt)?;
+                self.bytes = self.bytes.checked_sub(entry.charge).ok_or_else(corrupt)?;
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            _ => Err(corrupt()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -173,13 +197,114 @@ pub(super) struct PayloadCache {
     state: Mutex<PayloadEntries>,
 }
 
+/// Exactly one selected metadata entry and at most one disposable cache entry.
+/// The caller retains its independent immutable storage view as the authority.
+pub(crate) struct CapturedCommandPayload {
+    metadata: Arc<SegmentMetadata>,
+    cached: Option<CachedPayload>,
+}
+
+pub(crate) struct ResolvedCommandPayload {
+    metadata: Arc<SegmentMetadata>,
+    pub(crate) segment: Arc<StoredCommandSegmentV1>,
+    retained: Option<CachedPayload>,
+}
+
+impl CapturedCommandPayload {
+    pub(crate) fn last_sequence(&self) -> CommitSequence {
+        self.metadata.last
+    }
+
+    pub(crate) fn resolve(
+        self,
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+    ) -> Result<ResolvedCommandPayload, StorageError> {
+        #[cfg(test)]
+        super::before_payload_load();
+        let bytes = load(self.metadata.first)?.ok_or_else(corrupt)?;
+        let (segment, retained) = decode_payload(&self.metadata, bytes, self.cached)?;
+        Ok(ResolvedCommandPayload {
+            metadata: self.metadata,
+            segment,
+            retained,
+        })
+    }
+}
+
+fn decode_payload(
+    metadata: &SegmentMetadata,
+    bytes: Vec<u8>,
+    cached: Option<CachedPayload>,
+) -> Result<(Arc<StoredCommandSegmentV1>, Option<CachedPayload>), StorageError> {
+    let stub = crate::history_stub::segment_summary(&bytes)?;
+    if let Some(cached) = cached.filter(|cached| {
+        cached_payload_matches(
+            &cached.canonical,
+            cached.decoded.segment_digest().as_bytes(),
+            metadata.first,
+            &bytes,
+            stub.as_ref(),
+        )
+    }) {
+        metadata.validate(&cached.decoded)?;
+        // Only an authority-checked hit refreshes retention. New writes must
+        // not evict an active older reader solely because its sequence is old.
+        return Ok((Arc::clone(&cached.decoded), Some(cached)));
+    }
+    #[cfg(test)]
+    PAYLOAD_COLD_DECODES.with(|count| count.set(count.get() + 1));
+    let segment = Arc::new(
+        crate::history_stub::decode_retained_segment(&bytes)
+            .map_err(|_| corrupt())?
+            .into_parts()
+            .0,
+    );
+    metadata.validate(&segment)?;
+    let charge = decoded_charge(&segment, bytes.len()).ok_or_else(corrupt)?;
+    let retained = (charge <= MAX_PAYLOAD_BYTES).then(|| CachedPayload {
+        canonical: Arc::from(bytes),
+        decoded: Arc::clone(&segment),
+        charge,
+    });
+    Ok((segment, retained))
+}
+
 impl PayloadCache {
-    pub(super) fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
-        let state = self.state.get_mut().map_err(|_| corrupt())?;
-        if let Some(old) = state.entries.remove(&first) {
-            state.bytes -= old.charge;
+    fn candidate(&self, first: CommitSequence) -> Result<Option<CachedPayload>, StorageError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| corrupt())?
+            .entries
+            .get(&first)
+            .cloned())
+    }
+
+    pub(super) fn capture(
+        &self,
+        metadata: Arc<SegmentMetadata>,
+    ) -> Result<CapturedCommandPayload, StorageError> {
+        let cached = self.candidate(metadata.first)?;
+        Ok(CapturedCommandPayload { metadata, cached })
+    }
+
+    pub(super) fn retain_resolved(
+        &self,
+        metadata: &Arc<SegmentMetadata>,
+        resolved: &mut ResolvedCommandPayload,
+    ) -> Result<(), StorageError> {
+        // Prune or rebuild may have replaced the index while the old pinned
+        // read resolved. Such a read never repopulates the new cache.
+        if Arc::ptr_eq(metadata, &resolved.metadata)
+            && let Some(retained) = resolved.retained.take()
+        {
+            self.retain_prepared(metadata.first, retained)?;
         }
         Ok(())
+    }
+    pub(super) fn remove(&mut self, first: CommitSequence) -> Result<(), StorageError> {
+        let state = self.state.get_mut().map_err(|_| corrupt())?;
+        state.remove(first)
     }
 
     pub(super) fn resolve(
@@ -189,38 +314,13 @@ impl PayloadCache {
     ) -> Result<Arc<StoredCommandSegmentV1>, StorageError> {
         // Capture this caller's authority before consulting the disposable cache.
         // Never hold the cache mutex across storage I/O or canonical decoding.
+        #[cfg(test)]
+        super::before_payload_load();
         let bytes = load(metadata.first)?.ok_or_else(corrupt)?;
-        // The overlay and checkpoint hold a history stub for a journaled
-        // segment (ADR-0263); it names the cached segment by its digest.
-        let stub = crate::history_stub::segment_summary(&bytes)?;
-        let cached = {
-            let state = self.state.lock().map_err(|_| corrupt())?;
-            state
-                .entries
-                .get(&metadata.first)
-                .filter(|cached| {
-                    cached_payload_matches(
-                        &cached.canonical,
-                        cached.decoded.segment_digest().as_bytes(),
-                        metadata.first,
-                        &bytes,
-                        stub.as_ref(),
-                    )
-                })
-                .map(|cached| Arc::clone(&cached.decoded))
-        };
-        if let Some(cached) = cached {
-            metadata.validate(&cached)?;
-            return Ok(cached);
+        let (segment, retained) = decode_payload(metadata, bytes, self.candidate(metadata.first)?)?;
+        if let Some(retained) = retained {
+            self.retain_prepared(metadata.first, retained)?;
         }
-        let segment = Arc::new(
-            crate::history_stub::decode_retained_segment(&bytes)
-                .map_err(|_| corrupt())?
-                .into_parts()
-                .0,
-        );
-        metadata.validate(&segment)?;
-        self.retain(metadata.first, Arc::from(bytes), Arc::clone(&segment))?;
         Ok(segment)
     }
 
@@ -258,23 +358,31 @@ impl PayloadCache {
         if charge > MAX_PAYLOAD_BYTES {
             return Ok(());
         }
-        let mut state = self.state.lock().map_err(|_| corrupt())?;
-        if let Some(old) = state.entries.remove(&first) {
-            state.bytes -= old.charge;
-        }
-        while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
-        {
-            let (_, old) = state.entries.pop_first().ok_or_else(corrupt)?;
-            state.bytes -= old.charge;
-        }
-        state.entries.insert(
+        self.retain_prepared(
             first,
             CachedPayload {
                 canonical,
                 decoded: segment,
                 charge,
             },
-        );
+        )
+    }
+
+    fn retain_prepared(
+        &self,
+        first: CommitSequence,
+        retained: CachedPayload,
+    ) -> Result<(), StorageError> {
+        let charge = retained.charge;
+        let mut state = self.state.lock().map_err(|_| corrupt())?;
+        state.remove(first)?;
+        while state.entries.len() >= MAX_PAYLOAD_ENTRIES || state.bytes > MAX_PAYLOAD_BYTES - charge
+        {
+            let first = state.recency.front().copied().ok_or_else(corrupt)?;
+            state.remove(first)?;
+        }
+        state.entries.insert(first, retained);
+        state.recency.push_back(first);
         state.bytes += charge;
         Ok(())
     }

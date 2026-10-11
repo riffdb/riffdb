@@ -5,11 +5,13 @@
 
 //! Restartable, backup-bound offline durable-format transition.
 
+use redb::StorageBackend;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 
 use riffdb_storage_api::{
@@ -26,6 +28,9 @@ use crate::format_preflight::{
     publish_upgraded_current_marker,
 };
 use crate::store::RedbStore;
+
+#[path = "format_upgrade_space.rs"]
+mod space;
 
 const RECEIPT_SUFFIX: &str = ".riffdb-format-upgrade-v1";
 const RECEIPT_STAGING_SUFFIX: &str = ".riffdb-format-upgrade-v1.staging";
@@ -151,6 +156,8 @@ pub enum RedbDurableFormatUpgradeError {
     ReceiptInvalid,
     /// Restartable storage migration or recovery failed closed.
     Storage(StorageError),
+    /// Available target filesystem space is below the manifest floor.
+    InsufficientSpace,
     /// Receipt or filesystem durability was unavailable.
     Unavailable,
 }
@@ -172,6 +179,9 @@ impl fmt::Display for RedbDurableFormatUpgradeError {
                 "the durable-format upgrade receipt is invalid or does not match this database and backup",
             ),
             Self::Storage(_) => formatter.write_str("the durable-format upgrade failed closed"),
+            Self::InsufficientSpace => formatter.write_str(
+                "insufficient space for the durable-format upgrade; provision space and retry with the same immutable backup",
+            ),
             Self::Unavailable => formatter.write_str("the durable-format upgrade path is unavailable"),
         }
     }
@@ -184,7 +194,10 @@ impl Error for RedbDurableFormatUpgradeError {
             Self::BackupInvalid(error)
             | Self::BackupDoesNotMatchSource(error)
             | Self::Storage(error) => Some(error),
-            Self::UnsupportedAction | Self::ReceiptInvalid | Self::Unavailable => None,
+            Self::UnsupportedAction
+            | Self::ReceiptInvalid
+            | Self::InsufficientSpace
+            | Self::Unavailable => None,
         }
     }
 }
@@ -207,10 +220,88 @@ impl RedbDurableFormatUpgrade {
 
     /// Executes or resumes the only manifest-authorized offline transition.
     pub fn run(&self) -> Result<RedbDurableFormatUpgradeResult, RedbDurableFormatUpgradeError> {
+        self.run_with_space_observer(space::observe_available)
+    }
+
+    fn run_with_space_observer(
+        &self,
+        observe: impl FnOnce(&File) -> Result<(u64, u64), RedbDurableFormatUpgradeError>,
+    ) -> Result<RedbDurableFormatUpgradeResult, RedbDurableFormatUpgradeError> {
         let observed = preflight_durable_format_path(&self.database_path)
             .map_err(RedbDurableFormatUpgradeError::Preflight)?;
         let receipt_path = durable_format_upgrade_receipt_path(&self.database_path);
         let retained_receipt = read_optional_receipt(&receipt_path)?;
+        if observed == RedbDurableFormatPreflight::OpenCurrent && retained_receipt.is_none() {
+            return Ok(RedbDurableFormatUpgradeResult {
+                disposition: RedbDurableFormatUpgradeDisposition::AlreadyCurrent,
+                receipt: None,
+            });
+        }
+        if !matches!(
+            observed,
+            RedbDurableFormatPreflight::OpenCurrent
+                | RedbDurableFormatPreflight::OfflineUpgradeRequired { .. }
+        ) {
+            return Err(RedbDurableFormatUpgradeError::UnsupportedAction);
+        }
+        // Acquire both retained-engine flock custody and the current engine's
+        // range lock before comparing source bytes or publishing any receipt.
+        // Raw FileBackend construction performs no engine open or repair.
+        let source_custody = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.database_path)
+            .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
+        source_custody
+            .try_lock()
+            .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
+        let backend = redb::backends::FileBackend::new(
+            source_custody
+                .try_clone()
+                .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?,
+        )
+        .map_err(crate::error::database_error)
+        .map_err(RedbDurableFormatUpgradeError::Storage)?;
+        if !backend
+            .try_lock_range(Bound::Unbounded, Bound::Unbounded)
+            .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?
+        {
+            return Err(RedbDurableFormatUpgradeError::Unavailable);
+        }
+        if preflight_durable_format_path(&self.database_path)
+            .map_err(RedbDurableFormatUpgradeError::Preflight)?
+            != observed
+        {
+            return Err(RedbDurableFormatUpgradeError::ReceiptInvalid);
+        }
+        let mut retained_receipt = read_optional_receipt(&receipt_path)?;
+        let admission_action = match observed {
+            RedbDurableFormatPreflight::OfflineUpgradeRequired { action, .. } => action,
+            RedbDurableFormatPreflight::OpenCurrent => match retained_receipt.as_ref() {
+                Some(receipt) => preflight_durable_format(receipt.source)
+                    .map_err(|_| RedbDurableFormatUpgradeError::ReceiptInvalid)?,
+                None => {
+                    return Ok(RedbDurableFormatUpgradeResult {
+                        disposition: RedbDurableFormatUpgradeDisposition::AlreadyCurrent,
+                        receipt: None,
+                    });
+                }
+            },
+            _ => return Err(RedbDurableFormatUpgradeError::UnsupportedAction),
+        };
+        let DurableFormatAction::OfflineInPlace {
+            free_space_source_multiples,
+            ..
+        } = admission_action
+        else {
+            return Err(RedbDurableFormatUpgradeError::UnsupportedAction);
+        };
+        space::admit(
+            &self.database_path,
+            observed,
+            free_space_source_multiples,
+            observe,
+        )?;
 
         if observed == RedbDurableFormatPreflight::OpenCurrent {
             let Some(receipt) = retained_receipt else {
@@ -268,6 +359,33 @@ impl RedbDurableFormatUpgrade {
             ));
         }
 
+        // A completed prior edge is historical evidence, not an incomplete
+        // receipt for this edge. Recognize it only against the exact checked
+        // predecessor marker and database identity. The new edge still requires
+        // a new immutable backup and an exact source-byte comparison below.
+        if let Some(prior) = retained_receipt.as_ref()
+            && prior.phase == RedbDurableFormatUpgradePhase::Complete
+            && prior.target == current
+        {
+            let marker = crate::format_preflight::read_marker(
+                &crate::media::RealJournalMedia,
+                &crate::durable_format_marker_path(&self.database_path),
+            )
+            .map_err(RedbDurableFormatUpgradeError::Preflight)?;
+            if marker.identity() != current
+                || prior.database_id != backup_identity.database_id()
+                || prior.compatibility_fixture_digest != marker.compatibility_fixture_digest()
+                || prior.source.epoch() != current.epoch()
+                || prior.source.writer() >= current.writer()
+                || !matches!(
+                    preflight_durable_format(prior.source),
+                    Ok(DurableFormatAction::OfflineInPlace { .. })
+                )
+            {
+                return Err(RedbDurableFormatUpgradeError::ReceiptInvalid);
+            }
+            retained_receipt = None;
+        }
         let (receipt, resumed) = match retained_receipt {
             Some(receipt) => {
                 validate_receipt_for_manifest(&receipt, &backup_identity)?;
@@ -291,15 +409,24 @@ impl RedbDurableFormatUpgrade {
                     compatibility_fixture_digest: manifest.compatibility_fixture_digest(),
                 };
                 publish_receipt(&receipt_path, &receipt)?;
+                #[cfg(test)]
+                upgrade_crash_edge("accepted");
                 (receipt, false)
             }
         };
 
-        let store = RedbStore::open_for_durable_format_upgrade(&self.database_path, observed)
-            .map_err(RedbDurableFormatUpgradeError::Storage)?;
-        drop(store);
+        let store = RedbStore::open_for_durable_format_upgrade(
+            &self.database_path,
+            observed,
+            Some(Box::new(backend)),
+        )
+        .map_err(RedbDurableFormatUpgradeError::Storage)?;
+        #[cfg(test)]
+        upgrade_crash_edge("migration");
         let migrated = receipt.with_phase(RedbDurableFormatUpgradePhase::Migrated);
         publish_receipt(&receipt_path, &migrated)?;
+        #[cfg(test)]
+        upgrade_crash_edge("migrated");
         publish_upgraded_current_marker(&self.database_path, observed)
             .map_err(RedbDurableFormatUpgradeError::Preflight)?;
         if preflight_durable_format_path(&self.database_path)
@@ -308,8 +435,14 @@ impl RedbDurableFormatUpgrade {
         {
             return Err(RedbDurableFormatUpgradeError::ReceiptInvalid);
         }
+        #[cfg(test)]
+        upgrade_crash_edge("marker");
         let complete = migrated.with_phase(RedbDurableFormatUpgradePhase::Complete);
         publish_receipt(&receipt_path, &complete)?;
+        #[cfg(test)]
+        upgrade_crash_edge("complete");
+        drop(store);
+        drop(source_custody);
         Ok(RedbDurableFormatUpgradeResult {
             disposition: if resumed {
                 RedbDurableFormatUpgradeDisposition::Reconciled
@@ -318,6 +451,13 @@ impl RedbDurableFormatUpgrade {
             },
             receipt: Some(complete),
         })
+    }
+}
+
+#[cfg(test)]
+fn upgrade_crash_edge(edge: &str) {
+    if std::env::var("RIFFDB_FORMAT_UPGRADE_EDGE").ok().as_deref() == Some(edge) {
+        std::process::exit(95);
     }
 }
 
@@ -376,11 +516,14 @@ fn validate_receipt_for_current_marker(
 fn read_optional_receipt(
     path: &Path,
 ) -> Result<Option<RedbDurableFormatUpgradeReceipt>, RedbDurableFormatUpgradeError> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
+    // Inspect artifact kind before opening: a retained receipt is a regular
+    // lifecycle file, never a directory, alias or potentially blocking pipe.
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(RedbDurableFormatUpgradeError::Unavailable),
-    };
+        _ => return Err(RedbDurableFormatUpgradeError::Unavailable),
+    }
+    let mut file = File::open(path).map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
     let metadata = file
         .metadata()
         .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
@@ -638,6 +781,204 @@ mod tests {
         (database, backup)
     }
 
+    // req: AFC-001, AFC-002, REC-001, STO-032, END-008
+    #[test]
+    fn offline_format_upgrade_refuses_insufficient_space_before_any_mutation() {
+        let root = TestRoot::new("space-before-mutation");
+        let (database, backup) = predecessor_fixture(&root, 0x95);
+        let before = fs::read(&database).unwrap();
+        let journal_before = fs::read(crate::journal::journal_path(&database)).ok();
+        let result = RedbDurableFormatUpgrade::bind(&database, &backup)
+            .run_with_space_observer(|_| Ok((0, 4096)));
+        assert!(
+            matches!(
+                result,
+                Err(RedbDurableFormatUpgradeError::InsufficientSpace)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(&database).unwrap(), before);
+        assert_eq!(
+            fs::read(crate::journal::journal_path(&database)).ok(),
+            journal_before
+        );
+        assert!(!durable_format_upgrade_receipt_path(&database).exists());
+        assert!(!crate::durable_format_marker_path(&database).exists());
+    }
+
+    // req: AFC-001, AFC-002, REC-001, STO-032, END-008
+    #[test]
+    fn resumed_offline_upgrade_space_refusal_preserves_every_receipt_phase() {
+        for (ordinal, phase, current_marker) in [
+            (0, RedbDurableFormatUpgradePhase::Accepted, false),
+            (1, RedbDurableFormatUpgradePhase::Migrated, false),
+            (2, RedbDurableFormatUpgradePhase::Migrated, true),
+            (3, RedbDurableFormatUpgradePhase::Complete, true),
+        ] {
+            let root = TestRoot::new("resumed-space-floor");
+            let (database, backup) = predecessor_fixture(&root, 0xa0 + ordinal);
+            let observed = preflight_durable_format_path(&database).unwrap();
+            let RedbDurableFormatPreflight::OfflineUpgradeRequired { current, .. } = observed
+            else {
+                panic!("predecessor required")
+            };
+            let (_, identity) = validate_immutable_backup(&backup).unwrap();
+            let manifest = current_durable_format_manifest();
+            let receipt = RedbDurableFormatUpgradeReceipt {
+                phase,
+                source: current,
+                target: manifest.identity(),
+                database_id: identity.database_id(),
+                backup_manifest_checksum: identity.manifest_checksum().clone(),
+                compatibility_fixture_digest: manifest.compatibility_fixture_digest(),
+            };
+            if current_marker {
+                RedbDurableFormatUpgrade::bind(&database, &backup)
+                    .run()
+                    .unwrap();
+            }
+            publish_receipt(&durable_format_upgrade_receipt_path(&database), &receipt).unwrap();
+            let source_snapshot = || {
+                fs::read_dir(&root.0)
+                    .unwrap()
+                    .filter_map(|entry| {
+                        let entry = entry.unwrap();
+                        if entry.file_type().unwrap().is_file() {
+                            Some((entry.file_name(), fs::read(entry.path()).unwrap()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            };
+            let before = source_snapshot();
+            for available in [
+                Ok((0, 4096)),
+                Ok((u64::MAX, 2)),
+                Ok((100, 0)),
+                Err(RedbDurableFormatUpgradeError::Unavailable),
+            ] {
+                let result = RedbDurableFormatUpgrade::bind(&database, &backup)
+                    .run_with_space_observer(|_| available);
+                assert!(
+                    matches!(
+                        result,
+                        Err(RedbDurableFormatUpgradeError::InsufficientSpace
+                            | RedbDurableFormatUpgradeError::Unavailable)
+                    ),
+                    "{result:?}"
+                );
+                assert_eq!(source_snapshot(), before);
+            }
+        }
+    }
+
+    // req: AFC-001, AFC-002, REC-001, END-008
+    #[test]
+    fn already_current_without_upgrade_receipt_needs_no_space_or_backup_admission() {
+        let root = TestRoot::new("already-current-space-noop");
+        let database = root.join("current.redb");
+        drop(RedbStore::open(&database).unwrap());
+        let before = fs::read(&database).unwrap();
+        let result = RedbDurableFormatUpgrade::bind(&database, root.join("absent-backup"))
+            .run_with_space_observer(|_| panic!("a true no-op cannot request admission"))
+            .unwrap();
+        assert_eq!(
+            result.disposition(),
+            RedbDurableFormatUpgradeDisposition::AlreadyCurrent
+        );
+        assert_eq!(fs::read(&database).unwrap(), before);
+    }
+
+    // req: AFC-001, AFC-002, REC-001, END-008
+    #[cfg(unix)]
+    #[test]
+    fn upgrade_receipt_inspection_refuses_nonregular_artifacts_before_opening() {
+        let root = TestRoot::new("receipt-file-kind");
+        let (database, backup) = predecessor_fixture(&root, 0xa4);
+        RedbDurableFormatUpgrade::bind(&database, &backup)
+            .run()
+            .unwrap();
+        let receipt = durable_format_upgrade_receipt_path(&database);
+        assert!(read_optional_receipt(&receipt).unwrap().is_some());
+        let alias = root.join("receipt-alias");
+        std::os::unix::fs::symlink(&receipt, &alias).unwrap();
+        assert!(matches!(
+            read_optional_receipt(&alias),
+            Err(RedbDurableFormatUpgradeError::Unavailable)
+        ));
+        let directory = root.join("receipt-directory");
+        fs::create_dir(&directory).unwrap();
+        assert!(matches!(
+            read_optional_receipt(&directory),
+            Err(RedbDurableFormatUpgradeError::Unavailable)
+        ));
+        assert!(
+            read_optional_receipt(&root.join("absent-receipt"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    // req: AFC-001, AFC-002, REC-001, STO-032
+    #[test]
+    fn offline_upgrade_requires_source_custody_before_accepted_receipt() {
+        const CHILD: &str = "RIFFDB_OFFLINE_UPGRADE_CUSTODY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Parallel crash tests can fork while this fixture owns an OS lock.
+            // Such children retain inherited file descriptions until exec/exit,
+            // so closing our descriptor does not prove that custody is free.
+            // Own the complete lock-lifetime proof after exec in one child.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "format_upgrade::tests::offline_upgrade_requires_source_custody_before_accepted_receipt",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated native source-custody proof failed"
+            );
+            return;
+        }
+        let root = TestRoot::new("custody-before-accepted");
+        let (database, backup) = predecessor_fixture(&root, 0x94);
+        let before = fs::read(&database).unwrap();
+        // Raw native custody does not open or mutate the engine. An active
+        // owner must prevent even the initial upgrade-receipt publication.
+        let source = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database)
+            .unwrap();
+        source.try_lock().unwrap();
+        let custody = redb::backends::FileBackend::new(source).unwrap();
+        assert!(
+            redb::StorageBackend::try_lock_range(
+                &custody,
+                std::ops::Bound::Unbounded,
+                std::ops::Bound::Unbounded
+            )
+            .unwrap()
+        );
+        assert!(
+            RedbDurableFormatUpgrade::bind(&database, &backup)
+                .run()
+                .is_err()
+        );
+        assert!(!durable_format_upgrade_receipt_path(&database).exists());
+        assert_eq!(fs::read(&database).unwrap(), before);
+        assert!(!crate::durable_format_marker_path(&database).exists());
+        drop(custody);
+        RedbDurableFormatUpgrade::bind(&database, &backup)
+            .run()
+            .unwrap();
+    }
+
     // req: STO-030, STO-032, REC-005
     #[test]
     fn logical_v3_writer_upgrade_requires_exact_backup_and_refuses_online_open() {
@@ -656,7 +997,7 @@ mod tests {
         );
         let marker = riffdb_storage_api::DurableFormatMarker::new(
             source,
-            manifest.registry_digest(),
+            crate::store::PRE_COMPLETION_REGISTRY,
             CompatibilityFixtureDigest::from_bytes([
                 0x71, 0xf4, 0x29, 0xa8, 0x0c, 0xb6, 0x71, 0xe1, 0xd9, 0xf1, 0x7a, 0xb0, 0x96, 0x46,
                 0x81, 0x9d, 0xe0, 0x27, 0xe7, 0x0f, 0x1a, 0xd5, 0x61, 0x3d, 0xf1, 0x9b, 0x42, 0x9f,
@@ -806,7 +1147,7 @@ mod tests {
         publish_receipt(&durable_format_upgrade_receipt_path(&database), &receipt)
             .expect("publish admitted receipt");
         drop(
-            RedbStore::open_for_durable_format_upgrade(&database, observed)
+            RedbStore::open_for_durable_format_upgrade(&database, observed, None)
                 .expect("perform migration before simulated crash"),
         );
         assert!(!crate::durable_format_marker_path(&database).exists());

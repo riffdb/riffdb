@@ -34,6 +34,9 @@ impl DriverRuntime {
             std::str::from_utf8(&bytes).map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let document: DriverDocument =
             toml::from_str(text).map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        let socket_path = checked_absolute(&document.driver.socket)?;
+        crate::socket::checked_socket_path(&socket_path)
+            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let database = DatabaseAlias::new(document.application.database.clone())
             .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let endpoint = CanonicalHttpsEndpoint::parse(&document.remote.endpoint)
@@ -92,8 +95,8 @@ impl DriverRuntime {
         pool.verify_remote_identity(&catalog, &metadata)
             .await
             .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
-        let socket = DriverSocket::bind(checked_absolute(&document.driver.socket)?)
-            .map_err(|_| DriverRuntimeError::SocketUnavailable)?;
+        let socket =
+            DriverSocket::bind(socket_path).map_err(|_| DriverRuntimeError::SocketUnavailable)?;
         let remote_identity_hash = hex(&Sha256::digest(format!(
             "{}|{}",
             document.remote.endpoint, document.remote.tls_server_name

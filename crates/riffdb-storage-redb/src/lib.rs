@@ -28,6 +28,7 @@ mod backup;
 #[doc(hidden)]
 pub mod benchmark_support;
 mod changelog;
+mod changelog_source_reclamation_journal;
 mod changelog_v3;
 mod changelog_v3_activation;
 mod changelog_v3_capture;
@@ -39,7 +40,10 @@ mod changelog_v3_retained_validation;
 mod changelog_v3_roots;
 mod changelog_v3_write;
 mod checkpoint_census;
+mod outbox_ports;
 mod outbox_stage_census;
+mod source_validation_pin;
+mod source_validation_read;
 #[doc(hidden)]
 pub use outbox_stage_census::OUTBOX_NATIVE_STAGE_LABELS_V1;
 mod checkpoint_rewrite;
@@ -52,6 +56,7 @@ mod command_prefix;
 mod command_segment_preparation;
 mod composite_view;
 mod consumer;
+mod consumer_ports;
 mod derived;
 #[cfg(feature = "test-fixtures")]
 mod durable_fixtures;
@@ -283,6 +288,7 @@ pub use consumer::{
     ProtectedEventConsumerResolutionV1, ProtectedEventReplayDispositionV1,
     ProtectedEventReplayPageV1, ProtectedEventReplayResultV1, ProtectedEventReplayV1,
 };
+pub use consumer_ports::RedbEventConsumerPorts;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_set};
@@ -323,15 +329,15 @@ pub use maintenance::validate_migration_receipt_fixture;
 pub use maintenance::{
     RedbArchiveFrames, RedbArchiveProjectionRebuild, RedbArchiveRepository,
     RedbArchiveRestoreStage, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
-    RedbBootstrapMaterializationInput, RedbBootstrapMaterializer, RedbBootstrapReceiverRepository,
-    RedbBootstrapRepository, RedbBootstrapSourceBuild, RedbBootstrapStage,
-    RedbBootstrapVerification, RedbFollowerColumnarBuild, RedbFollowerColumnarScratch,
-    RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
-    RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPreparedArchiveRestore,
-    RedbPrivateArchiveRestoreCandidate, RedbPublishedBootstrapCandidate,
-    RedbReplayedArchiveRestore, RedbSealedArchiveRestore, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbValidatedPrivateArchiveRestore,
-    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
+    RedbBootstrapCustodyRead, RedbBootstrapMaterializationInput, RedbBootstrapMaterializer,
+    RedbBootstrapReceiverRepository, RedbBootstrapRepository, RedbBootstrapSourceBuild,
+    RedbBootstrapStage, RedbBootstrapVerification, RedbFollowerAcknowledgementPreparation,
+    RedbFollowerColumnarBuild, RedbFollowerColumnarScratch, RedbHeldBootstrapSource,
+    RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
+    RedbMigrationDiskReservation, RedbPreparedArchiveRestore, RedbPrivateArchiveRestoreCandidate,
+    RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
+    RedbValidatedPrivateArchiveRestore, RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{
@@ -346,6 +352,7 @@ pub use migration_stage::{
     RedbContractMigrationContext, RedbContractMigrationImmutableWitness,
     RedbContractMigrationPreflight, RedbContractMigrationStage, RedbMigrationProjectionPorts,
 };
+pub use outbox_ports::RedbOutboxPorts;
 pub use retention::{
     ONLINE_RETENTION_STEP_SEQUENCES, OnlineRetentionHold, OnlineRetentionPhases,
     OnlineRetentionStep, RedbOfflineRetention, RedbOnlineRetentionLane, RetentionStatusV1,

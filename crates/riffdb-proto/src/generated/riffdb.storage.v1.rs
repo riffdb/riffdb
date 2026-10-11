@@ -3827,6 +3827,34 @@ pub struct StoredRecordRegistryV2 {
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredRecordRegistryV3 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(oneof = "stored_record_registry_v3::State", tags = "2, 3")]
+    pub state: ::core::option::Option<stored_record_registry_v3::State>,
+}
+/// Nested message and enum types in `StoredRecordRegistryV3`.
+pub mod stored_record_registry_v3 {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Pending {}
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Completed {
+        #[prost(bytes = "vec", tag = "1")]
+        pub database_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "2")]
+        pub history_incarnation: u64,
+        #[prost(bytes = "vec", tag = "3")]
+        pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "2")]
+        Pending(Pending),
+        #[prost(message, tag = "3")]
+        Completed(Completed),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredReplicationAdministrationV1 {
     #[prost(uint64, tag = "1")]
     pub administration_sequence: u64,

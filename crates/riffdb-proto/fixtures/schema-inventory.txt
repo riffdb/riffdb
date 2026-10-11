@@ -138,6 +138,7 @@ files
   riffdb/storage/v1/reactive_module_v1.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/registry_v2.proto
+  riffdb/storage/v1/registry_v3.proto
   riffdb/storage/v1/replication_administration_v1.proto
     import riffdb/storage/v1/common.proto
     import riffdb/storage/v1/changelog_history_state_v3.proto
@@ -1595,6 +1596,15 @@ messages
     2 index_range_epoch optional .riffdb.storage.v1.IndexRangeReadDependencyV1 oneof=dependency
   riffdb.storage.v1.StoredRecordRegistryV2 fields=1
     1 registry_digest optional bytes
+  riffdb.storage.v1.StoredRecordRegistryV3 fields=3
+    1 registry_digest optional bytes
+    2 pending optional .riffdb.storage.v1.StoredRecordRegistryV3.Pending oneof=state
+    3 completed optional .riffdb.storage.v1.StoredRecordRegistryV3.Completed oneof=state
+  riffdb.storage.v1.StoredRecordRegistryV3.Completed fields=3
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 registry_digest optional bytes
+  riffdb.storage.v1.StoredRecordRegistryV3.Pending fields=0
   riffdb.storage.v1.StoredReplicationAdministrationV1 fields=12
     1 administration_sequence optional uint64
     2 timestamp optional .riffdb.storage.v1.TimestampV1

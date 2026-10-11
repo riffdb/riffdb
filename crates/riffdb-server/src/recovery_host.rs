@@ -97,6 +97,11 @@ impl RunningRecoveryHost {
             return Err(RecoveryHostStartError::Install { source, cleanup });
         }
 
+        // A bound socket precedes startup reconciliation. This closed private
+        // census is emitted only after restore-only admission is installed;
+        // it grants no ordinary readiness or authority. Missing diagnostic
+        // output cannot be mistaken for readiness by its observer.
+        let _ = publish_recovery_admission(&lifecycle, &mut std::io::stderr().lock());
         Ok(Self {
             lifecycle,
             spawner,
@@ -130,6 +135,19 @@ impl RunningRecoveryHost {
             Err(RecoveryHostShutdownError { runtime, blocking })
         }
     }
+}
+
+/// Best-effort fixed-size recovery admission census; never a public capability.
+pub(crate) fn publish_recovery_admission(
+    lifecycle: &ProductionLifecycleRoute,
+    output: &mut impl std::io::Write,
+) -> std::io::Result<bool> {
+    if !lifecycle.recovery_admission_available() {
+        return Ok(false);
+    }
+    output.write_all(b"riffdb-recovery-admission-v1\tready=1\n")?;
+    output.flush()?;
+    Ok(true)
 }
 
 impl fmt::Debug for RunningRecoveryHost {

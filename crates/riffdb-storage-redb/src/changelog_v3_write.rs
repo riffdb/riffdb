@@ -360,7 +360,7 @@ impl CapturedImmediateWrite {
 /// and apply the exact source first, and abort the transaction on any failure.
 pub(crate) struct PreparedHistoryAdvance {
     successor: ChangelogHistoryStateV3,
-    encoded: Vec<u8>,
+    encoded: Option<Vec<u8>>,
     encoded_history: Vec<u8>,
     encoded_allocator: Vec<u8>,
 }
@@ -373,6 +373,15 @@ impl PreparedHistoryAdvance {
         let history = read_checkpoint_roots_for_write(transaction)?
             .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
         Self::from_captured_predecessor(transaction, history, receipt)
+    }
+
+    pub(crate) fn prepare_stub(
+        transaction: &WriteTransaction,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        let history = read_checkpoint_roots_for_write(transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+        Self::from_predecessor(transaction, history, receipt, false)
     }
 
     /// [`Self::prepare`] for the next frame of one multi-frame checkpoint
@@ -390,6 +399,25 @@ impl PreparedHistoryAdvance {
         transaction: &WriteTransaction,
         history: ChangelogHistoryStateV3,
         receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        Self::prepare_chained_with_encoding(transaction, history, receipt, true)
+    }
+
+    /// Chained preparation for a retained frame that persists a stub rather
+    /// than canonical receipt bytes. Keep the same per-frame root checks.
+    pub(crate) fn prepare_stub_chained(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        Self::prepare_chained_with_encoding(transaction, history, receipt, false)
+    }
+
+    fn prepare_chained_with_encoding(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        receipt: &AuthoritativeTransactionV3,
+        encode_receipt: bool,
     ) -> Result<Self, StorageError> {
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
@@ -412,7 +440,7 @@ impl PreparedHistoryAdvance {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }
-        Self::from_captured_predecessor(transaction, history, receipt)
+        Self::from_predecessor(transaction, history, receipt, encode_receipt)
     }
 
     /// The history state this advance stages.
@@ -428,6 +456,15 @@ impl PreparedHistoryAdvance {
         transaction: &WriteTransaction,
         history: ChangelogHistoryStateV3,
         receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        Self::from_predecessor(transaction, history, receipt, true)
+    }
+
+    fn from_predecessor(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        receipt: &AuthoritativeTransactionV3,
+        encode_receipt: bool,
     ) -> Result<Self, StorageError> {
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
@@ -459,7 +496,12 @@ impl PreparedHistoryAdvance {
         if assigned != receipt.binding().sequence {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        let (successor, encoded) = history.advance_and_encode(receipt).map_err(value_error)?;
+        let (successor, encoded) = if encode_receipt {
+            let (successor, encoded) = history.advance_and_encode(receipt).map_err(value_error)?;
+            (successor, Some(encoded))
+        } else {
+            (history.advance(receipt).map_err(value_error)?, None)
+        };
         let encoded_history = encode_changelog_history_state_v3(successor)
             .map_err(codec_error)?
             .into_bytes();
@@ -499,7 +541,8 @@ impl PreparedHistoryAdvance {
 
     /// Stages one frame of a multi-frame checkpoint transaction without the
     /// per-frame physical root re-read. Only for an advance produced by
-    /// [`Self::prepare_chained`] or [`Self::prepare`] inside a batch whose
+    /// [`Self::prepare_chained`], [`Self::prepare_stub_chained`] or
+    /// [`Self::prepare`] inside a batch whose
     /// owner fully re-reads the roots after its final frame and aborts the
     /// transaction on any mismatch; `stub` is as for [`Self::stage_stub`].
     pub(crate) fn stage_within_batch(
@@ -526,7 +569,8 @@ impl PreparedHistoryAdvance {
                     .get()
                     .to_be_bytes()
                     .as_slice(),
-                stub.unwrap_or(self.encoded.as_slice()),
+                stub.or(self.encoded.as_deref())
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
             )
             .map_err(precommit_storage_error)?;
         #[cfg(test)]

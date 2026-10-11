@@ -5,6 +5,12 @@ use super::*;
 #[path = "store_creation_sync_tests.rs"]
 mod creation_sync_tests;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum EngineRepairPolicy {
+    Recover,
+    Refuse,
+}
+
 impl RedbStore {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_after_format_preflight(
@@ -17,13 +23,39 @@ impl RedbStore {
         engine_backend: Option<Box<dyn redb::StorageBackend>>,
         journal_media: Arc<dyn JournalMedia>,
     ) -> Result<Self, StorageError> {
+        Self::open_after_format_preflight_with_repair_policy(
+            open_mode,
+            path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            initialize_marker_witness,
+            engine_backend,
+            journal_media,
+            EngineRepairPolicy::Recover,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_after_format_preflight_with_repair_policy(
+        open_mode: OpenMode,
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        engine_backend: Option<Box<dyn redb::StorageBackend>>,
+        journal_media: Arc<dyn JournalMedia>,
+        repair_policy: EngineRepairPolicy,
+    ) -> Result<Self, StorageError> {
         if let Some(witness) = initialize_marker_witness {
             publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
         }
         let repair_observed = Arc::new(AtomicBool::new(false));
         let repair_observed_callback = Arc::clone(&repair_observed);
-        let refuse_repair = open_mode.is_offline_scrub();
+        let refuse_repair =
+            open_mode.is_offline_scrub() || repair_policy == EngineRepairPolicy::Refuse;
         let mut builder = Builder::new();
         builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);
         builder.set_repair_callback(move |session| {
@@ -69,11 +101,11 @@ impl RedbStore {
                     ),
                 )
             }
-        }
-        .map_err(database_error)?;
+        };
         if refuse_repair && repair_observed.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
+        let database = database.map_err(database_error)?;
         if open_mode == OpenMode::Source {
             // redb synchronizes file contents, not first-creation directory
             // publication. Recheck on reopen too: a prior failed sync may have
@@ -131,7 +163,7 @@ impl RedbStore {
                 journal_media,
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
-                write_fenced: AtomicBool::new(open_mode.is_private_validation() || refuse_repair),
+                write_fenced: AtomicBool::new(open_mode.is_private_validation()),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire)
                     | (!refuse_repair && take_engine_repaired_by_prior_open(path)),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
@@ -139,6 +171,7 @@ impl RedbStore {
                 clean_certificate_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 source_continuation_epoch: AtomicU64::new(0),
+                source_control_owner: Mutex::new(std::sync::Weak::new()),
                 durable_root_publication: AtomicU64::new(0),
                 durable_root_publication_wait: Mutex::new(()),
                 durable_root_publication_changed: Condvar::new(),
@@ -150,6 +183,7 @@ impl RedbStore {
                 publication_queue: Mutex::new(PublicationQueue::default()),
                 next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
+                idle_journal_lane: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
                 journal_spare: Arc::new(Mutex::new(())),
                 journal_sealer: Mutex::new(None),
@@ -194,9 +228,7 @@ impl RedbStore {
             store.ensure_current_storage_format()?;
             store.install_command_locator_tables()?;
             store.recover_durability_journal()?;
-        }
-        if open_mode == OpenMode::OfflineSource {
-            store.verify_materialized_journals()?;
+            store.upgrade_registry_completion_pending()?;
         }
         store.cache_verified_retention_watermark()?;
         Ok(store)

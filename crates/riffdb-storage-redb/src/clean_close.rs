@@ -683,7 +683,7 @@ fn validate_bounded_meta_value(
             codec::decode_capability_bootstrap_marker_v1(value)?;
         }
         META_RECORD_REGISTRY => {
-            let digest = codec::decode_record_registry_v2(value)?;
+            let digest = codec::decode_record_registry_digest(value)?;
             if digest.value() != &riffdb_storage_api::proto_codec::current_record_registry_digest()
             {
                 return Err(corrupt());

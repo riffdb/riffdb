@@ -901,3 +901,77 @@ fn preflight_rejects_a_group_that_dynamic_compatibility_would_split() {
 
     assert!(!crate::command_execution::command_group_is_deferred_eligible([&first, &same_target]));
 }
+
+fn follower_acknowledgement_request() -> riffdb_storage_api::ReplicationFollowerAcknowledgementV3 {
+    let database =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [3; 10]).unwrap();
+    let lineage = riffdb_storage_api::ChangelogLineageV3::new(
+        database,
+        1,
+        riffdb_types::LeadershipEpochV1::initial(),
+    )
+    .unwrap();
+    let point = riffdb_storage_api::ChangelogHistoryPointV3::new(
+        riffdb_storage_api::ChangelogTransactionSequence::new(1).unwrap(),
+        [1; 32],
+        riffdb_types::DualFrontier::INITIAL,
+    );
+    riffdb_storage_api::ReplicationFollowerAcknowledgementV3::new(
+        riffdb_storage_api::ReplicationSourceHoldIdV1::new([1; 16]).unwrap(),
+        lineage,
+        point,
+    )
+}
+
+// req: REP-003, REC-001, LOG-001, END-008
+#[test]
+fn follower_acknowledgement_keeps_its_fifo_position_between_command_groups() {
+    let request = follower_acknowledgement_request();
+    let (completion, _receiver) = oneshot::channel();
+    let mut pending = VecDeque::from([
+        command_msg_with_id(1),
+        CoordinatorMessage::FollowerAcknowledgement {
+            request,
+            completion,
+        },
+        command_msg_with_id(2),
+    ]);
+    let (first, reason) = form_next_unit(&mut pending).unwrap();
+    assert!(matches!(first, WorkUnit::CommandGroup(group) if group.len() == 1));
+    assert_eq!(reason, CommitGroupDispatchReason::Barrier);
+    let (second, _) = form_next_unit(&mut pending).unwrap();
+    assert!(
+        matches!(second, WorkUnit::Single(CoordinatorMessage::FollowerAcknowledgement { request: actual, .. }) if actual == request)
+    );
+    let (last, _) = form_next_unit(&mut pending).unwrap();
+    assert!(matches!(last, WorkUnit::CommandGroup(group) if group.len() == 1));
+    assert!(form_next_unit(&mut pending).is_none());
+}
+
+// req: REP-003, REC-001, LOG-001
+#[tokio::test]
+async fn follower_acknowledgement_lost_completion_preserves_uncertainty() {
+    let (completion, receiver) = oneshot::channel();
+    let receipt = FollowerAcknowledgementReceipt { receiver };
+    drop(completion);
+    assert!(matches!(receipt.completion().await,
+        Err(riffdb_storage_api::ChangelogCursorErrorV3::Storage(error))
+            if error.kind() == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown));
+}
+
+// req: REP-003, REC-001, LOG-001
+#[tokio::test]
+async fn follower_acknowledgement_fenced_and_stopped_messages_return_certain_refusal() {
+    for reject in [reject_message_fenced, reject_message_stopped] {
+        let (completion, receiver) = oneshot::channel();
+        reject(CoordinatorMessage::FollowerAcknowledgement {
+            request: follower_acknowledgement_request(),
+            completion,
+        });
+        assert!(
+            matches!(FollowerAcknowledgementReceipt { receiver }.completion().await,
+            Err(riffdb_storage_api::ChangelogCursorErrorV3::Storage(error))
+                if error.kind() == riffdb_storage_api::StorageErrorKind::Unavailable)
+        );
+    }
+}

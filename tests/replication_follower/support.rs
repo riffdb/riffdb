@@ -507,3 +507,17 @@ pub(super) async fn create_replication_capability(
     };
     created.token
 }
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && std::env::var_os("RIFFDB_TEST_KEEP_REPLICATION_FAILURE")
+                .is_some_and(|value| value == "1")
+        {
+            // Explicit diagnostic custody: ScratchDir excludes kept evidence
+            // from its stale-owner sweep. Report no paths or stored values.
+            self.root.keep();
+            eprintln!("replication-native-failure-evidence-kept");
+        }
+    }
+}

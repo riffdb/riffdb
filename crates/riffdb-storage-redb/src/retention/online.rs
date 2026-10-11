@@ -73,6 +73,9 @@ pub struct OnlineRetentionPhases {
     pub receipt_gate_us: u64,
     /// Another bounded off-gate receipt page remains before exact end.
     pub receipt_validation_pending: bool,
+    /// Remaining rest already charged by the shared source scheduler. This
+    /// observation grants no source work, writer turn or checkpoint authority.
+    pub source_work_wait: std::time::Duration,
     /// Receipt/audit rows streamed during the complete initial source pass.
     pub source_initial_rows: u64,
     /// Receipt/audit rows streamed after closed publication qualification.
@@ -172,9 +175,108 @@ pub struct RedbOnlineRetentionLane {
     /// lane materializes the journal suffix only once the database is idle.
     last_journal_sequence: Arc<std::sync::atomic::AtomicU64>,
     source_control: Arc<std::sync::Mutex<crate::store::ReplicationSourceControl>>,
+    logical_bytes: Arc<std::sync::Mutex<super::eligible_bytes::Observer>>,
+    physical_bytes:
+        Arc<std::sync::Mutex<crate::store::extent_reclamation::physical_bytes::Observer>>,
 }
 
 impl RedbOnlineRetentionLane {
+    /// Incomplete captured pages owned by the native maintenance worker.
+    /// This observation schedules read-only progress and confers no authority.
+    #[doc(hidden)]
+    pub fn captured_observations_pending(&self) -> Result<bool, StorageError> {
+        if self.physical_observation_pending()?
+            || self
+                .logical_bytes
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .pending()
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .captured_observations_pending())
+    }
+
+    /// Captured read-only pages can progress without a checkpoint poll. A
+    /// source proof waiting for its preparation budget is not read-only work.
+    /// This never captures a pin or supplies mutation or checkpoint authority.
+    #[doc(hidden)]
+    pub fn captured_read_only_observation_pending(&self) -> Result<bool, StorageError> {
+        if self.physical_observation_pending()?
+            || self
+                .logical_bytes
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .pending()
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .captured_read_only_observation_pending())
+    }
+
+    /// Advance only already captured pages during existing worker rest/wait.
+    /// Never capture another root, acquire the writer or authorize deletion.
+    #[doc(hidden)]
+    pub fn advance_captured_observations_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .continue_captured(&self.shared);
+        self.advance_source_and_logical_observations_off_gate()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn physical_observations_for_test(&self) -> u64 {
+        self.physical_bytes.lock().unwrap().completed_for_test
+    }
+
+    /// Whether the first-party worker owns an incomplete physical census.
+    /// This is nondurable observation state and confers no writer authority.
+    #[doc(hidden)]
+    pub fn physical_observation_pending(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .pending())
+    }
+
+    /// Advance one existing physical census page during worker rest. Never
+    /// capture a new census here, shorten writer rest, or authorize retirement.
+    #[doc(hidden)]
+    pub fn advance_physical_observation_off_gate(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .continue_captured(&self.shared))
+    }
+
+    /// Whether source-root preparation is still waiting for native checkpoint
+    /// installation or sealing. This only schedules a fresh preparation attempt;
+    /// it grants no source mutation, drain, writer or checkpoint authority.
+    #[doc(hidden)]
+    pub fn source_checkpoint_publication_pending(&self) -> Result<bool, StorageError> {
+        self.shared.source_checkpoint_publication_pending()
+    }
+
+    /// Fixed cumulative drain-refusal classes and the latest suffix metadata.
+    /// Only nondurable diagnostics; never source or checkpoint authority.
+    #[doc(hidden)]
+    pub fn source_drain_observation(&self) -> Result<[u64; 11], StorageError> {
+        self.shared.source_drain_observation()
+    }
+
     /// First-party worker retirement cancels pending source requests under the
     /// gate lock, leaving ordinary writers and granted atomic turns intact.
     #[doc(hidden)]
@@ -182,7 +284,28 @@ impl RedbOnlineRetentionLane {
         self.shared.retire_online_source_admission();
     }
 
-    /// Releases the retired owner's nondurable source-validation pins after
+    /// Binds the graph's shared source scheduling policy before starting work.
+    /// This is monotonic: repeated composition cannot reset already charged rest.
+    #[doc(hidden)]
+    pub fn bind_source_scheduler(&self) -> Result<(), StorageError> {
+        self.source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .bind_source_scheduler();
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "test-fixtures")]
+    pub fn source_scheduler_bound_fixture(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_scheduler_bound())
+    }
+
+    /// Releases the retired owner's nondurable validation and byte-observation pins after
     /// its worker has joined. No durable hold or history is changed.
     #[doc(hidden)]
     pub fn release_source_validation(&self) {
@@ -190,25 +313,71 @@ impl RedbOnlineRetentionLane {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retire_online_validation();
+        self.physical_bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire();
+        self.logical_bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire();
     }
 
-    /// Continues one captured receipt/audit page while the worker waits for a
-    /// checkpoint. Never requests a writer turn or captures another reader.
-    /// Existing page bounds, qualification and exact-end checks still apply.
+    /// Continues receipt/audit and logical-byte pages while waiting for a checkpoint,
+    /// and ticks the bounded physical-byte observer outside the writer gate.
+    /// Existing capture, page, qualification and exact-end checks still apply.
     #[doc(hidden)]
     pub fn advance_source_validation_off_gate(
         &self,
     ) -> Result<OnlineRetentionPhases, StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .tick(&self.shared);
+        self.advance_source_and_logical_observations_off_gate()
+    }
+
+    fn advance_source_and_logical_observations_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
+        let mut logical = self
+            .logical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = logical.advance(
+            &RedbOperationalPorts {
+                shared: Arc::clone(&self.shared),
+            },
+            std::time::Instant::now(),
+        ) {
+            logical.report_refusal(&error);
+        }
+        drop(logical);
         let mut source = self
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let [initial, continued, invalidated] = source.advance_validation_off_gate()?;
+        // Like logical/physical observations, already captured source-byte
+        // pages continue during mandatory writer/proof rest. They cannot
+        // prepare a mutation, renew a source turn or overwrite its candidate.
+        source.advance_source_byte_observation_off_gate()?;
+        if !source.source_background_work_ready() {
+            return Ok(OnlineRetentionPhases {
+                receipt_validation_pending: source.receipt_validation_pending(),
+                source_work_wait: source.source_work_wait(),
+                ..OnlineRetentionPhases::default()
+            });
+        }
+        let started = std::time::Instant::now();
+        let result = source.advance_source_proof_off_gate();
+        source.charge_source_work(started);
+        let [initial, continued, invalidated] = result?;
         Ok(OnlineRetentionPhases {
             source_initial_rows: initial,
             source_continuation_rows: continued,
             source_validation_invalidations: invalidated,
             receipt_validation_pending: source.receipt_validation_pending(),
+            source_work_wait: source.source_work_wait(),
             ..OnlineRetentionPhases::default()
         })
     }
@@ -249,6 +418,23 @@ impl RedbOnlineRetentionLane {
         max_sequences: NonZeroU64,
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        self.physical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .tick(&self.shared);
+        let mut logical = self
+            .logical_bytes
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Err(error) = logical.tick(
+            &RedbOperationalPorts {
+                shared: Arc::clone(&self.shared),
+            },
+            retain_sequences,
+        ) {
+            logical.report_refusal(&error);
+        }
+        drop(logical);
         let mut phases = OnlineRetentionPhases::default();
         let reclaiming = std::time::Instant::now();
         let reclamation = self.shared.reclaim_one_extent()?;
@@ -261,25 +447,35 @@ impl RedbOnlineRetentionLane {
             .source_control
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let (removed, held_us) = source_control.reclaim_history_online()?;
-        phases.receipt_validation_pending = source_control.receipt_validation_pending();
-        [
-            phases.source_initial_rows,
-            phases.source_continuation_rows,
-            phases.source_validation_invalidations,
-            phases.source_admission_refusals,
-        ] = source_control.validation_phases();
-        [
-            phases.source_admission_busy_writer,
-            phases.source_admission_pending_journal,
-            phases.source_admission_checkpoint,
-            phases.source_admission_qualification,
-            phases.source_admission_page_bound,
-        ] = source_control.admission_yields();
-        phases.source_reclamation_attempts = 1;
-        phases.source_reclamation_sample = source_control.reclamation_observation();
-        phases.source_reclamation_yields = source_control.reclamation_yields();
-        phases.source_admission_census = source_control.source_admission_census();
+        let (removed, held_us) = if source_control.source_background_work_ready() {
+            let started = std::time::Instant::now();
+            let result = source_control.reclaim_history_online();
+            source_control.charge_source_work(started);
+            let (removed, held_us) = result?;
+            phases.receipt_validation_pending = source_control.receipt_validation_pending();
+            [
+                phases.source_initial_rows,
+                phases.source_continuation_rows,
+                phases.source_validation_invalidations,
+                phases.source_admission_refusals,
+            ] = source_control.validation_phases();
+            [
+                phases.source_admission_busy_writer,
+                phases.source_admission_pending_journal,
+                phases.source_admission_checkpoint,
+                phases.source_admission_qualification,
+                phases.source_admission_page_bound,
+            ] = source_control.admission_yields();
+            phases.source_reclamation_attempts = 1;
+            phases.source_reclamation_sample = source_control.reclamation_observation();
+            phases.source_reclamation_yields = source_control.reclamation_yields();
+            phases.source_admission_census = source_control.source_admission_census();
+            (removed, held_us)
+        } else {
+            phases.receipt_validation_pending = source_control.receipt_validation_pending();
+            (0, 0)
+        };
+        phases.source_work_wait = source_control.source_work_wait();
         drop(source_control);
         phases.reclaimed_receipts = removed;
         phases.receipt_gate_us = held_us;
@@ -319,7 +515,16 @@ impl RedbOperationalPorts {
         RedbOnlineRetentionLane {
             shared: Arc::clone(&self.shared),
             last_journal_sequence: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
-            source_control: Arc::new(std::sync::Mutex::new(self.replication_source_control())),
+            source_control: self.shared_source_control().unwrap_or_else(|_| {
+                self.shared.fence_writes();
+                Arc::new(std::sync::Mutex::new(self.replication_source_control()))
+            }),
+            physical_bytes: Arc::new(std::sync::Mutex::new(
+                crate::store::extent_reclamation::physical_bytes::Observer::default(),
+            )),
+            logical_bytes: Arc::new(std::sync::Mutex::new(
+                super::eligible_bytes::Observer::default(),
+            )),
         }
     }
 

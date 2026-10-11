@@ -231,7 +231,7 @@ pub(crate) fn validate_retained_rows(
 pub(crate) fn validate_source_holds(
     holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
     history: ChangelogHistoryStateV3,
-    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    receipts: &impl crate::source_validation_read::ReceiptRead,
 ) -> Result<(), StorageError> {
     use riffdb_storage_api::{
         ChangelogHistoryPointV3, FollowerRegistrationPhaseV1 as Phase,
@@ -281,13 +281,8 @@ pub(crate) fn validate_source_holds(
         )
         .map_err(|_| corrupt())?;
         let receipt = receipts
-            .get(hold.fence().sequence().get().to_be_bytes().as_slice())
-            .map_err(precommit_storage_error)?
+            .receipt(hold.fence().sequence(), None)?
             .ok_or_else(corrupt)?;
-        let receipt = AuthoritativeTransactionV3::decode(
-            &crate::history_stub::resolve_history_value(receipt.value())?,
-        )
-        .map_err(|_| corrupt())?;
         if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())? != hold.fence() {
             return Err(corrupt());
         }
@@ -378,10 +373,13 @@ fn validate_roots(
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
         )
     };
-    let registry = *decode_record_registry_v2(&read(META_RECORD_REGISTRY)?)
+    let registry = *decode_record_registry_digest(&read(META_RECORD_REGISTRY)?)
         .map_err(codec_error)?
         .value();
-    if registry != PRE_V3_REGISTRY && registry != current_record_registry_digest() {
+    if registry != PRE_V3_REGISTRY
+        && registry != current_record_registry_digest()
+        && registry != crate::store::PRE_COMPLETION_REGISTRY
+    {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let mut present = 0;
@@ -406,7 +404,10 @@ fn validate_roots(
         }
         return Ok(None);
     }
-    if registry != current_record_registry_digest() || present != required || source_holds.is_none()
+    if (registry != current_record_registry_digest()
+        && registry != crate::store::PRE_COMPLETION_REGISTRY)
+        || present != required
+        || source_holds.is_none()
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
@@ -499,13 +500,10 @@ fn validate_roots(
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
         return Ok(Some(history));
     }
-    // The decoder checks its frame-adjusted hard bound before hashing/copying.
-    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-        receipt.value(),
-    )?)
-    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     history
-        .validate_terminal_receipt(&receipt)
+        .validate_terminal_canonical_v1(&crate::history_stub::resolve_history_value(
+            receipt.value(),
+        )?)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     Ok(Some(history))
 }

@@ -156,6 +156,61 @@ fn successor_segment_covers_evidence_in_both_sealing_paths_and_digest() {
 }
 
 #[test]
+fn successor_segment_decoding_preserves_semantics_with_bounded_stack() {
+    const CHILD: &str = "RIFFDB_SEGMENT_STACK_REGRESSION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // A stack overflow aborts the process. Keep its evidence and refusal
+        // inside a child so a regression does not abort the rest of the suite.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "proto_codec::tests::command_prefix::successor_segment_decoding_preserves_semantics_with_bounded_stack",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "bounded decoder child: {:?}; stdout={}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed;"));
+        return;
+    }
+
+    let command = capsule(1)
+        .with_prefix_evidence(evidence(1, b"intermediate"))
+        .unwrap();
+    let (sealed, encoded) =
+        seal_and_encode_command_segment_v1(draft(vec![command]).unwrap()).unwrap();
+    // The failing native call chain also needs space for journal replay,
+    // operational admission and the allocator within its 384-KiB stack.
+    // Reserve 160 KiB for complete decoding, leaving 224 KiB for those callers.
+    std::thread::Builder::new()
+        .name("segment-stack-regression".into())
+        .stack_size(160 * 1024)
+        .spawn(move || {
+            eprintln!("segment-stack-phase=decode");
+            let decoded = decode_command_segment_v1(encoded.as_bytes()).unwrap();
+            eprintln!("segment-stack-phase=semantic-equality");
+            assert_eq!(decoded.value(), &sealed);
+            eprintln!("segment-stack-phase=canonical-encoding");
+            assert_eq!(encode_command_segment_v1(decoded.value()).unwrap(), encoded);
+            let mut corrupt = encoded.into_bytes();
+            let last = corrupt.len() - 1;
+            corrupt[last] ^= 1;
+            eprintln!("segment-stack-phase=corruption-refusal");
+            assert!(decode_command_segment_v1(&corrupt).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn successor_segment_refuses_mixed_missing_or_discontinuous_evidence() {
     let first = capsule(1)
         .with_prefix_evidence(evidence(1, b"one"))

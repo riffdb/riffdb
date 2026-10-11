@@ -26,7 +26,7 @@ use riffdb_storage_api::{
 #[path = "changelog_source_control_transaction.rs"]
 mod transaction;
 use transaction::Barrier;
-pub(crate) use transaction::ControlWrite;
+pub(crate) use transaction::{AcknowledgementPublication, ControlWrite};
 #[path = "changelog_source_prefix_refresh.rs"]
 mod prefix_refresh;
 pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
@@ -34,6 +34,20 @@ pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
 mod bootstrap_attachment;
+#[path = "changelog_bootstrap_custody.rs"]
+mod bootstrap_custody;
+#[path = "changelog_source_checkpoint_license.rs"]
+mod checkpoint_license;
+#[path = "changelog_source_control_checkpointed_online.rs"]
+mod checkpointed_online;
+#[path = "changelog_source_eligible_bytes.rs"]
+mod eligible_bytes;
+#[path = "changelog_follower_acknowledgement.rs"]
+mod follower_acknowledgement;
+#[path = "changelog_source_control_journaled.rs"]
+mod journaled;
+#[path = "changelog_source_pacing.rs"]
+mod pacing;
 #[path = "primary_fence_control.rs"]
 mod primary_fence;
 #[path = "changelog_registered_ack.rs"]
@@ -56,51 +70,41 @@ struct Observation {
 pub(crate) struct ReplicationSourceControl {
     shared: Arc<SharedRedb>,
     observed: Option<Observation>,
+    prepared_acknowledgement: Option<(Hold, Vec<u8>)>,
+    pub(crate) acknowledgement_active: Option<Hold>,
+    bootstrap_reader: Option<std::sync::Weak<()>>,
+    // A storage primitive has no background scheduler. The graph and closed
+    // acknowledgement custodian bind this shared scheduling policy once.
+    source_pacing: Option<pacing::SourcePacing>,
     online_validation: Option<crate::changelog_v3_retained_validation::RetainedHistoryValidation>,
     online_independent_sequence: u64,
+    online_license: Option<checkpoint_license::CheckpointLicense>,
     online_validation_phases: [u64; 4],
     online_admission_yields: [u64; 5],
     reclamation_observation: Option<[u64; 8]>,
     reclamation_yields: [u64; 3],
     source_admission_census: [u64; 8],
+    eligible_bytes: eligible_bytes::Observer,
 }
 
 impl RedbOperationalPorts {
     /// A retained artifact handle is not permission to continue after retirement
     /// or custody loss. Outbound bytes use one current, completely validated pin.
     pub(crate) fn validate_bootstrap_custody(&self, bootstrap: Hold) -> Result<(), StorageError> {
-        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+        if self.shared.mutation_gate.source_admission_retired()?
+            || self.shared.write_fenced.load(Ordering::Acquire)
+            || self.shared.is_follower_mode()
+        {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let root = self.shared.capture_checkpoint_root()?;
         let history = crate::changelog_v3_roots::validate_retained_history(&root)?
             .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-        if bootstrap.kind() != Kind::Bootstrap || bootstrap.lineage() != history.lineage() {
-            return Err(storage_error(StorageErrorKind::Unavailable));
-        }
-        let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
-        let row = table
-            .get(bootstrap.storage_key().as_slice())
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-        let held = *decode_replication_source_hold_v1(row.value())
-            .map_err(crate::error::codec_error)?
-            .value();
-        if held != bootstrap {
-            return Err(storage_error(StorageErrorKind::Unavailable));
-        }
-        let key = Hold::storage_key_for(bootstrap.id(), Kind::FollowerAcknowledgement);
-        if let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? {
-            let state = *decode_replication_source_hold(row.value())
-                .map_err(crate::error::codec_error)?
-                .value();
-            if let State::Registered(policy) = state
-                && !registered_ack::permits_bootstrap(policy, bootstrap)
-            {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        }
-        Ok(())
+        bootstrap_custody::validate_hold(
+            &crate::source_validation_pin::ValidationSource::Checkpoint(root),
+            history,
+            bootstrap,
+        )
     }
 
     /// Bounded source-only custody probe. Cleanup already owns the artifact's
@@ -164,23 +168,116 @@ impl RedbOperationalPorts {
         Ok(false)
     }
 
+    pub(crate) fn shared_source_control(
+        &self,
+    ) -> Result<Arc<Mutex<ReplicationSourceControl>>, StorageError> {
+        let mut owner = self
+            .shared
+            .source_control_owner
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if let Some(existing) = owner.upgrade() {
+            return Ok(existing);
+        }
+        let control = Arc::new(Mutex::new(self.replication_source_control()));
+        *owner = Arc::downgrade(&control);
+        Ok(control)
+    }
+
     /// A new handle loses only conservative observations, never durable holds.
     pub(crate) fn replication_source_control(&self) -> ReplicationSourceControl {
         ReplicationSourceControl {
             shared: Arc::clone(&self.shared),
             observed: None,
+            prepared_acknowledgement: None,
+            acknowledgement_active: None,
+            bootstrap_reader: None,
+            source_pacing: None,
             online_validation: None,
             online_independent_sequence: 0,
+            online_license: None,
             online_validation_phases: [0; 4],
             online_admission_yields: [0; 5],
             reclamation_observation: None,
             reclamation_yields: [0; 3],
             source_admission_census: [0; 8],
+            eligible_bytes: eligible_bytes::Observer::default(),
         }
     }
 }
 
 impl ReplicationSourceControl {
+    pub(crate) fn bind_source_scheduler(&mut self) {
+        // Rebinding cannot reset charged rest or recover clock overflow.
+        self.source_pacing.get_or_insert_with(Default::default);
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn source_scheduler_bound(&self) -> bool {
+        self.source_pacing.is_some()
+    }
+
+    pub(crate) fn source_work_wait(&self) -> std::time::Duration {
+        self.source_pacing
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |pacing| {
+                pacing.wait(std::time::Instant::now())
+            })
+    }
+
+    /// A ready candidate owns the single proof slot until admission, yield or
+    /// cancellation. Background work cannot overwrite it or renew its rest
+    /// between preparation and the existing ordered writer turn.
+    pub(crate) fn source_background_work_ready(&self) -> bool {
+        self.prepared_acknowledgement.is_none()
+            && !self.bootstrap_read_active()
+            && self.source_work_wait().is_zero()
+    }
+
+    pub(crate) fn charge_source_work(&mut self, started: std::time::Instant) {
+        if let Some(pacing) = self.source_pacing.as_mut() {
+            let now = std::time::Instant::now();
+            pacing.charge(now, now.saturating_duration_since(started));
+        }
+    }
+
+    pub(crate) fn acknowledgement_gate_census(&self) -> Result<[u64; 2], StorageError> {
+        let sample = self.shared.mutation_gate.source_census()?;
+        Ok([sample[5], sample[6]])
+    }
+
+    pub(crate) fn charge_acknowledgement_work(
+        &mut self,
+        started: std::time::Instant,
+        phase: u8,
+        writer_wait_us: u64,
+        gate_held_us: u64,
+        result: &Result<bool, Refusal>,
+    ) {
+        let elapsed = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        self.charge_source_work(started);
+        let [initial_rows, continued_rows] = self
+            .online_validation
+            .as_ref()
+            .map_or([0; 2], |walk| walk.step_rows());
+        let result_class = match result {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(_) => 2,
+        };
+        let off_gate_us =
+            if elapsed == u64::MAX || writer_wait_us == u64::MAX || gate_held_us == u64::MAX {
+                u64::MAX
+            } else {
+                elapsed
+                    .saturating_sub(writer_wait_us)
+                    .saturating_sub(gate_held_us)
+            };
+        eprintln!(
+            "riffdb-follower-ack-work-v1\tphase={phase}\tresult={result_class}\toff_gate_us={off_gate_us}\twriter_wait_us={writer_wait_us}\tgate_held_us={gate_held_us}\tinitial_rows={initial_rows}\tcontinued_rows={continued_rows}"
+        );
+    }
+
     /// Exact registration retries allocate no receipt; replacement is refused.
     pub(crate) fn register(&mut self, hold: Hold) -> Result<bool, Refusal> {
         self.change_hold(hold, false)
@@ -300,15 +397,24 @@ impl ReplicationSourceControl {
         self.reclamation_yields = [0; 3];
         // The offline owner deliberately reconstructs the complete current
         // proof. A retained online candidate cannot authorize its publication.
-        self.online_validation = None;
+        self.retire_online_validation();
         let barrier = Barrier::acquire(Arc::clone(&self.shared))?;
-        self.reclaim_at_barrier(barrier)
+        self.reclaim_at_barrier(barrier, false)
     }
 
     /// One bounded validation page, followed only at exact end by a
     /// bounded FIFO, drained-root admission. Returns actual removed receipts
     /// and gate-held time; the caller applies the existing maintenance pacing.
     pub(crate) fn reclaim_history_online(&mut self) -> Result<(u64, u64), StorageError> {
+        self.eligible_bytes.check_qualification(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        );
+        if let Err(error) = self.eligible_bytes.advance(std::time::Instant::now()) {
+            self.retire_online_validation();
+            return Err(error);
+        }
         self.reclamation_observation = None;
         self.reclamation_yields = [0; 3];
         self.online_validation_phases = [0; 4];
@@ -321,6 +427,7 @@ impl ReplicationSourceControl {
             Ok(sample) => sample,
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
@@ -329,6 +436,7 @@ impl ReplicationSourceControl {
             Ok(sample) => sample,
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
@@ -345,7 +453,7 @@ impl ReplicationSourceControl {
             self.online_validation_phases[1] = continued;
         }
         if result.is_err() {
-            self.online_validation = None;
+            self.retire_online_validation();
         } else if let Some(walk) = self.online_validation.as_mut() {
             walk.release_completed_pin();
         }
@@ -353,6 +461,16 @@ impl ReplicationSourceControl {
     }
 
     fn reclaim_history_online_step(&mut self) -> Result<u64, StorageError> {
+        self.refresh_qualified_source_byte_prefix(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        )?;
+        if self.shared.application_commit_profile == RedbCommitProfile::Standard
+            && riffdb_storage_api::DURABILITY_JOURNAL_FRAME_VERSION >= 5
+        {
+            return self.reclaim_history_journaled_online_step();
+        }
         use crate::changelog_v3_retained_validation::RetainedHistoryValidation;
         let epoch = self
             .shared
@@ -364,13 +482,43 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.qualifies(epoch))
         {
             self.online_validation = None;
+            self.online_license = None;
             self.online_validation_phases[2] = 1;
         }
+        // A completed ancestor may lag an already installed checkpoint even
+        // when the newer active suffix cannot admit a drained source turn.
+        // Continue its qualified proof outside the writer before admission;
+        // leave incomplete candidates on their original pin until exact end.
+        if let Some(walk) = self.online_validation.as_mut() {
+            let publication = self.shared.durable_root_publication.load(Ordering::Acquire);
+            if walk.is_complete()
+                && publication.is_multiple_of(2)
+                && publication != walk.root_identity()
+            {
+                walk.release_completed_pin();
+                let root = self.shared.capture_checkpoint_root()?;
+                let epoch = self
+                    .shared
+                    .source_continuation_epoch
+                    .load(Ordering::Acquire);
+                if !walk.continue_on(root, epoch)? {
+                    self.online_validation = None;
+                    self.online_license = None;
+                    self.online_validation_phases[2] = 1;
+                    return Ok(0);
+                }
+            }
+        }
         if self.online_validation.is_none() {
-            let captured = Barrier::try_validation_capture(&self.shared)?;
-            let Some((root, qualification)) = captured else {
-                return Ok(0);
-            };
+            let (root, qualification) =
+                match Barrier::try_validation_capture_observed(&self.shared)? {
+                    transaction::AdmissionAttempt::Admitted(captured) => captured,
+                    transaction::AdmissionAttempt::Yielded(reason) => {
+                        self.online_validation_phases[3] = 1;
+                        self.online_admission_yields[reason.index()] = 1;
+                        return Ok(0);
+                    }
+                };
             self.online_validation = RetainedHistoryValidation::new(root)?;
             if let Some(walk) = self.online_validation.as_mut() {
                 walk.bind_qualification(qualification);
@@ -401,44 +549,11 @@ impl ReplicationSourceControl {
             }
             Err(error) => {
                 self.online_validation = None;
+                self.online_license = None;
                 return Err(error);
             }
         };
-        let independent = self
-            .online_validation
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .independent_sequence();
-        if independent <= self.online_independent_sequence {
-            self.reclamation_yields[1] = 1;
-            return Ok(0);
-        }
-        let before = barrier
-            .observation()
-            .history
-            .minimum_resume()
-            .sequence()
-            .get();
-        let advanced = self
-            .reclaim_at_barrier(barrier)
-            .map_err(|error| match error {
-                Refusal::Storage(error) => error,
-                _ => storage_error(StorageErrorKind::CorruptData),
-            })?;
-        self.online_independent_sequence = independent;
-        let removed = if advanced {
-            self.observed
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-                .history
-                .minimum_resume()
-                .sequence()
-                .get()
-                .checked_sub(before)
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-        } else {
-            0
-        };
-        Ok(removed)
+        self.reclaim_checkpointed_online(barrier)
     }
 
     pub(crate) fn source_admission_census(&self) -> [u64; 8] {
@@ -448,7 +563,31 @@ impl ReplicationSourceControl {
     /// Advances only the already captured candidate. This cannot capture a
     /// root, request a writer turn, drain a journal or delete a receipt. Exact
     /// end leaves a certificate for the next ordinarily paced admission.
+    #[cfg(test)]
     pub(crate) fn advance_validation_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
+        self.advance_source_byte_observation_off_gate()?;
+        self.advance_source_proof_off_gate()
+    }
+
+    /// Already captured exact byte accounting is read-only observation work.
+    /// It cannot advance source proof, capture a pin, request a writer turn or
+    /// change the source owner's preparation/rest deadline.
+    pub(crate) fn advance_source_byte_observation_off_gate(&mut self) -> Result<(), StorageError> {
+        self.eligible_bytes.check_qualification(
+            self.shared
+                .source_continuation_epoch
+                .load(Ordering::Acquire),
+        );
+        if let Err(error) = self.eligible_bytes.advance(std::time::Instant::now()) {
+            self.retire_online_validation();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Mutation-proof preparation stays on the graph's shared source pacing.
+    /// Observations have their own captured pages and grant no such authority.
+    pub(crate) fn advance_source_proof_off_gate(&mut self) -> Result<[u64; 3], StorageError> {
         let epoch = self
             .shared
             .source_continuation_epoch
@@ -459,6 +598,7 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.qualifies(epoch))
         {
             self.online_validation = None;
+            self.online_license = None;
             return Ok([0, 0, 1]);
         }
         let Some(walk) = self.online_validation.as_mut() else {
@@ -472,6 +612,7 @@ impl ReplicationSourceControl {
             )
         {
             self.online_validation = None;
+            self.online_license = None;
             return Err(error);
         }
         let [initial, continued] = walk.step_rows();
@@ -480,7 +621,9 @@ impl ReplicationSourceControl {
     }
 
     pub(crate) fn retire_online_validation(&mut self) {
+        self.eligible_bytes.retire();
         self.online_validation = None;
+        self.online_license = None;
     }
 
     pub(crate) fn validation_phases(&self) -> [u64; 4] {
@@ -497,6 +640,14 @@ impl ReplicationSourceControl {
             .is_some_and(|walk| !walk.is_complete())
     }
 
+    pub(crate) fn captured_observations_pending(&self) -> bool {
+        self.receipt_validation_pending() || self.eligible_bytes.pending()
+    }
+
+    pub(crate) fn captured_read_only_observation_pending(&self) -> bool {
+        self.eligible_bytes.pending()
+    }
+
     pub(crate) fn reclamation_observation(&self) -> Option<[u64; 8]> {
         self.reclamation_observation
     }
@@ -505,7 +656,7 @@ impl ReplicationSourceControl {
         self.reclamation_yields
     }
 
-    fn reclaim_at_barrier(&mut self, barrier: Barrier) -> Result<bool, Refusal> {
+    fn reclaim_at_barrier(&mut self, barrier: Barrier, online: bool) -> Result<bool, Refusal> {
         let current = barrier.observation();
         let Some(previous) = self.observed else {
             self.reclamation_yields[0] = 1;
@@ -535,6 +686,14 @@ impl ReplicationSourceControl {
             derived_floor,
         )?;
         self.reclamation_observation = Some(observation);
+        if online {
+            self.eligible_bytes.capture(
+                Arc::clone(&barrier.root),
+                current.history,
+                observation[5],
+                std::time::Instant::now(),
+            )?;
+        }
         let Some(floor) = floor else {
             self.reclamation_yields[2] = 1;
             self.observed = Some(current);
@@ -566,6 +725,7 @@ impl ReplicationSourceControl {
             && let Err(error) = walk.rebase_own_deletion(root, qualification)
         {
             self.online_validation = None;
+            self.online_license = None;
             return Err(Refusal::Storage(error));
         }
         crash_edge("continuation-certificate");

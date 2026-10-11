@@ -77,10 +77,11 @@ threads-required = "num-test-threads"
 priority = 90
 
 [[profile.ci.overrides]]
-# These two promotion campaigns repeatedly kill processes at durable cutover and
-# reconciliation edges. Reserve I/O while retaining the default 120s watchdog
-# and every crash schedule; both complete within that bound in isolation.
-filter = 'package(=riffdb-storage-redb) & (test(=maintenance::bootstrap_materialize_tests::promotion_cutover::crashes::promotion_cutover_process_crashes_keep_one_complete_lineage_and_pending_receipt) | test(=maintenance::bootstrap_materialize_tests::promotion_cutover::reconciliation::committed_promotion_reconciliation_process_crashes_resume_without_restamping))'
+# These promotion and bootstrap campaigns repeatedly kill processes at durable
+# publication and reconciliation edges. Reserve I/O while retaining the default
+# 120s watchdog and every crash schedule. Bootstrap publication takes 24s in
+# isolation but exceeded 120s alongside unrelated durable-copy campaigns.
+filter = 'package(=riffdb-storage-redb) & (test(=maintenance::bootstrap_materialize_tests::promotion_cutover::crashes::promotion_cutover_process_crashes_keep_one_complete_lineage_and_pending_receipt) | test(=maintenance::bootstrap_materialize_tests::promotion_cutover::reconciliation::committed_promotion_reconciliation_process_crashes_resume_without_restamping) | test(=maintenance::bootstrap_materialize_tests::publication::bootstrap_publication_repeated_crashes_keep_a_recoverable_candidate_and_gate_partial_replacements))'
 threads-required = "num-test-threads"
 priority = 90
 

@@ -4,7 +4,9 @@ mod transient_access;
 
 mod read_census;
 
+mod checkpoint_completion;
 mod source_reclamation_drain;
+use checkpoint_completion::{CheckpointCompletion, CheckpointPublisher};
 pub(super) use source_reclamation_drain::Readiness as SourceDrainReadiness;
 
 #[cfg(test)]
@@ -86,7 +88,7 @@ pub(crate) mod changelog_lifecycle;
 
 #[path = "store_changelog_source_control.rs"]
 mod changelog_source_control;
-pub(crate) use changelog_source_control::ReplicationSourceControl;
+pub(crate) use changelog_source_control::{AcknowledgementPublication, ReplicationSourceControl};
 pub(crate) use changelog_source_control::{
     ControlWrite, PendingPrefixRefresh, PrefixRefreshPublication,
 };
@@ -123,7 +125,7 @@ use riffdb_storage_api::{
     StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
-        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
+        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_digest,
         decode_storage_format_version_v1, encode_administration_sequence_allocator_v1,
         encode_application_sequence_allocator_v1, encode_database_identity_v1,
         encode_history_incarnation_v1, encode_record_registry_v2, encode_storage_format_version_v1,
@@ -413,6 +415,15 @@ pub(crate) fn command_publication_stage_census() -> [u64; 9] {
 #[path = "extent_reclamation.rs"]
 pub(crate) mod extent_reclamation;
 
+/// Publication is complete only after this job's retirement and sealing syncs.
+/// Its thread may still be preparing the next spare; that work has no authority
+/// over the already published checkpoint root.
+pub(crate) struct JournalSealer {
+    pub(super) handle: std::thread::JoinHandle<()>,
+    pub(super) publication_complete: Arc<AtomicBool>,
+    finished: Arc<CheckpointCompletion>,
+}
+
 pub(crate) struct SharedRedb {
     extent_roots: Mutex<Vec<std::sync::Weak<CheckpointRoot>>>,
     extent_scrubs: std::sync::atomic::AtomicUsize,
@@ -467,6 +478,9 @@ pub(crate) struct SharedRedb {
     pub(crate) clean_certificate_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
     pub(crate) source_continuation_epoch: AtomicU64,
+    /// Graph handles share one source-proof owner. A weak link avoids retaining
+    /// the database through its own proof owner after graph shutdown.
+    pub(crate) source_control_owner: Mutex<std::sync::Weak<Mutex<ReplicationSourceControl>>>,
     /// Even values name stable redb roots; odd values mean an engine commit is
     /// in flight or visible but has not yet published its exact root identity.
     /// Readers use the adjacent condition variable only while an odd value is
@@ -502,6 +516,9 @@ pub(crate) struct SharedRedb {
     publication_queue: Mutex<PublicationQueue>,
     next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
+    /// At most one idle physical append owner. It retains no read root,
+    /// semantic history, frame proof, mutation lease or publication authority.
+    idle_journal_lane: Mutex<Option<IdleJournalLane>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
     /// Serializes every move of the spare extent name: the background spare
     /// preparation, checkpoint start, and runtime open.
@@ -509,7 +526,7 @@ pub(crate) struct SharedRedb {
     /// The background job sealing the last installed extent and preparing the
     /// next spare (ADR-0263). At most one runs; it is joined before the next
     /// install and when the store drops.
-    journal_sealer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    journal_sealer: Mutex<Option<JournalSealer>>,
     /// Registers this store's retained extents for history-stub resolution
     /// (ADR-0263 Amendment 3) once its database identity is known.
     history_resolver: std::sync::OnceLock<Arc<crate::history_stub::HistoryResolver>>,
@@ -1603,7 +1620,7 @@ impl RedbOfflineRetentionPreparation<'_> {
 /// is not an operational-readiness proof.
 pub struct RedbDormantPorts {
     pub(crate) shared: Arc<SharedRedb>,
-    pub(crate) pending_v3_activation: Option<crate::startup::PendingV3Activation>,
+    pub(crate) pending_v3_activation: Option<Box<crate::startup::PendingV3Activation>>,
 }
 
 /// Activated redb-backed semantic storage ports.
@@ -1721,6 +1738,12 @@ pub struct RedbDurabilityEpoch {
     completed: bool,
 }
 
+struct IdleJournalLane {
+    lane: Arc<crate::journal::JournalLane>,
+    database_id: DatabaseId,
+    physical_bytes: usize,
+}
+
 struct JournalRuntime {
     changelog_history: Option<riffdb_storage_api::ChangelogHistoryStateV3>,
     lane: Arc<crate::journal::JournalLane>,
@@ -1748,6 +1771,7 @@ struct JournalRuntime {
 
 #[derive(Clone)]
 struct ValidatedCheckpointFrame {
+    source_reclamation: Option<Arc<crate::journal::SourceReclamationProof>>,
     changelog_binding: Option<riffdb_storage_api::AuthoritativeTransactionBindingV3>,
     database_id: DatabaseId,
     predecessor_sequence: Option<CommitSequence>,
@@ -1833,6 +1857,7 @@ struct RetentionPrunePublication {
 struct ServiceAuditPublication {
     audit_count: usize,
     prune: Option<RetentionPrunePublication>,
+    source_reclamation: bool,
     successor: Arc<CheckpointRoot>,
     transition_count: usize,
     encoded_bytes: usize,
@@ -1907,7 +1932,7 @@ struct JournalCheckpointBatch {
 struct AsyncJournalCheckpoint {
     batch: JournalCheckpointBatch,
     covered_view: Arc<crate::composite_view::RedbCompositeReadView>,
-    completion: Option<std::sync::mpsc::Receiver<Result<(), StorageError>>>,
+    completion: Option<Arc<CheckpointCompletion>>,
     result: Option<Result<(), StorageError>>,
 }
 
@@ -1949,6 +1974,7 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
     covered_sequence: Option<CommitSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
     publication_ticket: PublicationTicket,
+    source_successor: Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)>,
     completed: bool,
 }
 
@@ -2152,6 +2178,7 @@ enum LayoutState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegistryMigration {
     Current,
+    RegistryCompletion,
     V3Activation,
     EventRoute,
     EventReferencesThenGenerations,
@@ -2173,6 +2200,11 @@ enum RegistryMigration {
     CleanCloseLifecycle,
     ColumnarProjectionControls,
 }
+
+pub(crate) const PRE_COMPLETION_REGISTRY: SchemaHash = SchemaHash::from_bytes([
+    0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa, 0xd6, 0xa5,
+    0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27, 0xed, 0x4b, 0x40, 0xa3,
+]);
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
 const FORMAT_MIGRATION_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -2521,6 +2553,39 @@ impl RedbStore {
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
         media: Option<RedbStorageMedia>,
     ) -> Result<Self, StorageError> {
+        Self::open_inner_with_repair_policy(
+            path,
+            application_commit_profile,
+            test_controller,
+            changelog_port,
+            media,
+            engine_open::EngineRepairPolicy::Recover,
+        )
+    }
+
+    pub(crate) fn open_private_stage_authorization(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner_with_repair_policy(
+            path,
+            application_commit_profile,
+            None,
+            changelog_port,
+            None,
+            engine_open::EngineRepairPolicy::Refuse,
+        )
+    }
+
+    fn open_inner_with_repair_policy(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        media: Option<RedbStorageMedia>,
+        repair_policy: engine_open::EngineRepairPolicy,
+    ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
         let (engine_backend, journal_media) = match media {
             Some(media) => (Some(media.engine), media.journal),
@@ -2535,7 +2600,7 @@ impl RedbStore {
         ) {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
-        Self::open_after_format_preflight(
+        Self::open_after_format_preflight_with_repair_policy(
             OpenMode::Source,
             &path,
             application_commit_profile,
@@ -2545,12 +2610,14 @@ impl RedbStore {
                 .then_some(format_preflight),
             engine_backend,
             journal_media,
+            repair_policy,
         )
     }
 
     pub(crate) fn open_for_durable_format_upgrade(
         path: &Path,
         format_preflight: RedbDurableFormatPreflight,
+        backend: Option<Box<dyn redb::StorageBackend>>,
     ) -> Result<Self, StorageError> {
         if !matches!(
             format_preflight,
@@ -2567,7 +2634,7 @@ impl RedbStore {
             None,
             default_changelog_port(),
             None,
-            None,
+            backend,
             Arc::new(RealJournalMedia),
         )
     }
@@ -2801,12 +2868,14 @@ impl RedbStore {
                 let registry = registry
                     .as_ref()
                     .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-                let observed = decode_record_registry_v2(registry.value())
+                let observed = decode_record_registry_digest(registry.value())
                     .map_err(crate::error::codec_error)?;
                 if observed.value()
                     == &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
                     RegistryMigration::Current
+                } else if observed.value() == &PRE_COMPLETION_REGISTRY {
+                    RegistryMigration::RegistryCompletion
                 } else if observed.value() == &crate::changelog_v3_activation::PRE_V3_REGISTRY {
                     RegistryMigration::V3Activation
                 } else if observed.value()
@@ -3210,7 +3279,12 @@ impl RedbStore {
         // string-encoded), and a pre-current V2 registry can carry non-compact
         // rows from before a rotation.
         let require_compact = format == StorageFormatVersion::V2;
-        if !require_compact || registry_migration != RegistryMigration::Current {
+        if !require_compact
+            || !matches!(
+                registry_migration,
+                RegistryMigration::Current | RegistryMigration::RegistryCompletion
+            )
+        {
             migrate_string_table(&self.shared, META, require_compact)?;
             for table in BYTE_TABLES {
                 migrate_byte_table(&self.shared, table, require_compact)?;
@@ -3377,6 +3451,80 @@ impl RedbStore {
         Ok(())
     }
 
+    /// The additive registry transition follows acknowledged journal recovery,
+    /// so it cannot overtake or invalidate a predecessor's durable suffix.
+    fn upgrade_registry_completion_pending(&self) -> Result<(), StorageError> {
+        use riffdb_storage_api::{
+            AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N,
+            AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
+            StoredRecordRegistry, current_record_registry_digest, decode_record_registry,
+            encode_record_registry_v3,
+        };
+        let _lease = self.acquire_mutation_lease()?;
+        let read = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        if classify_read_layout(&read)? == LayoutState::Empty {
+            return Ok(());
+        }
+        let meta = read.open_table(META).map_err(table_error)?;
+        let prior = meta
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let observed = decode_record_registry(prior.value()).map_err(crate::error::codec_error)?;
+        if observed.value().digest() != PRE_COMPLETION_REGISTRY {
+            return Ok(());
+        }
+        let history = crate::changelog_v3_roots::read_checkpoint_roots(&read)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let pending = encode_record_registry_v3(StoredRecordRegistry::pending(
+            current_record_registry_digest(),
+        ))
+        .map_err(crate::error::codec_error)?;
+        let mutation = AuthoritativeMutationV3::replace(
+            N::RecordRegistry,
+            META_RECORD_REGISTRY.as_bytes(),
+            prior.value(),
+            pending.as_bytes(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let (sequence, _) = history
+            .expected_allocator()
+            .allocate_one()
+            .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
+        let receipt = AuthoritativeTransactionV3::new_for_catalog(
+            AuthoritativeTransactionBindingV3 {
+                database_id: history.lineage().database_id(),
+                history_incarnation: history.lineage().history_incarnation(),
+                predecessor: Some(history.tail().sequence()),
+                sequence,
+                predecessor_frontier: history.tail().frontier(),
+                covered_frontier: history.tail().frontier(),
+                prior_history_hash: history.tail().history_hash(),
+            },
+            ChangelogAttributionV3::StorageFormatMigration,
+            vec![mutation],
+            history.lineage().catalog_digest(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        drop(prior);
+        drop(meta);
+        drop(read);
+        let prepared = crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+            &self.shared.database,
+            RedbCommitProfile::Hardened,
+            &receipt,
+        )?;
+        self.shared
+            .before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        prepared.commit(&self.shared)?;
+        self.shared
+            .after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
+    }
+
     pub(crate) fn complete_partition_index_generation_migration(&self) -> Result<(), StorageError> {
         let observed = {
             let transaction = self
@@ -3389,7 +3537,7 @@ impl RedbStore {
                 .get(META_RECORD_REGISTRY)
                 .map_err(precommit_storage_error)?
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-            *decode_record_registry_v2(encoded.value())
+            *decode_record_registry_digest(encoded.value())
                 .map_err(crate::error::codec_error)?
                 .value()
         };
@@ -4391,7 +4539,7 @@ fn publish_record_registry(
             .get(META_RECORD_REGISTRY)
             .map_err(precommit_storage_error)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        *decode_record_registry_v2(encoded.value())
+        *decode_record_registry_digest(encoded.value())
             .map_err(crate::error::codec_error)?
             .value()
     };
@@ -4419,7 +4567,7 @@ fn observed_registry_digest(shared: &SharedRedb) -> Result<SchemaHash, StorageEr
         .get(META_RECORD_REGISTRY)
         .map_err(precommit_storage_error)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    Ok(*decode_record_registry_v2(encoded.value())
+    Ok(*decode_record_registry_digest(encoded.value())
         .map_err(crate::error::codec_error)?
         .value())
 }
@@ -5564,8 +5712,40 @@ impl RedbOperationalPorts {
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
-        self.begin_attributed_write_inner(source, false, false, None)?
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+        loop {
+            if let Some(access) = self.begin_attributed_write_inner(source, false, false, None)? {
+                return Ok(access);
+            }
+            // Clone only the completion capability, never the checkpoint state
+            // lock or writer lease. Publication and fencing remain gate-owned.
+            let completion = self
+                .shared
+                .journal_checkpoint
+                .lock()
+                .map_err(|_| {
+                    self.shared.fence_writes();
+                    storage_error(StorageErrorKind::CommitStatusUnknown)
+                })?
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.completion.clone());
+            let completion = match completion {
+                Some(completion) => Some(completion),
+                None => self
+                    .shared
+                    .journal_sealer
+                    .lock()
+                    .map_err(|_| {
+                        self.shared.fence_writes();
+                        storage_error(StorageErrorKind::CommitStatusUnknown)
+                    })?
+                    .as_ref()
+                    .filter(|sealer| !sealer.handle.is_finished())
+                    .map(|sealer| Arc::clone(&sealer.finished)),
+            };
+            if let Some(completion) = completion {
+                let _ = completion.poll(true);
+            }
+        }
     }
 
     /// A deferrable direct write: `None`, with the gate already released,
@@ -5612,6 +5792,64 @@ impl RedbOperationalPorts {
         let publish_span = stage(Stage::PrefixPublish);
         self.shared.publish_pending_journal_prefix()?;
         drop(publish_span);
+        #[cfg(feature = "test-fixtures")]
+        if source == riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+            && let Some(controller) = &self.shared.test_controller
+        {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeConsumerCheckpointPreparation,
+            );
+        }
+        let bounded_background = matches!(
+            source,
+            riffdb_storage_api::ChangelogAttributionV3::OutboxTransition
+                | riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+        );
+        if bounded_background {
+            self.shared.poll_async_checkpoint_locked(false)?;
+            let oversized = self
+                .shared
+                .journal_runtime
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .as_ref()
+                .is_some_and(|runtime| {
+                    runtime.suffix_transitions > crate::journal::SOURCE_SUFFIX_TRANSITIONS
+                        || runtime.suffix_bytes > crate::journal::SOURCE_SUFFIX_BYTES
+                });
+            if oversized {
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = &self.shared.test_controller {
+                    controller.checkpoint_test_pause(
+                        crate::hooks::RedbCheckpointTestPoint::BeforeOutboxCheckpointPreparation,
+                    );
+                }
+                // Rotation reuses the existing sealer/spare protocol. Joining
+                // an unfinished job here would move its I/O under this lease.
+                if self
+                    .shared
+                    .journal_sealer
+                    .lock()
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                    .as_ref()
+                    .is_some_and(|sealer| !sealer.handle.is_finished())
+                {
+                    drop(lease);
+                    return Ok(None);
+                }
+                self.shared.start_async_checkpoint_for_direct_write()?;
+            }
+            if self.shared.async_checkpoint_in_flight()? {
+                drop(lease);
+                return Ok(None);
+            }
+            if oversized {
+                // Failure to rotate a fully published suffix is an invariant
+                // failure, never permission to drain it under the writer gate.
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
         if yield_to_checkpoint {
             self.shared.poll_async_checkpoint_locked(false)?;
             if self.shared.async_checkpoint_in_flight()? {
@@ -5646,10 +5884,11 @@ impl RedbOperationalPorts {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let apply_span = stage(Stage::SuffixApply);
         let footprint = if let Some(runtime) = journal_checkpoint.as_ref() {
-            match self
-                .shared
-                .apply_published_journal_suffix(&transaction, runtime)
-            {
+            match self.shared.apply_published_journal_suffix_with_limits(
+                &transaction,
+                runtime,
+                bounded_background,
+            ) {
                 Ok(footprint) => footprint,
                 Err(error) => {
                     let _ = transaction.abort();
@@ -6881,6 +7120,7 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
                 runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    source_reclamation: None,
                     segment_summaries: Arc::from(segment_summaries),
                     extent_generation: runtime.lane.generation(),
                     placement,
@@ -6972,6 +7212,7 @@ impl RedbDurabilityEpoch {
         // first would let a later service-audit frame enter the publication
         // queue ahead of this already-submitted command frame.
         let pipeline_drain_required = self.shared.async_checkpoint_installation_pending()?;
+        self.shared.finish_source_requested_publication()?;
         self.completed = true;
         drop(self.lease.take());
         #[cfg(feature = "test-fixtures")]
@@ -7040,7 +7281,11 @@ impl SharedRedb {
         if online_source {
             changelog_source_control::crash_edge("source-drain-staged");
         }
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("checkpoint-staged");
         self.commit_with_source_footprint(transaction, footprint)?;
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         if online_source {
             changelog_source_control::crash_edge("source-drain-committed");
         }
@@ -7427,6 +7672,9 @@ impl SharedRedb {
                     segments: prune.segments,
                 });
         }
+        if publication.source_reclamation {
+            changelog_source_control::crash_edge("reclamation-before-publication");
+        }
         let published_snapshot = Arc::clone(&publication.composite_successor);
         if let Err(error) = self.publish_composite_successor(
             &publication.composite_predecessor,
@@ -7666,21 +7914,7 @@ impl SharedRedb {
                     .completion
                     .as_ref()
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-                let result = if wait {
-                    Some(
-                        receiver
-                            .recv()
-                            .unwrap_or_else(|_| Err(storage_error(StorageErrorKind::Unavailable))),
-                    )
-                } else {
-                    match receiver.try_recv() {
-                        Ok(result) => Some(result),
-                        Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            Some(Err(storage_error(StorageErrorKind::Unavailable)))
-                        }
-                    }
-                };
+                let result = receiver.poll(wait);
                 if let Some(result) = result {
                     checkpoint.completion = None;
                     checkpoint.result = Some(result);
@@ -7729,7 +7963,7 @@ impl SharedRedb {
             Err(poisoned) => poisoned.into_inner().take(),
         };
         if let Some(handle) = handle {
-            let _ = handle.join();
+            let _ = handle.handle.join();
         }
     }
 
@@ -7743,32 +7977,78 @@ impl SharedRedb {
         &self,
         spare_header: crate::journal::JournalFileHeader,
     ) -> Result<(), StorageError> {
+        let sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.start_journal_sealer_locked(spare_header, sealer)
+    }
+
+    /// Preparation demand creates no new extent-publication obligation. Reuse
+    /// an unfinished job instead of growing a chain of threads waiting for it.
+    /// Rotation resets a completed spare to its actual successor header before
+    /// consuming it, so repeated demand need not queue intermediate headers.
+    pub(super) fn ensure_journal_spare(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        let sealer = self
+            .journal_sealer
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if sealer.as_ref().is_some_and(|job| !job.handle.is_finished()) {
+            return Ok(());
+        }
+        self.start_journal_sealer_locked(spare_header, sealer)
+    }
+
+    fn start_journal_sealer_locked(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+        mut sealer: std::sync::MutexGuard<'_, Option<JournalSealer>>,
+    ) -> Result<(), StorageError> {
         let media = Arc::clone(&self.journal_media);
         let path = self.path.clone();
         let spare_lock = Arc::clone(&self.journal_spare);
         let database_id = spare_header.database_id();
-        let mut sealer = self
-            .journal_sealer
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        #[cfg(feature = "test-fixtures")]
+        let controller = self.test_controller.clone();
         let previous = sealer.take();
+        let publication_complete = Arc::new(AtomicBool::new(false));
+        let published = Arc::clone(&publication_complete);
+        let finished = Arc::new(CheckpointCompletion::default());
+        let completion = CheckpointPublisher(Arc::clone(&finished));
         let handle = std::thread::Builder::new()
             .name("riffdb-journal-seal".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 if let Some(previous) = previous {
-                    let _ = previous.join();
+                    let _ = previous.handle.join();
                 }
-                crate::journal::record_seal_outcome(
-                    crate::journal::retire_checkpoint_extent_with_media(
-                        media.as_ref(),
-                        &path,
-                        database_id,
-                    )
-                    .and_then(|()| {
-                        crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
-                    }),
-                );
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = &controller {
+                    controller.checkpoint_test_pause(
+                        crate::hooks::RedbCheckpointTestPoint::BeforeSealPublication,
+                    );
+                }
+                let outcome = crate::journal::retire_checkpoint_extent_with_media(
+                    media.as_ref(),
+                    &path,
+                    database_id,
+                )
+                .and_then(|()| {
+                    crate::journal::seal_extent_with_media(media.as_ref(), &path, database_id)
+                });
+                if outcome.is_ok() {
+                    published.store(true, Ordering::Release);
+                }
+                crate::journal::record_seal_outcome(outcome);
+                #[cfg(feature = "test-fixtures")]
+                if let Some(controller) = &controller {
+                    controller.checkpoint_test_pause(
+                        crate::hooks::RedbCheckpointTestPoint::BeforeSparePreparation,
+                    );
+                }
                 crate::journal::record_spare_outcome(
                     crate::journal::prepare_spare_extent_with_media(
                         media.as_ref(),
@@ -7777,9 +8057,14 @@ impl SharedRedb {
                         &spare_lock,
                     ),
                 );
+                completion.publish(Ok(()));
             })
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        *sealer = Some(handle);
+        *sealer = Some(JournalSealer {
+            handle,
+            publication_complete,
+            finished,
+        });
         Ok(())
     }
 
@@ -7914,6 +8199,7 @@ impl SharedRedb {
         }
     }
 
+    #[cfg(test)]
     fn apply_published_journal_suffix(
         &self,
         transaction: &WriteTransaction,
@@ -7926,7 +8212,7 @@ impl SharedRedb {
         &self,
         transaction: &WriteTransaction,
         runtime: &JournalRuntime,
-        online_source: bool,
+        bounded_direct: bool,
     ) -> Result<crate::source_continuation::SourceContinuationFootprint, StorageError> {
         let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
         let mut footprint = if v3 {
@@ -7960,7 +8246,7 @@ impl SharedRedb {
             }
             Ok(())
         };
-        let scanned = if online_source {
+        let scanned = if bounded_direct {
             crate::journal::scan_online_source_suffix_with_media(
                 self.journal_media.as_ref(),
                 &crate::journal::journal_path(&self.path),
@@ -8025,7 +8311,6 @@ impl SharedRedb {
     }
 
     fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
-        drop(runtime.lane);
         let checkpoint = self.capture_checkpoint_root()?;
         let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
         let checkpoint_sequence = read_commit_tail(&checkpoint)?;
@@ -8063,7 +8348,34 @@ impl SharedRedb {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         *frontier = Some(checkpoint);
+        drop(frontier);
         self.clear_composite_publication()?;
+        // The direct writer published every submitted fence before taking
+        // this runtime. Its complete anchor update leaves the physical cursor
+        // unchanged. Keep only that cursor's owner; semantic state is discarded
+        // and must be reconstructed by the ordinary fully checked open path.
+        if Arc::strong_count(&runtime.lane) == 1
+            && runtime
+                .lane
+                .owns_current_file(
+                    self.journal_media.as_ref(),
+                    &crate::journal::journal_path(&self.path),
+                )
+                .map_err(journal_io_error)?
+        {
+            let mut idle = self
+                .idle_journal_lane
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if idle.is_some() {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            *idle = Some(IdleJournalLane {
+                lane: runtime.lane,
+                database_id: runtime.database_id,
+                physical_bytes: runtime.suffix_physical_bytes,
+            });
+        }
         self.note_journal_checkpoint_finished();
         Ok(())
     }
@@ -8431,6 +8743,12 @@ impl riffdb_storage_api::DeferredServiceAuditFence for RedbSubmittedServiceAudit
 }
 
 impl RedbSubmittedServiceAuditFence {
+    pub(crate) fn source_successor(
+        &self,
+    ) -> Option<(Arc<crate::composite_view::RedbCompositeReadView>, u64)> {
+        self.source_successor.clone()
+    }
+
     fn publish_fenced(
         &mut self,
         fenced: crate::journal::JournalFence,
@@ -9112,10 +9430,11 @@ where
                 .map_err(crate::error::codec_error)?;
             }
             META_RECORD_REGISTRY => {
-                let observed =
-                    decode_record_registry_v2(value.value()).map_err(crate::error::codec_error)?;
+                let observed = decode_record_registry_digest(value.value())
+                    .map_err(crate::error::codec_error)?;
                 if observed.value()
                     != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    && observed.value() != &PRE_COMPLETION_REGISTRY
                     && observed.value() != &crate::changelog_v3_activation::PRE_V3_REGISTRY
                 {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
@@ -9205,6 +9524,12 @@ fn frame_changelog_binding(
 
 impl Drop for SharedRedb {
     fn drop(&mut self) {
+        drop(
+            self.idle_journal_lane
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
         // The sealer holds only the media port and paths, but a store that
         // outlived its sealing work would leave the next open to finish it.
         self.join_journal_sealer();

@@ -8,6 +8,45 @@ use riffdb_storage_api::{
 use riffdb_types::{ReplicationFollowerAuditTargetV1, Timestamp};
 
 impl ReplicationRegistrationMaintenancePort for RedbOperationalPorts {
+    fn advance_prepared_follower_acknowledgement_v3(
+        &self,
+        request: riffdb_storage_api::ReplicationFollowerAcknowledgementV3,
+    ) -> Result<bool, Refusal> {
+        let control = self.shared_source_control()?;
+        let mut owner = match control.try_lock() {
+            Ok(owner) => owner,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation).into());
+            }
+        };
+        owner.verify_follower_acknowledgement_admission()?;
+        if owner.acknowledgement_active != Some(request.hold()) {
+            return Ok(false);
+        }
+        if !owner.source_work_wait().is_zero() {
+            return Ok(false);
+        }
+        let before = owner.acknowledgement_gate_census()?;
+        let started = std::time::Instant::now();
+        let result = owner.advance_prepared_follower_acknowledgement(request.hold());
+        let [wait, gate] = match owner.acknowledgement_gate_census() {
+            Ok(after) => std::array::from_fn(|index| {
+                if after[index] == u64::MAX
+                    || before[index] == u64::MAX
+                    || after[index] < before[index]
+                {
+                    u64::MAX
+                } else {
+                    after[index] - before[index]
+                }
+            }),
+            Err(_) => [u64::MAX; 2],
+        };
+        owner.charge_acknowledgement_work(started, 2, wait, gate, &result);
+        result
+    }
+
     fn maintain_replication_registration(
         &self,
         timestamp: Timestamp,

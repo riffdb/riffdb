@@ -99,7 +99,7 @@ fn fresh_v3_activation_waits_for_catalog_join_and_cancelled_handoff_is_read_only
 #[test]
 fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry_once() {
     use riffdb_storage_api::proto_codec::{
-        current_record_registry_digest, decode_record_registry_v2,
+        current_record_registry_digest, decode_record_registry_digest,
     };
     for edge in ["preflight", "roots", "receipt", "committed"] {
         let path = TestDatabasePath::new("v3-fresh-activation-crash");
@@ -135,7 +135,9 @@ fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry
             if edge == "committed" {
                 assert_eq!(history.unwrap().tail().sequence().get(), 1);
                 assert_eq!(
-                    *decode_record_registry_v2(registry.value()).unwrap().value(),
+                    *decode_record_registry_digest(registry.value())
+                        .unwrap()
+                        .value(),
                     current_record_registry_digest()
                 );
                 let receipt = receipts(&store.shared).remove(0);
@@ -276,6 +278,7 @@ fn actual_v3_bounded_dirty_and_clean_consumption_keep_exact_receipts() {
 /// physical AUDIT row at or beyond the allocator (a sequence the next
 /// administration write would reissue) is an authoritative header finding
 /// before readiness, and the session writes nothing.
+// req: REC-005, REC-006
 #[test]
 fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
     let path = TestDatabasePath::new("v3-bounded-dirty-audit-tail");
@@ -308,9 +311,8 @@ fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
         )
         .unwrap();
     write.commit().unwrap();
-    drop(store);
-
-    let store = RedbStore::open(&path.0).unwrap();
+    // Use the already opened handle to exercise the structural header itself.
+    // A fresh recovery open also checks this fixed root and refuses earlier.
     let epoch = store.shared.durable_commit_epoch();
     let before = control_bytes(&store.shared);
     let shared = Arc::clone(&store.shared);
@@ -335,6 +337,14 @@ fn bounded_dirty_header_refuses_an_audit_tail_beyond_the_allocator() {
         control_bytes(&shared) == before,
         "a refused header writes nothing"
     );
+    drop(shared);
+    assert_eq!(
+        RedbStore::open(&path.0).err().unwrap().kind(),
+        StorageErrorKind::CorruptData,
+        "a fresh recovery open must reject the same inconsistent audit tail"
+    );
+    let database = redb::Builder::new().open(&path.0).unwrap();
+    assert_eq!(control_bytes_from_database(&database), before);
 }
 
 #[test]
@@ -638,7 +648,11 @@ fn actual_v3_startup_and_scrub_refuse_missing_or_corrupt_interior_history_before
 type ControlBytes = (Vec<(String, Vec<u8>)>, Vec<(Vec<u8>, Vec<u8>)>);
 
 fn control_bytes(shared: &crate::store::SharedRedb) -> ControlBytes {
-    let read = shared.database.begin_read().unwrap();
+    control_bytes_from_database(&shared.database)
+}
+
+fn control_bytes_from_database(database: &redb::Database) -> ControlBytes {
+    let read = database.begin_read().unwrap();
     let meta = read
         .open_table(META)
         .unwrap()
@@ -979,4 +993,128 @@ fn scrub_refuses_retained_history(shared: &Arc<crate::store::SharedRedb>) -> boo
     crate::startup::begin_background_scrub_on_shared(shared, inputs())
         .and_then(|mut scrub| scrub.validate_retained_history())
         .is_err()
+}
+
+#[test]
+fn verified_materialized_history_journal_checks_match_fresh_validation_and_detect_damage() {
+    let path = TestDatabasePath::new("verified-offline-history-journals");
+    let id = database_id(0xe1);
+    let store = v3_store(&path, id);
+    let verified = crate::journal::VerifiedMaterializedHistory::capture(
+        store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let normal = crate::journal::journal_path(&path.0);
+    // Activation creates retained V3 roots in redb, not a journal file.
+    // Make the valid artifact distinct from the deliberate missing case.
+    crate::journal::reset_journal(
+        &normal,
+        &crate::journal::JournalFileHeader::with_frontiers(id, None, None, [0; 32]),
+    )
+    .unwrap();
+    let absent = path.0.with_extension("absent-journal");
+    let future = path.0.with_extension("future-journal");
+    crate::journal::reset_journal(
+        &future,
+        &crate::journal::JournalFileHeader::with_frontiers(
+            id,
+            None,
+            Some(riffdb_types::AdministrationSequence::new(1).unwrap()),
+            [0; 32],
+        ),
+    )
+    .unwrap();
+    let damaged = path.0.with_extension("damaged-journal");
+    std::fs::write(&damaged, b"damaged journal").unwrap();
+    let before = std::fs::read(&normal).unwrap();
+    for (journal, succeeds) in [
+        (&normal, true),
+        (&absent, true),
+        (&future, false),
+        (&damaged, false),
+    ] {
+        let reference = crate::journal::verify_materialized_journal_with_media(
+            &crate::media::RealJournalMedia,
+            &store.shared.database,
+            journal,
+            id,
+        );
+        let result = verified.verify_journal(&crate::media::RealJournalMedia, journal, id);
+        assert_eq!(result, reference);
+        assert_eq!(result.is_ok(), succeeds);
+    }
+    assert_eq!(std::fs::read(&normal).unwrap(), before);
+    assert_eq!(std::fs::read(&damaged).unwrap(), b"damaged journal");
+    assert!(!absent.exists());
+    // Pin release is explicit and cannot leave an extra snapshot alive.
+    drop(verified.into_read());
+    drop(store);
+    for journal in [future, damaged] {
+        std::fs::remove_file(journal).unwrap();
+    }
+}
+
+#[test]
+fn verified_materialized_history_does_not_validate_a_later_corrupt_snapshot() {
+    let path = TestDatabasePath::new("verified-offline-history-snapshot");
+    let id = database_id(0xe2);
+    let store = v3_store(&path, id);
+    let verified = crate::journal::VerifiedMaterializedHistory::capture(
+        store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let journal = crate::journal::journal_path(&path.0);
+    assert!(
+        verified
+            .verify_journal(&crate::media::RealJournalMedia, &journal, id)
+            .is_ok()
+    );
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut history = write
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap();
+        assert!(
+            history
+                .remove(1_u64.to_be_bytes().as_slice())
+                .unwrap()
+                .is_some()
+        );
+    }
+    write.commit().unwrap();
+    assert!(
+        crate::journal::VerifiedMaterializedHistory::capture(
+            store.shared.database.begin_read().unwrap(),
+        )
+        .is_err()
+    );
+    assert!(
+        crate::journal::verify_materialized_journal_with_media(
+            &crate::media::RealJournalMedia,
+            &store.shared.database,
+            &journal,
+            id,
+        )
+        .is_err()
+    );
+    // Only the exact immutable old pin retains its original valid history.
+    assert!(
+        verified
+            .verify_journal(&crate::media::RealJournalMedia, &journal, id)
+            .is_ok()
+    );
+    let old = verified.into_read();
+    assert!(
+        crate::changelog_v3_roots::validate_retained_history(&old)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        crate::changelog_v3_roots::validate_retained_history(
+            &store.shared.database.begin_read().unwrap(),
+        )
+        .is_err()
+    );
 }

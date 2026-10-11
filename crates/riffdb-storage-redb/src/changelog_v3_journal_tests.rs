@@ -83,6 +83,108 @@ fn publish_recovery_sources(path: &Path, sources: &[&JournalFrame]) {
     }
 }
 
+// req: REC-005, REC-006
+#[test]
+fn journal_recovery_admits_nested_terminal_work_before_any_replay_mutation() {
+    let scope = crate::test_path::ScopedDirectory::new("recovery-nested-capacity");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = audit_source(history);
+    let mut mutations = source.mutations().to_vec();
+    for ordinal in 0_u64..250_000 {
+        mutations.push(
+            JournalMutation::put(JournalTable::AuditByRequest, ordinal.to_be_bytes(), [0x51])
+                .unwrap(),
+        );
+    }
+    // The closed physical source passes frame and receipt codec limits. This
+    // test owns recovery admission, not the later service-index semantic scrub.
+    let source = JournalFrame::service_audit(
+        source.database_id(),
+        source.predecessor_sequence(),
+        source.predecessor_administration_sequence(),
+        source.covered_administration_sequence(),
+        1,
+        source.previous_hash(),
+        mutations,
+    )
+    .unwrap();
+    let mut buffered = crate::journal::JournalMutationBuffer::default();
+    buffered.extend(source.mutations().to_vec()).unwrap();
+    let binding = AuthoritativeTransactionBindingV3 {
+        database_id: history.lineage().database_id(),
+        history_incarnation: history.lineage().history_incarnation(),
+        predecessor: Some(history.tail().sequence()),
+        sequence: history.expected_allocator().allocate_one().unwrap().0,
+        predecessor_frontier: history.tail().frontier(),
+        covered_frontier: DualFrontier::new(
+            source.covered_sequence(),
+            source.covered_administration_sequence(),
+        ),
+        prior_history_hash: history.tail().history_hash(),
+    };
+    assert!(
+        matches!(
+            JournalFrame::encode_buffered_service_audit(
+                source.database_id(),
+                source.predecessor_sequence(),
+                source.predecessor_administration_sequence(),
+                source.covered_administration_sequence(),
+                1,
+                source.previous_hash(),
+                buffered,
+                Some(crate::journal::FrameChangelogBinding::new(
+                    &binding,
+                    history.lineage().catalog_digest(),
+                )),
+            ),
+            Err(crate::journal::JournalCodecError::LimitExceeded)
+        ),
+        "live publication must refuse work whose recovery ownership cannot fit"
+    );
+    let source = source.with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+        &binding,
+        history.lineage().catalog_digest(),
+    )));
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        lineage().database_id(),
+        &scope.join("db.redb"),
+        std::sync::Arc::new(crate::media::RealJournalMedia),
+    );
+    let path = crate::journal::journal_path(&scope.join("db.redb"));
+    publish_recovery_source(&path, &source);
+    let before = crate::journal::content_digest(&std::fs::read(&path).unwrap());
+    assert_eq!(
+        crate::journal::recover_journal_path(&database, &path, lineage().database_id()),
+        Err(crate::journal::JournalIoError::Capacity)
+    );
+    assert_eq!(
+        crate::journal::content_digest(&std::fs::read(&path).unwrap()),
+        before
+    );
+    let pin = database.begin_read().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        Some(history)
+    );
+    assert_eq!(
+        pin.open_table(crate::layout::AUDIT).unwrap().len().unwrap(),
+        0
+    );
+    assert_eq!(
+        pin.open_table(crate::layout::AUDIT_BY_REQUEST)
+            .unwrap()
+            .len()
+            .unwrap(),
+        0
+    );
+}
+
 #[test]
 fn journal_recovery_preserves_a_materialized_prefix_and_replays_only_its_exact_successor() {
     let scope = crate::test_path::ScopedDirectory::new("v3-recovery-partial-overlap");
@@ -891,4 +993,109 @@ fn recovery_refuses_a_version_3_frame_whose_recorded_binding_disagrees_with_the_
         crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &recorded).unwrap();
     transaction.commit().unwrap();
     assert_eq!(receipt.binding(), good.binding(&recorded));
+}
+
+// req: REC-005, REC-006, STO-030, STO-032
+#[test]
+fn journal_recovery_validates_referenced_preimages_without_enumerating_untouched_history() {
+    let scope = crate::test_path::ScopedDirectory::new("bounded-recovery-history");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let mut history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    for _ in 0..6 {
+        let source = audit_source(history);
+        let tx = database.begin_write().unwrap();
+        let receipt =
+            crate::changelog_v3_journal::materialize_recovered_frame(&tx, &source).unwrap();
+        tx.commit().unwrap();
+        history = history.advance(&receipt).unwrap();
+    }
+    let before = database.begin_read().unwrap();
+    let rows = before.open_table(HISTORY).unwrap();
+    let canonical = |sequence: u64| {
+        rows.get(sequence.to_be_bytes().as_slice())
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec()
+    };
+    let removed: Vec<_> = (1..4)
+        .map(|sequence| {
+            crate::journal::SourceReceiptPreimage::capture(&canonical(sequence)).unwrap()
+        })
+        .collect();
+    let floor = riffdb_storage_api::ChangelogHistoryPointV3::from_receipt(
+        &riffdb_storage_api::AuthoritativeTransactionV3::decode(&canonical(4)).unwrap(),
+    )
+    .unwrap();
+    let retained =
+        ChangelogHistoryStateV3::new(history.lineage(), history.anchor(), history.tail(), floor)
+            .unwrap();
+    let cut = JournalFrame::source_reclamation(
+        crate::journal::SourceReclamationProof::new(history, retained, removed).unwrap(),
+        [0x42; 32],
+    )
+    .unwrap();
+    drop(rows);
+    drop(before);
+    let tx = database.begin_write().unwrap();
+    tx.open_table(HISTORY)
+        .unwrap()
+        .insert(
+            3_u64.to_be_bytes().as_slice(),
+            b"corrupt-untouched-history".as_slice(),
+        )
+        .unwrap();
+    tx.commit().unwrap();
+    let root = database.begin_read().unwrap();
+    let source = audit_source(history);
+    assert_eq!(crate::changelog_v3_journal::plan_recovery(&root, std::slice::from_ref(&source), history.tail().frontier())
+        .expect("bounded recovery must defer unrelated population rows to first access and complete scrub").replay_from, 0);
+    drop(root);
+    let tx = database.begin_write().unwrap();
+    crate::changelog_v3_journal::materialize_recovered_frame(&tx, &source).unwrap();
+    tx.abort().unwrap();
+    let tx = database.begin_write().unwrap();
+    assert_eq!(
+        crate::changelog_v3_journal::materialize_recovered_frame(&tx, &cut)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData,
+        "a source cut must still validate every actual removed preimage"
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots_for_write(&tx).unwrap(),
+        Some(history)
+    );
+    tx.abort().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&database.begin_read().unwrap())
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    let path = scope.join("source.journal");
+    publish_recovery_source(&path, &source);
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id())
+        .expect("the production two-pass recovery must not enumerate unrelated history");
+    let pin = database.begin_read().unwrap();
+    let recovered = crate::changelog_v3_journal::verify_materialized_frame(&pin, &source).unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&pin).unwrap(),
+        Some(history.advance(&recovered).unwrap())
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData,
+        "bounded recovery must leave corruption visible to complete validation"
+    );
+    drop(pin);
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id())
+        .expect("the recovered empty extent must be idempotent");
 }
