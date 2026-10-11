@@ -136,6 +136,10 @@ impl RestoreCustody {
         Ok(owner)
     }
 
+    pub(crate) fn cancellation(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shared.cancellation)
+    }
+
     pub(crate) fn freeze_prepared_artifact(&self) -> Result<u64, StorageError> {
         self.verify_identity()?;
         let leases = self.shared.leases.write().map_err(|_| {

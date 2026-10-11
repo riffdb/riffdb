@@ -678,7 +678,7 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     // Retention grants no public proof constructor, operational ports or
     // migration capability, and the original exact catalog/session join stays.
     let offline = without_whitespace(&production_source(offline_catalog));
-    assert!(offline.contains("pub(super)structCompleteLogicalValidation"));
+    assert!(offline.contains("pub(crate)structCompleteLogicalValidation"));
     assert!(offline.contains("catalog:riffdb_catalog::ValidatedCatalogHistory"));
     assert!(
         offline.contains("self.catalog.matches(snapshot.database_id,snapshot.open_session_id)")

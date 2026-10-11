@@ -47,7 +47,7 @@ impl RedbStore {
         Ok(OfflineScrubOpen { store, history })
     }
 
-    pub(super) fn verify_materialized_journals(
+    pub(crate) fn verify_materialized_journals(
         &self,
     ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
         let read = self

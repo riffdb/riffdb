@@ -2,6 +2,7 @@
 
 mod offline_integrity;
 mod offline_parallel;
+pub(crate) use offline_integrity::CompleteLogicalValidation;
 pub use offline_integrity::RedbOfflineIntegrityScrub;
 
 mod archive_private;

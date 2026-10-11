@@ -656,6 +656,20 @@ enum RestoredHistoryLayout<'a> {
     },
 }
 
+enum MaterializationDatabase {
+    Ordinary(Database),
+    Owned(crate::store::OwnedEngineOpen),
+}
+impl std::ops::Deref for MaterializationDatabase {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        match self {
+            Self::Ordinary(database) => database,
+            Self::Owned(engine) => engine.database(),
+        }
+    }
+}
+
 struct NativeRestoreResult {
     outcome: OfflineRestoreResultV1,
     owned: Option<OwnedMaterialization>,
@@ -668,11 +682,25 @@ struct NativeRestoreResult {
     expect(dead_code, reason = "owned restore validation integration is pending")
 )]
 pub(crate) struct OwnedMaterialization {
-    database: Option<std::sync::Arc<Database>>,
+    database: Option<std::sync::Arc<MaterializationDatabase>>,
     primary: MaterializationArtifact,
     journal: MaterializationArtifact,
     marker: MaterializationArtifact,
     custody: crate::maintenance::RestoreCustody,
+}
+
+/// Proof drops its immutable pin and engine before creation pins and custody.
+/// It deliberately exposes no authorization or publication method yet.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "complete restore startup join integration is pending"
+    )
+)]
+struct OwnedValidatedMaterialization {
+    logical: crate::startup::CompleteLogicalValidation,
+    materialization: OwnedMaterialization,
 }
 
 /// A move-only preparation read retains the original Database owner as well
@@ -684,7 +712,7 @@ pub(crate) struct OwnedMaterialization {
 )]
 struct PreparedMaterializationRead {
     read: redb::ReadTransaction,
-    _engine: std::sync::Arc<Database>,
+    _engine: std::sync::Arc<MaterializationDatabase>,
 }
 
 #[cfg_attr(
@@ -718,6 +746,46 @@ impl OwnedMaterialization {
         Ok(PreparedMaterializationRead {
             read,
             _engine: std::sync::Arc::clone(engine),
+        })
+    }
+
+    /// Complete verification on the same first engine. This internal result
+    /// still requires compatibility preparation and the server startup join.
+    fn validate_complete(
+        mut self,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<OwnedValidatedMaterialization, StorageError> {
+        self.verify()?;
+        let engine = self
+            .database
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let engine = std::sync::Arc::try_unwrap(engine)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let MaterializationDatabase::Owned(mut engine) = engine else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        // No read or savepoint survives preparation admission. The engine is
+        // unique here; its original observer and repair latch travel with it.
+        engine.check_integrity()?;
+        self.verify()?;
+        #[cfg(test)]
+        let observer = engine.checkpoint_observer();
+        let store = crate::RedbStore::from_owned_restore_engine(self.primary.path(), engine)?;
+        #[cfg(test)]
+        assert!(
+            std::sync::Arc::ptr_eq(&observer, &store.shared.checkpoint_rewrite),
+            "the first engine's actual checkpoint observer survives the store join"
+        );
+        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_restore(
+            store,
+            inputs,
+            self.custody.cancellation(),
+        )?;
+        self.verify()?;
+        Ok(OwnedValidatedMaterialization {
+            logical,
+            materialization: self,
         })
     }
 
@@ -947,23 +1015,26 @@ impl RedbOfflineRestore {
             None
         };
         let staged_lock = match staged_lock {
-            Some(database) => database,
+            Some(database) => MaterializationDatabase::Ordinary(database),
             None => {
                 let database = match &custody {
-                    Some(custody) => open_unrepaired_private_backend(
-                        Box::new(custody.lease()?),
-                        Some(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES),
-                    )?,
-                    None => open_private_materialization_database(
-                        &staged_artifact,
-                        &staged_journal,
-                        &staged_format_marker,
-                    )?,
+                    Some(custody) => MaterializationDatabase::Owned(
+                        crate::store::OwnedEngineOpen::from_private_restore_backend(
+                            custody.lease()?,
+                        )?,
+                    ),
+                    None => {
+                        MaterializationDatabase::Ordinary(open_private_materialization_database(
+                            &staged_artifact,
+                            &staged_journal,
+                            &staged_format_marker,
+                        )?)
+                    }
                 };
                 staged_artifact.verify()?;
                 staged_journal.verify()?;
                 staged_format_marker.verify()?;
-                validate_copied_database_facts(read_database_facts(&database)?, &manifest)?;
+                validate_copied_database_facts(read_database_facts(&*database)?, &manifest)?;
                 database
             }
         };
@@ -1097,6 +1168,7 @@ pub(crate) fn open_unrepaired_private_file(
     open_unrepaired_private_location(PrivateDatabaseLocation::File(file), cache_bytes)
 }
 
+#[cfg(test)]
 fn open_unrepaired_private_backend(
     backend: Box<dyn redb::StorageBackend>,
     cache_bytes: Option<usize>,
@@ -1107,6 +1179,7 @@ fn open_unrepaired_private_backend(
 enum PrivateDatabaseLocation<'a> {
     Path(&'a Path),
     File(&'a File),
+    #[cfg(test)]
     Backend(Box<dyn redb::StorageBackend>),
 }
 
@@ -1129,6 +1202,7 @@ fn open_unrepaired_private_location(
         PrivateDatabaseLocation::File(file) => {
             builder.create_file(file.try_clone().map_err(io_unavailable)?)
         }
+        #[cfg(test)]
         PrivateDatabaseLocation::Backend(backend) => {
             builder.create_with_backend(crate::media::DynStorageBackend(backend))
         }
@@ -3406,6 +3480,86 @@ mod tests {
         };
         assert_eq!(opened.database_id(), database_id);
         database_id
+    }
+
+    fn owned_validation_inputs() -> StartupValidationInputs {
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
+        StartupValidationInputs::new(
+            Timestamp::new(1_700_000_000, 0).unwrap(),
+            ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+            ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+        )
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_same_first_engine_reaches_both_complete_validation_ends() {
+        let root = TestRoot::new("owned-native-complete-validation");
+        let (_, backup, expected) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        let (manifest, owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(manifest, expected);
+        let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
+        crate::maintenance::probe_restore_custody(&path, true);
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        validated.materialization.verify().unwrap();
+        crate::maintenance::probe_restore_custody(&path, true);
+        let OwnedValidatedMaterialization {
+            logical,
+            materialization,
+        } = validated;
+        let (database_id, session, retained, catalog, reader) =
+            logical.into_authorization_parts().unwrap();
+        assert_eq!(database_id, manifest.database_id());
+        assert_eq!(retained.database_id(), database_id);
+        assert!(catalog.matches(database_id, session));
+        // The immutable proof reader owns the SAME engine, even when its
+        // materialization handle is released; no second dense copy exists.
+        drop(materialization);
+        crate::maintenance::probe_restore_custody(&path, true);
+        assert_eq!(
+            fs::read_dir(&stage)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .count(),
+            0
+        );
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
+        drop(reader);
+        crate::maintenance::probe_restore_custody(&path, false);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_complete_validation_refuses_cancellation_after_exact_ends() {
+        let root = TestRoot::new("owned-native-complete-cancel");
+        let (_, backup, _) = create_backup(&root);
+        let before = validate_immutable_backup(&backup).unwrap();
+        let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stage = root.join("stage");
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(&root.join("configured.redb"), cancellation.clone())
+            .unwrap();
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        cancellation.store(true, std::sync::atomic::Ordering::Release);
+        let OwnedValidatedMaterialization {
+            logical,
+            materialization,
+        } = validated;
+        assert!(matches!(logical.into_authorization_parts(),
+            Err(error) if error.kind() == StorageErrorKind::Unavailable));
+        assert!(materialization.verify().is_err());
+        drop(materialization);
+        crate::maintenance::probe_restore_custody(&stage.join(DATABASE_ARTIFACT_FILE_NAME), false);
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
     }
 
     fn create_backup(root: &TestRoot) -> (PathBuf, PathBuf, OfflineBackupManifestV1) {

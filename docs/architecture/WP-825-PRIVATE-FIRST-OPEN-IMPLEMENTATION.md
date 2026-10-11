@@ -79,3 +79,18 @@ and only its release permits close and the exact-length freeze. The final
 logical authorization reader has the same obligation through its retained
 shared engine owner. This correction changes the native ownership protocol,
 not the harness or the accepted release condition.
+
+The next internal handoff carries the first private engine, its actual checkpoint
+rewrite observer and repair latch into the existing native store join. It runs
+physical integrity before admitting a read pin, verifies the native journals,
+and invokes the existing complete structural and catalog validators through both
+exact ends on that same engine. Private validation allocates no preparation
+workers and remains write fenced. This internal result grants no publication or
+serving authority. Required compatibility preparation, ordinary server joins,
+closed-engine seals and production staged-restore integration remain unfinished;
+component checks cannot qualify the campaign.
+
+The owned backend and existing ordinary opens converge on the same redb builder;
+the fixed cache and repair callback remain centralized. The complete logical
+proof is crate-private to permit the native backup adapter to retain it, and is
+still absent from the public crate exports and operational-port interfaces.

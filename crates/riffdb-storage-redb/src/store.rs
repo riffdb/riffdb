@@ -73,6 +73,7 @@ impl OpenMode {
 
 #[path = "store_open.rs"]
 mod engine_open;
+pub(crate) use engine_open::OwnedEngineOpen;
 #[path = "store_offline_scrub.rs"]
 mod offline_scrub;
 #[path = "store_private_restore.rs"]

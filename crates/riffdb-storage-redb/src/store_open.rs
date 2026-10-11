@@ -13,14 +13,123 @@ pub(super) enum EngineRepairPolicy {
 
 /// Exact engine construction state carried into the existing native store join.
 /// Keeps backend rewrite observation and repair state bound to their engine.
-struct OwnedEngineOpen {
+pub(crate) struct OwnedEngineOpen {
     database: Database,
     checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     repair_observed: Arc<AtomicBool>,
     refuse_repair: bool,
 }
 
+enum EngineMedium<'a> {
+    File(&'a Path),
+    Backend(Box<dyn redb::StorageBackend>),
+}
+
+impl OwnedEngineOpen {
+    pub(crate) fn from_private_restore_backend(
+        backend: crate::maintenance::RestoreEngineBackend,
+    ) -> Result<Self, StorageError> {
+        Self::create(EngineMedium::Backend(Box::new(backend)), true)
+    }
+
+    fn create(medium: EngineMedium<'_>, refuse_repair: bool) -> Result<Self, StorageError> {
+        let repair_observed = Arc::new(AtomicBool::new(false));
+        let repair_observed_callback = Arc::clone(&repair_observed);
+        let mut builder = Builder::new();
+        builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);
+        builder.set_repair_callback(move |session| {
+            repair_observed_callback.store(true, Ordering::Release);
+            if refuse_repair {
+                session.abort();
+            }
+            // Bounded progress telemetry only; do not enable quick_repair
+            // (quick_repair forces two-phase commit, conflicting with Standard).
+            let progress = session.progress();
+            let basis_points = ((progress * 10_000.0) as u64).min(10_000);
+            LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
+        });
+        // The builder configuration above is shared by both arms; only the
+        // storage medium differs (ADR-0113 backend-parameterized open).
+        // Sidecar durability follows the primary path, not the backend
+        // wrapper: a FileBackend kill-barrier still has to observe the
+        // sidecar after process death (ADR-0240 two-store crash).
+        let checkpoint_rewrite = Arc::new(crate::checkpoint_rewrite::CheckpointRewrite::default());
+        let database = match medium {
+            EngineMedium::Backend(backend) => builder.create_with_backend(
+                crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
+                    DynStorageBackend(backend),
+                    Arc::clone(&checkpoint_rewrite),
+                ),
+            ),
+            EngineMedium::File(path) => {
+                // Preserve Builder::create's exact opening and exclusive-lock
+                // behavior; the wrapper only compares checkpoint commit writes.
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+                let backend = redb::backends::FileBackend::new(file).map_err(database_error)?;
+                builder.create_with_backend(
+                    crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
+                        backend,
+                        Arc::clone(&checkpoint_rewrite),
+                    ),
+                )
+            }
+        };
+        if refuse_repair && repair_observed.load(Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let database = database.map_err(database_error)?;
+        Ok(Self {
+            database,
+            checkpoint_rewrite,
+            repair_observed,
+            refuse_repair,
+        })
+    }
+
+    pub(crate) fn database(&self) -> &Database {
+        &self.database
+    }
+
+    pub(crate) fn check_integrity(&mut self) -> Result<(), StorageError> {
+        if !self.database.check_integrity().map_err(database_error)?
+            || self.repair_observed.load(Ordering::Acquire)
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn checkpoint_observer(&self) -> Arc<crate::checkpoint_rewrite::CheckpointRewrite> {
+        Arc::clone(&self.checkpoint_rewrite)
+    }
+}
+
 impl RedbStore {
+    /// Join the same private engine without source preparation or readiness.
+    /// This is not a public open mode and grants no publication capability.
+    pub(crate) fn from_owned_restore_engine(
+        path: &Path,
+        engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        Self::finish_owned_engine_open(
+            OpenMode::OfflineSource,
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+            Arc::new(RealJournalMedia),
+            engine,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_after_format_preflight(
         open_mode: OpenMode,
@@ -61,59 +170,13 @@ impl RedbStore {
             publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
         }
-        let repair_observed = Arc::new(AtomicBool::new(false));
-        let repair_observed_callback = Arc::clone(&repair_observed);
         let refuse_repair =
             open_mode.is_private_validation() || repair_policy == EngineRepairPolicy::Refuse;
-        let mut builder = Builder::new();
-        builder.set_cache_size(PRIMARY_REDB_CACHE_SIZE_BYTES);
-        builder.set_repair_callback(move |session| {
-            repair_observed_callback.store(true, Ordering::Release);
-            if refuse_repair {
-                session.abort();
-            }
-            // Bounded progress telemetry only; do not enable quick_repair
-            // (quick_repair forces two-phase commit, conflicting with Standard).
-            let progress = session.progress();
-            let basis_points = ((progress * 10_000.0) as u64).min(10_000);
-            LAST_REPAIR_PROGRESS_BPS.store(basis_points, Ordering::Relaxed);
-        });
-        // The builder configuration above is shared by both arms; only the
-        // storage medium differs (ADR-0113 backend-parameterized open).
-        // Sidecar durability follows the primary path, not the backend
-        // wrapper: a FileBackend kill-barrier still has to observe the
-        // sidecar after process death (ADR-0240 two-store crash).
-        let checkpoint_rewrite = Arc::new(crate::checkpoint_rewrite::CheckpointRewrite::default());
-        let database = match engine_backend {
-            Some(backend) => builder.create_with_backend(
-                crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
-                    DynStorageBackend(backend),
-                    Arc::clone(&checkpoint_rewrite),
-                ),
-            ),
-            None => {
-                // Preserve Builder::create's exact opening and exclusive-lock
-                // behavior; the wrapper only compares checkpoint commit writes.
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(path)
-                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-                let backend = redb::backends::FileBackend::new(file).map_err(database_error)?;
-                builder.create_with_backend(
-                    crate::checkpoint_rewrite::CheckpointRewriteBackend::new(
-                        backend,
-                        Arc::clone(&checkpoint_rewrite),
-                    ),
-                )
-            }
+        let medium = match engine_backend {
+            Some(backend) => EngineMedium::Backend(backend),
+            None => EngineMedium::File(path),
         };
-        if refuse_repair && repair_observed.load(Ordering::Acquire) {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        let database = database.map_err(database_error)?;
+        let engine = OwnedEngineOpen::create(medium, refuse_repair)?;
         Self::finish_owned_engine_open(
             open_mode,
             path,
@@ -122,12 +185,7 @@ impl RedbStore {
             changelog_port,
             initialize_marker_witness,
             journal_media,
-            OwnedEngineOpen {
-                database,
-                checkpoint_rewrite,
-                repair_observed,
-                refuse_repair,
-            },
+            engine,
         )
     }
 
@@ -185,7 +243,9 @@ impl RedbStore {
         }
         let command_segment_preparation =
             crate::command_segment_preparation::CommandSegmentPreparationPool::new(
-                crate::command_segment_preparation::CommandSegmentPreparationPool::production_worker_count(),
+                if open_mode.is_private_validation() { 0 } else {
+                    crate::command_segment_preparation::CommandSegmentPreparationPool::production_worker_count()
+                },
             )
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {

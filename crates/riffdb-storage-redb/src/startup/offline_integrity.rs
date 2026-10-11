@@ -4,7 +4,7 @@ use super::*;
 /// Move-only complete logical evidence. Private materialization and physical
 /// verification remain separate requirements; this grants no serving, writer
 /// or publication capability and cannot be reconstructed from a receipt.
-pub(super) struct CompleteLogicalValidation {
+pub(crate) struct CompleteLogicalValidation {
     snapshot: CompletedLogicalSnapshot,
     catalog: riffdb_catalog::ValidatedCatalogHistory,
 }
@@ -181,6 +181,21 @@ impl RedbOfflineIntegrityScrub {
         let receipt = Self::validate_session(session)?;
         copy.finish()?;
         Ok(receipt)
+    }
+
+    pub(crate) fn validate_owned_restore(
+        store: RedbStore,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        let history = store.verify_materialized_journals()?;
+        let mut session = store.begin_structural_evidence_for_history(
+            inputs,
+            EvidenceOpenPurpose::OfflineIntegrityScrub,
+            history,
+        )?;
+        session.set_cancellation(cancellation);
+        Self::validate_complete_session(session)
     }
 
     pub(super) fn validate_session(
