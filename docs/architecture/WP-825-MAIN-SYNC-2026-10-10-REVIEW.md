@@ -8,14 +8,18 @@ retain their identifiers and exact text.
 Main owns ADR-0282 and ADR-0283. The branch's unaccepted finite checkpoint
 handoff proposal moves from ADR-0282 to ADR-0287; it remains proposed and
 unimplemented. The accepted follower acknowledgement decision moves from
-ADR-0283 to [ADR-0286](../../adr/0286-bounded-native-follower-acknowledgement-validation.md).
+ADR-0283 to ADR-0286.
 Its Decision section is byte-for-byte identical to the previously accepted
 record. Its original acceptance references are preserved. The bootstrap
-record [ADR-0284](../../adr/0284-bounded-native-bootstrap-source-custody-validation.md)
+record ADR-0284
 changes only references from ADR-0283 to ADR-0286. Package requirements and
 allowed paths follow that same identity. Historical observations retain the
 identifiers used at the time; current references use the reconciled identity.
 ADR-0285 is reserved for the separate, unaccepted private-restore proposal.
+The [follower implementation review](WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
+and [bootstrap implementation review](WP-825-ADR-0284-IMPLEMENTATION-REVIEW.md)
+provide handbook navigation; the decision records remain in the repository
+under `adr/`.
 
 The maintainer approved this identifier and reference reconciliation in session
 on 2026-10-10: "Approve the identifier-only reconciliation";
