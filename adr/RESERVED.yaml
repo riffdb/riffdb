@@ -22,8 +22,9 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
-  - adr: "0285"
+  - adr: "0284"
     status: in-flight
     note: >-
-      Owned private restore validation custody is proposed on an unmerged
-      WP-825 branch. It is neither accepted nor implemented here.
+      Main owns the accepted bounded native outbox claim-group decision.
+      Its record joins the reviewed WP-825 main integration; the bootstrap
+      decision is now ADR-0288, with its original accepted body preserved.

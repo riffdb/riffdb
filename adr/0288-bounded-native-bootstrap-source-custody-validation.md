@@ -1,26 +1,26 @@
 ---
-adr: "0284"
+adr: "0288"
 title: Bounded Native Bootstrap Source Custody Validation
 status: accepted
 tier: guarantee
 date: 2026-10-07
 accepted: '2026-10-07'
-acceptance: 'maintainer, in session, 2026-10-07: Accepted, in response to the exact-text acceptance and WP-825 scope request for ADR-0281; maintainer, in session, 2026-10-09: Approve the identifier-only reconciliation, in response to the ADR-0281 to ADR-0284 metadata and reference reconciliation request'
+acceptance: 'maintainer, in session, 2026-10-07: Accepted, in response to the exact-text acceptance and WP-825 scope request for ADR-0281; maintainer, in session, 2026-10-09: Approve the identifier-only reconciliation, in response to the ADR-0281 to ADR-0284 metadata and reference reconciliation request; maintainer, in session, 2026-10-11: I accept, in response to the ADR-0284 to ADR-0288 identifier-only reconciliation and package-path review request'
 requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279, ADR-0286]
 amends: [ADR-0268, ADR-0286]
 supersedes: []
 requirements: [REP-003, REP-006, REC-001, END-008, LOG-001]
 packages: [WP-825]
 obligations:
-  - id: OBL-0284-1
+  - id: OBL-0288-1
     package: WP-825
     proof: bootstrap_custody_continuation_matches_complete_source_oracle_without_population_walk_per_page
     says: One complete bounded initial proof and checked successors preserve exact current bootstrap custody without repeating the retained population walk for every page.
-  - id: OBL-0284-2
+  - id: OBL-0288-2
     package: WP-825
     proof: bootstrap_custody_refuses_retired_changed_corrupt_and_unclassified_evidence
     says: Missing or changed holds, retirement, corrupt source evidence, incompatible lineage and unknown publication cannot release bootstrap bytes.
-  - id: OBL-0284-3
+  - id: OBL-0288-3
     package: WP-825
     proof: bootstrap_custody_cancellation_preserves_shared_candidate_capacity_and_pin_bound
     says: Cancellation releases nondurable custody, preserves a prepared acknowledgement owner and keeps the shared compiled capacity and two-pin bound.
@@ -30,13 +30,16 @@ review_triggers:
   - Foreground reads bypass maintenance pacing for mutation or introduce another proof owner, writer, queue or retained snapshot chain.
   - Public surfaces, formats, authorization, ordering, durability, workload or deadlines change.
 ---
-# ADR-0284: Bounded Native Bootstrap Source Custody Validation
+# ADR-0288: Bounded Native Bootstrap Source Custody Validation
 
 ## Context
 
 Originally accepted as ADR-0281 on 2026-10-07. Main independently assigned
 ADR-0281 to changelog replay root validation; this record is renumbered
 ADR-0284 to preserve both decisions and their original acceptance history.
+Main later assigned ADR-0284 to bounded native outbox claim groups. This
+identifier-only reconciliation moves the bootstrap record to ADR-0288 and
+preserves its accepted Decision section byte for byte.
 
 After ADR-0286's acknowledgement and shutdown repairs, the unchanged required-host
 replication suite passes 25 cases and fails initial bootstrap held attachment at
