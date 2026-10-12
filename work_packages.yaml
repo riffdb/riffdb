@@ -29140,3 +29140,34 @@ work_packages:
     follow_ups:
     - The entity-chain and historical passes still decode each segment once each (ADR-0286 Options considered 4).
     - The second SHA-256 over each resolved frame and the encode-then-decode of each rebuilt receipt remain (ADR-0283 Consequences).
+- id: WP-834
+  name: Validation walks read command history in one pass
+  tier: guarantee
+  depends_on: [WP-833]
+  objective: Implement ADR-0287. The complete structural walk builds its
+    command history, entity chains and the historical plan's COMMITS plan
+    references in one forward pass, decoding each row once, and holds the
+    chains and plans, with their refusals, for the points their own passes ran.
+  requirements: [REC-007]
+  required_adrs: [ADR-0287, ADR-0286, ADR-0283, ADR-0182, ADR-0203]
+  allowed_paths: [work_packages.yaml, adr/0287-validation-walks-read-command-history-in-one-pass.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/startup/command_history.rs, crates/riffdb-storage-redb/src/startup/tests.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs, docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - The single COMMITS pass serving the command history, the entity chains and the historical commit plans
+  - Row builders for the command history and the entity chains that keep each pass's per-row behavior
+  - Fail-before tests holding equal results and one decode per row, with and without a checkpoint and a malformed row
+  - A performance note with the scrub measurement
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-834
+  - ./scripts/ci-all
+  exit_gate: A complete walk reads COMMITS twice, its history, chains and
+    historical plan equal the separate passes', and every ADR-0182, ADR-0203,
+    ADR-0283 and ADR-0286 proof passes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration or opt-out is added.
+    scale: Retained state stays under the evidence-index ceiling and the entity-chain capacity.
+  human_review_triggers:
+  - A consumer of the single pass sees different rows, order or decoder than its own pass.
+  - A held refusal surfaces at a different point or with a different error.
