@@ -327,7 +327,7 @@ record with no front matter.
 | [0290](0290-restore-content-seals-at-mutation-boundaries.md) | Restore Content Seals At Mutation Boundaries | Accepted | guarantee |
 | [0291](0291-bounded-restore-readiness-and-background-validation.md) | Bounded Restore Readiness And Background Validation | Accepted | guarantee |
 | [0292](0292-recovery-clock-begins-at-primary-loss.md) | Recovery Clock Begins At Primary Loss | Accepted | guarantee |
-| [0293](0293-native-restore-uses-one-validated-preparation-owner.md) | Native Restore Uses One Validated Preparation Owner | Proposed | guarantee |
+| [0293](0293-native-restore-uses-one-validated-preparation-owner.md) | Native Restore Uses One Validated Preparation Owner | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

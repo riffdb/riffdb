@@ -1,11 +1,11 @@
 ---
 adr: "0293"
 title: Native Restore Uses One Validated Preparation Owner
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-12
-accepted: null
-acceptance: null
+accepted: '2026-10-12'
+acceptance: 'maintainer, in session, 2026-10-12: Accept ADR-0293 as written, in response to the exact-text review linked from WP-825-NATIVE-OWNER-REVIEW.md; proposed text SHA-256 b58d08cea2353aad8f1d1b701e12271ffb2b6b1e82752659f5cad8c80569b553'
 requires: [ADR-0290, ADR-0291]
 amends: [ADR-0290, ADR-0291]
 supersedes: []

@@ -1,7 +1,8 @@
 # WP-825 native restore owner review
 
-Status: proposal. ADR-0293 is unaccepted and unimplemented. ADR-0290, ADR-0291
-and ADR-0292 remain accepted. WP-825 and WP-826 remain open.
+Status: ADR-0293 was accepted exactly as written in session on 2026-10-12.
+Implementation and verification are pending. ADR-0290, ADR-0291 and ADR-0292
+remain accepted. WP-825 and WP-826 remain open.
 
 The approved restore work is checkpointed. The ordinary daemon reaches restored
 readiness in 75.815435474 seconds on the preserved populated fixture; the
@@ -93,6 +94,6 @@ No timing estimate is claimed as a passing result.
 AGENTS.md requires exact human acceptance of guarantee-tier records before
 merge. This proposal amends ADR-0290's separate mutation/close seals and
 ADR-0291's staging lifecycle. The earlier broad native-fix approval covers the
-implementation paths; it does not substitute for acceptance of this new exact
-record. The previously accepted clock/controller work remains authorized and
-independent of this proposal.
+implementation paths. The maintainer separately accepted this exact record;
+acceptance does not qualify its implementation or any timing result. The
+previously accepted clock/controller work remains authorized and independent.
