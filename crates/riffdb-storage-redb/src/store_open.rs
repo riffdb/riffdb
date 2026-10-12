@@ -329,7 +329,15 @@ impl RedbStore {
                 let target = match requested {
                     Some(value) => Some(value),
                     None => {
-                        crate::backup::restored_retention_watermark_target(&self.shared.database)?
+                        crate::backup::restored_retention_watermark_target_for_validated_history(
+                            &self.shared.database,
+                            proof.as_ref().ok_or_else(|| {
+                                storage_error(StorageErrorKind::InvariantViolation)
+                            })?,
+                            self.shared.restore_integrity.as_ref().ok_or_else(|| {
+                                storage_error(StorageErrorKind::InvariantViolation)
+                            })?,
+                        )?
                     }
                 };
                 let Some(target) = target else {

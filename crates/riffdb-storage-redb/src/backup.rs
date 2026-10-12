@@ -451,6 +451,24 @@ fn apply_restored_retention_watermark_on_database(
 pub(crate) fn restored_retention_watermark_target(
     database: &Database,
 ) -> Result<Option<u64>, StorageError> {
+    restored_retention_watermark_target_with_history(database, None)
+}
+
+pub(crate) fn restored_retention_watermark_target_for_validated_history(
+    database: &Database,
+    history: &crate::restore_history::CompleteRestoreHistory,
+    binding: &crate::maintenance::RestoreIntegrityBinding,
+) -> Result<Option<u64>, StorageError> {
+    restored_retention_watermark_target_with_history(database, Some((history, binding)))
+}
+
+fn restored_retention_watermark_target_with_history(
+    database: &Database,
+    validated: Option<(
+        &crate::restore_history::CompleteRestoreHistory,
+        &crate::maintenance::RestoreIntegrityBinding,
+    )>,
+) -> Result<Option<u64>, StorageError> {
     let transaction = database.begin_read().map_err(transaction_error)?;
     let current = crate::retention::load_watermark(&transaction)?
         .map(|w| w.watermark_sequence())
@@ -458,7 +476,15 @@ pub(crate) fn restored_retention_watermark_target(
     let holds = crate::retention::load_holds(&transaction)?;
     // Restore discards the derived sidecar (ADR-0240), so no projection
     // frontier exists yet for the restored timeline.
-    let fencing = crate::retention::collect_fencing_inputs(&transaction, None, &holds)?;
+    let fencing = match validated {
+        Some((history, binding)) => crate::retention::collect_restore_fencing_inputs(
+            &transaction,
+            &holds,
+            history,
+            binding,
+        )?,
+        None => crate::retention::collect_fencing_inputs(&transaction, None, &holds)?,
+    };
     let (max_perm, _) = riffdb_storage_api::compute_max_permissible_watermark(&fencing);
     let tombstone_end = {
         let table = transaction
@@ -5524,6 +5550,99 @@ mod tests {
         write.commit().unwrap();
         let read = owner.shared.database.begin_read().unwrap();
         assert!(proof.verify_read(&read, binding).is_err());
+        assert!(owner.verify_authorization().is_err());
+    }
+
+    // req: REC-001, REC-004, REC-006, END-001
+    #[test]
+    fn owned_materialization_history_proof_fencing_reuses_the_complete_same_state_chain() {
+        use riffdb_storage_api::{
+            ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+        };
+        let root = TestRoot::new("owned-native-history-proof-fencing");
+        let (source, _, _) = create_backup(&root);
+        let database = Database::open(&source).unwrap();
+        let history =
+            crate::changelog_v3_roots::validate_retained_history(&database.begin_read().unwrap())
+                .unwrap()
+                .unwrap();
+        let hold = ReplicationSourceHoldV1::new(
+            ReplicationSourceHoldIdV1::new([0xa9; 16]).unwrap(),
+            ReplicationSourceHoldKindV1::FollowerAcknowledgement,
+            history.lineage(),
+            history.tail(),
+        );
+        let key = hold.storage_key();
+        let encoded =
+            riffdb_storage_api::proto_codec::encode_replication_source_hold_v1(hold).unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+            .insert(key.as_slice(), encoded.as_bytes())
+            .unwrap();
+        write.commit().unwrap();
+        drop(database);
+        let backup = root.join("follower-backup");
+        RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let (owner, (_, _, _, _, reader)) = owned
+            .validate_complete(owned_validation_inputs())
+            .unwrap()
+            .into_authorization()
+            .unwrap();
+        drop(reader);
+        let binding = owner.shared.restore_integrity.as_ref().unwrap();
+        let read = owner.shared.database.begin_read().unwrap();
+        let holds = crate::retention::load_holds(&read).unwrap();
+        let original = crate::retention::collect_fencing_inputs(&read, None, &holds).unwrap();
+        assert_eq!(original.follower_low_water, Some(0));
+        let proof = crate::restore_history::CompleteRestoreHistory::capture(&read, binding)
+            .unwrap()
+            .unwrap();
+        crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(0));
+        assert_eq!(
+            crate::retention::collect_restore_fencing_inputs(&read, &holds, &proof, binding)
+                .unwrap(),
+            original
+        );
+        drop(read);
+        assert_eq!(
+            restored_retention_watermark_target_for_validated_history(
+                &owner.shared.database,
+                &proof,
+                binding
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.get()),
+            0,
+            "the complete same-state proof already checked all follower hold links and history ancestry"
+        );
+        let write = owner.shared.database.begin_write().unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+            .insert(key.as_slice(), b"corrupt follower control".as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        assert!(
+            restored_retention_watermark_target_for_validated_history(
+                &owner.shared.database,
+                &proof,
+                binding
+            )
+            .is_err()
+        );
         assert!(owner.verify_authorization().is_err());
     }
 

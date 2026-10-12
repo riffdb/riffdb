@@ -938,6 +938,41 @@ fn collect_fencing_inputs_with(
     holds: &StoredRetentionHoldsV1,
     outbox: OutboxFence,
 ) -> Result<RetentionFencingInputs, StorageError> {
+    collect_fencing_inputs_checked(transaction, derived, holds, outbox, None)
+}
+
+/// Native restore only: the constructor already checked every retained receipt,
+/// source hold, registration link, admission and cutover on this exact state.
+/// All projection, operator, outbox, migration, consumer and follower minima
+/// are still collected; this proof replaces only the repeated full chain walk.
+pub(crate) fn collect_restore_fencing_inputs(
+    transaction: &redb::ReadTransaction,
+    holds: &StoredRetentionHoldsV1,
+    history: &crate::restore_history::CompleteRestoreHistory,
+    binding: &crate::maintenance::RestoreIntegrityBinding,
+) -> Result<RetentionFencingInputs, StorageError> {
+    history.verify_read(transaction, binding)?;
+    let inputs = collect_fencing_inputs_checked(
+        transaction,
+        None,
+        holds,
+        OutboxFence::Scan,
+        Some((history, binding)),
+    )?;
+    history.verify_read(transaction, binding)?;
+    Ok(inputs)
+}
+
+fn collect_fencing_inputs_checked(
+    transaction: &redb::ReadTransaction,
+    derived: Option<&redb::ReadTransaction>,
+    holds: &StoredRetentionHoldsV1,
+    outbox: OutboxFence,
+    restore: Option<(
+        &crate::restore_history::CompleteRestoreHistory,
+        &crate::maintenance::RestoreIntegrityBinding,
+    )>,
+) -> Result<RetentionFencingInputs, StorageError> {
     let detached = detached_projection_ids(holds);
     let primary_projection = min_projection_durable_frontier(transaction, &detached)?;
     let derived_projection = derived
@@ -978,7 +1013,18 @@ fn collect_fencing_inputs_with(
         undelivered_outbox_low_water: undelivered,
         staged_migration_frozen_frontier: staged,
         consumer_low_water,
-        follower_low_water: follower_low_water(transaction, outbox)?,
+        follower_low_water: match restore {
+            Some((history, binding)) => {
+                history.verify_read(transaction, binding)?;
+                let source_holds = transaction
+                    .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+                    .map_err(table_error)?;
+                let minimum = follower_acknowledgement_minimum(&source_holds)?;
+                history.verify_read(transaction, binding)?;
+                minimum
+            }
+            None => follower_low_water(transaction, outbox)?,
+        },
     })
 }
 

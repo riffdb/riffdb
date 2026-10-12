@@ -4,16 +4,17 @@ Status: ADR-0293 was accepted exactly as written in session on 2026-10-12.
 The single-engine stamp/close foundation is implemented and focused checks pass.
 Complete-history proof reuse through watermark preparation and stamping, plus
 delayed predecessor HISTORY hydration, are implemented. The latest focused
-native checks and ordinary build pass. The faithful whole gate still fails;
-restore-only attribution measures 64.148945502 seconds.
+native checks and ordinary build pass. The faithful whole gate restores the
+database in 58.213811086 seconds but fails when the first write completes at
+60.000607091 seconds. Replay and full-state reconciliation have not run.
 ADR-0290, ADR-0291 and ADR-0292
 remain accepted. WP-825 and WP-826 remain open.
 
-The approved restore work is checkpointed. The last measured ordinary daemon reaches restored
-readiness in 64.148945502 seconds on the preserved populated fixture; the
-faithful primary-loss 60-second gate still fails during restore. Ninety-eight
-focused native regressions, the ordinary release daemon build, allowed paths
-and whitespace pass on the required host. Full acceptance, final-source CI,
+The approved restore work is checkpointed. The last measured ordinary daemon
+reaches restored readiness in 58.213826456 seconds on the preserved populated
+fixture. The faithful primary-loss 60-second gate still fails at the first
+successful write. Focused native regressions, the ordinary release daemon build,
+allowed paths and whitespace pass on the required host. Full acceptance, final-source CI,
 actual scheduled-fault qualification, eight-hour rehearsal and 24-hour campaign
 remain pending. No old failure has been revised into a success.
 
@@ -88,7 +89,39 @@ source, logs, frozen binaries and unchanged original backup and fixture. No
 failure is converted into a pass. Further process crash
 coverage, final acceptance/CI and both actual campaigns remain pending.
 
-## Measured remaining work
+## Fencing proof follow-through
+
+A subsequent private profile confirms that the deferred lifecycle is selected.
+Watermark preparation takes 27.428 seconds, including 13.155 seconds for its
+complete retained-history constructor. The restored follower-fence collector
+then invokes the same full validator again. The profiled restore takes 63.769
+seconds; instrumentation is diagnostic only and production bytes are restored
+and independently verified afterward.
+
+A focused counter test reproduces the extra full walk before the fix. The native
+restore fence collector now accepts only the same-state complete proof, checks
+its current read pin and native generation before and after collection, and
+retains all projection, operator, outbox, migration, consumer and follower minima.
+Every source hold is still decoded; the constructor already checked its exact
+key, lineage, ancestry and registration links. Other offline and online collectors
+retain their original full-validation behavior.
+
+The focused test compares the complete fence result against the original
+collector with a genuine follower hold, proves no extra full chain walk, and
+refuses reuse after a native hold mutation. This test, existing retention,
+readiness, custody, stamp and publication tests pass, including nine retention
+tests, six readiness tests, 35 custody tests and 12 stamp tests. The ordinary
+default-profile release build passes. The faithful populated gate completes
+restore at 58.213811086 seconds after primary loss, then commits its first write
+but records completion at 60.000607091 seconds. This exceeds the unchanged
+60-second deadline. The exact retries, original acknowledged-identity replay and
+full 65,536-ticket reconciliation do not run. Backup preparation took
+16.348319239 seconds before primary loss, with no intervening acknowledgements;
+it is reported separately. Independent verification binds the actual source,
+logs, frozen binaries and unchanged original inputs. This remains a failed gate;
+neither campaign has started.
+
+## Earlier attribution motivating ADR-0293
 
 A private diagnostic build of the same native implementation adds only static
 phase names and monotonic timings. It measures a 75.490149914-second restore.
