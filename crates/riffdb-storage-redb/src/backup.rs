@@ -282,16 +282,39 @@ pub(crate) fn stamp_retention_watermark(
     stamp_retention_watermark_on_database(&database, watermark_sequence)
 }
 
-fn stamp_retention_watermark_on_database(
+pub(crate) fn stamp_retention_watermark_on_database(
     database: &Database,
     watermark_sequence: u64,
+) -> Result<(), StorageError> {
+    stamp_watermark_with_complete_history(database, watermark_sequence, None)
+}
+
+pub(crate) fn verify_equal_restore_watermark(
+    database: &Database,
+    watermark_sequence: u64,
+    history: &crate::restore_history::CompleteRestoreHistory,
+    binding: &crate::maintenance::RestoreIntegrityBinding,
+) -> Result<(), StorageError> {
+    stamp_watermark_with_complete_history(database, watermark_sequence, Some((history, binding)))
+}
+
+fn stamp_watermark_with_complete_history(
+    database: &Database,
+    watermark_sequence: u64,
+    validated: Option<(
+        &crate::restore_history::CompleteRestoreHistory,
+        &crate::maintenance::RestoreIntegrityBinding,
+    )>,
 ) -> Result<(), StorageError> {
     let mut transaction = database.begin_write().map_err(transaction_error)?;
     transaction.set_two_phase_commit(true);
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    let history = v3_restore::watermark_history(&transaction)?;
+    let history = match validated {
+        Some((proof, binding)) => Some(proof.history_for_stamp(&transaction, binding)?),
+        None => v3_restore::watermark_history(&transaction)?,
+    };
     let (incarnation, current) = {
         let meta = transaction.open_table(META).map_err(table_error)?;
         let incarnation = match meta
@@ -330,6 +353,11 @@ fn stamp_retention_watermark_on_database(
     }
     if current.as_ref().map(|w| w.watermark_sequence()) == Some(watermark_sequence) {
         return transaction.abort().map_err(precommit_storage_error);
+    }
+    // This evidence authorizes only the already fully checked no-op. A real
+    // transition must discard it and use the original complete write protocol.
+    if validated.is_some() {
+        return Err(corrupt());
     }
     let chain_root = if watermark_sequence == 0 {
         None
@@ -420,7 +448,9 @@ fn apply_restored_retention_watermark_on_database(
     Ok(())
 }
 
-fn restored_retention_watermark_target(database: &Database) -> Result<Option<u64>, StorageError> {
+pub(crate) fn restored_retention_watermark_target(
+    database: &Database,
+) -> Result<Option<u64>, StorageError> {
     let transaction = database.begin_read().map_err(transaction_error)?;
     let current = crate::retention::load_watermark(&transaction)?
         .map(|w| w.watermark_sequence())
@@ -699,6 +729,7 @@ enum RestoredHistoryLayout<'a> {
     SelfContained {
         configured_database_file: &'a Path,
         private_cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        receipt_stamp: bool,
     },
 }
 
@@ -731,6 +762,13 @@ pub(crate) struct OwnedMaterialization {
     custody: crate::maintenance::RestoreCustody,
     validated_seal: Option<OwnedArtifactSeals>,
     manifest: OfflineBackupManifestV1,
+    deferred_extents: Option<DeferredRestoreExtents>,
+    journal_successor: Option<(BackupIntegrityChecksumV1, BackupIntegrityChecksumV1)>,
+}
+
+struct DeferredRestoreExtents {
+    sealed: Vec<std::sync::Arc<OwnedExtentSeal>>,
+    journal_floor: u64,
 }
 
 /// Proof drops its immutable pin and engine before creation pins and custody.
@@ -748,10 +786,12 @@ struct OwnedArtifactSeals {
     marker: BackupIntegrityChecksumV1,
     continuity: [Option<ArtifactContinuity>; 3],
     mutation_generation: u64,
-    sealed: Vec<OwnedExtentSeal>,
+    sealed: Vec<std::sync::Arc<OwnedExtentSeal>>,
 }
 
 struct OwnedExtentSeal {
+    file: File,
+    copied_immutable: bool,
     generation: u64,
     checksum: BackupIntegrityChecksumV1,
     continuity: Option<ArtifactContinuity>,
@@ -801,7 +841,17 @@ impl OwnedArtifactSeals {
         // Seal the actual post-preparation inventory, not its predecessor's
         // manifest ordinals. Subsequent handoffs must retain this exact set.
         let mut sealed = Vec::with_capacity(paths.len());
-        for (generation, path) in &paths {
+        for (index, (generation, path)) in paths.iter().enumerate() {
+            if let Some(deferred) = &owner.deferred_extents {
+                let original = deferred
+                    .sealed
+                    .get(index)
+                    .filter(|seal| seal.generation == *generation)
+                    .ok_or_else(corrupt)?;
+                original.verify(owner, path, false)?;
+                sealed.push(std::sync::Arc::clone(original));
+                continue;
+            }
             let file = owner.open_extent(path)?;
             let before = ArtifactContinuity::read(&file)?;
             let checksum = sha256_reader(&file)?;
@@ -814,11 +864,13 @@ impl OwnedArtifactSeals {
             if ArtifactContinuity::read(&file)? != before {
                 return Err(corrupt());
             }
-            sealed.push(OwnedExtentSeal {
+            sealed.push(std::sync::Arc::new(OwnedExtentSeal {
+                file,
+                copied_immutable: false,
                 generation: *generation,
                 checksum,
                 continuity: before,
-            });
+            }));
         }
         if owner.artifact_continuity()? != continuity
             || owner.custody.mutation_generation()? != mutation_generation
@@ -886,19 +938,48 @@ impl OwnedArtifactSeals {
             if *generation != seal.generation {
                 return Err(corrupt());
             }
-            let file = owner.open_extent(path)?;
-            let before = ArtifactContinuity::read(&file)?;
-            if seal.continuity.is_some() && before != seal.continuity {
-                return Err(corrupt());
-            }
-            if (full || seal.continuity.is_none()) && sha256_reader(&file)? != seal.checksum {
-                return Err(corrupt());
-            }
-            if ArtifactContinuity::read(&file)? != before {
+            seal.verify(owner, path, full)?;
+        }
+        Ok(())
+    }
+}
+
+impl OwnedExtentSeal {
+    fn verify(
+        &self,
+        owner: &OwnedMaterialization,
+        path: &Path,
+        full: bool,
+    ) -> Result<(), StorageError> {
+        let (parent, _) = owner
+            .primary
+            .identity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        parent.verify()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if self.file.metadata().map_err(io_unavailable)?.nlink() != 1 {
                 return Err(corrupt());
             }
         }
-        Ok(())
+        if !parent.regular_file_matches(path.file_name().ok_or_else(corrupt)?, &self.file)? {
+            return Err(corrupt());
+        }
+        let before = ArtifactContinuity::read(&self.file)?;
+        if self.continuity.is_some() && before != self.continuity {
+            return Err(corrupt());
+        }
+        if (self.continuity.is_none() || (full && !self.copied_immutable))
+            && sha256_open_file(&self.file)? != self.checksum
+        {
+            return Err(corrupt());
+        }
+        if ArtifactContinuity::read(&self.file)? != before {
+            return Err(corrupt());
+        }
+        parent.verify()
     }
 }
 
@@ -1058,6 +1139,10 @@ impl OwnedAuthorizationMaterialization {
     pub(crate) fn close(self) -> Result<OwnedClosedMaterialization, StorageError> {
         self.materialization.verify()?;
         self.shared.verify_private_restore_integrity()?;
+        if self.materialization.deferred_extents.is_some() {
+            self.materialization.custody.invalidate();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         // Every authorization clone retains this same SharedRedb. Refuse a
         // surviving read instead of treating backend close as read release.
         if std::sync::Arc::strong_count(&self.shared) != 1 {
@@ -1175,9 +1260,13 @@ impl OwnedStampPreparation {
                 Some((complete_history, binding)),
             )?;
             crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
+            if materialization.deferred_extents.is_some() {
+                crate::history_stub::verify_no_surviving_stubs(&engine.database)?;
+            }
             drop(shared);
             materialization.custody.freeze_prepared_artifact()?;
             old.verify_immutable(&materialization)?;
+            materialization.retire_validated_source_extents(&old)?;
             materialization.validated_seal = Some(OwnedArtifactSeals::capture(&materialization)?);
             materialization.verify()
         })();
@@ -1251,6 +1340,25 @@ impl OwnedClosedMaterialization {
             self.materialization.custody.invalidate();
         }
         result
+    }
+
+    pub(crate) fn verify_journal_successor(
+        &self,
+        previous: &BackupIntegrityChecksumV1,
+        current: &BackupIntegrityChecksumV1,
+    ) -> Result<(), StorageError> {
+        self.materialization.verify()?;
+        if previous == current
+            || self
+                .materialization
+                .journal_successor
+                .as_ref()
+                .is_some_and(|(old, new)| old == previous && new == current)
+        {
+            Ok(())
+        } else {
+            Err(corrupt())
+        }
     }
 
     pub(crate) fn verify(&self) -> Result<(), StorageError> {
@@ -1633,6 +1741,18 @@ impl OwnedMaterialization {
             self.primary.verify()?;
             self.journal.verify()?;
             self.marker.verify()?;
+            if let Some(deferred) = &self.deferred_extents {
+                let paths = sealed_extents_beside(self.primary.path())?;
+                if paths.len() != deferred.sealed.len() {
+                    return Err(corrupt());
+                }
+                for ((generation, path), seal) in paths.iter().zip(&deferred.sealed) {
+                    if *generation != seal.generation {
+                        return Err(corrupt());
+                    }
+                    seal.verify(self, path, false)?;
+                }
+            }
             if let Some(seal) = &self.validated_seal {
                 seal.verify(self)?;
             }
@@ -1642,6 +1762,81 @@ impl OwnedMaterialization {
             self.custody.invalidate();
         }
         result
+    }
+
+    /// Called only after the checked RestoreAnchor, no surviving references,
+    /// observed engine close and verification against the old immutable seals.
+    fn retire_validated_source_extents(
+        &mut self,
+        old: &OwnedArtifactSeals,
+    ) -> Result<(), StorageError> {
+        let Some(deferred) = self.deferred_extents.as_ref() else {
+            return Ok(());
+        };
+        let paths = sealed_extents_beside(self.primary.path())?;
+        if paths.len() != deferred.sealed.len() {
+            return Err(corrupt());
+        }
+        for ((generation, path), seal) in paths.iter().zip(&deferred.sealed) {
+            if *generation != seal.generation {
+                return Err(corrupt());
+            }
+            seal.verify(self, path, false)?;
+        }
+        let floor = deferred.journal_floor;
+        // The current journal was proven empty in the immutable backup and
+        // again in materialized inspection. Its prior bytes must still match.
+        validate_backup_journal(
+            self.journal.path(),
+            self.manifest.database_id(),
+            self.manifest.last_commit_sequence(),
+        )?;
+        for ((_, path), seal) in paths.iter().zip(&deferred.sealed) {
+            self.custody.verify_identity()?;
+            seal.verify(self, path, false)?;
+            fs::remove_file(path).map_err(io_unavailable)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if seal.file.metadata().map_err(io_unavailable)?.nlink() != 0 {
+                    return Err(corrupt());
+                }
+            }
+        }
+        sync_parent(self.primary.path())?;
+        if !sealed_extents_beside(self.primary.path())?.is_empty() {
+            return Err(corrupt());
+        }
+        self.custody.verify_identity()?;
+        self.journal.verify()?;
+        crate::journal::renew_extent_above_with_media(
+            &crate::media::RealJournalMedia,
+            self.journal.path(),
+            floor,
+        )
+        .map_err(backup_journal_error)?;
+        self.journal.verify()?;
+        validate_backup_journal(
+            self.journal.path(),
+            self.manifest.database_id(),
+            self.manifest.last_commit_sequence(),
+        )?;
+        if crate::journal::extent_generation_with_media(
+            &crate::media::RealJournalMedia,
+            self.journal.path(),
+        )
+        .map_err(backup_journal_error)?
+        .is_none_or(|generation| generation <= floor)
+        {
+            return Err(corrupt());
+        }
+        let successor = self.journal.checksum()?;
+        if self.marker.checksum()? != old.marker {
+            return Err(corrupt());
+        }
+        self.journal_successor = Some((old.journal.clone(), successor));
+        self.deferred_extents = None;
+        self.custody.verify_identity()
     }
 
     fn artifact_continuity(&self) -> Result<[Option<ArtifactContinuity>; 3], StorageError> {
@@ -1764,14 +1959,35 @@ impl OwnedMaterialization {
         )?;
         store.prepare_owned_restore_before_validation()?;
         self.verify()?;
+        let history =
+            if self.deferred_extents.is_some() {
+                if !crate::startup::private_restore_supports_bounded_readiness(&store)? {
+                    return Err(corrupt());
+                }
+                Some(store.prepare_owned_restore_watermark(
+                    self.manifest.retention_watermark_sequence(),
+                )?)
+            } else {
+                None
+            };
+        self.verify()?;
         let (shared, parts, assurance, complete_history) =
             if crate::startup::private_restore_supports_bounded_readiness(&store)? {
-                let (shared, parts, complete_history) =
-                    crate::startup::validate_private_restore_readiness(
+                let (shared, parts, complete_history) = match history {
+                    Some(history) => {
+                        crate::startup::validate_private_restore_readiness_with_history(
+                            store,
+                            inputs.clone(),
+                            self.custody.cancellation(),
+                            Some(history),
+                        )?
+                    }
+                    None => crate::startup::validate_private_restore_readiness(
                         store,
                         inputs.clone(),
                         self.custody.cancellation(),
-                    )?;
+                    )?,
+                };
                 (
                     shared,
                     parts,
@@ -1923,6 +2139,7 @@ impl RedbOfflineRestore {
             RestoredHistoryLayout::SelfContained {
                 configured_database_file,
                 private_cancellation: None,
+                receipt_stamp: false,
             },
         )
         .map(|restored| restored.outcome)
@@ -1938,6 +2155,30 @@ impl RedbOfflineRestore {
             RestoredHistoryLayout::SelfContained {
                 configured_database_file,
                 private_cancellation: Some(cancellation),
+                receipt_stamp: false,
+            },
+        )?;
+        let OfflineRestoreResultV1::Restored { manifest } = restored.outcome else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        let owned = restored
+            .owned
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        owned.verify()?;
+        Ok((*manifest, owned))
+    }
+
+    pub(crate) fn restore_owned_stamp_preparation(
+        &mut self,
+        configured_database_file: &Path,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(OfflineBackupManifestV1, OwnedMaterialization), StorageError> {
+        let restored = self.restore_offline_backup_with_layout(
+            OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+            RestoredHistoryLayout::SelfContained {
+                configured_database_file,
+                private_cancellation: Some(cancellation),
+                receipt_stamp: true,
             },
         )?;
         let OfflineRestoreResultV1::Restored { manifest } = restored.outcome else {
@@ -2050,10 +2291,18 @@ impl RedbOfflineRestore {
             return Err(corrupt());
         }
         validate_manifest_format_marker(staged_format_marker.path(), &manifest)?;
+        let receipt_stamp = matches!(
+            &layout,
+            RestoredHistoryLayout::SelfContained {
+                receipt_stamp: true,
+                ..
+            }
+        );
         let staged_sealed = stage_restored_sealed_extents(
             &self.backup_directory,
             &self.target_directory,
             &manifest,
+            receipt_stamp,
         )?;
         // Only this native manifest-verified copy path can mint the input to
         // production custody. It retains the original creation descriptor and
@@ -2118,13 +2367,49 @@ impl RedbOfflineRestore {
         for (_, stale) in sealed_extents_beside(&target_artifact)? {
             fs::remove_file(stale).map_err(io_unavailable)?;
         }
-        for (generation, mut staged) in staged_sealed {
+        let mut copied_extents = Vec::with_capacity(staged_sealed.len());
+        for (generation, mut staged, original) in staged_sealed {
+            if let Some(original) = &original {
+                let parent = crate::maintenance::PinnedDirectory::open(&self.target_directory)?;
+                parent.verify()?;
+                if !parent.regular_file_matches(
+                    staged.path().file_name().ok_or_else(corrupt)?,
+                    &original.file,
+                )? || ArtifactContinuity::read(&original.file)? != original.continuity
+                {
+                    return Err(corrupt());
+                }
+            }
             fs::rename(
                 staged.path(),
                 crate::journal::sealed_journal_path(&target_artifact, generation),
             )
             .map_err(io_unavailable)?;
             staged.mark_published();
+            if let Some(mut original) = original {
+                let parent = crate::maintenance::PinnedDirectory::open(&self.target_directory)?;
+                let path = crate::journal::sealed_journal_path(&target_artifact, generation);
+                parent.verify()?;
+                if !parent
+                    .regular_file_matches(path.file_name().ok_or_else(corrupt)?, &original.file)?
+                {
+                    return Err(corrupt());
+                }
+                let after = ArtifactContinuity::read(&original.file)?;
+                if let (Some(before), Some(after)) = (original.continuity, after) {
+                    if before.device != after.device
+                        || before.inode != after.inode
+                        || before.length != after.length
+                        || before.modified != after.modified
+                    {
+                        return Err(corrupt());
+                    }
+                } else if sha256_open_file(&original.file)? != original.checksum {
+                    return Err(corrupt());
+                }
+                original.continuity = after;
+                copied_extents.push(std::sync::Arc::new(original));
+            }
         }
         staged_format_marker.rename_to(&target_format_marker)?;
         if sync_directory(&self.target_directory).is_err() {
@@ -2144,6 +2429,12 @@ impl RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
+        let defer_history = match (receipt_stamp && cfg!(unix), private_database.as_ref()) {
+            (true, Some(database)) => {
+                crate::startup::private_restore_image_supports_bounded_readiness(database)?
+            }
+            _ => false,
+        };
         match (&layout, private_database.as_ref()) {
             (
                 RestoredHistoryLayout::SelfContained {
@@ -2154,12 +2445,21 @@ impl RedbOfflineRestore {
             ) => {
                 #[cfg(test)]
                 materialization_test_boundary(MaterializationTestBoundary::BeforeHydration)?;
-                hydrate_staged_history_on_database(
-                    database,
-                    &self.target_directory,
-                    manifest.database_id(),
-                    configured_database_file,
-                )?;
+                if defer_history {
+                    let _resolver = crate::history_stub::HistoryResolver::register(
+                        manifest.database_id(),
+                        &target_artifact,
+                        std::sync::Arc::new(crate::media::RealJournalMedia),
+                    );
+                    crate::history_stub::hydrate_surviving_command_stubs(database)?;
+                } else {
+                    hydrate_staged_history_on_database(
+                        database,
+                        &self.target_directory,
+                        manifest.database_id(),
+                        configured_database_file,
+                    )?;
+                }
                 #[cfg(test)]
                 materialization_test_boundary(MaterializationTestBoundary::BeforeWatermark)?;
             }
@@ -2174,6 +2474,7 @@ impl RedbOfflineRestore {
             std::sync::Arc::new(crate::media::RealJournalMedia),
         );
         match private_database.as_ref() {
+            Some(_) if defer_history => {}
             Some(database) => apply_restored_retention_watermark_on_database(
                 database,
                 manifest.retention_watermark_sequence(),
@@ -2193,6 +2494,24 @@ impl RedbOfflineRestore {
                     custody,
                     validated_seal: None,
                     manifest: manifest.clone(),
+                    deferred_extents: if defer_history {
+                        let RestoredHistoryLayout::SelfContained {
+                            configured_database_file,
+                            ..
+                        } = &layout
+                        else {
+                            return Err(corrupt());
+                        };
+                        Some(DeferredRestoreExtents {
+                            sealed: copied_extents,
+                            journal_floor: highest_extent_generation_beside(
+                                configured_database_file,
+                            )?,
+                        })
+                    } else {
+                        None
+                    },
+                    journal_successor: None,
                 };
                 owned.verify()?;
                 Some(owned)
@@ -3384,6 +3703,13 @@ pub(crate) fn sha256_file(path: &Path) -> Result<BackupIntegrityChecksumV1, Stor
     sha256_reader(file)
 }
 
+fn sha256_open_file(file: &File) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    use std::io::{Seek, SeekFrom};
+    let mut reader = file.try_clone().map_err(io_unavailable)?;
+    reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+    sha256_reader(reader)
+}
+
 pub(crate) fn sha256_reader(
     mut reader: impl Read,
 ) -> Result<BackupIntegrityChecksumV1, StorageError> {
@@ -3706,19 +4032,30 @@ fn stage_restored_sealed_extents(
     backup_directory: &Path,
     target_directory: &Path,
     manifest: &OfflineBackupManifestV1,
-) -> Result<Vec<(u64, StagedArtifact)>, StorageError> {
+    retain_descriptors: bool,
+) -> Result<Vec<(u64, StagedArtifact, Option<OwnedExtentSeal>)>, StorageError> {
     let sealed = sealed_artifacts_in(backup_directory)?;
     let mut staged = Vec::with_capacity(sealed.len());
     for (ordinal, path) in sealed_artifact_ordinals(&sealed)? {
         let generation = sealed_artifact_generation(path.file_name().ok_or_else(corrupt)?)
             .ok_or_else(corrupt)?;
         let expected = manifest_artifact_checksum(manifest, ordinal)?;
-        let artifact = StagedArtifact::create_named(
+        let (artifact, file) = StagedArtifact::create_named_with_file(
             target_directory,
             OsStr::new(&sealed_artifact_name(generation)),
+            true,
         )?;
+        let parent = crate::maintenance::PinnedDirectory::open(target_directory)?;
+        parent.verify()?;
+        if !parent.regular_file_matches(artifact.path().file_name().ok_or_else(corrupt)?, &file)? {
+            return Err(corrupt());
+        }
         copy_and_sync(&path, artifact.path())?;
-        if sha256_file(artifact.path())? != expected {
+        if !parent.regular_file_matches(artifact.path().file_name().ok_or_else(corrupt)?, &file)? {
+            return Err(corrupt());
+        }
+        let before = ArtifactContinuity::read(&file)?;
+        if sha256_reader(&file)? != expected {
             return Err(corrupt());
         }
         crate::journal::read_sealed_extent_with_media(
@@ -3727,7 +4064,21 @@ fn stage_restored_sealed_extents(
             manifest.database_id(),
         )
         .map_err(|_| corrupt())?;
-        staged.push((generation, artifact));
+        parent.verify()?;
+        if ArtifactContinuity::read(&file)? != before
+            || !parent
+                .regular_file_matches(artifact.path().file_name().ok_or_else(corrupt)?, &file)?
+        {
+            return Err(corrupt());
+        }
+        let original = retain_descriptors.then_some(OwnedExtentSeal {
+            generation,
+            checksum: expected,
+            continuity: before,
+            file,
+            copied_immutable: true,
+        });
+        staged.push((generation, artifact, original));
     }
     Ok(staged)
 }
@@ -4064,11 +4415,6 @@ struct StagedArtifact {
 }
 
 impl StagedArtifact {
-    fn create_named(target_directory: &Path, stem: &OsStr) -> Result<Self, StorageError> {
-        Self::create_named_with_file(target_directory, stem, false)
-            .map(|(artifact, _file)| artifact)
-    }
-
     fn create_named_with_file(
         target_directory: &Path,
         stem: &OsStr,

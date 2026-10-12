@@ -50,11 +50,18 @@ impl RedbStore {
     pub(crate) fn verify_materialized_journals(
         &self,
     ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
-        self.verify_materialized_journals_for_restore(None)
+        self.verify_materialized_journals_for_restore(None, None)
     }
 
     pub(crate) fn verify_owned_restore_materialized_journals(
         &self,
+    ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
+        self.verify_owned_restore_materialized_journals_with_history(None)
+    }
+
+    pub(crate) fn verify_owned_restore_materialized_journals_with_history(
+        &self,
+        history: Option<crate::restore_history::CompleteRestoreHistory>,
     ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
         if !self.shared.permits_owned_source_compatibility() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -64,12 +71,13 @@ impl RedbStore {
             .restore_integrity
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.verify_materialized_journals_for_restore(Some(binding))
+        self.verify_materialized_journals_for_restore(Some(binding), history)
     }
 
     fn verify_materialized_journals_for_restore(
         &self,
         binding: Option<&crate::maintenance::RestoreIntegrityBinding>,
+        complete: Option<crate::restore_history::CompleteRestoreHistory>,
     ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
         let read = self
             .shared
@@ -78,9 +86,14 @@ impl RedbStore {
             .map_err(transaction_error)?;
         let database_id = read_identity_from_read_transaction(&read)?;
         let history = match binding {
-            Some(binding) => {
-                crate::journal::VerifiedMaterializedHistory::capture_owned_restore(read, binding)
-            }
+            Some(binding) => match complete {
+                Some(proof) => crate::journal::VerifiedMaterializedHistory::reuse_owned_restore(
+                    read, binding, proof,
+                ),
+                None => crate::journal::VerifiedMaterializedHistory::capture_owned_restore(
+                    read, binding,
+                ),
+            },
             None => crate::journal::VerifiedMaterializedHistory::capture(read),
         }
         .map_err(recovery_journal_error)?;

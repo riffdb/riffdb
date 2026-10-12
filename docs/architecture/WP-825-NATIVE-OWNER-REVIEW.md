@@ -2,13 +2,15 @@
 
 Status: ADR-0293 was accepted exactly as written in session on 2026-10-12.
 The single-engine stamp/close foundation is implemented and focused checks pass.
-Complete-history proof reuse into stamping is implemented; watermark reuse and
-delayed HISTORY hydration remain pending.
+Complete-history proof reuse through watermark preparation and stamping, plus
+delayed predecessor HISTORY hydration, are implemented. The latest focused
+native checks and ordinary build pass. The faithful whole gate still fails;
+restore-only attribution measures 64.148945502 seconds.
 ADR-0290, ADR-0291 and ADR-0292
 remain accepted. WP-825 and WP-826 remain open.
 
-The approved restore work is checkpointed. The ordinary daemon reaches restored
-readiness in 75.815435474 seconds on the preserved populated fixture; the
+The approved restore work is checkpointed. The last measured ordinary daemon reaches restored
+readiness in 64.148945502 seconds on the preserved populated fixture; the
 faithful primary-loss 60-second gate still fails during restore. Ninety-eight
 focused native regressions, the ordinary release daemon build, allowed paths
 and whitespace pass on the required host. Full acceptance, final-source CI,
@@ -53,9 +55,38 @@ test pass on the required host, alongside the ordinary release daemon build.
 The tests reject valid terminal roots with a corrupt middle receipt, an
 unclassified native commit and rebinding to another owner. The stamp count
 asserts that only the new anchor needs another full walk. The faithful whole
-60-second gate still fails during restore; the component attribution is pending.
+60-second gate still fails during restore; a subsequent restore-only diagnostic measures 68.191618524 seconds.
 This checkpoint does not implement watermark proof reuse, avoid predecessor
 HISTORY serialization, qualify final CI or start either campaign.
+
+## Deferred source lifecycle checkpoint
+
+The ordinary server's receipt-authorized constructors retain the copied sealed
+extents and their original creation descriptors. They hydrate surviving command
+values, then perform complete predecessor-history validation after compatibility,
+journal recovery and physical checking. Equal watermark retries and bounded
+readiness reuse that same-state evidence. Original fencing and tombstone checks
+remain; a real watermark transition retires the proof, uses the original full
+transaction and requires a fresh physical check and complete history proof.
+
+The stamp consumes all readers, atomically replaces predecessor HISTORY with its
+canonical RestoreAnchor, checks for any surviving command or receipt stub, and
+observes engine close. Only then can the controlled span retire the checked
+original extents and renew and completely verify the empty journal above the
+target generation. A private verified journal-successor binding permits exactly
+that change before final sealing. Legacy direct close refuses a deferred stage;
+ordinary direct offline, archive, follower and promotion paths retain their
+previous protocols. Unsupported images use complete preparation.
+
+Six readiness tests, 34 existing native custody/compatibility tests, 12 stamp
+compatibility tests, one real publication test and six maintenance tests pass.
+They verify the single complete constructor, source lifetime and refusal of
+missing, replaced or same-length modified extents. The ordinary default-profile build passes. The faithful
+populated whole gate still fails during restore; subsequent restore-only
+attribution measures 64.148945502 seconds. Independent checks bind the actual
+source, logs, frozen binaries and unchanged original backup and fixture. No
+failure is converted into a pass. Further process crash
+coverage, final acceptance/CI and both actual campaigns remain pending.
 
 ## Measured remaining work
 

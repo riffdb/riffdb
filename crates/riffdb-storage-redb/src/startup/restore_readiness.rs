@@ -12,11 +12,13 @@ pub(crate) fn private_restore_supports_bounded_readiness(
         return Ok(false);
     }
     store.shared.verify_private_restore_integrity()?;
-    let read = store
-        .shared
-        .database
-        .begin_read()
-        .map_err(transaction_error)?;
+    private_restore_image_supports_bounded_readiness(&store.shared.database)
+}
+
+pub(crate) fn private_restore_image_supports_bounded_readiness(
+    database: &redb::Database,
+) -> Result<bool, StorageError> {
+    let read = database.begin_read().map_err(transaction_error)?;
     let retained = read_retained_metadata(&read)?;
     let meta = read.open_table(META).map_err(table_error)?;
     let encoded = meta
@@ -44,10 +46,31 @@ pub(crate) fn validate_private_restore_readiness(
     ),
     StorageError,
 > {
+    validate_private_restore_readiness_with_history(store, inputs, cancellation, None)
+}
+
+pub(crate) fn validate_private_restore_readiness_with_history(
+    store: RedbStore,
+    inputs: StartupValidationInputs,
+    cancellation: Arc<AtomicBool>,
+    history: Option<crate::restore_history::CompleteRestoreHistory>,
+) -> Result<
+    (
+        Arc<SharedRedb>,
+        ValidatedAuthorizationParts,
+        crate::restore_history::CompleteRestoreHistory,
+    ),
+    StorageError,
+> {
     if !private_restore_supports_bounded_readiness(&store)? {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
-    let mut history = store.verify_owned_restore_materialized_journals()?;
+    let mut history = match history {
+        Some(history) => {
+            store.verify_owned_restore_materialized_journals_with_history(Some(history))?
+        }
+        None => store.verify_owned_restore_materialized_journals()?,
+    };
     let complete_history = history
         .as_mut()
         .and_then(crate::journal::VerifiedMaterializedHistory::take_restore_history)

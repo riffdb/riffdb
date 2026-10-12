@@ -304,6 +304,76 @@ impl RedbStore {
         self.cache_verified_retention_watermark()
     }
 
+    /// One complete predecessor proof, after replay/compatibility/physical
+    /// checks. Equal retries preserve it; real watermark writes retire it and
+    /// require a fresh physical check and complete retained-chain validation.
+    pub(crate) fn prepare_owned_restore_watermark(
+        &mut self,
+        watermark: Option<u64>,
+    ) -> Result<crate::restore_history::CompleteRestoreHistory, StorageError> {
+        use crate::restore_history::CompleteRestoreHistory;
+        let capture = |shared: &SharedRedb| {
+            let read = shared.database.begin_read().map_err(transaction_error)?;
+            CompleteRestoreHistory::capture(
+                &read,
+                shared
+                    .restore_integrity
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+            )?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
+        };
+        let mut proof = Some(capture(&self.shared)?);
+        if let Some(watermark) = watermark.filter(|value| *value != 0) {
+            for requested in [Some(watermark), None] {
+                let target = match requested {
+                    Some(value) => Some(value),
+                    None => {
+                        crate::backup::restored_retention_watermark_target(&self.shared.database)?
+                    }
+                };
+                let Some(target) = target else {
+                    continue;
+                };
+                let current = {
+                    let read = self
+                        .shared
+                        .database
+                        .begin_read()
+                        .map_err(transaction_error)?;
+                    crate::retention::load_watermark(&read)?.map(|value| value.watermark_sequence())
+                };
+                if current == Some(target) {
+                    crate::backup::verify_equal_restore_watermark(
+                        &self.shared.database,
+                        target,
+                        proof
+                            .as_ref()
+                            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                        self.shared
+                            .restore_integrity
+                            .as_ref()
+                            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                    )?;
+                } else {
+                    drop(proof.take());
+                    let shared = Arc::get_mut(&mut self.shared)
+                        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+                    let binding = shared
+                        .restore_integrity
+                        .as_mut()
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                    binding.begin_controlled_preparation()?;
+                    crate::backup::stamp_retention_watermark_on_database(&shared.database, target)?;
+                    binding.check_integrity(&mut shared.database)?;
+                    proof = Some(capture(shared)?);
+                }
+            }
+        }
+        self.cache_verified_retention_watermark()?;
+        proof.ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn open_after_format_preflight(
         open_mode: OpenMode,

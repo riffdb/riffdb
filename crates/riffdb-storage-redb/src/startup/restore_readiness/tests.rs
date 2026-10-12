@@ -208,3 +208,151 @@ fn restore_readiness_reuses_complete_history_only_for_the_same_receipt_stamp() {
     closed.verify_publication_seal().unwrap();
     assert_eq!(closed.history_incarnation(), incarnation);
 }
+
+fn receipt_stamp_backup() -> (crate::test_path::ScopedDirectory, PathBuf) {
+    let (root, backup, _) = fixture(false);
+    let source = root.join("source.redb");
+    let journal = crate::journal::journal_path(&source);
+    // The deployed compatibility fixture has only Immediate writes and no
+    // active source journal. Its genuine backup supplies the empty bound one.
+    std::fs::copy(
+        backup.join(crate::backup::JOURNAL_ARTIFACT_FILE_NAME),
+        &journal,
+    )
+    .unwrap();
+    std::fs::rename(&journal, crate::journal::sealing_journal_path(&source)).unwrap();
+    let id = crate::backup::validate_immutable_backup(&backup)
+        .unwrap()
+        .0
+        .database_id();
+    crate::journal::seal_extent_with_media(&crate::media::RealJournalMedia, &source, id)
+        .unwrap()
+        .unwrap();
+    crate::journal::recreate_missing_active_with_media(&crate::media::RealJournalMedia, &source)
+        .unwrap();
+    std::fs::remove_dir_all(&backup).unwrap();
+    let build = riffdb_storage_api::BackupBuildMetadataV1::new(
+        "0.1.0",
+        "0123456789abcdef",
+        "rustc-test",
+        1,
+        vec![],
+    )
+    .unwrap();
+    crate::RedbOfflineBackup::bind(&source, &backup)
+        .create_offline_backup(&build)
+        .unwrap();
+    (root, backup)
+}
+
+#[test]
+fn restore_readiness_receipt_stamp_retains_original_extents_until_the_anchor_and_close() {
+    let (root, backup) = receipt_stamp_backup();
+    let before = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let stage = root.join("stage");
+    let (_, owned) = crate::RedbOfflineRestore::bind(&backup, &stage)
+        .restore_owned_stamp_preparation(
+            &root.join("configured.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    assert_eq!(copied_extent_paths(&stage).len(), 1);
+    crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(0));
+    let (owner, evidence) = owned.validate_readiness(inputs()).unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.get()),
+        1
+    );
+    let (_, _, retained, _, reader) = evidence.into_parts().unwrap();
+    drop(reader);
+    assert_eq!(copied_extent_paths(&stage).len(), 1);
+    let incarnation = retained.history_incarnation() + 1;
+    let mut closed = owner
+        .into_stamp_preparation()
+        .unwrap()
+        .stamp_and_close(incarnation)
+        .unwrap();
+    closed.verify_publication_seal().unwrap();
+    assert!(copied_extent_paths(&stage).is_empty());
+    closed.stamp_history_incarnation(incarnation).unwrap();
+    closed.verify_publication_seal().unwrap();
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        before
+    );
+    assert!(!root.join("configured.redb").exists());
+}
+
+#[test]
+fn restore_readiness_receipt_stamp_cannot_close_without_removing_predecessor_references() {
+    let (root, backup) = receipt_stamp_backup();
+    let (_, owned) = crate::RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        .restore_owned_stamp_preparation(
+            &root.join("configured.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    let (owner, evidence) = owned.validate_readiness(inputs()).unwrap();
+    drop(evidence);
+    assert!(
+        owner.close().is_err(),
+        "the legacy close cannot authorize an unanchored deferred stage"
+    );
+}
+
+#[test]
+fn restore_readiness_receipt_stamp_refuses_missing_replaced_and_same_length_changed_extents() {
+    for mode in 0..3 {
+        let (root, backup) = receipt_stamp_backup();
+        let stage = root.join("stage");
+        let (_, owned) = crate::RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_stamp_preparation(
+                &root.join("configured.redb"),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        let extent = std::fs::read_dir(&stage)
+            .unwrap()
+            .map(|row| row.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".riffjournal.sealed.")
+            })
+            .unwrap();
+        let bytes = std::fs::read(&extent).unwrap();
+        match mode {
+            0 => std::fs::remove_file(&extent).unwrap(),
+            1 => {
+                std::fs::rename(&extent, root.join("original-extent")).unwrap();
+                std::fs::write(&extent, &bytes).unwrap();
+            }
+            _ => {
+                use std::io::{Seek, SeekFrom, Write};
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&extent)
+                    .unwrap();
+                file.seek(SeekFrom::Start(0)).unwrap();
+                file.write_all(&[bytes[0] ^ 1]).unwrap();
+                file.sync_all().unwrap();
+            }
+        }
+        assert!(owned.validate_readiness(inputs()).is_err());
+        assert!(crate::backup::validate_immutable_backup(&backup).is_ok());
+    }
+}
+
+fn copied_extent_paths(stage: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(stage)
+        .unwrap()
+        .map(|row| row.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(".riffjournal.sealed.")
+        })
+        .collect()
+}

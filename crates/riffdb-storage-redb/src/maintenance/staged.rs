@@ -71,6 +71,7 @@ pub struct RedbStagedRestore {
 enum NativeStagePurpose {
     Legacy,
     Ordinary,
+    OrdinaryStamp,
     Archive,
 }
 
@@ -148,6 +149,27 @@ impl RedbStagedRestore {
         )
     }
 
+    pub(super) fn materialize_owned_stamp(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        backup_directory: PathBuf,
+        staged_directory: PathBuf,
+        configured_database_file: PathBuf,
+        validation_inputs: StartupValidationInputs,
+        test_controller: Option<RedbMaintenanceTestController>,
+    ) -> Result<Self, StorageError> {
+        Self::materialize_inner(
+            operation_id,
+            backup_name,
+            backup_directory,
+            staged_directory,
+            configured_database_file,
+            validation_inputs,
+            test_controller,
+            NativeStagePurpose::OrdinaryStamp,
+        )
+    }
+
     pub(super) fn materialize_owned_archive(
         operation_id: OfflineMaintenanceOperationId,
         backup_name: BackupNameV1,
@@ -211,10 +233,13 @@ impl RedbStagedRestore {
         let materialized = (|| {
             let mut restore = RedbOfflineRestore::bind(&backup_directory, &staged_directory);
             let (manifest, native) = if purpose != NativeStagePurpose::Legacy {
-                let (manifest, owner) = restore.restore_owned_staged_backup(
-                    &configured_database_file,
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                )?;
+                let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (manifest, owner) = if purpose == NativeStagePurpose::OrdinaryStamp {
+                    restore
+                        .restore_owned_stamp_preparation(&configured_database_file, cancellation)?
+                } else {
+                    restore.restore_owned_staged_backup(&configured_database_file, cancellation)?
+                };
                 (Box::new(manifest), Some(owner))
             } else {
                 let OfflineRestoreResultV1::Restored { manifest } =
@@ -604,6 +629,17 @@ impl NativeStagedOwner {
         }
     }
 
+    fn verify_journal_successor(
+        &self,
+        previous: &BackupIntegrityChecksumV1,
+        current: &BackupIntegrityChecksumV1,
+    ) -> Result<(), StorageError> {
+        match self {
+            Self::Closed(owner) => owner.verify_journal_successor(previous, current),
+            _ => Err(invariant()),
+        }
+    }
+
     fn stamp_history_incarnation(&mut self, incarnation: u64) -> Result<(), StorageError> {
         let old = std::mem::replace(self, Self::Invalidated);
         let closed = match old {
@@ -683,11 +719,11 @@ impl RedbSealedStagedRestore {
         if let Some(owner) = &mut self.native_owner {
             owner.stamp_history_incarnation(incarnation)?;
             let (primary, journal, marker) = owner.checksums()?;
-            if journal != self.sealed_journal_checksum
-                || marker != self.sealed_format_marker_checksum
-            {
+            owner.verify_journal_successor(&self.sealed_journal_checksum, &journal)?;
+            if marker != self.sealed_format_marker_checksum {
                 return Err(corrupt());
             }
+            self.sealed_journal_checksum = journal;
             self.sealed_artifact_checksum = primary;
         } else if let Some(owner) = &mut self.native_archive_closed {
             owner.stamp_incarnation(incarnation, None)?;

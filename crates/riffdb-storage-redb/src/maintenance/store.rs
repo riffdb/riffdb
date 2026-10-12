@@ -1161,6 +1161,34 @@ impl RedbMaintenanceStorage {
         Ok(stage)
     }
 
+    /// Native ordinary preparation whose source extents require the existing
+    /// receipt-authorized RestoreAnchor before self-contained publication.
+    #[doc(hidden)]
+    pub fn stage_restore_for_receipt_stamp(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: &BackupNameV1,
+        validation_inputs: StartupValidationInputs,
+    ) -> Result<RedbStagedRestore, StorageError> {
+        self.verify_path_ownership()?;
+        self.require_offline_operation(
+            operation_id,
+            OfflineMaintenanceOperationKind::RestoreBackup,
+            backup_name,
+        )?;
+        let stage = RedbStagedRestore::materialize_owned_stamp(
+            operation_id,
+            backup_name.clone(),
+            self.named_backup_directory(backup_name),
+            self.staged_directory.join(operation_id.to_string()),
+            self.database_file.clone(),
+            validation_inputs,
+            self.test_controller.clone(),
+        )?;
+        self.verify_path_ownership()?;
+        Ok(stage)
+    }
+
     /// Materializes a source candidate for staged-only recovery authorization.
     ///
     /// This narrow path is used only when the configured target cannot provide
@@ -1199,7 +1227,7 @@ impl RedbMaintenanceStorage {
         validation_inputs: StartupValidationInputs,
     ) -> Result<RedbStagedRestore, StorageError> {
         self.verify_path_ownership()?;
-        let stage = RedbStagedRestore::materialize_owned(
+        let stage = RedbStagedRestore::materialize_owned_stamp(
             operation_id,
             backup_name.clone(),
             self.named_backup_directory(backup_name),

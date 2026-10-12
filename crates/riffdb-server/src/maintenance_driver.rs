@@ -1143,7 +1143,7 @@ fn run_restore(
                 None => {
                     let credential = credential.ok_or(DriverFault::StagedAuthorization)?;
                     let stage = storage
-                        .stage_restore(
+                        .stage_restore_for_receipt_stamp(
                             receipt.operation_id(),
                             receipt.backup_name(),
                             dependencies.startup_inputs.clone(),

@@ -4435,6 +4435,20 @@ impl VerifiedMaterializedHistory {
         }))
     }
 
+    pub(crate) fn reuse_owned_restore(
+        read: ReadTransaction,
+        binding: &crate::maintenance::RestoreIntegrityBinding,
+        restore: crate::restore_history::CompleteRestoreHistory,
+    ) -> Result<Option<Self>, JournalIoError> {
+        restore
+            .verify_read(&read, binding)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        Ok(Some(Self {
+            read,
+            restore: Some(restore),
+        }))
+    }
+
     pub(crate) fn take_restore_history(
         &mut self,
     ) -> Option<crate::restore_history::CompleteRestoreHistory> {

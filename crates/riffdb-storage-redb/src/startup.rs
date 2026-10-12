@@ -3,7 +3,8 @@
 mod offline_integrity;
 mod restore_readiness;
 pub(crate) use restore_readiness::{
-    private_restore_supports_bounded_readiness, validate_private_restore_readiness,
+    private_restore_image_supports_bounded_readiness, private_restore_supports_bounded_readiness,
+    validate_private_restore_readiness, validate_private_restore_readiness_with_history,
     validate_restore_transition_roots,
 };
 mod offline_parallel;

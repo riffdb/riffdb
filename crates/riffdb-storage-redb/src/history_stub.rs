@@ -645,9 +645,19 @@ const HYDRATION_BATCH_ROWS: usize = 256;
 /// durably; a partly hydrated database is valid, since a stub and its value
 /// are interchangeable representations (C3).
 pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), StorageError> {
+    hydrate_stubs(database, false)
+}
+
+pub(crate) fn hydrate_surviving_command_stubs(
+    database: &redb::Database,
+) -> Result<(), StorageError> {
+    hydrate_stubs(database, true)
+}
+
+fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), StorageError> {
     use redb::ReadableDatabase as _;
 
-    for (definition, resolve) in [
+    for (index, (definition, resolve)) in [
         (
             crate::layout::COMMITS,
             resolve_commits_value as fn(&[u8]) -> Result<Cow<'_, [u8]>, StorageError>,
@@ -656,7 +666,13 @@ pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), Sto
             crate::changelog_v3_activation::HISTORY,
             resolve_history_value,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if commands_only && index == 1 {
+            continue;
+        }
         let mut after: Option<Vec<u8>> = None;
         loop {
             let mut batch = Vec::new();
@@ -715,6 +731,35 @@ pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), Sto
                 }
             }
             write.commit().map_err(crate::error::commit_error)?;
+        }
+    }
+    Ok(())
+}
+
+/// Only the receipt-authorized stamp may eliminate predecessor references.
+/// Stream the surviving tables before retiring any original source extent.
+pub(crate) fn verify_no_surviving_stubs(database: &redb::Database) -> Result<(), StorageError> {
+    use redb::{ReadableDatabase as _, ReadableTable as _};
+    let read = database
+        .begin_read()
+        .map_err(crate::error::transaction_error)?;
+    for definition in [
+        crate::layout::COMMITS,
+        crate::changelog_v3_activation::HISTORY,
+    ] {
+        let table = read
+            .open_table(definition)
+            .map_err(crate::error::table_error)?;
+        for row in table
+            .iter()
+            .map_err(crate::error::precommit_storage_error)?
+        {
+            let (_, value) = row.map_err(crate::error::precommit_storage_error)?;
+            if HistoryStub::decode(value.value())?.is_some()
+                || value.value().starts_with(&STUB_MAGIC)
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
         }
     }
     Ok(())

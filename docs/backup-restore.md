@@ -502,10 +502,22 @@ The receipt-authorized incarnation stamp verifies the complete primary, journal
 and marker content seals under the same native custody and uses the existing
 immediate two-phase metadata transaction. Its complete retained-history evidence
 is bound to the same private engine and native mutation generation; stamping
-checks transaction-current roots before consuming that evidence. This does not
-grant complete semantic-scrub assurance or journal replay permission. After the
-stamp and observed engine close, it verifies immutable artifacts and binds a
-fresh final content seal.
+checks transaction-current roots before consuming that evidence. Equal-watermark
+retries reuse the same complete evidence while preserving every restored fencing
+and tombstone check. A real watermark change discards it and requires fresh
+physical and complete history validation. This grants no complete semantic-scrub
+assurance or journal replay permission.
+
+For current ordinary receipt-authorized restore, command values that survive
+publication are hydrated first. Predecessor HISTORY receipts can remain in their
+original verified copied extents through complete validation and authorization.
+The canonical RestoreAnchor removes those references atomically. After checking
+that no command or receipt stub survives and observing engine close, the owner
+retires the original extents and verifies the renewed empty journal above the
+configured target's extent generation. Original descriptors, content seals and
+file/inventory continuity remain checked until retirement. Unsupported images
+retain the complete preparation path. The owner then binds a fresh full seal of
+the three publication artifacts.
 Publication retains the existing immutable-backup revalidation, target exclusion,
 verified copies, marker-last rename and fresh post-publication startup. A failed
 check or changed artifact refuses the operation and preserves the immutable
