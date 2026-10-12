@@ -29075,3 +29075,35 @@ work_packages:
     follow_ups:
     - Journal outbox transitions with commands (ADR-0284 option 3) to remove the per-write suffix drain and Immediate commit.
     - A committed command-epoch gate-wait census with holder attribution, which needs its own record.
+- id: WP-833
+  name: Validation walks validate each contract bundle once
+  tier: guarantee
+  depends_on: [WP-831]
+  objective: Implement ADR-0286. The complete structural walk reuses the last
+    validated contract bundle for rows whose stored bundle record is equal, and
+    its command history shares the commit phase's decode of a byte-equal
+    COMMITS row, so a segment's bundle and row are each processed once.
+  requirements: [REC-007]
+  required_adrs: [ADR-0286, ADR-0283, ADR-0182, ADR-0203]
+  allowed_paths: [work_packages.yaml, adr/0286-validation-walks-validate-each-contract-bundle-once.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/command_authority.rs,
+    crates/riffdb-storage-redb/src/command_prefix.rs, crates/riffdb-storage-redb/src/command_prefix/catalog.rs,
+    crates/riffdb-storage-redb/src/history_stub.rs, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/startup/command_history.rs, crates/riffdb-storage-redb/src/startup/tests.rs,
+    docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - The one-bundle memo keyed by the exact stored bundle record, held by the walk session and the sampled checkpoint pass
+  - The row-validating segment memo shared by the commit phase and the walk's command history
+  - Fail-before tests holding one validation per bundle and one decode per row, with identical members and refusals
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-833
+  - ./scripts/ci-all
+  exit_gate: A walk validates a shared bundle once and decodes a commit-phase
+    row once, every reported finding and refusal is unchanged, and every
+    ADR-0182, ADR-0203 and ADR-0283 scrub proof passes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration or opt-out is added.
+    scale: One remembered bundle and one remembered segment per walk.
+  human_review_triggers:
+  - A remembered bundle is served for a stored record with different identity or bytes.
+  - A remembered segment is served for different row bytes, or either memo remembers a refusal.
