@@ -28672,6 +28672,18 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      Build hygiene consequence under standing approval for necessary fixes:
+      optimize only the existing sha2 dependency in dev and test profiles.
+      The unchanged promoted backup/restore regression fails in full CI and
+      exact-source repeats with the original build; captured native stacks
+      show full artifact hashing in receipt reconciliation and closed sealing.
+      With only this command-local build override it passes all original
+      restore, idempotency, rewind and source-role restart assertions in
+      5.76 seconds. Preserve every checksum, validator and deadline, dependency
+      version and feature set, workspace debug setting and shipping release
+      profile. This diagnostic does not qualify full CI or measured recovery;
+      retake exact committed-source acceptance before any campaign.
+    - >-
       ADR-0289 implementation foundation: retain exact primary, journal and
       marker file identities from private materialization into the sealed
       publication owner. Byte-identical replacements cannot authorize sealing

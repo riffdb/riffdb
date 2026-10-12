@@ -141,9 +141,17 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Keep full artifact integrity scans practical in ordinary debug builds.
+# This uses the same sha2 implementation and checks as release builds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.test]
 debug = "line-tables-only"
 incremental = false
 
 [profile.test.package."*"]
 debug = false
+
+[profile.test.package.sha2]
+opt-level = 3

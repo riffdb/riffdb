@@ -3702,7 +3702,9 @@ Historical references in this page use the identifiers current at the time:
 the branch's unaccepted finite-handoff proposal is now ADR-0287, and its accepted
 follower acknowledgement decision is proposed for identifier-only reconciliation
 to ADR-0286. See the [review note](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
-The finite-handoff and private-restore proposals remain unimplemented.
+At that reconciliation, both proposals were unimplemented. The finite-handoff
+proposal remains unaccepted; the private-restore decision has since been
+accepted as ADR-0289 and implemented, as described below.
 
 Ordinary preparation of the previous full-CI-qualified source completes its
 specified operations and state reconciliation but fails the final normal-window
@@ -3761,10 +3763,10 @@ The diagnostic records the exact typed `storage_unavailable`/`retry` response as
 unknown; it grants no successful receipt, authority or readiness. The original
 whole-action oracle and every qualification limit remain unchanged.
 
-This is a native restore-lifecycle limitation. The proposed private-custody
-redesign remains unaccepted and unimplemented, and removing an extra verification
-copy alone has not been shown sufficient. Main's bounded outbox claim groups may
-reduce future receipt history; that is an inference requiring fresh combined-
+This attempt exposed a native restore-lifecycle limitation. ADR-0289 has since
+been accepted and its private-custody redesign implemented; removing an extra
+verification copy alone has not been shown sufficient. Main's bounded outbox
+claim groups may reduce future receipt history; that is an inference requiring fresh combined-
 source measurement. See the curated observations in
 `release/evidence/ticketdesk-lifecycle/2026-10-11-fresh-prerequisite-attempt.json`.
 WP-825 and WP-826 remain open; neither measured campaign has started.
@@ -3782,6 +3784,32 @@ It still refuses other operations, commands, altered errors and missing fields.
 This observation never resubmits the mutation, proves completion, resets the
 original whole-action deadline or enlarges the finite polling population. A
 successful durable receipt and every independent recovery check remain required.
-An unavailable poll at the deadline is a sticky campaign failure. The native
-restore-lifecycle cost remains unresolved; this classification correction alone
-qualifies neither WP-825 nor WP-826.
+An unavailable poll at the deadline is a sticky campaign failure. The
+measured whole-action recovery gate remains unproved; this classification
+correction alone qualifies neither WP-825 nor WP-826.
+
+
+### Owned restore implemented; qualification remains open
+
+Accepted ADR-0289 now owns private materialization through complete native
+validation, fresh staged authorization, engine close, receipt-authorized
+incarnation stamping and marker-last publication. It removes the additional
+verification copy. The [implementation note](WP-825-PRIVATE-FIRST-OPEN-IMPLEMENTATION.md)
+describes the preserved checks and ownership boundaries. Scoped acceptance
+passed 2,178 selected tests, with ten existing skips; these observations do not
+qualify a campaign.
+
+Latest local main `e9c77c023` is integrated. Subsequent combined-source full CI
+failed the promoted backup/restore readiness test. Exact-source repetition and
+native stack observations identify time spent in artifact hashing during the
+unoptimized test build. Optimizing only the existing `sha2` dependency makes the
+unchanged regression pass in 5.76 seconds and its full 26-test follower suite
+pass. The dev/test build correction preserves all validators, checksums and
+original deadlines, dependency versions and features, workspace debug settings
+and the shipping release profile.
+
+Retake exact committed-source full CI, then fresh ordinary preparation and the
+original whole public backup/restore/restart/reconcile/first-write gate within
+60 seconds. Actual free-space admission and the complete eight-hour rehearsal
+still precede WP-825 closure and WP-826's 24-hour run. Neither measured campaign
+has started; the historical preparation and restore failures remain evidence.

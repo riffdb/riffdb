@@ -358,6 +358,11 @@ require independent wall-time reconciliation with an explicit remainder;
 - Dependency debuginfo is disabled workspace-wide
   (`[profile.dev.package."*"] debug = false`) while workspace crates keep line
   tables. Do not re-enable it in a package without maintainer approval.
+- The existing `sha2` dependency uses optimization level 3 in dev and test
+  builds. Full artifact checksum scans run inside bounded recovery tests;
+  unoptimized hashing can consume the recovery deadline before publication.
+  Workspace code keeps its normal debug settings, every integrity check remains
+  enabled, and the shipping release profile is unchanged.
 - Prefer targeted cleanup (`rm -rf <target>/*/incremental`, age-based sweeps)
   over `cargo clean`; a machine-wide `sccache` wrapper caches dependency
   compilation, so cold rebuilds are cheap but still wasteful.
