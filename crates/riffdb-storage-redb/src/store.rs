@@ -635,6 +635,21 @@ impl RedbCommitProfile {
 }
 
 impl SharedRedb {
+    pub(crate) fn is_offline_source_mode(&self) -> bool {
+        self.open_mode == OpenMode::OfflineSource
+    }
+
+    pub(crate) fn is_offline_follower_mode(&self) -> bool {
+        self.open_mode == OpenMode::OfflineFollower
+    }
+
+    pub(crate) fn is_native_restore_image_mode(&self) -> bool {
+        matches!(
+            self.open_mode,
+            OpenMode::OfflineSource | OpenMode::PrivatePromotion(_)
+        )
+    }
+
     pub(crate) fn is_follower_mode(&self) -> bool {
         self.open_mode.is_follower()
     }

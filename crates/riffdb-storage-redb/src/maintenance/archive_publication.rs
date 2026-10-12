@@ -22,7 +22,7 @@ impl RedbReplayedArchiveRestore {
     /// Revalidates the complete restored follower and freezes its bytes after
     /// staged authorization has released all readers. No incarnation is changed.
     pub fn seal_after_validation(
-        self,
+        mut self,
         validated_database_id: DatabaseId,
         stop: ArchiveRestoreStopV1,
         validation_inputs: StartupValidationInputs,
@@ -34,6 +34,31 @@ impl RedbReplayedArchiveRestore {
         self.selection
             .validate_restored_frontier(stop, self.history.tail().frontier())
             .map_err(|_| corrupt())?;
+        if self.stage.native_archive_preparation.is_some() {
+            preparation::validate_physical(
+                &mut self,
+                validation_inputs.clone(),
+                std::sync::Arc::new(AtomicBool::new(false)),
+            )?;
+        }
+        if self
+            .stage
+            .close_native_archive_authorization(&validation_inputs)?
+        {
+            verify_file(&self.stage, &self.file)?;
+            let checksum = sha256_file(self.staged_database_file())?;
+            return Ok(RedbSealedArchiveRestore {
+                stage: self.stage,
+                file: self.file,
+                selection: self.selection,
+                lineage: self.history.lineage(),
+                frontier: self.history.tail().frontier(),
+                private: None,
+                stop,
+                checksum,
+                validation_inputs,
+            });
+        }
         crate::startup::RedbOfflineIntegrityScrub::from_inputs(
             self.staged_database_file(),
             validation_inputs.clone(),
@@ -138,12 +163,36 @@ impl RedbSealedArchiveRestore {
                 true,
             )?;
         }
-        if let Some(binding) = self.private {
-            verify_quarantine(stage)?;
+        let native = self.stage.native_archive_closed.is_some();
+        if native {
+            if self.private.is_some() {
+                verify_quarantine(&self.stage)?;
+            }
+            self.stage
+                .native_archive_closed
+                .as_mut()
+                .ok_or_else(invariant)?
+                .stamp_incarnation(incarnation, self.private)?;
+            let seal = self
+                .stage
+                .native_archive_seal
+                .take()
+                .ok_or_else(invariant)?;
+            self.stage.native_archive_seal =
+                Some(seal.after_native_close(&self.stage.artifact_identities)?);
+            self.stage.verify_paths()?;
+            if self.private.is_some() {
+                prefix::prefix_edge("private-incarnation-stamped");
+            }
+        } else if let Some(binding) = self.private {
+            verify_quarantine(&self.stage)?;
             crate::backup::stamp_private_archive_incarnation(&self.file, binding, incarnation)?;
             prefix::prefix_edge("private-incarnation-stamped");
         } else {
-            crate::backup::stamp_history_incarnation(&stage.staged_database_file, incarnation)?;
+            crate::backup::stamp_history_incarnation(
+                &self.stage.staged_database_file,
+                incarnation,
+            )?;
         }
         edge("restore-incarnation-stamped");
         // The replay follower has no source journal. The new RestoreAnchor owns
@@ -155,7 +204,13 @@ impl RedbSealedArchiveRestore {
             frontier.administration(),
             [0; 32],
         );
-        stage.verify_paths()?;
+        self.stage.verify_paths()?;
+        // The receipt authorizes the existing journal creation and marker
+        // restoration. Retire the old absence/quarantine seals before them;
+        // original descriptor identities and native primary custody continue.
+        if native {
+            drop(self.stage.native_archive_seal.take());
+        }
         self.stage
             .artifact_identities
             .create_archive_anchor_journal(
@@ -181,27 +236,50 @@ impl RedbSealedArchiveRestore {
             self.stage.staged_format_marker_file = marker;
             prefix::prefix_edge("private-marker-restored");
         }
-        let stage = &self.stage;
-        crate::startup::RedbOfflineIntegrityScrub::from_inputs(
-            &stage.staged_database_file,
-            self.validation_inputs,
-        )
-        .run()?;
-        edge("restore-source-validated");
-        verify_file(stage, &self.file)?;
-        let database = read_only_database(&self.file)?;
-        let read = database.begin_read().map_err(unavailable)?;
-        let history =
-            crate::changelog_v3_roots::validate_retained_history(&read)?.ok_or_else(corrupt)?;
-        if history.lineage().database_id() != self.lineage.database_id()
-            || history.lineage().history_incarnation() != incarnation
-            || history.tail().frontier() != frontier
-            || crate::follower_lifecycle::is_attached(&read)?
-        {
-            return Err(corrupt());
+        if native {
+            let closed = self
+                .stage
+                .native_archive_closed
+                .take()
+                .ok_or_else(invariant)?;
+            let preparation = closed.into_preparation()?;
+            let complete = preparation.validate_complete_source(
+                &self.stage.staged_database_file,
+                self.validation_inputs.clone(),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )?;
+            edge("restore-source-validated");
+            complete.verify_source_history(self.lineage.database_id(), incarnation, frontier)?;
+            self.stage.native_archive_closed = Some(complete.close_after_source_validation()?);
+            self.stage.native_archive_seal =
+                Some(super::super::identity::ArchiveArtifactSeal::capture(
+                    &self.stage.artifact_identities,
+                )?);
+            self.stage.verify_paths()?;
+        } else {
+            let stage = &self.stage;
+            crate::startup::RedbOfflineIntegrityScrub::from_inputs(
+                &stage.staged_database_file,
+                self.validation_inputs,
+            )
+            .run()?;
+            edge("restore-source-validated");
+            verify_file(stage, &self.file)?;
+            let database = read_only_database(&self.file)?;
+            let read = database.begin_read().map_err(unavailable)?;
+            let history =
+                crate::changelog_v3_roots::validate_retained_history(&read)?.ok_or_else(corrupt)?;
+            if history.lineage().database_id() != self.lineage.database_id()
+                || history.lineage().history_incarnation() != incarnation
+                || history.tail().frontier() != frontier
+                || crate::follower_lifecycle::is_attached(&read)?
+            {
+                return Err(corrupt());
+            }
+            drop(read);
+            drop(database);
         }
-        drop(read);
-        drop(database);
+        let stage = &self.stage;
         let sealed_artifact_checksum = sha256_file(&stage.staged_database_file)?;
         let sealed_journal_checksum = sha256_file(&stage.staged_journal_file)?;
         let sealed_format_marker_checksum = sha256_file(&stage.staged_format_marker_file)?;
@@ -218,6 +296,8 @@ impl RedbSealedArchiveRestore {
             manifest: stage.manifest,
             manifest_identity: stage.manifest_identity,
             staged_history_incarnation: incarnation,
+            native_closed: None,
+            native_archive_closed: stage.native_archive_closed,
             sealed_artifact_checksum,
             sealed_journal_checksum,
             sealed_format_marker_checksum,

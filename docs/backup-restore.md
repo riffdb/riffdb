@@ -465,16 +465,23 @@ writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
 clean eligibility.
 
-Private staged materialization verifies the copied artifacts before its first
-engine open and refuses engine repair there. It retains that native engine owner
-through history hydration and watermark preparation, excluding a competing
-engine at both boundaries. Staged-history hydration, the ordinary staged-
-authentication startup open, and final sealing also refuse engine repair
-requests. The authentication open
-still completes the existing storage, catalog, retained-metadata, bootstrap and
-allocator startup checks before checking the retained bearer and policy.
-Healthy startup preparation remains supported; ordinary primary crash recovery
-retains its existing recovery behavior.
+Ordinary backup restore and staged-only backup recovery verify the copied
+artifacts before the first private engine open and retain its native exclusion
+through history hydration, complete physical and exact-end logical validation,
+the existing storage/catalog/retained-metadata/bootstrap/allocator joins, and
+fresh staged bearer authentication. Required native compatibility preparation
+uses the existing transformations and repeats complete validation afterward.
+No operational source writer or readiness capability is activated for that
+authorization read. Every immutable reader must close before the native owner
+closes its engine and binds the primary, journal and marker byte seals.
+
+The receipt-authorized incarnation stamp verifies those seals under the same
+native custody and uses the existing immediate two-phase metadata transaction.
+Publication retains the existing immutable-backup revalidation, target exclusion,
+verified copies, marker-last rename and fresh post-publication startup. A failed
+check or changed artifact refuses the operation and preserves the immutable
+backup. Ordinary primary crash recovery retains its existing recovery behavior.
+
 Private archive conversion, command-prefix reconstruction, archive validation,
 promoted-backup validation and archive incarnation stamping also abort engine
 repair requests. Private archive replay startup and projection preparation use
@@ -492,15 +499,26 @@ Replacing any of these files with an identical copy still refuses the operation;
 matching checksums alone cannot establish continuity. Archive recovery tracks
 its intentional removal of the empty source journal, receipt-authorized creation
 of the new RestoreAnchor journal, and rename of the retained marker explicitly.
-These identity checks do not yet implement ADR-0289's continuous native custody
-or eliminate the additional private verification copy.
+Ordinary and archived backup restore use their owned private stages directly
+for complete verification. Archive conversion, replay, projection rebuilding
+and an interior command-prefix reconstruction retain the original native owner.
+Their final immutable proof includes the complete physical, structural and
+catalog checks; a private cut additionally proves its exact reconstruction
+binding and reciprocal command graph. The server runs the ordinary startup
+joins over that same proof before fresh bearer authentication. All authorization
+readers must close before sealing. Journal absence and the original marker are
+sealed alongside the primary; only the receipt-authorized journal creation and
+marker restoration retire those bindings. The original incarnation transaction
+is followed by a fresh complete source proof under continuous custody before
+publication. A witnessed failure permanently invalidates that private candidate.
+The complete ADR and unchanged public rehearsal gates remain unqualified.
 
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete
 structural and catalog-semantic streams through exact end before staged
-authentication; it never uses those bytes to skip restore validation. Because
-that sealed scrub is read-only, the later ordinary open used solely for staged
-authentication may still report the matching clean mode. Eligibility is a
+authentication; it never uses those bytes to skip restore validation. Ordinary backup restore
+consumes the complete native proof for authorization without an operational
+startup open; copied clean or checkpoint state cannot replace that proof. Eligibility is a
 property of the complete stopped database, journal, format marker, maintenance
 state, and retained roots, not of certificate bytes alone. A complete stopped
 lifecycle-unit copy preserves eligibility; a bare database-file copy does not
@@ -548,3 +566,11 @@ Private restore materialization retains the original primary, journal and
 format-marker file identities before their first engine open. A same-byte
 replacement of one of those files or its parent directory refuses the private
 open. This identity check does not substitute for complete integrity validation.
+
+Archive image validation preserves the immutable backup's exact history fence.
+It performs complete physical, journal and structural/catalog verification
+without appending ordinary source compatibility receipts before selected replay.
+Ordinary backup restore retains its required source compatibility transformations.
+The final receipt-stamped source proof closes without granting a second staged
+authorization or source activation; fresh ordinary post-publication startup still
+owns its existing compatibility and readiness checks.

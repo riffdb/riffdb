@@ -377,58 +377,66 @@ fn publish_before_phase_record(
 
 #[test]
 fn archive_driver_resumes_exact_publication_without_credential_or_archive_access() {
-    for phase in [
-        OfflineMaintenanceReceiptPhaseV1::Offline,
+    check_archive_driver_resumes_exact_publication(OfflineMaintenanceReceiptPhaseV1::Offline);
+}
+
+#[test]
+fn archive_driver_resumes_artifact_published_without_credential_or_archive_access() {
+    check_archive_driver_resumes_exact_publication(
+        OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+    );
+}
+
+#[test]
+fn archive_driver_resumes_validating_without_credential_or_archive_access() {
+    check_archive_driver_resumes_exact_publication(OfflineMaintenanceReceiptPhaseV1::Validating);
+}
+
+fn check_archive_driver_resumes_exact_publication(phase: OfflineMaintenanceReceiptPhaseV1) {
+    let clocks =
+        ProductionWallClocks::settable(Arc::new(std::sync::atomic::AtomicI64::new(1_700_000_001)));
+    let recovery = MaintenanceRecoveryController::disabled();
+    let dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None);
+    let mut fixture = restore_fixture(&dependencies, false);
+    let _previous_lifecycle = offline(&mut fixture);
+    publish_before_phase_record(&mut fixture, &dependencies);
+    let id = fixture.receipt.operation_id();
+    let mut receipt = fixture.storage.read_archive_receipt(id).unwrap().unwrap();
+    for next in [
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
         OfflineMaintenanceReceiptPhaseV1::Validating,
     ] {
-        let clocks = ProductionWallClocks::settable(Arc::new(std::sync::atomic::AtomicI64::new(
-            1_700_000_001,
-        )));
-        let recovery = MaintenanceRecoveryController::disabled();
-        let dependencies = super::tests::fixture_dependencies(&clocks, &recovery, None);
-        let mut fixture = restore_fixture(&dependencies, false);
-        let _previous_lifecycle = offline(&mut fixture);
-        publish_before_phase_record(&mut fixture, &dependencies);
-        let id = fixture.receipt.operation_id();
-        let mut receipt = fixture.storage.read_archive_receipt(id).unwrap().unwrap();
-        for next in [
-            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
-            OfflineMaintenanceReceiptPhaseV1::Validating,
-        ] {
-            if receipt.current_phase() == phase {
-                break;
-            }
-            receipt
-                .advance(OfflineMaintenanceReceiptTransitionV1::phase(next))
-                .unwrap();
-            fixture.storage.replace_archive_receipt(&receipt).unwrap();
+        if receipt.current_phase() == phase {
+            break;
         }
-        // Exact publication evidence survives archive loss; no credential-free
-        // replay is possible because dependencies have no archive bindings.
-        std::fs::remove_dir_all(fixture.archives[0].1.path()).unwrap();
-        let root = fixture._root.path().to_path_buf();
-        drop(fixture.storage);
-        let (storage, reconciliation) =
-            RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
-        fixture.storage = storage;
-        let request =
-            crate::daemon::archive_restart_request_for_test(&mut fixture.storage, &reconciliation);
-        let lifecycle = offline(&mut fixture);
-        let success =
-            run_offline_maintenance(&mut fixture.storage, &lifecycle, &dependencies, request)
-                .unwrap();
-        assert_eq!(success.startup.retained_metadata().history_incarnation(), 2);
-        assert_eq!(
-            fixture
-                .storage
-                .read_archive_receipt(id)
-                .unwrap()
-                .unwrap()
-                .current_phase(),
-            OfflineMaintenanceReceiptPhaseV1::Succeeded
-        );
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(next))
+            .unwrap();
+        fixture.storage.replace_archive_receipt(&receipt).unwrap();
     }
+    // Exact publication evidence survives archive loss; no credential-free
+    // replay is possible because dependencies have no archive bindings.
+    std::fs::remove_dir_all(fixture.archives[0].1.path()).unwrap();
+    let root = fixture._root.path().to_path_buf();
+    drop(fixture.storage);
+    let (storage, reconciliation) =
+        RedbMaintenanceStorage::open(root.join("target.redb"), root.join("backups")).unwrap();
+    fixture.storage = storage;
+    let request =
+        crate::daemon::archive_restart_request_for_test(&mut fixture.storage, &reconciliation);
+    let lifecycle = offline(&mut fixture);
+    let success =
+        run_offline_maintenance(&mut fixture.storage, &lifecycle, &dependencies, request).unwrap();
+    assert_eq!(success.startup.retained_metadata().history_incarnation(), 2);
+    assert_eq!(
+        fixture
+            .storage
+            .read_archive_receipt(id)
+            .unwrap()
+            .unwrap()
+            .current_phase(),
+        OfflineMaintenanceReceiptPhaseV1::Succeeded
+    );
 }
 
 #[cfg(feature = "test-fixtures")]

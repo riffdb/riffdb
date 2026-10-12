@@ -3,7 +3,7 @@
 use super::*;
 use riffdb_storage_api::*;
 use riffdb_storage_redb::{RedbMaintenanceStorage, RedbOfflineBackup, RedbVerifiedArchiveBackup};
-use riffdb_types::{BackupNameV1, OfflineMaintenanceOperationId};
+use riffdb_types::{ArchiveRestoreStopV1, BackupNameV1, OfflineMaintenanceOperationId};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -24,6 +24,19 @@ fn check_private_archive_case(
     profile: RedbCommitProfile,
     root: Option<PathBuf>,
     fault: Option<&str>,
+) {
+    check_private_archive_case_inner(profile, root, fault, None);
+}
+
+fn check_private_archive_native_case(profile: RedbCommitProfile, stop: u64, cancel: bool) {
+    check_private_archive_case_inner(profile, None, Some("prepare-owned"), Some((stop, cancel)));
+}
+
+fn check_private_archive_case_inner(
+    profile: RedbCommitProfile,
+    root: Option<PathBuf>,
+    fault: Option<&str>,
+    only_case: Option<(u64, bool)>,
 ) {
     let scope = root.map_or_else(|| ScratchScope::new("private-archive-prefix"), ScratchScope);
     let path = scope.path().join("source.redb");
@@ -155,7 +168,7 @@ fn check_private_archive_case(
     consumer.append(frame).unwrap();
     drop(consumer);
     let target = scope.path().join("configured.redb");
-    for (stop, cancel) in [
+    let cases = [
         (0, false),
         (1, false),
         (2, false),
@@ -165,7 +178,17 @@ fn check_private_archive_case(
         (6, false),
         (7, false),
         (2, true),
-    ] {
+    ];
+    if let Some(case) = only_case {
+        assert!(
+            cases.contains(&case),
+            "selected case must be in the original stop matrix"
+        );
+    }
+    for (stop, cancel) in cases {
+        if only_case.is_some_and(|case| case != (stop, cancel)) {
+            continue;
+        }
         let preparation = fault.is_some_and(|f| f.starts_with("prepare"));
         if matches!(fault, Some("prepare-held" | "prepare-changed")) && (stop != 1 || cancel) {
             continue;
@@ -199,19 +222,24 @@ fn check_private_archive_case(
             .unwrap()
             .open_archive(&archive, ArchiveEncryptionPostureV1::Unencrypted)
             .unwrap();
-        let stage = maintenance
-            .stage_recovery_restore_candidate(
-                OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
-                    1000,
-                    [stop as u8; 10],
-                )
-                .unwrap(),
-                &BackupNameV1::new("baseline").unwrap(),
-                prefix_predecessors::inputs(),
+        let materialize = if matches!(fault, Some("prepare-owned" | "publish-owned")) {
+            RedbMaintenanceStorage::stage_owned_archive_recovery_restore_candidate
+        } else {
+            RedbMaintenanceStorage::stage_recovery_restore_candidate
+        };
+        let stage = materialize(
+            &maintenance,
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
+                1000,
+                [stop as u8; 10],
             )
-            .unwrap()
-            .begin_archive_replay(repository, &AtomicBool::new(false))
-            .unwrap();
+            .unwrap(),
+            &BackupNameV1::new("baseline").unwrap(),
+            prefix_predecessors::inputs(),
+        )
+        .unwrap()
+        .begin_archive_replay(repository, &AtomicBool::new(false))
+        .unwrap();
         if preparation {
             preparation::check(
                 stage,
@@ -222,6 +250,39 @@ fn check_private_archive_case(
                 stop,
                 cancel,
                 fault.unwrap(),
+            );
+            assert_eq!(
+                std::fs::read(backup.join("database.redb")).unwrap(),
+                backup_bytes
+            );
+            continue;
+        }
+        if fault == Some("publish-owned") {
+            let candidate = stage
+                .prepare_restore(
+                    ArchiveRestoreStopV1::AtApplicationSequence(CommitSequence::new(stop).unwrap()),
+                    prefix_predecessors::inputs(),
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .unwrap();
+            let snapshot = candidate.authorization_snapshot().unwrap();
+            assert_eq!(
+                snapshot.read_entity(&commands[0].target).unwrap(),
+                commands[stop as usize - 2].records.entities()[0]
+                    .live_post_image()
+                    .cloned()
+            );
+            assert_eq!(
+                snapshot.application_frontier().unwrap(),
+                CommitSequence::new(stop)
+            );
+            drop(snapshot);
+            publication::publish_prepared(
+                candidate,
+                &mut maintenance,
+                &target,
+                &commands[0],
+                "publish",
             );
             assert_eq!(
                 std::fs::read(backup.join("database.redb")).unwrap(),

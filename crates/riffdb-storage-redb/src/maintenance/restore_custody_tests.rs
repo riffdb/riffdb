@@ -551,3 +551,45 @@ fn native_physical_recheck_cannot_launder_an_unclassified_engine_commit() {
     assert!(binding.verify().is_err());
     assert!(owner.verify_identity().is_err());
 }
+
+// req: REC-001, REC-006, END-001
+#[test]
+fn staged_restore_native_custody_remains_exclusive_after_full_validation() {
+    use riffdb_storage_api::{
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs,
+    };
+    use riffdb_types::{BackupNameV1, DigestKeyId, OfflineMaintenanceOperationId, Timestamp};
+    let scope = ScopedDirectory::new("production-private-stage-custody");
+    let (backup, _) = crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+    let (manifest, identity) = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1, 0).unwrap(),
+        ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+        ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+    );
+    let stage = crate::maintenance::staged::RedbStagedRestore::materialize_owned(
+        OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1700000000000, [0x72; 10])
+            .unwrap(),
+        BackupNameV1::new("native-custody-baseline").unwrap(),
+        backup.clone(),
+        scope.join("stage"),
+        scope.join("configured.redb"),
+        inputs,
+        None,
+    )
+    .unwrap();
+    assert_eq!(stage.manifest(), &manifest);
+    assert_eq!(stage.manifest_identity(), &identity);
+    // The full native materialization and exact-end validators have returned.
+    // Their authority must not leave a window for either a fresh native reader,
+    // a writer, a legacy engine, or another full-range backend owner.
+    probe(stage.staged_database_file(), true);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        (manifest, identity)
+    );
+    assert!(!scope.join("configured.redb").exists());
+    stage.discard().unwrap();
+}

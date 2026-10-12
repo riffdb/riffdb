@@ -175,7 +175,7 @@ impl RedbPrivateArchiveRestoreCandidate {
     /// Runs the full structural/catalog and reciprocal command graph checks with
     /// no checkpoint shortcut, source journal recovery, migration or local audit.
     pub fn validate(
-        self,
+        mut self,
         inputs: StartupValidationInputs,
         cancellation: Arc<AtomicBool>,
     ) -> Result<RedbValidatedPrivateArchiveRestore, StorageError> {
@@ -184,13 +184,23 @@ impl RedbPrivateArchiveRestoreCandidate {
         if sha256_file(self.staged_database_file())? != self.construction_checksum {
             return Err(corrupt());
         }
-        crate::startup::validate_private_archive(
-            &self.stage.staged_database_file,
-            &self.file,
-            self.binding,
-            inputs,
-            cancellation,
-        )?;
+        if let Some(owner) = self.stage.native_archive_preparation.take() {
+            let complete = owner.validate_complete_private(
+                &self.stage.staged_database_file,
+                self.binding,
+                inputs,
+                cancellation,
+            )?;
+            self.stage.install_native_archive_validation(complete)?;
+        } else {
+            crate::startup::validate_private_archive(
+                &self.stage.staged_database_file,
+                &self.file,
+                self.binding,
+                inputs,
+                cancellation,
+            )?;
+        }
         self.verify_private()?;
         let checksum = sha256_file(self.staged_database_file())?;
         self.verify_private()?;
@@ -232,10 +242,23 @@ impl RedbValidatedPrivateArchiveRestore {
     pub const fn restored_frontier(&self) -> DualFrontier {
         self.candidate.restored_frontier()
     }
+    pub(in crate::maintenance) fn take_owned_authorization_evidence(
+        &mut self,
+    ) -> Result<crate::RedbPrivateRestoreAuthorization, StorageError> {
+        self.candidate.stage.take_owned_authorization_evidence()
+    }
+
     /// Opens one immutable validated state for staged authentication and current
     /// policy. All clones must close before the later publication ceremony.
     pub fn authorization_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {
         self.candidate.verify_private()?;
+        if let Some(snapshot) = self
+            .candidate
+            .stage
+            .native_archive_authorization_snapshot()?
+        {
+            return Ok(snapshot);
+        }
         let database = read_only_database(&self.candidate.file)?;
         let read = database.begin_read().map_err(unavailable)?;
         self.candidate.binding.validate(&read)?;
@@ -251,7 +274,7 @@ impl RedbValidatedPrivateArchiveRestore {
     /// Revalidates the private cut after staged authorization releases all
     /// snapshots. The resulting seal still needs a matching durable V3 receipt.
     pub fn seal_after_validation(
-        self,
+        mut self,
         validated_database_id: DatabaseId,
         inputs: StartupValidationInputs,
     ) -> Result<RedbSealedArchiveRestore, StorageError> {
@@ -267,13 +290,19 @@ impl RedbValidatedPrivateArchiveRestore {
         self.selection()
             .validate_restored_frontier(stop, self.restored_frontier())
             .map_err(|_| corrupt())?;
-        crate::startup::validate_private_archive(
-            self.staged_database_file(),
-            &self.candidate.file,
-            self.candidate.binding,
-            inputs.clone(),
-            Arc::new(AtomicBool::new(false)),
-        )?;
+        if !self
+            .candidate
+            .stage
+            .close_native_archive_authorization(&inputs)?
+        {
+            crate::startup::validate_private_archive(
+                self.staged_database_file(),
+                &self.candidate.file,
+                self.candidate.binding,
+                inputs.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )?;
+        }
         self.candidate.verify_private()?;
         let checksum = sha256_file(self.staged_database_file())?;
         let candidate = self.candidate;

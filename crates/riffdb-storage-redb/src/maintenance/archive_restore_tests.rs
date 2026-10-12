@@ -67,7 +67,7 @@ fn validated_applier(path: &Path) -> crate::RedbFollowerApplier {
     crate::startup::open_validated_follower_fixture(path, inputs())
 }
 
-fn archive(
+pub(super) fn archive(
     scope: &crate::test_path::ScopedDirectory,
     backup: &Path,
 ) -> (crate::RedbArchiveRepository, ChangelogHistoryPointV3) {

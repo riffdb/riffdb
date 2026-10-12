@@ -193,7 +193,7 @@ fn restore(
                 .record_selection(stage.selection().clone())
                 .map_err(|_| DriverFault::ReceiptValue)?;
             update(storage, receipt, selected)?;
-            let prepared = stage
+            let mut prepared = stage
                 .prepare_restore_with_projection_rebuild(
                     receipt.stop(),
                     dependencies.startup_inputs.clone(),
@@ -204,10 +204,19 @@ fn restore(
             let database_id = prepared.selection().lineage().database_id();
             let staged_incarnation = prepared.selection().lineage().history_incarnation();
             let frontier = prepared.restored_frontier();
-            authorize_staged_restore(
+            let joined = crate::startup::complete_owned_staged_authorization_join(
                 prepared
-                    .authorization_snapshot()
+                    .take_owned_authorization_evidence()
                     .map_err(DriverFault::ArtifactStorage)?,
+                &dependencies.startup_inputs,
+            )
+            .map_err(|_| DriverFault::Validation)?;
+            let (checked_database, snapshot) = joined.into_reader();
+            if checked_database != database_id {
+                return Err(DriverFault::ValidationIdentity);
+            }
+            authorize_staged_restore(
+                snapshot,
                 database_id,
                 credential,
                 receipt.operation_id(),

@@ -28,7 +28,7 @@ pub(super) fn rebuild_projection_state(
     };
     cancelled(&cancellation)?;
     verify_file(stage, file)?;
-    let store = crate::RedbFollowerStore::open_private_archive(stage.staged_database_file())?;
+    let store = stage.open_archive_follower_store()?;
     let session = store.begin_projection_recovery(inputs, Arc::clone(&cancellation))?;
     let owner = rebuilder.rebuild(session, Arc::clone(&cancellation))?;
     if owner.durable_history()? != expected {
@@ -37,8 +37,8 @@ pub(super) fn rebuild_projection_state(
     drop(owner.finish_rebuild()?);
     cancelled(&cancellation)?;
     verify_file(stage, file)?;
-    let database = read_only_database(file)?;
-    let read = database.begin_read().map_err(unavailable)?;
+    let database = stage.open_archive_preparation_read(file)?;
+    let read = database.begin_read()?;
     if crate::changelog_v3_roots::validate_retained_history(&read)? != Some(expected) {
         return Err(corrupt());
     }
@@ -99,12 +99,8 @@ impl RedbArchiveRestoreStage {
         self.selection
             .target_application(stop)
             .map_err(|_| corrupt())?;
-        let applier = crate::startup::open_validated_archive_follower(
-            self.staged_database_file(),
-            inputs.clone(),
-            &cancellation,
-        )?;
-        let replayed = self.replay(applier, &cancellation)?;
+        let applier = self.open_preparation_applier(inputs.clone(), &cancellation)?;
+        let mut replayed = self.replay(applier, &cancellation)?;
         rebuild_projection_state(
             &replayed.stage,
             &replayed.file,
@@ -113,7 +109,7 @@ impl RedbArchiveRestoreStage {
             Arc::clone(&cancellation),
             rebuilder,
         )?;
-        validate_physical(&replayed, inputs.clone(), Arc::clone(&cancellation))?;
+        validate_physical(&mut replayed, inputs.clone(), Arc::clone(&cancellation))?;
         let kind = match stop {
             ArchiveRestoreStopV1::LastArchived => physical_kind(replayed)?,
             ArchiveRestoreStopV1::AtApplicationSequence(sequence) => {
@@ -123,7 +119,7 @@ impl RedbArchiveRestoreStage {
                     &cancellation,
                     rebuilder.map(|owner| (owner, Arc::clone(&cancellation))),
                 )? {
-                    prefix::RebuiltArchiveStop::Physical(replayed) => {
+                    prefix::RebuiltArchiveStop::Physical(mut replayed) => {
                         rebuild_projection_state(
                             &replayed.stage,
                             &replayed.file,
@@ -132,7 +128,11 @@ impl RedbArchiveRestoreStage {
                             Arc::clone(&cancellation),
                             rebuilder,
                         )?;
-                        validate_physical(&replayed, inputs.clone(), Arc::clone(&cancellation))?;
+                        validate_physical(
+                            &mut replayed,
+                            inputs.clone(),
+                            Arc::clone(&cancellation),
+                        )?;
                         physical_kind(*replayed)?
                     }
                     prefix::RebuiltArchiveStop::Private(candidate) => PreparedKind::Private(
@@ -151,12 +151,22 @@ impl RedbArchiveRestoreStage {
     }
 }
 
-fn validate_physical(
-    replayed: &RedbReplayedArchiveRestore,
+pub(super) fn validate_physical(
+    replayed: &mut RedbReplayedArchiveRestore,
     inputs: StartupValidationInputs,
     cancellation: Arc<AtomicBool>,
 ) -> Result<(), StorageError> {
     verify_file(&replayed.stage, &replayed.file)?;
+    if let Some(owner) = replayed.stage.native_archive_preparation.take() {
+        let complete = owner.validate_complete_follower(
+            replayed.staged_database_file(),
+            inputs,
+            cancellation,
+        )?;
+        complete.verify_follower_history(replayed.history)?;
+        replayed.stage.install_native_archive_validation(complete)?;
+        return verify_file(&replayed.stage, &replayed.file);
+    }
     crate::startup::RedbOfflineIntegrityScrub::from_inputs(replayed.staged_database_file(), inputs)
         .with_cancellation(cancellation)
         .run_follower()?;
@@ -197,12 +207,28 @@ impl RedbPreparedArchiveRestore {
             PreparedKind::Private(candidate) => candidate.restored_frontier(),
         }
     }
+    /// Consumes the original native proof for the server's ordinary startup joins.
+    #[doc(hidden)]
+    pub fn take_owned_authorization_evidence(
+        &mut self,
+    ) -> Result<crate::RedbPrivateRestoreAuthorization, StorageError> {
+        match &mut self.kind {
+            PreparedKind::Physical { replayed, .. } => {
+                replayed.stage.take_owned_authorization_evidence()
+            }
+            PreparedKind::Private(candidate) => candidate.take_owned_authorization_evidence(),
+        }
+    }
+
     /// One immutable exact-state pin for staged authentication and policy.
     pub fn authorization_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {
         match &self.kind {
             PreparedKind::Private(candidate) => candidate.authorization_snapshot(),
             PreparedKind::Physical { replayed, checksum } => {
                 verify_physical_seal(replayed, checksum)?;
+                if let Some(snapshot) = replayed.stage.native_archive_authorization_snapshot()? {
+                    return Ok(snapshot);
+                }
                 let database = read_only_database(&replayed.file)?;
                 let read = database.begin_read().map_err(unavailable)?;
                 if crate::changelog_v3_roots::validate_retained_history(&read)?

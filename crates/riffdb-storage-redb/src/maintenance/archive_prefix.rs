@@ -54,7 +54,7 @@ impl RedbReplayedArchiveRestore {
     /// history. Only an interior application boundary is accepted here. The
     /// result has no serving, follower, seal or publication capability.
     pub fn reconstruct_inside_group(
-        self,
+        mut self,
         stop: CommitSequence,
         inputs: StartupValidationInputs,
         cancellation: &AtomicBool,
@@ -66,11 +66,11 @@ impl RedbReplayedArchiveRestore {
         {
             return Err(corrupt());
         }
-        crate::startup::RedbOfflineIntegrityScrub::from_inputs(
-            self.staged_database_file(),
+        preparation::validate_physical(
+            &mut self,
             inputs.clone(),
-        )
-        .run_follower()?;
+            std::sync::Arc::new(AtomicBool::new(false)),
+        )?;
         verify_file(&self.stage, &self.file)?;
         match self.rebuild_to_stop(stop, inputs, cancellation)? {
             RebuiltArchiveStop::Private(candidate) => Ok(*candidate),
@@ -115,11 +115,9 @@ impl RedbReplayedArchiveRestore {
             selection,
             cancellation,
         )?;
-        let mut applier = crate::startup::open_validated_archive_follower(
-            stage.staged_database_file(),
-            inputs.clone(),
-            cancellation,
-        )?;
+        let mut applier = stage
+            .stage
+            .open_archive_follower(inputs.clone(), cancellation)?;
         applier.verify_database_file(&stage.file)?;
         let result = replay_predecessor(&stage, &mut applier, stop, cancellation);
         let predecessor = applier.durable_history();
@@ -174,6 +172,15 @@ fn rebuild(
     inputs: StartupValidationInputs,
 ) -> Result<RedbStagedRestore, StorageError> {
     stage.verify_paths()?;
+    let native_owned =
+        stage.native_archive_preparation.is_some() || stage.native_archive_authorization.is_some();
+    // The complete original selection is proven before reconstruction. Retire
+    // that proof and release its actual reads/engine before rematerialization.
+    drop(stage.native_authorization_evidence.take());
+    drop(stage.native_archive_authorization.take());
+    drop(stage.native_archive_preparation.take());
+    drop(stage.native_archive_closed.take());
+    drop(stage.native_archive_seal.take());
     let directory = stage
         .staged_database_file
         .parent()
@@ -189,7 +196,12 @@ fn rebuild(
         test_controller,
         ..
     } = stage;
-    let rebuilt = RedbStagedRestore::materialize(
+    let materialize = if native_owned {
+        RedbStagedRestore::materialize_owned_archive
+    } else {
+        RedbStagedRestore::materialize
+    };
+    let rebuilt = materialize(
         operation_id,
         backup_name,
         backup_directory,
@@ -298,7 +310,10 @@ fn construct(
         .ok_or_else(corrupt)?
         .join(PRIVATE_MARKER);
     prefix_edge("prefix-quarantined");
-    let database = open_prefix_construction_database(&stage.file)?;
+    let database = match &stage.stage.native_archive_preparation {
+        Some(owner) => owner.open_preparation_database()?,
+        None => open_prefix_construction_database(&stage.file)?,
+    };
     let mut write = database.begin_write().map_err(unavailable)?;
     write.set_two_phase_commit(true);
     write

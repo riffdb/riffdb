@@ -7,6 +7,21 @@ pub(crate) fn open_validated_archive_follower(
     inputs: StartupValidationInputs,
     cancellation: &AtomicBool,
 ) -> Result<crate::RedbFollowerApplier, StorageError> {
+    if cancellation.load(Ordering::Acquire) {
+        return Err(storage_error(StorageErrorKind::Unavailable));
+    }
+    validate_archive_follower(
+        crate::RedbFollowerStore::open_private_archive(path)?,
+        inputs,
+        cancellation,
+    )
+}
+
+pub(crate) fn validate_archive_follower(
+    store: crate::RedbFollowerStore,
+    inputs: StartupValidationInputs,
+    cancellation: &AtomicBool,
+) -> Result<crate::RedbFollowerApplier, StorageError> {
     let cancelled = |flag: &AtomicBool| {
         if flag.load(Ordering::Acquire) {
             Err(storage_error(StorageErrorKind::Unavailable))
@@ -15,8 +30,7 @@ pub(crate) fn open_validated_archive_follower(
         }
     };
     cancelled(cancellation)?;
-    let mut session =
-        crate::RedbFollowerStore::open_private_archive(path)?.begin_structural_evidence(inputs)?;
+    let mut session = store.begin_structural_evidence(inputs)?;
     let mut cursor =
         StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
     let end = loop {

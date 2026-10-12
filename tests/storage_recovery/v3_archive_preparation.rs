@@ -11,6 +11,115 @@ fn archive_preparation_covers_standard_physical_and_interior_stops() {
 fn archive_preparation_covers_hardened_physical_and_interior_stops() {
     check_private_archive_case(RedbCommitProfile::Hardened, None, Some("prepare"));
 }
+// Preserve every original stop and refusal assertion with one restore case per watchdog.
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_last_archived() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 0, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_1() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 1, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_2() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 2, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_3() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 3, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_4() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 4, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_5() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 5, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_at_6() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 6, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_invalid_stop() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 7, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_standard_cancelled() {
+    check_private_archive_native_case(RedbCommitProfile::Standard, 2, true);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_last_archived() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 0, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_1() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 1, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_2() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 2, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_3() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 3, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_4() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 4, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_5() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 5, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_at_6() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 6, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_invalid_stop() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 7, false);
+}
+
+// req: REC-001, REC-006, END-001, REP-007, AFC-007
+#[test]
+fn native_archive_preparation_hardened_cancelled() {
+    check_private_archive_native_case(RedbCommitProfile::Hardened, 2, true);
+}
+
 #[test]
 fn archive_preparation_requires_closed_readers_and_unchanged_validated_bytes() {
     for fault in ["prepare-held", "prepare-changed"] {

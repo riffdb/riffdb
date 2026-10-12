@@ -24,8 +24,53 @@ pub(super) fn publish(
     command: &CommandFixture,
     mode: &str,
 ) {
-    let selection = candidate.selection().clone();
-    let frontier = candidate.restored_frontier();
+    publish_candidate(
+        PublicationCandidate::Private(Box::new(candidate)),
+        maintenance,
+        target,
+        command,
+        mode,
+    )
+}
+
+pub(super) fn publish_prepared(
+    candidate: riffdb_storage_redb::RedbPreparedArchiveRestore,
+    maintenance: &mut RedbMaintenanceStorage,
+    target: &Path,
+    command: &CommandFixture,
+    mode: &str,
+) {
+    publish_candidate(
+        PublicationCandidate::Prepared(Box::new(candidate)),
+        maintenance,
+        target,
+        command,
+        mode,
+    )
+}
+
+// Both paths retain exactly the same receipt, incarnation, anchor and public
+// state assertions. No private native reader is replaced by a fresh file open.
+enum PublicationCandidate {
+    Private(Box<riffdb_storage_redb::RedbValidatedPrivateArchiveRestore>),
+    Prepared(Box<riffdb_storage_redb::RedbPreparedArchiveRestore>),
+}
+
+fn publish_candidate(
+    candidate: PublicationCandidate,
+    maintenance: &mut RedbMaintenanceStorage,
+    target: &Path,
+    command: &CommandFixture,
+    mode: &str,
+) {
+    let (selection, frontier) = match &candidate {
+        PublicationCandidate::Private(owner) => {
+            (owner.selection().clone(), owner.restored_frontier())
+        }
+        PublicationCandidate::Prepared(owner) => {
+            (owner.selection().clone(), owner.restored_frontier())
+        }
+    };
     assert_eq!(
         selection.terminal_frontier().application(),
         CommitSequence::new(6)
@@ -58,9 +103,13 @@ pub(super) fn publish(
     receipt
         .record_validated_restore(database_id, frontier)
         .unwrap();
-    let sealed = candidate
-        .seal_after_validation(database_id, prefix_predecessors::inputs())
-        .unwrap();
+    let sealed = match candidate {
+        PublicationCandidate::Private(owner) => {
+            owner.seal_after_validation(database_id, prefix_predecessors::inputs())
+        }
+        PublicationCandidate::Prepared(owner) => owner.seal_after_authorization(database_id),
+    }
+    .unwrap();
     assert_eq!(sealed.restored_frontier(), frontier);
     assert_eq!(sealed.selection(), &selection);
     if mode == "no-publication-receipt" {

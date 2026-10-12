@@ -1,195 +1,106 @@
-# WP-825 private materialization first-open repair refusal
+# WP-825 continuously owned private restore validation
 
-Package: WP-825 (open). Tier: guarantee, covered by accepted ADR-0289.
+Package: WP-825 (open). Tier: guarantee, implementing accepted ADR-0289.
+Handbook: `docs/backup-restore.md`.
 
-The first private restore copy used an ordinary recovering engine open before
-the later repair-refusing hydration and complete verification. A repair at that
-first boundary could therefore disappear behind a subsequent clean open.
+Private restore now retains the actual native owner from authenticated backup
+copy creation through complete validation, staged authentication, engine close,
+receipt-authorized incarnation stamping and the existing target publication.
+Ordinary restore, archived backup restore and source-less archive recovery use
+this composition. The additional full restore-verification copy is removed.
 
-Private materialization now authenticates the copied primary, journal, marker
-and sealed extents before opening the private primary with repair refusal.
-The existing exact manifest-semantic comparison still runs on the opened
-database. Ordinary offline restore retains its existing recovery behavior and
-mutation order. This correction adds no application selector or durable format.
+## First open and native custody
 
-The regression constructs a real native backup, makes its primary require
-allocator repair, and authenticates those bytes in its manifest. Private
-materialization must return `CorruptData`, leave every backup artifact intact,
-and publish neither a staged primary nor the configured target. The same test
-must fail against the preceding implementation before the correction is tested.
+The copied primary, journal, marker and sealed extents are authenticated before
+the first private engine open. Exact manifest-semantic comparisons remain
+required. Creation descriptors and directory capabilities retain the three
+primary artifacts; known staging renames recheck their original identities.
+The engine opens through the retained primary descriptor with repair refusal.
+An independently owned outer native exclusive guard survives each backend close;
+backend subleases cannot release or downgrade it. Raw-path custody construction
+is test-only. Sealed extents do not add one descriptor per possible extent.
 
-Checks run on the required 8-vCPU, 32-GiB Linux SSD host: the failing first-open regression, the corrected regression,
-native backup and maintenance tests, native Clippy, formatting, allowed paths,
-and scoped acceptance. Review the bound receipt before committing this change.
+The owned backend and ordinary opens use the same existing redb builder, fixed
+cache and repair callback. Preparation reads explicitly retain their `Database`
+owner because a surviving `ReadTransaction` alone cannot prevent backend close.
+Known preparation writes admit allocator growth under the existing resource
+bounds. An exact captured-length freeze applies after observed engine close.
 
-Handbook: `docs/backup-restore.md` documents first-open repair refusal.
+## Complete validation and compatibility
 
-Compatibility: original manifest comparisons, journal and marker predicates,
-history hydration, retention-watermark preparation and target publication remain
-required. The existing offline restore path and compatibility formats remain.
+The actual private engine performs physical integrity before admitting a read
+pin, then native journal, complete structural and complete catalog validation.
+Both complete streams must reach their exact ends with zero findings. Private
+validation allocates no preparation workers and grants no operational port or
+serving authority. The crate-private result retains the actual engine, immutable
+pin, catalog proof, original startup inputs and native validation binding.
 
-Hazards and follow-ups: this entry-point correction does not provide ADR-0289's
-continuous engine custody or retained complete native validation proof. Those
-remain implementation work. The native retention refusal, final combined-source
-CI, unchanged whole-action recovery measurement and real rehearsal are also
-open; no campaign qualification or package closure is claimed here.
+Ordinary source compatibility uses the existing format, locator, journal,
+registry and catalog-index preparation in its original transaction grouping.
+Each required compatibility write consumes the old pin and physical binding,
+uniquely retains the same engine, and repeats complete validation afterward.
+The bounded transition sequence permits at most one index migration and one
+registry transition, hence at most three complete passes for the oldest supported
+input. Ordinary activation retains its checkpoint, DIRTY and readiness sequence.
+Private promotion receives no source migration writer.
 
+Archive image validation preserves the immutable backup's exact history fence.
+It performs full source verification without appending ordinary source
+compatibility receipts before archive replay. The retained archive preparation
+owns the existing conversion transaction, checked empty-journal removal, original
+follower proof join, selected replay and projection rebuilding. An interior cut
+retires the old full-selection engine and readers, rematerializes the immutable
+backup, and retains its typed predecessor, logical frontier, quarantined marker
+and reciprocal command graph checks. Configured receiver recovery is unchanged.
 
-The next native materialization boundary retains the three creation descriptors
-and their directory capabilities before copying. Existing checksum checks read
-those retained private files. The first private engine is opened through the
-original primary descriptor, and every known staging rename rechecks the same
-file and directory identities. Only the existing no-journal compatibility path
-may create its known replacement journal before any proof or engine exists.
-Ordinary offline restore retains its existing engine and transaction path.
-Sealed extents keep their descriptor-free staging vector; this adds a fixed
-three artifact pins rather than one open descriptor per possible extent.
+## Authentication, close and publication
 
-Required native counterexamples replace primary, journal, marker or parent with
-identical bytes before first open. All must refuse before engine writes; healthy
-manifest facts, known renames, genuine backup compatibility, crash cuts, repair
-refusal and immutable originals must remain valid. This boundary remains short
-of the complete ADR-0289 owner: it does not retain outer native custody through
-full validation, authorization, stamping and publication, or remove the second
-verification copy. Final combined CI and unchanged public gates remain open.
+The opaque cross-crate bridge has no public constructor. The server checks the
+exact startup-input binding and calls its original `validate_ready_join`, including
+catalog/session, retained identity, active catalog, bootstrap lifecycle and both
+allocator-capacity predicates. It receives only an immutable authorization reader;
+fresh staged credential verification remains required before publication.
 
+Every authorization reader clone retains the same native engine. Semantic reads
+check the completed custody binding before accessing cached rows or allocating
+provider input. Backend writes and resizes advance a checked mutation generation,
+including engine commits outside the store commit counter. Unclassified writes,
+artifact identity changes, observed I/O uncertainty or cancellation permanently
+invalidate the owner; restoring bytes cannot revive its proof.
 
-A pending native factory can consume the actual verified copied-primary
-creation descriptor and directory capability into continuous exclusive custody
-before the first engine open. It keeps that first engine through the existing
-hydration and watermark preparation, performs its known rename under the same
-owner, and retains custody after observed engine close. Raw-path custody
-construction is test-only. Its three fixed artifact pins add no per-extent
-file-descriptor population. Cancellation remains sticky after an observed reset.
+The primary, journal and marker byte bindings precede authorization. All actual
+readers must release before close, and a close attempted with a surviving clone
+refuses permanently. Only the observed known engine close may update the primary
+seal for its clean header and allocator metadata. The sidecar seals remain intact.
+The matching durable receipt authorizes the original Immediate two-phase
+incarnation transaction, RestoreAnchor journal creation and marker restoration.
+Known changes explicitly retire their old seals while original file identities
+and native custody continue. Equal-incarnation retry preserves no-write behavior.
 
-This factory is not yet the production stage constructor. Complete owned
-physical/logical validation, compatibility preparation including legacy journal
-identity transitions, the unchanged server proof join, authorization, controlled
-stamp and publication still require integration. The existing full-stage
-custody counterexample remains open. A successful materialization-owner test
-cannot qualify that counterexample or the whole public recovery action.
+A fresh complete receipt-stamped archive source proof precedes the final closed
+three-artifact seal. That proof grants no second authorization or activation.
+Target exclusion, source/target revalidation, publication copies, marker-last
+rename, uncertainty recovery and fresh post-publication startup are unchanged.
 
+## Verification and remaining gates
 
-A native counterexample also shows that redb can close its backend while a
-`ReadTransaction` remains alive. Native backend-close observation therefore
-cannot prove that read pins have been released. Preparation reads retain the
-same `Database` owner explicitly; a second pin and a close with an outstanding
-pin refuse without consuming that owner. The original read must remain usable,
-and only its release permits close and the exact-length freeze. The final
-logical authorization reader has the same obligation through its retained
-shared engine owner. This correction changes the native ownership protocol,
-not the harness or the accepted release condition.
+Native counterexamples cover repair at first open, identical-byte file and
+parent replacement, reader lifetime, unclassified commits, stale byte seals,
+engine exclusion and the immutable archive history fence. Healthy backup
+compatibility, complete proof joins, cancellation, genuine process crashes and
+receipt retry assertions remain required on the specified 8-vCPU, 32-GiB Linux
+SSD host. Native publication crash tests exercise both durability profiles.
 
-The next internal handoff carries the first private engine, its actual checkpoint
-rewrite observer and repair latch into the existing native store join. It runs
-physical integrity before admitting a read pin, verifies the native journals,
-and invokes the existing complete structural and catalog validators through both
-exact ends on that same engine. Private validation allocates no preparation
-workers and remains write fenced. This internal result grants no publication or
-serving authority. Required compatibility preparation, ordinary server joins,
-closed-engine seals and production staged-restore integration remain unfinished;
-component checks cannot qualify the campaign.
+The 18 native archive-stop cases and three publication-resume receipt phases run
+as individually bounded tests. They retain the original case matrix, setup and
+assertions, the existing CI watchdogs and the 60-second whole-action recovery gate.
+No failed or interrupted acceptance run qualifies the candidate. Exact-source
+scoped acceptance, full branch CI and ordinary frozen release binaries remain
+necessary before fresh preparation and whole-action recovery measurements.
 
-The owned backend and existing ordinary opens converge on the same redb builder;
-the fixed cache and repair callback remain centralized. The complete logical
-proof is crate-private to permit the native backup adapter to retain it, and is
-still absent from the public crate exports and operational-port interfaces.
-
-The preparation experiment invokes the existing format, locator, journal-recovery
-and pending-registry routines in their original order before admitting the
-complete validation pin. Unique ownership permits the physical integrity pass
-after these writes on the same engine; the complete journal, structural and
-catalog checks then observe the prepared frontier. A test removes the actual
-three derived locator tables before producing an immutable backup and requires
-the native owner to restore them without changing that backup. Post-validation
-registry completion and legacy journal identity transitions still need their
-native handoffs before production integration is complete.
-
-A native proof-binding experiment attaches the original backend's file, lease
-and mutation generation to the same engine container and private store. Every
-backend write or resize advances a checked generation, including raw engine
-commits which bypass the store commit counter. Only the actual complete physical
-pass on the uniquely owned engine records a validated generation. Logical proof
-completion and cached authorization-reader clones recheck that binding and the
-original primary identity; observed uncertainty permanently refuses reuse.
-Ordinary source and follower construction carry no restore binding. This still
-does not implement the server join, sidecar sealing or publication lifecycle.
-
-Every semantic owned-snapshot reader checks an attached completed-validation
-custody before accessing cached rows or allocating provider input. Ordinary
-operational snapshots have no such attached private proof. Native regressions
-exercise the actual frontier, catalog and capability-reader interfaces after
-uncertain primary identity or an untracked engine commit, including cloned reads.
-
-The compatibility handoff consumes the original complete read before the native
-compatibility transaction, uniquely retains its engine, and retires the old
-physical binding before that known write. It reuses the original first V3
-activation transaction or the existing atomic registry/checkpoint/receipt
-transaction as applicable. Ordinary activation retains its checkpoint, DIRTY and
-readiness sequence. The private handoff repeats physical, journal and both
-complete evidence streams with the same value-only startup inputs, without
-operational admission. A second required transition is refused. A clean physical
-recheck cannot reset a binding after an unclassified engine write. The server
-join, final close/seals and production restore integration remain outstanding.
-
-The authorization handoff binds all three artifacts through their original file
-descriptors before handing out the immutable reader. Changed bytes on the same
-inode invalidate the native owner before another seal can be minted. The close
-handoff requires every actual reader clone to have released the first engine,
-checks the old byte binding and native mutation binding, observes actual engine
-close under outer exclusion, and only then binds the closed checksums. Engine
-close may change its own clean header and allocator metadata; the journal and
-marker must retain their prior checksums. This internal seam still requires the
-server's unchanged startup proof join, receipted stamp and production wiring.
-
-The closed owner can apply the existing incarnation stamp through a fresh
-repair-refusing native sublease of the same retained inode. It verifies all old
-seals before retiring them, permits the native allocator's required growth, and
-reuses the original transaction-current history validation, restore-anchor and
-replication reset inside the same Immediate two-phase transaction. Actual engine
-close precedes the new exact-length freeze and checksums. The journal and marker
-retain their old seals, and any transition error permanently invalidates the
-owner. Equal-incarnation retry retains the original no-write behavior. Receipt
-authority, server proof joins and publication still belong to their existing
-composition; this internal seam does not itself authorize target publication.
-
-Promoted backups use their existing private promotion binding, derived from the
-actual owned engine and the verified immutable manifest. This preserves the
-original complete private validation and skips source-only preparation and
-registry writers. The copied promotion record cannot reconcile the configured
-source's external authority, and no source port is created. Physical verification,
-immutable authorization, reader-release checks and closed seals retain the same
-native owner. Ordinary promotion reconciliation and receiver construction remain
-unchanged. Production stage wiring remains required.
-
-The cross-crate evidence bridge has no public constructor. Only the actual native
-materialization proof can construct it; it retains the exact value-only startup
-inputs and immutable reader. The server adapter checks the current configured
-input binding and calls the same `validate_ready_join` used by ordinary startup,
-including catalog/session, retained identity, active catalog, bootstrap lifecycle
-and both allocator-capacity checks. It returns only an immutable authorization
-reader and never invokes port activation, publication seeding or workers. The
-production driver has not yet switched to this internal adapter; its existing
-whole-stage custody regression remains an open integration gate.
-
-The native source-compatible owner consumes an actual catalog migration context
-only after both complete streams reach their exact ends with zero findings.
-It drops every old immutable pin before retiring that proof, and invokes the
-existing catalog-owned bounded index migration driver and native backend with
-their original hardened transaction grouping. Private promotion receives no
-migration writer. Every compatibility write is followed by fresh physical,
-journal, structural and catalog validation. The closed sequence admits at most
-one index migration and one registry transition, hence at most three complete
-passes for the oldest supported input; repeated transitions fail closed. Public
-offline scrub keeps its original refusal behavior and ordinary startup is
-unchanged. Production stage wiring and final combined-source CI remain open.
-
-The equal-incarnation test compares the owned retry to the actual unchanged
-original stamp routine on an exact copy of the first sealed primary. The
-original abort/open/close itself changes native housekeeping bytes; byte
-identity across that known transition is not its idempotence contract. Both
-paths preserve identical database/catalog/frontier facts, retained allocators,
-V3 history and every encoded receipt. The owned path also matches the original
-post-close primary bytes exactly and preserves journal and marker bytes. The
-original failed byte-identical assertion is retained as failure evidence. This
-test correction changes no runtime stamp transaction or retry semantics.
+Compatibility: durable formats, authorization policy, public selectors, fixed
+caches, transaction grouping, ordinary offline recovery and immutable backup
+artifacts are preserved. Hazards and follow-ups: actual free-space admission,
+measured recovery, the real eight-hour rehearsal, independent evidence checks,
+package closure and merge remain open. No eight-hour or 24-hour qualification is
+claimed by this implementation note.

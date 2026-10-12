@@ -52,6 +52,12 @@ pub struct RedbStagedRestore {
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     promoted_authorization_checksum: Option<BackupIntegrityChecksumV1>,
+    native_authorization_owner: Option<crate::backup::OwnedAuthorizationMaterialization>,
+    native_authorization_evidence: Option<crate::RedbPrivateRestoreAuthorization>,
+    native_archive_preparation: Option<crate::backup::OwnedArchivePreparation>,
+    native_archive_authorization: Option<crate::backup::OwnedArchiveAuthorization>,
+    native_archive_closed: Option<crate::backup::OwnedArchiveClosed>,
+    native_archive_seal: Option<identity::ArchiveArtifactSeal>,
     backup_directory_guard: PinnedDirectory,
     configured_parent_guard: PinnedDirectory,
     artifact_identities: StagedArtifactIdentities,
@@ -59,7 +65,45 @@ pub struct RedbStagedRestore {
     test_controller: Option<RedbMaintenanceTestController>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NativeStagePurpose {
+    Legacy,
+    Ordinary,
+    Archive,
+}
+
 impl RedbStagedRestore {
+    fn open_archive_follower_store(&self) -> Result<crate::RedbFollowerStore, StorageError> {
+        self.verify_paths()?;
+        match &self.native_archive_preparation {
+            Some(owner) => owner.open_follower_store(&self.staged_database_file),
+            None => crate::RedbFollowerStore::open_private_archive(&self.staged_database_file),
+        }
+    }
+
+    fn open_archive_follower(
+        &self,
+        inputs: StartupValidationInputs,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<crate::RedbFollowerApplier, StorageError> {
+        if cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if self.native_archive_preparation.is_some() {
+            crate::startup::validate_archive_follower(
+                self.open_archive_follower_store()?,
+                inputs,
+                cancellation,
+            )
+        } else {
+            crate::startup::open_validated_archive_follower(
+                &self.staged_database_file,
+                inputs,
+                cancellation,
+            )
+        }
+    }
+
     pub(super) fn materialize(
         operation_id: OfflineMaintenanceOperationId,
         backup_name: BackupNameV1,
@@ -68,6 +112,74 @@ impl RedbStagedRestore {
         configured_database_file: PathBuf,
         validation_inputs: StartupValidationInputs,
         test_controller: Option<RedbMaintenanceTestController>,
+    ) -> Result<Self, StorageError> {
+        Self::materialize_inner(
+            operation_id,
+            backup_name,
+            backup_directory,
+            staged_directory,
+            configured_database_file,
+            validation_inputs,
+            test_controller,
+            NativeStagePurpose::Legacy,
+        )
+    }
+
+    pub(super) fn materialize_owned(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        backup_directory: PathBuf,
+        staged_directory: PathBuf,
+        configured_database_file: PathBuf,
+        validation_inputs: StartupValidationInputs,
+        test_controller: Option<RedbMaintenanceTestController>,
+    ) -> Result<Self, StorageError> {
+        Self::materialize_inner(
+            operation_id,
+            backup_name,
+            backup_directory,
+            staged_directory,
+            configured_database_file,
+            validation_inputs,
+            test_controller,
+            NativeStagePurpose::Ordinary,
+        )
+    }
+
+    pub(super) fn materialize_owned_archive(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        backup_directory: PathBuf,
+        staged_directory: PathBuf,
+        configured_database_file: PathBuf,
+        validation_inputs: StartupValidationInputs,
+        test_controller: Option<RedbMaintenanceTestController>,
+    ) -> Result<Self, StorageError> {
+        Self::materialize_inner(
+            operation_id,
+            backup_name,
+            backup_directory,
+            staged_directory,
+            configured_database_file,
+            validation_inputs,
+            test_controller,
+            NativeStagePurpose::Archive,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Retain both existing seven-argument native construction call sites"
+    )]
+    fn materialize_inner(
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: BackupNameV1,
+        backup_directory: PathBuf,
+        staged_directory: PathBuf,
+        configured_database_file: PathBuf,
+        validation_inputs: StartupValidationInputs,
+        test_controller: Option<RedbMaintenanceTestController>,
+        purpose: NativeStagePurpose,
     ) -> Result<Self, StorageError> {
         let backup_directory_guard = PinnedDirectory::open(&backup_directory)?;
         let configured_parent_guard =
@@ -95,10 +207,20 @@ impl RedbStagedRestore {
             };
 
         let materialized = (|| {
-            let result = RedbOfflineRestore::bind(&backup_directory, &staged_directory)
-                .restore_staged_backup(&configured_database_file)?;
-            let OfflineRestoreResultV1::Restored { manifest } = result else {
-                return Err(invariant());
+            let mut restore = RedbOfflineRestore::bind(&backup_directory, &staged_directory);
+            let (manifest, native) = if purpose != NativeStagePurpose::Legacy {
+                let (manifest, owner) = restore.restore_owned_staged_backup(
+                    &configured_database_file,
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                )?;
+                (Box::new(manifest), Some(owner))
+            } else {
+                let OfflineRestoreResultV1::Restored { manifest } =
+                    restore.restore_staged_backup(&configured_database_file)?
+                else {
+                    return Err(invariant());
+                };
+                (manifest, None)
             };
             if *manifest != source_manifest {
                 return Err(corrupt());
@@ -116,11 +238,11 @@ impl RedbStagedRestore {
             if let Some(controller) = &test_controller {
                 controller.hit(RedbMaintenanceFailpoint::AfterStagedMaterialization, false)?;
             }
-            Ok((*manifest, artifact_identities))
+            Ok((*manifest, artifact_identities, native))
         })();
 
         match materialized {
-            Ok((manifest, artifact_identities)) => {
+            Ok((manifest, artifact_identities, native)) => {
                 let staged_database_file = staged_directory.join(DATABASE_ARTIFACT_FILE_NAME);
                 let staged_journal_file = crate::journal::journal_path(&staged_database_file);
                 let staged_format_marker_file =
@@ -136,13 +258,36 @@ impl RedbStagedRestore {
                     manifest,
                     manifest_identity,
                     promoted_authorization_checksum: None,
+                    native_authorization_owner: None,
+                    native_authorization_evidence: None,
+                    native_archive_preparation: None,
+                    native_archive_authorization: None,
+                    native_archive_closed: None,
+                    native_archive_seal: None,
                     backup_directory_guard,
                     configured_parent_guard,
                     artifact_identities,
                     stage_cleanup,
                     test_controller,
                 };
-                stage.validate_materialized(validation_inputs)?;
+                if let Some(native) = native {
+                    if purpose == NativeStagePurpose::Archive {
+                        stage.native_archive_preparation = Some(
+                            native
+                                .validate_archive_source(validation_inputs)?
+                                .into_archive_preparation()?,
+                        );
+                    } else {
+                        let (owner, evidence) = native
+                            .validate_complete(validation_inputs)?
+                            .into_server_authorization()?;
+                        stage.native_authorization_owner = Some(owner);
+                        stage.native_authorization_evidence = Some(evidence);
+                    }
+                    stage.verify_paths()?;
+                } else {
+                    stage.validate_materialized(validation_inputs)?;
+                }
                 Ok(stage)
             }
             Err(error) => {
@@ -150,6 +295,93 @@ impl RedbStagedRestore {
                 Err(error)
             }
         }
+    }
+
+    /// Consumes the native complete proof for the server's unchanged joins.
+    /// The retained owner keeps native exclusion until all immutable readers
+    /// are released and the closed byte seal is established.
+    #[doc(hidden)]
+    pub fn take_owned_authorization_evidence(
+        &mut self,
+    ) -> Result<crate::RedbPrivateRestoreAuthorization, StorageError> {
+        self.verify_paths()?;
+        if let Some(owner) = &self.native_archive_authorization {
+            owner.verify()?;
+        } else {
+            self.native_authorization_owner
+                .as_ref()
+                .ok_or_else(invariant)?
+                .verify_authorization()?;
+        }
+        self.native_authorization_evidence
+            .take()
+            .ok_or_else(invariant)
+    }
+
+    fn install_native_archive_validation(
+        &mut self,
+        complete: crate::backup::OwnedArchiveCompleteValidation,
+    ) -> Result<(), StorageError> {
+        self.verify_paths()?;
+        if self.native_archive_preparation.is_some()
+            || self.native_archive_authorization.is_some()
+            || self.native_archive_closed.is_some()
+            || self.native_authorization_evidence.is_some()
+        {
+            return Err(invariant());
+        }
+        let (owner, evidence) = complete.into_server_authorization()?;
+        self.native_archive_authorization = Some(owner);
+        self.native_authorization_evidence = Some(evidence);
+        self.native_archive_seal = Some(identity::ArchiveArtifactSeal::capture(
+            &self.artifact_identities,
+        )?);
+        self.verify_paths()
+    }
+
+    fn native_archive_authorization_snapshot(
+        &self,
+    ) -> Result<Option<crate::RedbOwnedSnapshot>, StorageError> {
+        self.verify_paths()?;
+        match &self.native_archive_authorization {
+            Some(owner) => {
+                owner.verify()?;
+                Ok(Some(
+                    self.native_authorization_evidence
+                        .as_ref()
+                        .ok_or_else(invariant)?
+                        .archive_snapshot()?,
+                ))
+            }
+            None if self.native_archive_preparation.is_some()
+                || self.native_archive_closed.is_some() =>
+            {
+                Err(invariant())
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn close_native_archive_authorization(
+        &mut self,
+        inputs: &StartupValidationInputs,
+    ) -> Result<bool, StorageError> {
+        self.verify_paths()?;
+        let Some(owner) = self.native_archive_authorization.take() else {
+            if self.native_archive_preparation.is_some() || self.native_archive_closed.is_some() {
+                return Err(invariant());
+            }
+            return Ok(false);
+        };
+        if !owner.matches_inputs(inputs) {
+            return Err(corrupt());
+        }
+        drop(self.native_authorization_evidence.take());
+        let seal = self.native_archive_seal.take().ok_or_else(invariant)?;
+        self.native_archive_closed = Some(owner.close()?);
+        self.native_archive_seal = Some(seal.after_native_close(&self.artifact_identities)?);
+        self.verify_paths()?;
+        Ok(true)
     }
 
     /// Returns the completely scrubbed private database for staged authorization.
@@ -183,7 +415,7 @@ impl RedbStagedRestore {
     /// The server-supplied identity is reread by its staged authorization open;
     /// this final check freezes exact post-open bytes for publication.
     pub fn seal_after_validation(
-        self,
+        mut self,
         validated_database_id: DatabaseId,
     ) -> Result<RedbSealedStagedRestore, StorageError> {
         self.verify_paths()?;
@@ -191,29 +423,47 @@ impl RedbStagedRestore {
         if validated_database_id != self.manifest.database_id() {
             return Err(corrupt());
         }
-        let database =
-            validate_sealed_database_semantics(&self.staged_database_file, &self.manifest)?;
-        drop(database);
-        let staged_history_incarnation =
-            crate::backup::read_history_incarnation(&self.staged_database_file)?.unwrap_or(0);
+        let native_closed = if let Some(owner) = self.native_authorization_owner.take() {
+            // Direct native storage callers consume any unused immutable
+            // evidence. Production first joins and authenticates that reader.
+            drop(self.native_authorization_evidence.take());
+            Some(owner.close()?)
+        } else {
+            None
+        };
+        let staged_history_incarnation = if let Some(owner) = &native_closed {
+            owner.history_incarnation()
+        } else {
+            let database =
+                validate_sealed_database_semantics(&self.staged_database_file, &self.manifest)?;
+            drop(database);
+            crate::backup::read_history_incarnation(&self.staged_database_file)?.unwrap_or(0)
+        };
         if let Some(manifest_incarnation) = self.manifest.history_incarnation()
             && manifest_incarnation > staged_history_incarnation
         {
             return Err(corrupt());
         }
-        let sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
         validate_backup_journal(
             &self.staged_journal_file,
             self.manifest.database_id(),
             self.manifest.last_commit_sequence(),
         )?;
-        let sealed_journal_checksum = sha256_file(&self.staged_journal_file)?;
         if crate::preflight_durable_format_path(&self.staged_database_file)
             != Ok(crate::RedbDurableFormatPreflight::OpenCurrent)
         {
             return Err(corrupt());
         }
-        let sealed_format_marker_checksum = sha256_file(&self.staged_format_marker_file)?;
+        let (sealed_artifact_checksum, sealed_journal_checksum, sealed_format_marker_checksum) =
+            if let Some(owner) = &native_closed {
+                owner.checksums()?
+            } else {
+                (
+                    sha256_file(&self.staged_database_file)?,
+                    sha256_file(&self.staged_journal_file)?,
+                    sha256_file(&self.staged_format_marker_file)?,
+                )
+            };
         self.verify_paths()?;
         Ok(RedbSealedStagedRestore {
             operation_id: self.operation_id,
@@ -226,6 +476,8 @@ impl RedbStagedRestore {
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
             staged_history_incarnation,
+            native_closed,
+            native_archive_closed: None,
             sealed_artifact_checksum,
             sealed_journal_checksum,
             sealed_format_marker_checksum,
@@ -238,15 +490,42 @@ impl RedbStagedRestore {
     }
 
     fn verify_paths(&self) -> Result<(), StorageError> {
-        self.backup_directory_guard.verify()?;
-        self.configured_parent_guard.verify()?;
-        self.stage_cleanup.verify()?;
-        self.artifact_identities.verify(
-            &self.stage_cleanup.directory_guard,
-            &self.staged_database_file,
-            &self.staged_journal_file,
-            &self.staged_format_marker_file,
-        )
+        let result = (|| {
+            if let Some(owner) = &self.native_archive_preparation {
+                owner.verify()?;
+            }
+            if let Some(owner) = &self.native_archive_authorization {
+                owner.verify()?;
+            }
+            if let Some(owner) = &self.native_archive_closed {
+                owner.verify()?;
+            }
+            self.backup_directory_guard.verify()?;
+            self.configured_parent_guard.verify()?;
+            self.stage_cleanup.verify()?;
+            self.artifact_identities.verify(
+                &self.stage_cleanup.directory_guard,
+                &self.staged_database_file,
+                &self.staged_journal_file,
+                &self.staged_format_marker_file,
+            )?;
+            if let Some(seal) = &self.native_archive_seal {
+                seal.verify(&self.artifact_identities)?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            if let Some(owner) = &self.native_archive_preparation {
+                owner.invalidate();
+            }
+            if let Some(owner) = &self.native_archive_authorization {
+                owner.invalidate();
+            }
+            if let Some(owner) = &self.native_archive_closed {
+                owner.invalidate();
+            }
+        }
+        result
     }
 }
 
@@ -273,6 +552,8 @@ pub struct RedbSealedStagedRestore {
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     staged_history_incarnation: u64,
+    native_closed: Option<crate::backup::OwnedClosedMaterialization>,
+    native_archive_closed: Option<crate::backup::OwnedArchiveClosed>,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
     sealed_journal_checksum: BackupIntegrityChecksumV1,
     sealed_format_marker_checksum: BackupIntegrityChecksumV1,
@@ -320,36 +601,71 @@ impl RedbSealedStagedRestore {
         // A new checksum may describe only the intended incarnation write;
         // it cannot launder changed primary, journal, or marker bytes.
         self.verify_sealed_artifacts()?;
-        crate::backup::stamp_sealed_history_incarnation(&self.staged_database_file, incarnation)?;
+        if let Some(owner) = &mut self.native_closed {
+            owner.stamp_history_incarnation(incarnation)?;
+            let (primary, journal, marker) = owner.checksums()?;
+            if journal != self.sealed_journal_checksum
+                || marker != self.sealed_format_marker_checksum
+            {
+                return Err(corrupt());
+            }
+            self.sealed_artifact_checksum = primary;
+        } else if let Some(owner) = &mut self.native_archive_closed {
+            owner.stamp_incarnation(incarnation, None)?;
+            self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
+        } else {
+            crate::backup::stamp_sealed_history_incarnation(
+                &self.staged_database_file,
+                incarnation,
+            )?;
+            self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
+        }
         self.staged_history_incarnation = incarnation;
-        self.sealed_artifact_checksum = sha256_file(&self.staged_database_file)?;
         self.verify_paths()?;
         Ok(())
     }
 
     fn verify_sealed_artifacts(&self) -> Result<(), StorageError> {
-        self.verify_paths()?;
-        let staged_file = self
-            .stage_cleanup
-            .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
-        if sha256_reader(staged_file)? != self.sealed_artifact_checksum {
-            return Err(corrupt());
+        let result = (|| {
+            self.verify_paths()?;
+            if let Some(owner) = &self.native_closed {
+                let (primary, journal, marker) = owner.checksums()?;
+                if primary != self.sealed_artifact_checksum
+                    || journal != self.sealed_journal_checksum
+                    || marker != self.sealed_format_marker_checksum
+                {
+                    return Err(corrupt());
+                }
+                return self.verify_paths();
+            }
+            let staged_file = self
+                .stage_cleanup
+                .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
+            if sha256_reader(staged_file)? != self.sealed_artifact_checksum {
+                return Err(corrupt());
+            }
+            let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
+            let staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
+            if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
+                return Err(corrupt());
+            }
+            let staged_format_marker_name = self
+                .staged_format_marker_file
+                .file_name()
+                .ok_or_else(invariant)?;
+            let staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
+            if sha256_reader(staged_format_marker)? != self.sealed_format_marker_checksum {
+                return Err(corrupt());
+            }
+            self.stage_cleanup.verify()?;
+            self.verify_paths()
+        })();
+        if result.is_err()
+            && let Some(owner) = &self.native_archive_closed
+        {
+            owner.invalidate();
         }
-        let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
-        let staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
-        if sha256_reader(staged_journal)? != self.sealed_journal_checksum {
-            return Err(corrupt());
-        }
-        let staged_format_marker_name = self
-            .staged_format_marker_file
-            .file_name()
-            .ok_or_else(invariant)?;
-        let staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
-        if sha256_reader(staged_format_marker)? != self.sealed_format_marker_checksum {
-            return Err(corrupt());
-        }
-        self.stage_cleanup.verify()?;
-        self.verify_paths()
+        result
     }
 
     pub(super) const fn operation_id(&self) -> OfflineMaintenanceOperationId {
@@ -501,15 +817,26 @@ impl RedbSealedStagedRestore {
     }
 
     fn verify_paths(&self) -> Result<(), StorageError> {
-        self.backup_directory_guard.verify()?;
-        self.configured_parent_guard.verify()?;
-        self.stage_cleanup.verify()?;
-        self.artifact_identities.verify(
-            &self.stage_cleanup.directory_guard,
-            &self.staged_database_file,
-            &self.staged_journal_file,
-            &self.staged_format_marker_file,
-        )
+        let result = (|| {
+            if let Some(owner) = &self.native_archive_closed {
+                owner.verify()?;
+            }
+            self.backup_directory_guard.verify()?;
+            self.configured_parent_guard.verify()?;
+            self.stage_cleanup.verify()?;
+            self.artifact_identities.verify(
+                &self.stage_cleanup.directory_guard,
+                &self.staged_database_file,
+                &self.staged_journal_file,
+                &self.staged_format_marker_file,
+            )
+        })();
+        if result.is_err()
+            && let Some(owner) = &self.native_archive_closed
+        {
+            owner.invalidate();
+        }
+        result
     }
 
     fn hit(

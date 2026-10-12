@@ -106,7 +106,7 @@ pub(in crate::maintenance_driver) fn run_recovery(
                 )
                 .map_err(DriverFault::ArtifactStorage)?;
             let candidate = storage
-                .stage_recovery_restore_candidate(
+                .stage_owned_archive_recovery_restore_candidate(
                     id,
                     request.backup_name(),
                     dependencies.startup_inputs.clone(),
@@ -138,7 +138,7 @@ pub(in crate::maintenance_driver) fn run_recovery(
                     .map_err(|_| DriverFault::ReceiptValue)?;
                 update(storage, receipt, selected)?;
             }
-            let prepared = candidate
+            let mut prepared = candidate
                 .prepare_restore_with_projection_rebuild(
                     request.stop(),
                     dependencies.startup_inputs.clone(),
@@ -148,10 +148,19 @@ pub(in crate::maintenance_driver) fn run_recovery(
                 .map_err(DriverFault::ArtifactStorage)?;
             let database = selection.lineage().database_id();
             let frontier = prepared.restored_frontier();
-            let admission = authorize_staged_restore(
+            let joined = crate::startup::complete_owned_staged_authorization_join(
                 prepared
-                    .authorization_snapshot()
+                    .take_owned_authorization_evidence()
                     .map_err(DriverFault::ArtifactStorage)?,
+                &dependencies.startup_inputs,
+            )
+            .map_err(|_| DriverFault::Validation)?;
+            let (checked_database, snapshot) = joined.into_reader();
+            if checked_database != database {
+                return Err(DriverFault::ValidationIdentity);
+            }
+            let admission = authorize_staged_restore(
+                snapshot,
                 database,
                 credential,
                 id,

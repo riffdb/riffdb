@@ -11,6 +11,10 @@ pub(crate) use prefix::PrivateArchiveValidationBinding;
 pub use prefix::{RedbPrivateArchiveRestoreCandidate, RedbValidatedPrivateArchiveRestore};
 pub use publication::RedbSealedArchiveRestore;
 
+#[cfg(test)]
+#[path = "archive_native_custody_tests.rs"]
+mod native_custody_tests;
+
 use super::*;
 use crate::maintenance::{RedbArchiveRepository, archive_backup::read_only_database};
 use redb::ReadableDatabase;
@@ -24,6 +28,22 @@ use std::{
     ffi::OsStr,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+// redb seals ReadableDatabase. Keep the closed preparation engine here instead
+// of implementing that trait or returning a read after dropping its Database.
+enum ArchivePreparationRead {
+    Native(redb::Database),
+    Legacy(redb::ReadOnlyDatabase),
+}
+
+impl ArchivePreparationRead {
+    fn begin_read(&self) -> Result<redb::ReadTransaction, StorageError> {
+        match self {
+            Self::Native(database) => database.begin_read().map_err(unavailable),
+            Self::Legacy(database) => database.begin_read().map_err(unavailable),
+        }
+    }
+}
 
 /// Move-only unpublished stage, bound to one already verified archive. The
 /// caller must run ordinary follower startup on this file before replay.
@@ -47,6 +67,19 @@ pub struct RedbReplayedArchiveRestore {
 }
 
 impl RedbStagedRestore {
+    fn open_archive_preparation_read(
+        &self,
+        file: &File,
+    ) -> Result<ArchivePreparationRead, StorageError> {
+        self.verify_paths()?;
+        match &self.native_archive_preparation {
+            Some(owner) => Ok(ArchivePreparationRead::Native(
+                owner.open_preparation_database()?,
+            )),
+            None => Ok(ArchivePreparationRead::Legacy(read_only_database(file)?)),
+        }
+    }
+
     /// Rechecks the complete archive before changing the copied backup. Only
     /// source-local control state and the validated empty source journal are
     /// removed. The original lineage, allocators and replicated bytes survive.
@@ -78,13 +111,19 @@ impl RedbStagedRestore {
     ) -> Result<RedbArchiveRestoreStage, StorageError> {
         cancelled(cancellation)?;
         self.verify_paths()?;
+        if let Some(owner) = self.native_authorization_owner.take() {
+            // Conversion changes authoritative private bytes. Consume every
+            // source read and proof before admitting its original transaction.
+            drop(self.native_authorization_evidence.take());
+            self.native_archive_preparation = Some(owner.close()?.into_archive_preparation()?);
+        }
         let file = self
             .stage_cleanup
             .directory_guard
             .open_file_read_write(OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?
             .into_std();
-        let database = read_only_database(&file)?;
-        let read = database.begin_read().map_err(unavailable)?;
+        let database = self.open_archive_preparation_read(&file)?;
+        let read = database.begin_read()?;
         let history =
             crate::changelog_v3_roots::validate_retained_history(&read)?.ok_or_else(corrupt)?;
         let digest = self
@@ -152,7 +191,10 @@ impl RedbStagedRestore {
                 return Err(corrupt());
             }
         }
-        let database = crate::backup::open_unrepaired_private_file(&file, Some(64 * 1024 * 1024))?;
+        let database = match &self.native_archive_preparation {
+            Some(owner) => owner.open_preparation_database()?,
+            None => crate::backup::open_unrepaired_private_file(&file, Some(64 * 1024 * 1024))?,
+        };
         let mut write = database.begin_write().map_err(unavailable)?;
         write.set_two_phase_commit(true);
         write
@@ -228,6 +270,15 @@ impl RedbStagedRestore {
 }
 
 impl RedbArchiveRestoreStage {
+    pub(in crate::maintenance) fn open_preparation_applier(
+        &self,
+        inputs: StartupValidationInputs,
+        cancellation: &AtomicBool,
+    ) -> Result<crate::RedbFollowerApplier, StorageError> {
+        self.verify()?;
+        self.stage.open_archive_follower(inputs, cancellation)
+    }
+
     /// Complete verified original selection to freeze durably before replay.
     #[must_use]
     pub const fn selection(&self) -> &ArchiveRestoreSelectionV3 {

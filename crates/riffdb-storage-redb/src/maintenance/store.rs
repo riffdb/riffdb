@@ -1153,7 +1153,7 @@ impl RedbMaintenanceStorage {
             OfflineMaintenanceOperationKind::RestoreBackup,
             backup_name,
         )?;
-        let stage = RedbStagedRestore::materialize(
+        let stage = RedbStagedRestore::materialize_owned(
             operation_id,
             backup_name.clone(),
             self.named_backup_directory(backup_name),
@@ -1182,6 +1182,52 @@ impl RedbMaintenanceStorage {
     ) -> Result<RedbStagedRestore, StorageError> {
         self.verify_path_ownership()?;
         let stage = RedbStagedRestore::materialize(
+            operation_id,
+            backup_name.clone(),
+            self.named_backup_directory(backup_name),
+            self.staged_directory.join(operation_id.to_string()),
+            self.database_file.clone(),
+            validation_inputs,
+            self.test_controller.clone(),
+        )?;
+        self.verify_path_ownership()?;
+        Ok(stage)
+    }
+
+    /// Native complete-proof construction for the ordinary server recovery driver.
+    /// No caller-supplied proof, source principal, selector or receipt is accepted.
+    #[doc(hidden)]
+    pub fn stage_owned_recovery_restore_candidate(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: &BackupNameV1,
+        validation_inputs: StartupValidationInputs,
+    ) -> Result<RedbStagedRestore, StorageError> {
+        self.verify_path_ownership()?;
+        let stage = RedbStagedRestore::materialize_owned(
+            operation_id,
+            backup_name.clone(),
+            self.named_backup_directory(backup_name),
+            self.staged_directory.join(operation_id.to_string()),
+            self.database_file.clone(),
+            validation_inputs,
+            self.test_controller.clone(),
+        )?;
+        self.verify_path_ownership()?;
+        Ok(stage)
+    }
+
+    /// Native exact-image construction for the archived-backup recovery driver.
+    /// No caller-supplied proof, source principal, selector or receipt is accepted.
+    #[doc(hidden)]
+    pub fn stage_owned_archive_recovery_restore_candidate(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        backup_name: &BackupNameV1,
+        validation_inputs: StartupValidationInputs,
+    ) -> Result<RedbStagedRestore, StorageError> {
+        self.verify_path_ownership()?;
+        let stage = RedbStagedRestore::materialize_owned_archive(
             operation_id,
             backup_name.clone(),
             self.named_backup_directory(backup_name),

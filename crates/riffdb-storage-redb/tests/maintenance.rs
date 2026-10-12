@@ -615,6 +615,22 @@ fn migration_external_failpoints_recover_exact_receipt_stage_and_target_state() 
     }
 }
 
+fn complete_owned_staged_validation(
+    stage: &mut riffdb_storage_redb::RedbStagedRestore,
+) -> DatabaseId {
+    let evidence = stage
+        .take_owned_authorization_evidence()
+        .expect("take original owned complete validation");
+    assert!(evidence.matches_inputs(&validation_inputs()));
+    let (database, session, retained, catalog, reader) =
+        evidence.into_parts().expect("consume actual native proof");
+    assert!(catalog.matches(database, session));
+    assert_eq!(retained.database_id(), database);
+    // The original immutable reader must be gone before sealing closes its engine.
+    drop(reader);
+    database
+}
+
 fn complete_structural_validation(path: &Path) -> DatabaseId {
     let store = RedbStore::open(path).expect("open staged database");
     let inputs = validation_inputs();
@@ -787,23 +803,18 @@ fn maintenance_and_copy_transitions_have_exact_clean_certificate_behavior() {
     maintenance
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
-    let staged = maintenance
+    let mut staged = maintenance
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
             validation_inputs(),
         )
         .expect("stage immutable backup through normal restore selector");
-    assert_eq!(
-        raw_meta(staged.staged_database_file(), "clean_close_certificate/v1"),
-        Some(clean),
-        "normal restore staging preserves the immutable artifact's certificate bytes"
-    );
-    assert!(
-        !clean_mode_selected(staged.staged_database_file()),
-        "V2 backup preserves certificate bytes but still requires complete source validation"
-    );
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    // Exact staged certificate-byte preservation and refusal of the clean
+    // shortcut are checked on the actual retained native engine by
+    // owned_materialization_preserves_clean_certificate_bytes_without_clean_shortcut.
+    // Reopening the private pathname here would violate the custody under test.
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let mut sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("seal validated restore");
@@ -1086,14 +1097,14 @@ fn zero_byte_target_needs_no_confirmation_but_every_nonempty_target_does() {
         .expect("persist staged evidence");
 
     let seal = |storage: &RedbMaintenanceStorage| {
-        let stage = storage
+        let mut stage = storage
             .stage_restore(
                 restore.operation_id(),
                 restore.backup_name(),
                 validation_inputs(),
             )
             .expect("materialize stage");
-        let staged_database_id = complete_structural_validation(stage.staged_database_file());
+        let staged_database_id = complete_owned_staged_validation(&mut stage);
         stage
             .seal_after_validation(staged_database_id)
             .expect("seal stage")
@@ -1747,14 +1758,14 @@ fn corrupt_target_restore_completes_and_fence_does_not_decrease() {
     storage
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
-    let staged = storage
+    let mut staged = storage
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
             validation_inputs(),
         )
         .expect("stage");
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let mut sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("seal");
@@ -1824,14 +1835,14 @@ fn restore_stamps_staged_before_publish_so_checksum_reconcile_holds() {
     storage
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
-    let staged = storage
+    let mut staged = storage
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
             validation_inputs(),
         )
         .expect("stage");
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let mut sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("seal");
@@ -1940,14 +1951,14 @@ fn resume_after_between_receipt_and_stamp_converges_to_receipt_value() {
     storage
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
-    let staged = storage
+    let mut staged = storage
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
             validation_inputs(),
         )
         .expect("stage");
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let mut sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("seal");
@@ -2140,7 +2151,7 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
     assert!(!incomplete_stage.exists());
     assert!(!target_temp.exists());
 
-    let staged = storage
+    let mut staged = storage
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
@@ -2149,7 +2160,7 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
         .expect("materialize stage");
     assert_eq!(staged.manifest(), &manifest);
     assert_eq!(staged.manifest_identity(), &manifest_identity);
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let premature_sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("seal validated stage");
@@ -2163,14 +2174,14 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
             .kind(),
         StorageErrorKind::InvariantViolation
     );
-    let staged = storage
+    let mut staged = storage
         .stage_restore(
             restore.operation_id(),
             restore.backup_name(),
             validation_inputs(),
         )
         .expect("rematerialize after refused publication");
-    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let staged_database_id = complete_owned_staged_validation(&mut staged);
     let sealed = staged
         .seal_after_validation(staged_database_id)
         .expect("reseal validated stage");

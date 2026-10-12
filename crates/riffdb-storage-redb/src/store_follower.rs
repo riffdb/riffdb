@@ -73,6 +73,21 @@ impl RedbFollowerStore {
         Self::open_with_namespace(path, namespace, engine_open::EngineRepairPolicy::Refuse)
     }
 
+    pub(crate) fn from_owned_archive_preparation(
+        path: &Path,
+        backend: crate::maintenance::RestoreEngineBackend,
+    ) -> Result<Self, StorageError> {
+        if preflight_durable_format_path(path).map_err(format_preflight_storage_error)?
+            != RedbDurableFormatPreflight::OpenCurrent
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        let namespace = crate::maintenance::FollowerNamespace::open(path)?;
+        let engine = OwnedEngineOpen::from_private_restore_backend(backend)?;
+        let store = RedbStore::from_owned_archive_follower_engine(path, engine)?;
+        Self::finish_with_namespace(store, namespace)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_with_failed_namespace_sync(path: &Path) -> Result<Self, StorageError> {
         let mut namespace = crate::maintenance::FollowerNamespace::open(path)?;
@@ -82,7 +97,7 @@ impl RedbFollowerStore {
 
     fn open_with_namespace(
         path: &Path,
-        mut namespace: crate::maintenance::FollowerNamespace,
+        namespace: crate::maintenance::FollowerNamespace,
         repair_policy: engine_open::EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
         let backend = namespace.backend()?;
@@ -97,6 +112,13 @@ impl RedbFollowerStore {
             Arc::new(RealJournalMedia),
             repair_policy,
         )?;
+        Self::finish_with_namespace(store, namespace)
+    }
+
+    fn finish_with_namespace(
+        store: RedbStore,
+        mut namespace: crate::maintenance::FollowerNamespace,
+    ) -> Result<Self, StorageError> {
         // The actual engine lock remains held during both syncs. A publisher's
         // lost/failed final sync can never be mistaken for a durable pathname.
         namespace.synchronize()?;

@@ -101,14 +101,31 @@ impl OwnedEngineOpen {
         &self.database
     }
 
-    pub(crate) fn into_database_for_controlled_stamp(self) -> Result<Database, StorageError> {
+    pub(crate) fn check_owned_restore_integrity(&mut self) -> Result<(), StorageError> {
+        if !self.refuse_repair || self.repair_observed.load(Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        self.restore_integrity
+            .as_mut()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .check_integrity(&mut self.database)
+    }
+
+    pub(crate) fn into_database_for_controlled_preparation(self) -> Result<Database, StorageError> {
+        Ok(self.into_archive_preparation_engine()?.database)
+    }
+
+    pub(crate) fn into_archive_preparation_engine(mut self) -> Result<Self, StorageError> {
         if !self.refuse_repair
             || self.restore_integrity.is_none()
             || self.repair_observed.load(Ordering::Acquire)
         {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        Ok(self.database)
+        // The native backend still retains continuous custody. No immutable
+        // validation proof exists during the known archive preparation writes.
+        self.restore_integrity = None;
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -131,6 +148,74 @@ impl SharedRedb {
 }
 
 impl RedbStore {
+    pub(crate) fn from_owned_archive_integrity_engine(
+        path: &Path,
+        mut engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        engine.check_owned_restore_integrity()?;
+        Self::finish_owned_engine_open(
+            OpenMode::OfflineFollower,
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+            Arc::new(RealJournalMedia),
+            engine,
+        )
+    }
+
+    pub(crate) fn from_owned_private_archive_integrity_engine(
+        path: &Path,
+        mut engine: OwnedEngineOpen,
+        binding: crate::maintenance::PrivateArchiveValidationBinding,
+    ) -> Result<Self, StorageError> {
+        engine.check_owned_restore_integrity()?;
+        Self::finish_owned_engine_open(
+            OpenMode::PrivateRestore(Arc::new(binding)),
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+            Arc::new(RealJournalMedia),
+            engine,
+        )
+    }
+
+    pub(crate) fn from_owned_archive_source_integrity_engine(
+        path: &Path,
+        mut engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        engine.check_owned_restore_integrity()?;
+        Self::finish_owned_engine_open(
+            OpenMode::OfflineSource,
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+            Arc::new(RealJournalMedia),
+            engine,
+        )
+    }
+
+    pub(crate) fn from_owned_archive_follower_engine(
+        path: &Path,
+        engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        Self::finish_owned_engine_open(
+            OpenMode::Follower,
+            path,
+            RedbCommitProfile::Hardened,
+            None,
+            default_changelog_port(),
+            None,
+            Arc::new(RealJournalMedia),
+            engine.into_archive_preparation_engine()?,
+        )
+    }
+
     /// Join the same private engine without source preparation or readiness.
     /// This is not a public open mode and grants no publication capability.
     pub(crate) fn from_owned_restore_engine(

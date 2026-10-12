@@ -250,7 +250,7 @@ impl RedbMaintenanceStorage {
             return Err(corrupt());
         }
         self.sync_archive_receipt_parent()?;
-        let stage = RedbStagedRestore::materialize(
+        let stage = RedbStagedRestore::materialize_owned_archive(
             operation_id,
             receipt.backup_name().clone(),
             directory,

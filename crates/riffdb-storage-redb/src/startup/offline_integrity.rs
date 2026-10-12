@@ -18,6 +18,61 @@ pub(crate) type CompleteAuthorizationParts = (
 );
 
 impl CompleteLogicalValidation {
+    pub(crate) fn verify_native_archive_follower(
+        &self,
+        expected: riffdb_storage_api::ChangelogHistoryStateV3,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_none()
+            || crate::changelog_v3_roots::validate_retained_history(&self.snapshot.read)?
+                != Some(expected)
+            || !crate::follower_lifecycle::is_attached(&self.snapshot.read)?
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_native_archive_source(
+        &self,
+        database: DatabaseId,
+        incarnation: u64,
+        frontier: riffdb_types::DualFrontier,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        let history = crate::changelog_v3_roots::validate_retained_history(&self.snapshot.read)?
+            .ok_or_else(corrupt)?;
+        if self.snapshot.shared.restore_integrity.is_none()
+            || history.lineage().database_id() != database
+            || history.lineage().history_incarnation() != incarnation
+            || history.tail().frontier() != frontier
+            || crate::follower_lifecycle::is_attached(&self.snapshot.read)?
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    /// Closed native proof consumption grants no authorization reader or source
+    /// readiness. Pending original registry completion remains the ordinary
+    /// post-publication startup's responsibility, as on the legacy path.
+    pub(crate) fn retain_native_close_owner(&self) -> Result<Arc<SharedRedb>, StorageError> {
+        self.verify()?;
+        if self.snapshot.shared.restore_integrity.is_none()
+            || !self.snapshot.shared.is_native_restore_image_mode()
+        {
+            return Err(invariant());
+        }
+        Ok(Arc::clone(&self.snapshot.shared))
+    }
+
+    pub(crate) fn native_authorization_cancellation(
+        &self,
+    ) -> Result<Arc<AtomicBool>, StorageError> {
+        self.verify()?;
+        self.snapshot.cancellation.clone().ok_or_else(invariant)
+    }
+
     pub(crate) fn native_authorization_inputs(
         &self,
     ) -> Result<StartupValidationInputs, StorageError> {
@@ -69,13 +124,6 @@ impl CompleteLogicalValidation {
     /// Logical handoff only. The eventual native materialization owner must
     /// separately prove physical integrity and artifact custody before exposing
     /// this reader to the server's unchanged startup proof join.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ADR-0289 owned private factory integration is still pending"
-        )
-    )]
     pub(crate) fn into_authorization_parts(
         self,
     ) -> Result<
@@ -220,6 +268,27 @@ pub struct RedbOfflineIntegrityScrub {
 }
 
 impl RedbOfflineIntegrityScrub {
+    pub(crate) fn validate_owned_archive_follower(
+        store: RedbStore,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        if !store.shared.is_offline_follower_mode() || store.shared.restore_integrity.is_none() {
+            return Err(invariant());
+        }
+        store.shared.verify_private_restore_integrity()?;
+        // The original follower admission has verified journal absence. The
+        // complete follower walk uses no source-journal pin, exactly as the
+        // ordinary full offline follower scrub.
+        let mut session = store.begin_structural_evidence_for_history(
+            inputs,
+            EvidenceOpenPurpose::OfflineIntegrityScrub,
+            None,
+        )?;
+        session.set_cancellation(cancellation);
+        Self::validate_complete_session(session)
+    }
+
     /// Binds one closed database file and the startup validation inputs the
     /// production startup uses (ADR-0203 Decision 8's complete validator).
     #[must_use]
@@ -294,6 +363,69 @@ impl RedbOfflineIntegrityScrub {
         let receipt = Self::validate_session(session)?;
         copy.finish()?;
         Ok(receipt)
+    }
+
+    pub(crate) fn validate_owned_archive_private(
+        store: RedbStore,
+        binding: crate::maintenance::PrivateArchiveValidationBinding,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        if store.shared.private_restore_binding() != Some(binding)
+            || store.shared.restore_integrity.is_none()
+        {
+            return Err(invariant());
+        }
+        {
+            let read = store
+                .shared
+                .database
+                .begin_read()
+                .map_err(transaction_error)?;
+            binding.validate(&read)?;
+            super::archive_private_graph::validate(&read, &cancellation)?;
+        }
+        let mut session = store
+            .begin_structural_evidence_for(inputs, EvidenceOpenPurpose::OfflineIntegrityScrub)?;
+        session.set_cancellation(cancellation);
+        Self::validate_complete_session(session)
+    }
+
+    pub(crate) fn validate_owned_archive_image(
+        store: RedbStore,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        if !store.shared.is_native_restore_image_mode() || store.shared.restore_integrity.is_none()
+        {
+            return Err(invariant());
+        }
+        let history = store.verify_materialized_journals()?;
+        let mut session = store.begin_structural_evidence_for_history(
+            inputs,
+            EvidenceOpenPurpose::OfflineIntegrityScrub,
+            history,
+        )?;
+        session.set_cancellation(cancellation);
+        Self::validate_complete_session(session)
+    }
+
+    pub(crate) fn validate_owned_archive_source(
+        store: RedbStore,
+        inputs: StartupValidationInputs,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<CompleteLogicalValidation, StorageError> {
+        if !store.shared.is_offline_source_mode() || store.shared.restore_integrity.is_none() {
+            return Err(invariant());
+        }
+        let history = store.verify_materialized_journals()?;
+        let mut session = store.begin_structural_evidence_for_history(
+            inputs,
+            EvidenceOpenPurpose::OfflineIntegrityScrub,
+            history,
+        )?;
+        session.set_cancellation(cancellation);
+        Self::validate_complete_session(session)
     }
 
     pub(crate) fn validate_owned_restore(

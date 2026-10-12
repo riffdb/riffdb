@@ -89,3 +89,52 @@ impl StagedArtifactIdentities {
 fn name(path: &Path) -> Result<&std::ffi::OsStr, StorageError> {
     path.file_name().ok_or_else(invariant)
 }
+
+/// Exact byte seals over the existing original descriptor inventory, including
+/// journal absence. Only a known native close may replace its primary seal.
+pub(super) struct ArchiveArtifactSeal {
+    primary: BackupIntegrityChecksumV1,
+    journal: Option<BackupIntegrityChecksumV1>,
+    marker: BackupIntegrityChecksumV1,
+}
+
+impl ArchiveArtifactSeal {
+    pub(super) fn capture(identities: &StagedArtifactIdentities) -> Result<Self, StorageError> {
+        Ok(Self {
+            primary: descriptor_checksum(&identities.primary)?,
+            journal: identities
+                .journal
+                .as_ref()
+                .map(descriptor_checksum)
+                .transpose()?,
+            marker: descriptor_checksum(&identities.marker)?,
+        })
+    }
+    pub(super) fn verify(&self, identities: &StagedArtifactIdentities) -> Result<(), StorageError> {
+        let actual = Self::capture(identities)?;
+        if self.primary != actual.primary
+            || self.journal != actual.journal
+            || self.marker != actual.marker
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+    pub(super) fn after_native_close(
+        self,
+        identities: &StagedArtifactIdentities,
+    ) -> Result<Self, StorageError> {
+        let actual = Self::capture(identities)?;
+        if self.journal != actual.journal || self.marker != actual.marker {
+            return Err(corrupt());
+        }
+        Ok(actual)
+    }
+}
+
+fn descriptor_checksum(file: &File) -> Result<BackupIntegrityChecksumV1, StorageError> {
+    use std::io::{Seek, SeekFrom};
+    let mut reader = file.try_clone().map_err(io_unavailable)?;
+    reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+    sha256_reader(reader)
+}

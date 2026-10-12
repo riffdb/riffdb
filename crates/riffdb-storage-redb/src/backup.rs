@@ -677,10 +677,6 @@ struct NativeRestoreResult {
 
 /// Native construction only; complete validation and server join are separate.
 /// Release the engine and its three fixed creation pins before outer custody.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "owned restore validation integration is pending")
-)]
 pub(crate) struct OwnedMaterialization {
     database: Option<std::sync::Arc<MaterializationDatabase>>,
     primary: MaterializationArtifact,
@@ -692,14 +688,7 @@ pub(crate) struct OwnedMaterialization {
 }
 
 /// Proof drops its immutable pin and engine before creation pins and custody.
-/// It deliberately exposes no authorization or publication method yet.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "complete restore startup join integration is pending"
-    )
-)]
+/// It yields only immutable authorization evidence, retaining native custody.
 pub(crate) struct OwnedValidatedMaterialization {
     logical: crate::startup::CompleteLogicalValidation,
     materialization: OwnedMaterialization,
@@ -748,6 +737,11 @@ impl RedbPrivateRestoreAuthorization {
         &self.inputs == inputs
     }
 
+    pub(crate) fn archive_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {
+        self.parts.4.verify_complete_logical_read()?;
+        Ok(self.parts.4.clone())
+    }
+
     /// Consumes the original same-owner proof for the unchanged server join.
     pub fn into_parts(self) -> Result<crate::startup::CompleteAuthorizationParts, StorageError> {
         self.parts.4.verify_complete_logical_read()?;
@@ -757,39 +751,36 @@ impl RedbPrivateRestoreAuthorization {
 
 /// Retains the actual first engine while immutable authorization clones exist.
 /// No writer, readiness, publication or source activation capability is exposed.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native production restore join integration pending"
-    )
-)]
 pub(crate) struct OwnedAuthorizationMaterialization {
     shared: std::sync::Arc<crate::store::SharedRedb>,
     materialization: OwnedMaterialization,
 }
 
 /// Exact closed bytes under the original continuous native exclusion.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native production restore sealing integration pending"
-    )
-)]
 pub(crate) struct OwnedClosedMaterialization {
     materialization: OwnedMaterialization,
     history_incarnation: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native production restore join integration pending"
-    )
-)]
 impl OwnedValidatedMaterialization {
+    pub(crate) fn into_archive_preparation(self) -> Result<OwnedArchivePreparation, StorageError> {
+        self.materialization.verify()?;
+        let shared = self.logical.retain_native_close_owner()?;
+        // Archive conversion is bound to the immutable backup's exact history,
+        // not a source-compatibility receipt appended to the private copy.
+        validate_copied_database_facts(
+            read_database_facts(&shared.database)?,
+            &self.materialization.manifest,
+        )?;
+        drop(self.logical);
+        OwnedAuthorizationMaterialization {
+            shared,
+            materialization: self.materialization,
+        }
+        .close()?
+        .into_archive_preparation()
+    }
+
     pub(crate) fn into_server_authorization(
         self,
     ) -> Result<
@@ -826,14 +817,12 @@ impl OwnedValidatedMaterialization {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native production restore sealing integration pending"
-    )
-)]
 impl OwnedAuthorizationMaterialization {
+    pub(crate) fn verify_authorization(&self) -> Result<(), StorageError> {
+        self.materialization.verify()?;
+        self.shared.verify_private_restore_integrity()
+    }
+
     pub(crate) fn close(self) -> Result<OwnedClosedMaterialization, StorageError> {
         self.materialization.verify()?;
         self.shared.verify_private_restore_integrity()?;
@@ -881,14 +870,21 @@ impl OwnedAuthorizationMaterialization {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "native production restore sealing integration pending"
-    )
-)]
 impl OwnedClosedMaterialization {
+    /// Consume the closed source proof before the existing archive conversion.
+    /// This retains only native custody, never authorization or publication
+    /// evidence. Complete validation must follow the known archive writes.
+    pub(crate) fn into_archive_preparation(self) -> Result<OwnedArchivePreparation, StorageError> {
+        self.verify()?;
+        self.materialization
+            .custody
+            .begin_controlled_closed_mutation()?;
+        let OwnedMaterialization {
+            custody, primary, ..
+        } = self.materialization;
+        Ok(OwnedArchivePreparation { custody, primary })
+    }
+
     pub(crate) fn stamp_history_incarnation(
         &mut self,
         incarnation: u64,
@@ -912,7 +908,7 @@ impl OwnedClosedMaterialization {
             // Reuse the original transaction-current history preflight, restore
             // anchor/reset and one Immediate two-phase transaction unchanged.
             stamp_incarnation(
-                engine.into_database_for_controlled_stamp()?,
+                engine.into_database_for_controlled_preparation()?,
                 incarnation,
                 None,
             )?;
@@ -964,6 +960,325 @@ impl OwnedClosedMaterialization {
     }
 }
 
+/// A verified native materialization after its source proof has been consumed.
+/// The archive owner retains the journal/marker identities across their existing
+/// controlled removal and quarantine transitions. This value alone can neither
+/// authenticate a principal nor seal or publish a restored database.
+pub(crate) struct OwnedArchivePreparation {
+    custody: crate::maintenance::RestoreCustody,
+    primary: MaterializationArtifact,
+}
+
+/// Complete follower evidence still awaiting the archive owner's artifact
+/// seals and server joins. It grants no public authorization or publication.
+pub(crate) struct OwnedArchiveCompleteValidation {
+    preparation: OwnedArchivePreparation,
+    logical: crate::startup::CompleteLogicalValidation,
+}
+
+#[cfg(test)]
+impl OwnedArchiveCompleteValidation {
+    pub(crate) fn into_parts_for_test(
+        self,
+    ) -> (
+        OwnedArchivePreparation,
+        crate::startup::CompleteLogicalValidation,
+    ) {
+        (self.preparation, self.logical)
+    }
+}
+
+impl OwnedArchiveCompleteValidation {
+    pub(crate) fn close_after_source_validation(self) -> Result<OwnedArchiveClosed, StorageError> {
+        self.preparation.verify()?;
+        let inputs = self.logical.native_authorization_inputs()?;
+        let cancellation = self.logical.native_authorization_cancellation()?;
+        let shared = self.logical.retain_native_close_owner()?;
+        drop(self.logical);
+        OwnedArchiveAuthorization {
+            shared,
+            preparation: self.preparation,
+            inputs,
+            cancellation,
+        }
+        .close()
+    }
+
+    pub(crate) fn verify_follower_history(
+        &self,
+        expected: riffdb_storage_api::ChangelogHistoryStateV3,
+    ) -> Result<(), StorageError> {
+        self.logical.verify_native_archive_follower(expected)
+    }
+
+    pub(crate) fn verify_source_history(
+        &self,
+        database: DatabaseId,
+        incarnation: u64,
+        frontier: riffdb_types::DualFrontier,
+    ) -> Result<(), StorageError> {
+        self.logical
+            .verify_native_archive_source(database, incarnation, frontier)
+    }
+
+    pub(crate) fn into_server_authorization(
+        self,
+    ) -> Result<(OwnedArchiveAuthorization, RedbPrivateRestoreAuthorization), StorageError> {
+        self.preparation.verify()?;
+        let inputs = self.logical.native_authorization_inputs()?;
+        let cancellation = self.logical.native_authorization_cancellation()?;
+        let shared = self.logical.retain_native_authorization_owner()?;
+        let parts = self.logical.into_authorization_parts()?;
+        Ok((
+            OwnedArchiveAuthorization {
+                shared,
+                preparation: self.preparation,
+                inputs: inputs.clone(),
+                cancellation,
+            },
+            RedbPrivateRestoreAuthorization { parts, inputs },
+        ))
+    }
+}
+
+pub(crate) struct OwnedArchiveAuthorization {
+    shared: std::sync::Arc<crate::store::SharedRedb>,
+    preparation: OwnedArchivePreparation,
+    inputs: riffdb_storage_api::StartupValidationInputs,
+    cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct OwnedArchiveClosed {
+    preparation: OwnedArchivePreparation,
+    primary_checksum: BackupIntegrityChecksumV1,
+}
+
+impl OwnedArchiveAuthorization {
+    pub(crate) fn invalidate(&self) {
+        self.preparation.custody.invalidate();
+    }
+    pub(crate) fn matches_inputs(
+        &self,
+        inputs: &riffdb_storage_api::StartupValidationInputs,
+    ) -> bool {
+        &self.inputs == inputs
+    }
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
+        if self.cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            self.preparation.custody.invalidate();
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        self.preparation.verify()?;
+        self.shared.verify_private_restore_integrity()
+    }
+    pub(crate) fn close(self) -> Result<OwnedArchiveClosed, StorageError> {
+        self.verify()?;
+        if std::sync::Arc::strong_count(&self.shared) != 1 {
+            self.preparation.custody.invalidate();
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        drop(self.shared);
+        self.preparation.custody.freeze_prepared_artifact()?;
+        let primary_checksum = self.preparation.primary.checksum()?;
+        let closed = OwnedArchiveClosed {
+            preparation: self.preparation,
+            primary_checksum,
+        };
+        closed.verify()?;
+        Ok(closed)
+    }
+}
+
+impl OwnedArchiveClosed {
+    pub(crate) fn invalidate(&self) {
+        self.preparation.custody.invalidate();
+    }
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
+        let result = (|| {
+            self.preparation.verify()?;
+            if self.preparation.primary.checksum()? != self.primary_checksum {
+                return Err(corrupt());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.invalidate();
+        }
+        result
+    }
+    pub(crate) fn into_preparation(self) -> Result<OwnedArchivePreparation, StorageError> {
+        self.verify()?;
+        self.preparation
+            .custody
+            .begin_controlled_closed_mutation()?;
+        Ok(self.preparation)
+    }
+    pub(crate) fn stamp_incarnation(
+        &mut self,
+        incarnation: u64,
+        private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        let result = (|| {
+            self.preparation
+                .custody
+                .begin_controlled_closed_mutation()?;
+            let engine = crate::store::OwnedEngineOpen::from_private_restore_backend(
+                self.preparation.custody.lease()?,
+            )?;
+            stamp_incarnation(
+                engine.into_database_for_controlled_preparation()?,
+                incarnation,
+                private,
+            )?;
+            self.preparation.custody.freeze_prepared_artifact()?;
+            self.primary_checksum = self.preparation.primary.checksum()?;
+            self.verify()
+        })();
+        if result.is_err() {
+            self.preparation.custody.invalidate();
+        }
+        result
+    }
+}
+
+impl OwnedArchivePreparation {
+    pub(crate) fn invalidate(&self) {
+        self.custody.invalidate();
+    }
+
+    pub(crate) fn validate_complete_follower(
+        self,
+        path: &Path,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<OwnedArchiveCompleteValidation, StorageError> {
+        self.verify()?;
+        if path != self.primary.path() {
+            self.custody.invalidate();
+            return Err(corrupt());
+        }
+        if cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let engine =
+            crate::store::OwnedEngineOpen::from_private_restore_backend(self.custody.lease()?)?;
+        let store = crate::RedbStore::from_owned_archive_integrity_engine(path, engine)?;
+        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_archive_follower(
+            store,
+            inputs,
+            cancellation,
+        )?;
+        self.verify()?;
+        Ok(OwnedArchiveCompleteValidation {
+            preparation: self,
+            logical,
+        })
+    }
+
+    pub(crate) fn validate_complete_private(
+        self,
+        path: &Path,
+        binding: crate::maintenance::PrivateArchiveValidationBinding,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<OwnedArchiveCompleteValidation, StorageError> {
+        self.verify()?;
+        if path != self.primary.path() {
+            self.custody.invalidate();
+            return Err(corrupt());
+        }
+        if cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let engine =
+            crate::store::OwnedEngineOpen::from_private_restore_backend(self.custody.lease()?)?;
+        let store =
+            crate::RedbStore::from_owned_private_archive_integrity_engine(path, engine, binding)?;
+        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_archive_private(
+            store,
+            binding,
+            inputs,
+            cancellation,
+        )?;
+        self.verify()?;
+        Ok(OwnedArchiveCompleteValidation {
+            preparation: self,
+            logical,
+        })
+    }
+
+    pub(crate) fn validate_complete_source(
+        self,
+        path: &Path,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+        cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<OwnedArchiveCompleteValidation, StorageError> {
+        self.verify()?;
+        if path != self.primary.path() {
+            self.custody.invalidate();
+            return Err(corrupt());
+        }
+        if cancellation.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let engine =
+            crate::store::OwnedEngineOpen::from_private_restore_backend(self.custody.lease()?)?;
+        let store = crate::RedbStore::from_owned_archive_source_integrity_engine(path, engine)?;
+        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_archive_source(
+            store,
+            inputs,
+            cancellation,
+        )?;
+        self.verify()?;
+        Ok(OwnedArchiveCompleteValidation {
+            preparation: self,
+            logical,
+        })
+    }
+
+    pub(crate) fn open_follower_store(
+        &self,
+        path: &Path,
+    ) -> Result<crate::RedbFollowerStore, StorageError> {
+        self.verify()?;
+        if path != self.primary.path() {
+            self.custody.invalidate();
+            return Err(corrupt());
+        }
+        let result = self.custody.lease().and_then(|backend| {
+            crate::RedbFollowerStore::from_owned_archive_preparation(path, backend)
+        });
+        if result.is_err() {
+            self.custody.invalidate();
+        }
+        result
+    }
+
+    pub(crate) fn verify(&self) -> Result<(), StorageError> {
+        let result = self
+            .custody
+            .verify_identity()
+            .and_then(|()| self.primary.verify());
+        if result.is_err() {
+            self.custody.invalidate();
+        }
+        result
+    }
+
+    pub(crate) fn open_preparation_database(&self) -> Result<redb::Database, StorageError> {
+        self.verify()?;
+        let result = (|| {
+            crate::store::OwnedEngineOpen::from_private_restore_backend(self.custody.lease()?)?
+                .into_database_for_controlled_preparation()
+        })();
+        if result.is_err() {
+            self.custody.invalidate();
+        }
+        result
+    }
+}
+
 /// A move-only preparation read retains the original Database owner as well
 /// as its actual read transaction. redb backend close alone does not establish
 /// that every ReadTransaction has gone away. Drop the read before its owner.
@@ -1011,6 +1326,43 @@ impl OwnedMaterialization {
         Ok(PreparedMaterializationRead {
             read,
             _engine: std::sync::Arc::clone(engine),
+        })
+    }
+
+    /// Complete original backup-image verification, without appending source
+    /// compatibility transactions before archive replay. Ordinary restore keeps
+    /// its existing required compatibility preparation in validate_complete.
+    pub(crate) fn validate_archive_source(
+        mut self,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<OwnedValidatedMaterialization, StorageError> {
+        self.verify()?;
+        let engine = self
+            .database
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let engine = std::sync::Arc::try_unwrap(engine)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let MaterializationDatabase::Owned(mut engine) = engine else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        engine.check_owned_restore_integrity()?;
+        let store = crate::RedbStore::from_owned_restore_engine(
+            self.primary.path(),
+            engine,
+            &self.manifest,
+        )?;
+        let logical = crate::RedbOfflineIntegrityScrub::validate_owned_archive_image(
+            store,
+            inputs,
+            self.custody.cancellation(),
+        )?;
+        self.verify()?;
+        self.validated_seal = Some(OwnedArtifactSeals::capture(&self)?);
+        self.verify()?;
+        Ok(OwnedValidatedMaterialization {
+            logical,
+            materialization: self,
         })
     }
 
@@ -1136,10 +1488,6 @@ impl RedbOfflineRestore {
         .map(|restored| restored.outcome)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "owned restore validation integration is pending")
-    )]
     pub(crate) fn restore_owned_staged_backup(
         &mut self,
         configured_database_file: &Path,
@@ -4363,6 +4711,101 @@ mod tests {
             matches!(evidence.into_parts(), Err(error) if error.kind() == StorageErrorKind::Unavailable)
         );
         assert!(owner.close().is_err());
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: STO-023, REC-004, END-004, REC-001, REC-006
+    #[test]
+    fn owned_materialization_preserves_clean_certificate_bytes_without_clean_shortcut() {
+        fn certificate(database: &impl redb::ReadableDatabase) -> Vec<u8> {
+            let read = database.begin_read().unwrap();
+            let meta = read.open_table(crate::layout::META).unwrap();
+            meta.get(crate::layout::META_CLEAN_CLOSE_LIFECYCLE)
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec()
+        }
+        let root = TestRoot::new("owned-native-clean-certificate");
+        let source = root.join("source.redb");
+        let backup = root.join("backup");
+        initialize(&source);
+        {
+            let store = RedbStore::open(&source).unwrap();
+            let mut session = store
+                .begin_structural_evidence(owned_validation_inputs())
+                .unwrap();
+            let limit = EvidencePageLimit::new(64).unwrap();
+            let mut cursor =
+                StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+            let structural_end = loop {
+                match session.read_structural_evidence(cursor, limit).unwrap() {
+                    StructuralEvidencePage::Page { findings, next, .. } => {
+                        assert!(findings.is_empty());
+                        cursor = next;
+                    }
+                    StructuralEvidencePage::ExactEnd(end) => break end,
+                }
+            };
+            let (catalog, historical_end) = session
+                .validate_startup_catalog_history()
+                .unwrap()
+                .into_parts();
+            assert!(matches!(
+                catalog,
+                riffdb_catalog::CatalogHistoryOutcome::Ready(_)
+            ));
+            let riffdb_storage_api::StructuralOpenOutcome::Clean(opened) =
+                session.finish(structural_end, historical_end).unwrap()
+            else {
+                panic!("current source must not require migration");
+            };
+            let (_, _, _, dormant) = opened.into_parts();
+            dormant
+                .into_operational_after_catalog_validation()
+                .unwrap()
+                .write_clean_close_lifecycle()
+                .unwrap();
+        }
+        let clean = certificate(&redb::ReadOnlyDatabase::open(&source).unwrap());
+        RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        assert_eq!(
+            certificate(
+                &redb::ReadOnlyDatabase::open(backup.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap()
+            ),
+            clean
+        );
+        let before = validate_immutable_backup(&backup).unwrap();
+        let stage = root.join("stage");
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let (owner, (database, session, retained, catalog, reader)) = owned
+            .validate_complete(owned_validation_inputs())
+            .unwrap()
+            .into_authorization()
+            .unwrap();
+        assert_eq!(
+            certificate(&owner.shared.database),
+            clean,
+            "normal restore staging preserves exact immutable certificate bytes"
+        );
+        // A complete logical proof is issued only by finish_offline_integrity_scrub,
+        // which rejects clean_close_fast, bounded_dirty and checkpoint shortcuts
+        // and requires both exact ends and the original catalog/session match.
+        assert!(catalog.matches(database, session));
+        assert_eq!(retained.database_id(), database);
+        reader.verify_complete_logical_read().unwrap();
+        assert!(!owner.shared.startup_validation_clean());
+        crate::maintenance::probe_restore_custody(&stage.join(DATABASE_ARTIFACT_FILE_NAME), true);
+        drop(reader);
+        owner.close().unwrap().verify().unwrap();
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
         assert!(!root.join("configured.redb").exists());
     }
 

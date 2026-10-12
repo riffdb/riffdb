@@ -16,7 +16,7 @@ use command_history::{CommandLookup, MapCommandLookup};
 pub(crate) use promotion::{validate_committed_promotion, validate_reconciled_promotion};
 
 mod archive_follower;
-pub(crate) use archive_follower::open_validated_archive_follower;
+pub(crate) use archive_follower::{open_validated_archive_follower, validate_archive_follower};
 
 mod index_migration_backend;
 #[path = "startup_v3_activation.rs"]

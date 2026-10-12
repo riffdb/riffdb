@@ -7,36 +7,80 @@ fn private_archive_publication_crash_child() {
     let Ok(root) = std::env::var("RIFFDB_PRIVATE_PUBLICATION_ROOT") else {
         return;
     };
+    let native = std::env::var("RIFFDB_PRIVATE_PUBLICATION_NATIVE").is_ok_and(|value| value == "1");
+    let profile = match std::env::var("RIFFDB_PRIVATE_PUBLICATION_PROFILE").as_deref() {
+        Ok("standard") => RedbCommitProfile::Standard,
+        Ok("hardened") | Err(_) => RedbCommitProfile::Hardened,
+        Ok(_) => panic!("unknown crash fixture profile"),
+    };
     check_private_archive_case(
-        RedbCommitProfile::Hardened,
+        profile,
         Some(PathBuf::from(root)),
-        Some("publish"),
+        Some(if native { "publish-owned" } else { "publish" }),
     );
     panic!("armed publication edge was not reached");
 }
 
 #[test]
 fn private_archive_publication_recovers_after_incarnation_stamp() {
-    crash_and_rebuild("private-incarnation-stamped");
+    crash_and_rebuild(
+        "private-incarnation-stamped",
+        false,
+        RedbCommitProfile::Hardened,
+    );
 }
 
 #[test]
 fn private_archive_publication_recovers_after_journal_creation() {
-    crash_and_rebuild("private-journal-created");
+    crash_and_rebuild(
+        "private-journal-created",
+        false,
+        RedbCommitProfile::Hardened,
+    );
 }
 
 #[test]
 fn private_archive_publication_recovers_after_marker_restoration() {
-    crash_and_rebuild("private-marker-restored");
+    crash_and_rebuild(
+        "private-marker-restored",
+        false,
+        RedbCommitProfile::Hardened,
+    );
 }
 
-fn crash_and_rebuild(phase: &str) {
+// req: REP-007, REC-001, REC-006, END-001, AFC-007
+#[test]
+fn native_private_archive_publication_recovers_after_incarnation_stamp_in_both_profiles() {
+    for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {
+        crash_and_rebuild("private-incarnation-stamped", true, profile);
+    }
+}
+
+// req: REP-007, REC-001, REC-006, END-001, AFC-007
+#[test]
+fn native_private_archive_publication_recovers_after_journal_creation_in_both_profiles() {
+    for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {
+        crash_and_rebuild("private-journal-created", true, profile);
+    }
+}
+
+// req: REP-007, REC-001, REC-006, END-001, AFC-007
+#[test]
+fn native_private_archive_publication_recovers_after_marker_restoration_in_both_profiles() {
+    for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {
+        crash_and_rebuild("private-marker-restored", true, profile);
+    }
+}
+
+fn crash_and_rebuild(phase: &str, native: bool, profile: RedbCommitProfile) {
     let scope = ScratchScope::new("private-publication-crash");
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
         .arg("v3_command_receipts::private_archive_prefix::publication::crash::private_archive_publication_crash_child")
         .env("RIFFDB_PRIVATE_PUBLICATION_ROOT", scope.path())
         .env("RIFFDB_PRIVATE_PREFIX_CRASH", phase)
+        .env("RIFFDB_PRIVATE_PUBLICATION_NATIVE", if native { "1" } else { "0" })
+        .env("RIFFDB_PRIVATE_PUBLICATION_PROFILE", match profile { RedbCommitProfile::Standard => "standard", RedbCommitProfile::Hardened => "hardened" })
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .status().unwrap();
     assert_eq!(status.code(), Some(98), "{phase}");
@@ -69,17 +113,9 @@ fn crash_and_rebuild(phase: &str) {
             .unwrap()
             .begin_selected_archive_replay(repository, selection.clone(), &AtomicBool::new(false))
             .unwrap();
-        let applier = prefix_predecessors::open_follower(stage.staged_database_file());
         let candidate = stage
-            .replay(applier, &AtomicBool::new(false))
-            .unwrap()
-            .reconstruct_inside_group(
-                CommitSequence::new(2).unwrap(),
-                prefix_predecessors::inputs(),
-                &AtomicBool::new(false),
-            )
-            .unwrap()
-            .validate(
+            .prepare_restore(
+                ArchiveRestoreStopV1::AtApplicationSequence(CommitSequence::new(2).unwrap()),
                 prefix_predecessors::inputs(),
                 Arc::new(AtomicBool::new(false)),
             )
@@ -98,7 +134,7 @@ fn crash_and_rebuild(phase: &str) {
             candidate.discard().unwrap();
             assert!(!target.exists());
         } else {
-            publish(candidate, &mut maintenance, &target, &command, "publish");
+            publish_prepared(candidate, &mut maintenance, &target, &command, "publish");
         }
         assert_eq!(
             std::fs::read(backup.join("database.redb")).unwrap(),

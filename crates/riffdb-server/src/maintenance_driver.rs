@@ -33,8 +33,8 @@ use riffdb_storage_api::{
     OfflineMaintenanceReceiptFailureV1, OfflineMaintenanceReceiptPersistencePort,
     OfflineMaintenanceReceiptPhaseV1, OfflineMaintenanceReceiptTransitionV1,
     OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
-    OfflineRestoreResultV1, OwnedSnapshotReader, StartupValidationInputs, StorageError,
-    StorageErrorKind, StorageValueError,
+    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_storage_redb::{
     RedbCommitProfile, RedbMaintenanceOperationEvidence, RedbMaintenanceStorage,
@@ -901,7 +901,7 @@ pub(crate) fn run_recovery_restore(
                 OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed,
             ));
         };
-        let stage = match storage.stage_recovery_restore_candidate(
+        let stage = match storage.stage_owned_recovery_restore_candidate(
             operation_id,
             request.backup_name(),
             dependencies.startup_inputs.clone(),
@@ -1373,59 +1373,24 @@ fn complete_post_publication_validation(
 }
 
 fn validate_and_authorize_stage(
-    stage: RedbStagedRestore,
+    mut stage: RedbStagedRestore,
     credential: RetainedOpaqueCredential,
     operation_id: OfflineMaintenanceOperationId,
     input_hash: riffdb_types::OfflineMaintenanceInputHash,
     dependencies: &MaintenanceDriverDependencies<'_>,
 ) -> Result<PreparedStagedRestore, DriverFault> {
-    if let Some(snapshot) = stage
-        .promoted_authorization_snapshot()
-        .map_err(DriverFault::ArtifactStorage)?
-    {
-        let staged_database_id = stage.manifest_identity().database_id();
-        let admission = authorize_staged_restore(
-            snapshot,
-            staged_database_id,
-            credential,
-            operation_id,
-            input_hash,
-            dependencies,
-        )
-        .map_err(|_| DriverFault::StagedAuthorization)?;
-        dependencies
-            .recovery
-            .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
-        let sealed = stage
-            .seal_after_validation(staged_database_id)
-            .map_err(DriverFault::ArtifactStorage)?;
-        return Ok(PreparedStagedRestore { sealed, admission });
-    }
-    // `stage_restore` and its recovery counterpart return only after the
-    // storage-owned complete exact-end scrub, so no copied CLEAN certificate
-    // can stand in for ADR-0050's pre-authorization validation.
-    let staged_startup = crate::startup::open_staged_redb_startup_with_commit_profile(
-        &stage,
-        dependencies.startup_inputs.clone(),
-        &dependencies.database_ids,
-        dependencies.application_commit_profile,
+    let evidence = stage
+        .take_owned_authorization_evidence()
+        .map_err(DriverFault::ArtifactStorage)?;
+    let joined = crate::startup::complete_owned_staged_authorization_join(
+        evidence,
+        &dependencies.startup_inputs,
     )
     .map_err(|_| DriverFault::Validation)?;
-    if staged_startup.database_id() != stage.manifest_identity().database_id() {
+    let (staged_database_id, snapshot) = joined.into_reader();
+    if staged_database_id != stage.manifest_identity().database_id() {
         return Err(DriverFault::ValidationIdentity);
     }
-
-    let (
-        staged_database_id,
-        _retained_metadata,
-        _catalog_history,
-        _startup_lifecycle,
-        _allocator_capacity,
-        operational_ports,
-    ) = staged_startup.into_parts();
-    let snapshot = operational_ports
-        .open_owned_snapshot()
-        .map_err(|_| DriverFault::Validation)?;
     let admission = authorize_staged_restore(
         snapshot,
         staged_database_id,
@@ -1435,9 +1400,8 @@ fn validate_and_authorize_stage(
         dependencies,
     )
     .map_err(|_| DriverFault::StagedAuthorization)?;
-    // The helper consumes every read pin and bearer before this final writer
-    // owner closes. The recovery boundary therefore still has no open engine.
-    drop(operational_ports);
+    // The existing helper consumes every reader, bearer and authorization
+    // value. The native owner observes their release before closing its engine.
     dependencies
         .recovery
         .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
@@ -2480,9 +2444,124 @@ mod tests {
     }
 
     // req: REC-001, REC-006, END-001
+    // req: REC-001, REC-006, END-001
     #[test]
-    fn staged_driver_refuses_engine_repair_before_bearer_authentication() {
-        for (needs_repair, seed) in [(false, 0xc1), (true, 0xc2)] {
+    fn owned_staged_authorization_join_refuses_different_validation_inputs() {
+        let StagedRestoreFixture {
+            root,
+            database,
+            storage,
+            receipt,
+            prepared,
+            lifecycle: _lifecycle,
+        } = staged_restore_fixture("owned-input-join", 0xcb, 1);
+        drop(prepared);
+        let backup_primary = root
+            .path()
+            .join("backups")
+            .join("driver-restore-fixture")
+            .join("database.redb");
+        let backup_before = std::fs::read(&backup_primary).unwrap();
+        let target_before = std::fs::read(&database).unwrap();
+        let inputs = fixture_startup_inputs();
+        let mut stage = storage
+            .stage_restore(
+                receipt.operation_id(),
+                receipt.backup_name(),
+                inputs.clone(),
+            )
+            .unwrap();
+        let evidence = stage.take_owned_authorization_evidence().unwrap();
+        let different = riffdb_storage_api::StartupValidationInputs::new(
+            riffdb_types::Timestamp::new(
+                inputs
+                    .authorization_time()
+                    .seconds()
+                    .checked_add(1)
+                    .unwrap(),
+                0,
+            )
+            .unwrap(),
+            inputs.capability_digests().clone(),
+            inputs.idempotency_digests().clone(),
+        );
+        let joined = crate::startup::complete_owned_staged_authorization_join(evidence, &different);
+        assert!(matches!(
+            joined,
+            Err(crate::startup::RedbStartupError::Integrity(
+                crate::startup::StartupIntegrityFailure::PrivateRestoreInputMismatch
+            ))
+        ));
+        stage.discard().unwrap();
+        assert_eq!(std::fs::read(&backup_primary).unwrap(), backup_before);
+        assert_eq!(std::fs::read(&database).unwrap(), target_before);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn legacy_staged_startup_refuses_engine_repair_before_bearer_authentication() {
+        let StagedRestoreFixture {
+            root,
+            database,
+            storage,
+            receipt,
+            prepared,
+            lifecycle: _lifecycle,
+        } = staged_restore_fixture("legacy-auth-repair-control", 0xc3, 1);
+        drop(prepared);
+        let backup_primary = root
+            .path()
+            .join("backups")
+            .join("driver-restore-fixture")
+            .join("database.redb");
+        let backup_before = std::fs::read(&backup_primary).unwrap();
+        let target_before = std::fs::read(&database).unwrap();
+        let stage = storage
+            .stage_recovery_restore_candidate(
+                receipt.operation_id(),
+                receipt.backup_name(),
+                fixture_startup_inputs(),
+            )
+            .unwrap();
+        let mut primary = std::fs::read(stage.staged_database_file()).unwrap();
+        assert!(primary.len() <= 64 * 1024 * 1024);
+        assert_eq!(
+            &primary[..9],
+            &[b'r', b'e', b'd', b'b', 26, 10, 169, 13, 10]
+        );
+        assert_eq!(
+            primary[9] & 2,
+            0,
+            "original closed-stage repair control must start clean"
+        );
+        primary[9] = (primary[9] | 2) & !4;
+        std::fs::write(stage.staged_database_file(), &primary).unwrap();
+        let clocks = ProductionWallClocks::new();
+        let recovery = MaintenanceRecoveryController::disabled();
+        let dependencies = fixture_dependencies(&clocks, &recovery, None);
+        let result = crate::startup::open_staged_redb_startup_with_commit_profile(
+            &stage,
+            dependencies.startup_inputs.clone(),
+            &dependencies.database_ids,
+            dependencies.application_commit_profile,
+        );
+        assert!(
+            matches!(result, Err(crate::startup::RedbStartupError::Storage(ref error))
+            if error.kind() == StorageErrorKind::CorruptData),
+            "the original closed-stage startup must still refuse native repair before any bearer check"
+        );
+        assert_eq!(
+            std::fs::read(stage.staged_database_file()).unwrap(),
+            primary
+        );
+        assert_eq!(std::fs::read(&backup_primary).unwrap(), backup_before);
+        assert_eq!(std::fs::read(&database).unwrap(), target_before);
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn staged_driver_refuses_changed_validated_bytes_before_bearer_authentication() {
+        for (changed, seed) in [(false, 0xc1), (true, 0xc2)] {
             let StagedRestoreFixture {
                 root,
                 database,
@@ -2508,16 +2587,17 @@ mod tests {
                     fixture_startup_inputs(),
                 )
                 .expect("completely validated private stage");
-            if needs_repair {
+            if changed {
                 let path = stage.staged_database_file();
                 let mut primary = std::fs::read(path).expect("staged primary");
                 assert_eq!(
                     &primary[..9],
                     &[b'r', b'e', b'd', b'b', 26, 10, 169, 13, 10]
                 );
-                assert_eq!(primary[9] & 2, 0, "clean engine flag before fixture damage");
-                primary[9] = (primary[9] | 2) & !4;
-                std::fs::write(path, primary).expect("require complete allocator repair");
+                // The validated engine stays open. Change its retained inode
+                // without assuming its live header represents a closed file.
+                primary[0] ^= 1;
+                std::fs::write(path, primary).expect("change already validated private bytes");
             }
             let clocks = ProductionWallClocks::new();
             let recovery = MaintenanceRecoveryController::disabled();
@@ -2538,15 +2618,13 @@ mod tests {
                 std::fs::read(&database).expect("unchanged target"),
                 target_before
             );
-            eprintln!(
-                "staged_driver_repair_boundary needs_repair={needs_repair} result={result:?}"
-            );
-            if needs_repair {
+            eprintln!("staged_driver_owned_proof_boundary changed={changed} result={result:?}");
+            if changed {
                 assert!(
                     matches!(result, Err(DriverFault::Validation))
                         || matches!(result, Err(DriverFault::ArtifactStorage(ref e))
                             if e.kind() == StorageErrorKind::CorruptData),
-                    "repair-needed stage must be refused before bearer authentication",
+                    "changed validated bytes must be refused before bearer authentication",
                 );
             } else {
                 assert!(

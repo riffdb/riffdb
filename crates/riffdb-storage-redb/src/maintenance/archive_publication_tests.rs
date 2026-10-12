@@ -220,7 +220,9 @@ fn rebuild(root: &Path, store: &mut crate::RedbMaintenanceStorage) -> RedbSealed
             &AtomicBool::new(false),
         )
         .unwrap();
-    let applier = validated_applier(stage.staged_database_file());
+    let applier = stage
+        .open_preparation_applier(inputs(), &AtomicBool::new(false))
+        .unwrap();
     let replayed = stage.replay(applier, &AtomicBool::new(false)).unwrap();
     replayed
         .seal_after_validation(
