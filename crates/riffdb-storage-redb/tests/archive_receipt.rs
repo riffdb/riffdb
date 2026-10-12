@@ -15,7 +15,11 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Root(PathBuf);
 impl Root {
     fn new() -> Self {
-        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        let path = riffdb_bench_root::test_data_root(
+            "storage-redb-archive-receipt",
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        )
+        .join(format!(
             "archive-receipt-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

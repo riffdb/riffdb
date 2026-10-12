@@ -1848,6 +1848,7 @@ name = "riffdb-columnar"
 version = "0.1.0"
 dependencies = [
  "rand 0.8.7",
+ "riffdb-bench-root",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-policy",
@@ -2277,6 +2278,7 @@ version = "0.1.0"
 dependencies = [
  "cap-std",
  "redb",
+ "riffdb-bench-root",
  "riffdb-catalog",
  "riffdb-columnar",
  "riffdb-contract-compiler",
@@ -2300,6 +2302,7 @@ name = "riffdb-testkit"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
+ "riffdb-bench-root",
  "riffdb-catalog",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",

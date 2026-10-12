@@ -42,11 +42,18 @@ struct TestRoot(PathBuf);
 impl TestRoot {
     fn new(label: &str) -> Self {
         let ordinal = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
-        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        let path = riffdb_bench_root::test_data_root(
+            "storage-redb-maintenance",
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        )
+        .join(format!(
             "riffdb-redb-maintenance-{label}-{}-{ordinal}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create test data root");
+        }
         fs::create_dir(&path).expect("create test root");
         Self(path)
     }

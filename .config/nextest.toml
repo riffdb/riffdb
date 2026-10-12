@@ -1,8 +1,17 @@
 nextest-version = "0.9.137"
-experimental = ["wrapper-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
 
 [scripts.wrapper.harnessless]
 command = { command-line = "scripts/nextest-harnessless", relative-to = "workspace-root" }
+
+# Ordinary tests use RAM-backed scratch when available; benchmarks keep a real
+# disk through riffdb-bench-root. See scripts/test-scratch-env.
+[scripts.setup.test-scratch]
+command = { command-line = "scripts/test-scratch-env", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+filter = "all()"
+setup = "test-scratch"
 
 [profile.ci]
 fail-fast = false
@@ -88,3 +97,7 @@ priority = 90
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
 list-wrapper = "harnessless"
 run-wrapper = "harnessless"
+
+[[profile.ci.scripts]]
+filter = "all()"
+setup = "test-scratch"

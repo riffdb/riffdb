@@ -34,9 +34,11 @@ struct RealRoot(PathBuf);
 impl RealRoot {
     fn new(label: &str) -> Self {
         let ordinal = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/journal-media-contract")
-            .join(format!("{label}-{}-{ordinal}", std::process::id()));
+        let root = riffdb_testkit::scratch::test_data_root(
+            "sim-journal-media-contract",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/journal-media-contract"),
+        )
+        .join(format!("{label}-{}-{ordinal}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create media contract root");
         Self(root)
     }

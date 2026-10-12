@@ -364,7 +364,7 @@ fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_director
         let source = read(&path);
         assert!(
             !source.contains("std::env::temp_dir()") && !source.contains("env::temp_dir()"),
-            "production-sized redb tests must allocate below target/riffdb-test-data, not the ambient temp directory: {}",
+            "production-sized redb tests must allocate below the test data root (riffdb_bench_root::test_data_root), not the ambient temp directory: {}",
             path.display()
         );
     }

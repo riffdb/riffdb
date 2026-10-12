@@ -275,7 +275,10 @@ mod directory_tests {
     #[test]
     fn directory_iteration_matches_real_siblings_and_has_a_reproducible_trace() {
         let scratch = riffdb_testkit::scratch::ScratchDir::new_in(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            riffdb_testkit::scratch::test_data_root(
+                "sim-directory-media",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            ),
             "directory-media",
         )
         .unwrap();

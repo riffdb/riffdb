@@ -23,6 +23,7 @@ sha2 = { version = "=0.11.0", default-features = false }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+riffdb-bench-root = { version = "0.1.0", path = "../riffdb-bench-root", default-features = false }
 riffdb-outbox = { version = "0.1.0", path = "../riffdb-outbox", default-features = false }
 # Enable private compatibility constructors only while building this crate's tests.
 riffdb-storage-redb = { version = "0.1.0", path = ".", default-features = false, features = ["test-fixtures"] }

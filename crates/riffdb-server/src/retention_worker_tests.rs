@@ -349,7 +349,10 @@ struct Scratch {
 /// One initialized source database, stopped.
 fn scratch(label: &str) -> Scratch {
     let directory = riffdb_testkit::scratch::ScratchDir::new_in(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        riffdb_testkit::scratch::test_data_root(
+            "server-retention-lane",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        ),
         "retention-lane",
     )
     .expect("scratch directory");

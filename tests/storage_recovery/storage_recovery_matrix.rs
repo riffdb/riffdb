@@ -258,7 +258,7 @@ fn recovery_scratch_scope_is_owned_by_its_pid_namespace() {
         .unwrap()
         .strip_suffix(']')
         .unwrap();
-    let expected_root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("pid-{namespace}"));
+    let expected_root = scratch_root().join(format!("pid-{namespace}"));
     assert_eq!(
         scope.path().parent(),
         Some(expected_root.as_path()),
@@ -279,12 +279,21 @@ fn recovery_scratch_scope_is_owned_by_its_pid_namespace() {
 /// because riffdb-testkit depends on riffdb-storage-redb.
 struct ScratchScope(PathBuf);
 
+/// The crash-harness root: RAM-backed when available
+/// (`riffdb_bench_root::test_data_root`), else `CARGO_TARGET_TMPDIR`.
+fn scratch_root() -> PathBuf {
+    riffdb_bench_root::test_data_root(
+        "storage-recovery",
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+    )
+}
+
 const SCRATCH_SCOPE_PREFIX: &str = "riffdb-storage-recovery-";
 
 impl ScratchScope {
     fn new(label: &str) -> Self {
         static SWEEP_ONCE: OnceLock<()> = OnceLock::new();
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        let root = scratch_root();
         #[cfg(target_os = "linux")]
         let root = {
             let namespace = std::fs::read_link("/proc/self/ns/pid").expect("read PID namespace");

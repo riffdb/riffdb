@@ -1,4 +1,5 @@
-//! Real-disk placement, leak hygiene, and device baseline for RiffDB benchmarks.
+//! Real-disk placement, leak hygiene, and device baseline for RiffDB benchmarks,
+//! and RAM-backed placement for ordinary test scratch ([`test_data_root`]).
 //!
 //! Harnesses must not put multi-GB durable databases on tmpfs (`/tmp` on many
 //! machines). This crate resolves a root, classifies the storage medium,
@@ -41,6 +42,12 @@ pub const LEGACY_SWEEP_PREFIXES: &[&str] = &[
 pub const PERF_DB_PATH_COMPONENT: &str = "perf-db";
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
+
+mod test_data;
+pub use test_data::{
+    RAM_TEST_DATA_MIN_FREE_BYTES, RAM_TEST_DATA_ROOT, TEST_DATA_ROOT_ENV, TestDataPlacement,
+    test_data_placement, test_data_root,
+};
 
 /// Classified backing store for a resolved bench root.
 #[derive(Clone, Debug, Eq, PartialEq)]
