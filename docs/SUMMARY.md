@@ -123,6 +123,7 @@
   - [Private engine repair refusal](architecture/WP-825-PRIVATE-ENGINE-REPAIR-REFUSAL.md)
   - [Retained materialization engine owner](architecture/WP-825-BORROWED-MATERIALIZATION-OWNER.md)
   - [Combined native follow-through](architecture/WP-825-COMBINED-NATIVE-FOLLOWTHROUGH.md)
+  - [Restore recovery decisions and implementation](architecture/WP-825-RESTORE-RECOVERY-REVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)

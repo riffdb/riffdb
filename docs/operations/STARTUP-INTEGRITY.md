@@ -74,10 +74,23 @@ a bounded restart and background refresh cannot create that witness. An
 uncertain commit fences writes until normal recovery resolves it.
 
 Restore advances the history incarnation. Copied completion and checkpoint
-bindings cannot certify that successor. Its complete validation can replace
-the exact predecessor checkpoint bytes with a new proof chain and publish its
-own completion binding in the same durable receipt. An ordinary checkpoint
-refresh cannot perform that renewal.
+bindings cannot certify complete validation of that successor. An ordinary
+self-contained restore instead binds fresh bounded readiness to its durable
+restore receipt, verified backup, database identity, new incarnation and exact
+application frontier. It checks private physical integrity and recovers the
+complete journal before publication, then validates bounded roots and consumes
+the dirty generation on reopen. It creates no complete scrub proof, checkpoint,
+completion witness or clean certificate. Its first-access checks and background
+scrub retain the assurance boundary below. Legacy migration, archive restore,
+follower bootstrap and promotion retain their required complete validation.
+The copied Completed binding still names the predecessor incarnation. A later
+dirty restart without matching clean evidence or another eligible checkpoint
+therefore uses complete validation under the existing startup rules. Bounded
+restore does not silently renew that binding; a successful restore alone must
+not be interpreted as a promise of bounded startup after every later crash.
+When complete validation runs, it can replace the exact predecessor checkpoint
+bytes with a new proof chain and publish its own completion binding in the same
+durable receipt. An ordinary checkpoint refresh cannot perform that renewal.
 
 Online retention still deletes the optional validated-prefix checkpoint in its
 first prune step. Ordinary writes and prune preserve the Completed binding,

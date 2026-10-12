@@ -131,3 +131,52 @@ whole public gate. Scoped acceptance, full CI, required crash/compatibility chec
 and fresh qualification remain pending on the final combined source. The actual
 eight-hour rehearsal and 24-hour campaign have not started. Existing failed
 attempts are not revised or reclassified.
+
+## ADR-0291 implementation checkpoint
+
+Package: WP-825. Tier: guarantee. WP-825 remains open.
+
+Ordinary current-format restore now creates bounded readiness evidence separately
+from complete logical-scrub evidence. It retains full immutable artifact checks,
+nonrepairing private physical integrity, journal recovery, bounded roots and
+fresh staged authorization. It releases all authorization reads before the
+unchanged receipt-authorized stamp and publication. Fresh published startup
+checks the persisted receipt, manifest, database, incarnation and application
+frontier before the existing catalog/bootstrap/allocator join and dirty
+consumption. Legacy migration, archive, follower and promotion proofs remain
+complete. Neither bounded proof creates a completion witness or clean record.
+
+Two focused readiness regressions, 28 existing native materialization regressions
+and the ordinary release daemon build pass on the
+required host. Valid file hashes with a semantically substituted entity reach
+bounded readiness; first access refuses it and the complete background walk
+finds it. The proof refuses archive authorization. Both readiness stages perform
+zero population counts; the published stage builds no command cache or locator
+index. Corrupt bounded allocator metadata refuses readiness.
+
+The new focused primary-loss-clock attempt still failed during restore. Backup
+creation took 15.010695239 seconds and produced 2,823,103,170 bytes before loss.
+The separate restore-only observation then reached ordinary readiness in
+76.896566669 seconds. These diagnostic observations qualify neither the recovery
+gate nor the campaign, and no previous failed attempt was reclassified.
+
+Updated handbook pages: `backup-restore.md` and
+`operations/STARTUP-INTEGRITY.md`. Compatibility: no durable encoding, fixture,
+public selector, authorization, ordering or acknowledgement changes. Ordinary
+restore success now means bounded recoverability rather than a complete scrub,
+as accepted in ADR-0291. A later dirty restart may still require complete
+validation because the copied completion binding names the predecessor.
+
+Hazards and follow-ups: the native recovery critical path remains too expensive.
+Continue direct failure reproduction while reviewing remaining artifact copies,
+hashing and history preparation. ADR-0292's revised focused clock is explicit;
+the complete campaign protocol still needs implementation and frozen-method
+verification. Required crash/compatibility coverage, scoped acceptance, final
+full CI, actual scheduled-fault population qualification and both campaigns
+remain outstanding.
+
+The handbook check first exposed a missing navigation entry for this review;
+`SUMMARY.md` now links it. Its next invocation reached the handbook's compiled
+examples but exceeded the diagnostic runner's 60-second limit. Complete handbook
+verification remains pending with final acceptance; that timeout is not recorded
+as a pass.

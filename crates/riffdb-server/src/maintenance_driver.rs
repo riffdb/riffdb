@@ -1329,8 +1329,23 @@ fn complete_post_publication_validation(
     }
     mark_lifecycle_validating(lifecycle, receipt.operation_id())?;
 
-    let startup =
-        reopen_current_source(storage, dependencies).map_err(|_| DriverFault::Validation)?;
+    let startup = if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup
+        && receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Succeeded
+        && storage
+            .discover_committed_promotion()
+            .map_err(|_| DriverFault::Validation)?
+            .is_none()
+    {
+        crate::startup::open_published_restore_startup(
+            storage,
+            receipt.operation_id(),
+            dependencies.startup_inputs.clone(),
+            dependencies.application_commit_profile,
+        )
+    } else {
+        reopen_current_source(storage, dependencies)
+    }
+    .map_err(|_| DriverFault::Validation)?;
     if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
         let expected = receipt
             .published_history_incarnation()

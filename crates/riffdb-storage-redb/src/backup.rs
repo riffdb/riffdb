@@ -124,6 +124,14 @@ fn stamp_incarnation(
     incarnation: u64,
     private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
 ) -> Result<(), StorageError> {
+    stamp_incarnation_retaining_database(database, incarnation, private).map(drop)
+}
+
+fn stamp_incarnation_retaining_database(
+    database: Database,
+    incarnation: u64,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+) -> Result<Database, StorageError> {
     let mut transaction = database.begin_write().map_err(transaction_error)?;
     transaction.set_two_phase_commit(true);
     transaction
@@ -151,7 +159,8 @@ fn stamp_incarnation(
         None => v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?,
     };
     if current == Some(incarnation) {
-        return transaction.abort().map_err(precommit_storage_error);
+        transaction.abort().map_err(precommit_storage_error)?;
+        return Ok(database);
     }
     v3_restore::edge("preflight");
     stamp_incarnation_metadata(&transaction, incarnation)?;
@@ -161,7 +170,7 @@ fn stamp_incarnation(
     }
     transaction.commit().map_err(commit_error)?;
     v3_restore::edge("committed");
-    Ok(())
+    Ok(database)
 }
 
 /// Shared private metadata portion of the ADR-0072 offline stamp. Callers own
@@ -858,28 +867,38 @@ impl OwnedArtifactSeals {
 
 /// Move-only native restore evidence for the server's ordinary startup joins.
 /// Only the immutable-backup materialization owner constructs this value. It
-/// carries one completely validated immutable reader and no operational ports.
+/// carries one immutable reader with its native assurance and no operational ports.
 #[doc(hidden)]
 pub struct RedbPrivateRestoreAuthorization {
-    parts: crate::startup::CompleteAuthorizationParts,
+    parts: crate::startup::ValidatedAuthorizationParts,
     inputs: riffdb_storage_api::StartupValidationInputs,
+    assurance: PrivateRestoreAssurance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrivateRestoreAssurance {
+    Complete,
+    Bounded,
 }
 
 impl RedbPrivateRestoreAuthorization {
-    /// Matches the actual complete walk's sampled values and readable inventories.
+    /// Matches the actual validation's sampled values and readable inventories.
     #[must_use]
     pub fn matches_inputs(&self, inputs: &riffdb_storage_api::StartupValidationInputs) -> bool {
         &self.inputs == inputs
     }
 
     pub(crate) fn archive_snapshot(&self) -> Result<crate::RedbOwnedSnapshot, StorageError> {
-        self.parts.4.verify_complete_logical_read()?;
+        if self.assurance != PrivateRestoreAssurance::Complete {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        self.parts.4.verify_validated_authorization_read()?;
         Ok(self.parts.4.clone())
     }
 
     /// Consumes the original same-owner proof for the unchanged server join.
-    pub fn into_parts(self) -> Result<crate::startup::CompleteAuthorizationParts, StorageError> {
-        self.parts.4.verify_complete_logical_read()?;
+    pub fn into_parts(self) -> Result<crate::startup::ValidatedAuthorizationParts, StorageError> {
+        self.parts.4.verify_validated_authorization_read()?;
         Ok(self.parts)
     }
 }
@@ -895,6 +914,7 @@ pub(crate) struct OwnedAuthorizationMaterialization {
 pub(crate) struct OwnedClosedMaterialization {
     materialization: OwnedMaterialization,
     history_incarnation: u64,
+    ordinary_source: bool,
 }
 
 impl OwnedValidatedMaterialization {
@@ -916,6 +936,7 @@ impl OwnedValidatedMaterialization {
         .into_archive_preparation()
     }
 
+    #[cfg(test)]
     pub(crate) fn into_server_authorization(
         self,
     ) -> Result<
@@ -927,15 +948,23 @@ impl OwnedValidatedMaterialization {
     > {
         let inputs = self.logical.native_authorization_inputs()?;
         let (owner, parts) = self.into_authorization()?;
-        Ok((owner, RedbPrivateRestoreAuthorization { parts, inputs }))
+        Ok((
+            owner,
+            RedbPrivateRestoreAuthorization {
+                parts,
+                inputs,
+                assurance: PrivateRestoreAssurance::Complete,
+            },
+        ))
     }
 
+    #[cfg(test)]
     pub(crate) fn into_authorization(
         self,
     ) -> Result<
         (
             OwnedAuthorizationMaterialization,
-            crate::startup::CompleteAuthorizationParts,
+            crate::startup::ValidatedAuthorizationParts,
         ),
         StorageError,
     > {
@@ -967,6 +996,7 @@ impl OwnedAuthorizationMaterialization {
             self.materialization.custody.invalidate();
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        let ordinary_source = self.shared.is_offline_source_mode();
         let history_incarnation = {
             let read = self
                 .shared
@@ -999,6 +1029,7 @@ impl OwnedAuthorizationMaterialization {
         Ok(OwnedClosedMaterialization {
             materialization,
             history_incarnation,
+            ordinary_source,
         })
     }
 }
@@ -1040,11 +1071,15 @@ impl OwnedClosedMaterialization {
             )?;
             // Reuse the original transaction-current history preflight, restore
             // anchor/reset and one Immediate two-phase transaction unchanged.
-            stamp_incarnation(
+            let database = stamp_incarnation_retaining_database(
                 engine.into_database_for_controlled_preparation()?,
                 incarnation,
                 None,
             )?;
+            if self.ordinary_source {
+                crate::startup::validate_restore_transition_roots(&database, incarnation)?;
+            }
+            drop(database);
             self.materialization.custody.freeze_prepared_artifact()?;
             old.verify_immutable(&self.materialization)?;
             self.materialization.validated_seal =
@@ -1168,7 +1203,11 @@ impl OwnedArchiveCompleteValidation {
                 inputs: inputs.clone(),
                 cancellation,
             },
-            RedbPrivateRestoreAuthorization { parts, inputs },
+            RedbPrivateRestoreAuthorization {
+                parts,
+                inputs,
+                assurance: PrivateRestoreAssurance::Complete,
+            },
         ))
     }
 }
@@ -1534,6 +1573,69 @@ impl OwnedMaterialization {
             logical,
             materialization: self,
         })
+    }
+
+    /// Ordinary self-contained restore readiness. Legacy compatibility and
+    /// promotion retain their existing complete proof before authorization.
+    pub(crate) fn validate_readiness(
+        mut self,
+        inputs: riffdb_storage_api::StartupValidationInputs,
+    ) -> Result<
+        (
+            OwnedAuthorizationMaterialization,
+            RedbPrivateRestoreAuthorization,
+        ),
+        StorageError,
+    > {
+        self.verify()?;
+        let engine = self
+            .database
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let engine = std::sync::Arc::try_unwrap(engine)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        let MaterializationDatabase::Owned(engine) = engine else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        let mut store = crate::RedbStore::from_owned_restore_engine(
+            self.primary.path(),
+            engine,
+            &self.manifest,
+        )?;
+        store.prepare_owned_restore_before_validation()?;
+        self.verify()?;
+        let (shared, parts, assurance) =
+            if crate::startup::private_restore_supports_bounded_readiness(&store)? {
+                let (shared, parts) = crate::startup::validate_private_restore_readiness(
+                    store,
+                    inputs.clone(),
+                    self.custody.cancellation(),
+                )?;
+                (shared, parts, PrivateRestoreAssurance::Bounded)
+            } else {
+                let logical = crate::RedbOfflineIntegrityScrub::validate_owned_restore(
+                    store,
+                    inputs.clone(),
+                    self.custody.cancellation(),
+                )?;
+                let shared = logical.retain_native_authorization_owner()?;
+                let parts = logical.into_authorization_parts()?;
+                (shared, parts, PrivateRestoreAssurance::Complete)
+            };
+        self.verify()?;
+        self.validated_seal = Some(OwnedArtifactSeals::capture(&self)?);
+        self.verify()?;
+        Ok((
+            OwnedAuthorizationMaterialization {
+                shared,
+                materialization: self,
+            },
+            RedbPrivateRestoreAuthorization {
+                parts,
+                inputs,
+                assurance,
+            },
+        ))
     }
 
     /// Complete verification on the same first engine. This internal result
@@ -4390,7 +4492,7 @@ mod tests {
         } = validated;
         let (_, _, _, _, reader) = logical.into_authorization_parts().unwrap();
         let clone = reader.clone();
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         assert!(
             reader
                 .complete_logical_access_for_test()
@@ -4433,8 +4535,8 @@ mod tests {
         assert!(
             riffdb_storage_api::CapabilityReader::resolve_capability_digests(&reader, &[]).is_err()
         );
-        assert!(reader.verify_complete_logical_read().is_err());
-        assert!(clone.verify_complete_logical_read().is_err());
+        assert!(reader.verify_validated_authorization_read().is_err());
+        assert!(clone.verify_validated_authorization_read().is_err());
         drop(reader);
         drop(clone);
         drop(shared);
@@ -4461,7 +4563,7 @@ mod tests {
         } = validated;
         let (_, _, _, _, reader) = logical.into_authorization_parts().unwrap();
         let clone = reader.clone();
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         assert!(
             reader
                 .complete_logical_access_for_test()
@@ -4484,11 +4586,11 @@ mod tests {
         assert!(
             riffdb_storage_api::CapabilityReader::resolve_capability_digests(&reader, &[]).is_err()
         );
-        assert!(reader.verify_complete_logical_read().is_err());
+        assert!(reader.verify_validated_authorization_read().is_err());
         fs::remove_file(&path).unwrap();
         fs::rename(root.join("original-primary"), &path).unwrap();
         assert!(
-            clone.verify_complete_logical_read().is_err(),
+            clone.verify_validated_authorization_read().is_err(),
             "restored pathname cannot launder an invalidated cached proof"
         );
         drop(reader);
@@ -4551,7 +4653,7 @@ mod tests {
             logical.into_authorization_parts().unwrap();
         assert!(catalog.matches(database, session));
         assert_eq!(retained.database_id(), expected.database_id());
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
         assert!(!root.join("configured.redb").exists());
         drop(reader);
@@ -4839,10 +4941,10 @@ mod tests {
         assert_eq!(database, manifest.database_id());
         assert!(catalog.matches(database, session));
         assert_eq!(retained.database_id(), database);
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         let clone = reader.clone();
         drop(reader);
-        clone.verify_complete_logical_read().unwrap();
+        clone.verify_validated_authorization_read().unwrap();
         drop(clone);
         let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
         let closed = owner.close().unwrap();
@@ -4890,7 +4992,7 @@ mod tests {
         assert!(
             matches!(owner.close(), Err(error) if error.kind() == StorageErrorKind::Unavailable)
         );
-        assert!(clone.verify_complete_logical_read().is_err());
+        assert!(clone.verify_validated_authorization_read().is_err());
         let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
         crate::maintenance::probe_restore_custody(&path, true);
         drop(clone);
@@ -5073,7 +5175,7 @@ mod tests {
         assert_eq!(retained.database_id(), database);
         assert!(owner.shared.cannot_serve_command_commit());
         assert!(!owner.shared.startup_validation_clean());
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         let path = stage.join(DATABASE_ARTIFACT_FILE_NAME);
         crate::maintenance::probe_restore_custody(&path, true);
         drop(reader);
@@ -5193,7 +5295,7 @@ mod tests {
         // and requires both exact ends and the original catalog/session match.
         assert!(catalog.matches(database, session));
         assert_eq!(retained.database_id(), database);
-        reader.verify_complete_logical_read().unwrap();
+        reader.verify_validated_authorization_read().unwrap();
         assert!(!owner.shared.startup_validation_clean());
         crate::maintenance::probe_restore_custody(&stage.join(DATABASE_ARTIFACT_FILE_NAME), true);
         drop(reader);

@@ -1,9 +1,14 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
 mod offline_integrity;
+mod restore_readiness;
+pub(crate) use restore_readiness::{
+    private_restore_supports_bounded_readiness, validate_private_restore_readiness,
+    validate_restore_transition_roots,
+};
 mod offline_parallel;
 pub use offline_integrity::RedbOfflineIntegrityScrub;
-pub(crate) use offline_integrity::{CompleteAuthorizationParts, CompleteLogicalValidation};
+pub(crate) use offline_integrity::{CompleteLogicalValidation, ValidatedAuthorizationParts};
 
 mod archive_private;
 mod archive_private_graph;
@@ -93,6 +98,11 @@ use crate::store::{
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static POPULATION_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// ADR-0182 Decision 5: the compiled ceiling on recovery-owned state beyond
 /// engine caches. The bounded dirty readiness path may hold only the bounded
 /// historical locator index and fixed-size streaming windows; a stage that
@@ -103,6 +113,10 @@ pub(crate) const MAX_RECOVERY_OWNED_STATE_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceOpenPurpose {
     Startup,
+    PrivateRestoreReadiness,
+    PublishedRestoreReadiness {
+        backup_incarnation: u64,
+    },
     OfflineIntegrityScrub,
     /// ADR-0182 background scrub: the complete exact-end walk over a
     /// least-authority MVCC snapshot while the writer stays live. No mutation
@@ -111,6 +125,15 @@ enum EvidenceOpenPurpose {
     /// the scrub validates its pinned snapshot, and progress restarts on the
     /// next process generation exactly as the record requires.
     BackgroundScrub,
+}
+
+impl EvidenceOpenPurpose {
+    fn is_restore_readiness(self) -> bool {
+        matches!(
+            self,
+            Self::PrivateRestoreReadiness | Self::PublishedRestoreReadiness { .. }
+        )
+    }
 }
 
 /// One fixed-cardinality successful offline integrity-scrub receipt.
@@ -141,7 +164,8 @@ struct CompletedLogicalSnapshot {
     terminal_execution_failure_rows: u64,
 }
 
-/// Retained native ownership for clones of one completed logical read.
+/// Retained native ownership for clones of one validated authorization read.
+/// Its constructor owns whether the evidence is complete or bounded.
 /// This grants no physical, materialization, authorization or publication proof.
 /// The immutable read lives in the snapshot and drops before this lease/owner.
 pub(crate) struct ValidatedReadCustody {
@@ -1062,7 +1086,13 @@ impl RedbStore {
         purpose: EvidenceOpenPurpose,
         history: Option<crate::journal::VerifiedMaterializedHistory>,
     ) -> Result<RedbStructuralEvidenceSession, StorageError> {
-        if history.is_some() && purpose != EvidenceOpenPurpose::OfflineIntegrityScrub {
+        if history.is_some()
+            && !matches!(
+                purpose,
+                EvidenceOpenPurpose::OfflineIntegrityScrub
+                    | EvidenceOpenPurpose::PrivateRestoreReadiness
+            )
+        {
             return Err(invariant());
         }
         let history_verified = history.is_some();
@@ -1086,7 +1116,11 @@ impl RedbStore {
                 .begin_read()
                 .map_err(transaction_error)?,
         };
-        let snapshot = collect_startup_snapshot(&transaction, private)?;
+        let snapshot = if purpose.is_restore_readiness() {
+            collect_bounded_restore_snapshot(&transaction)?
+        } else {
+            collect_startup_snapshot(&transaction, private)?
+        };
         let v3_history = if private.is_some() {
             None
         } else {
@@ -1229,19 +1263,34 @@ impl RedbStore {
         };
         let current_digest = riffdb_storage_api::current_record_registry_digest();
         let registry_is_current = registry.digest() == current_digest;
-        let checkpoint_admits_bounded = registry_is_current
-            && (registry.completed_for(
-                database_id,
-                snapshot.retained_metadata.history_incarnation(),
-                current_digest,
-            ) || crate::validated_prefix::load_active_checkpoint(
-                &transaction,
-                database_id,
-                snapshot.retained_metadata.history_incarnation(),
-                &full_structural_counts,
-            )
-            .is_ok());
-        if purpose == EvidenceOpenPurpose::Startup
+        let checkpoint_admits_bounded = if purpose.is_restore_readiness() {
+            let incarnation = match purpose {
+                EvidenceOpenPurpose::PublishedRestoreReadiness { backup_incarnation } => {
+                    backup_incarnation
+                }
+                _ => snapshot.retained_metadata.history_incarnation(),
+            };
+            registry_is_current && registry.completed_for(database_id, incarnation, current_digest)
+        } else {
+            registry_is_current
+                && (registry.completed_for(
+                    database_id,
+                    snapshot.retained_metadata.history_incarnation(),
+                    current_digest,
+                ) || crate::validated_prefix::load_active_checkpoint(
+                    &transaction,
+                    database_id,
+                    snapshot.retained_metadata.history_incarnation(),
+                    &full_structural_counts,
+                )
+                .is_ok())
+        };
+        if purpose.is_restore_readiness()
+            && (!v3_active || !checkpoint_admits_bounded || self.shared.is_follower_mode())
+        {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        if (purpose == EvidenceOpenPurpose::Startup || purpose.is_restore_readiness())
             && v3_active
             && checkpoint_admits_bounded
             && !self.shared.is_follower_mode()
@@ -1292,7 +1341,7 @@ impl RedbStore {
                 catalog_validation_complete: false,
                 shared: Arc::clone(&self.shared),
                 lease,
-                purpose: EvidenceOpenPurpose::Startup,
+                purpose,
                 durable_commit_epoch,
                 database_id,
                 open_session_id,
@@ -2273,6 +2322,15 @@ impl RedbStructuralEvidenceSession {
     }
 
     fn verify_structural_counts(&self, transaction: &ReadTransaction) -> Result<(), StorageError> {
+        if self.purpose.is_restore_readiness() {
+            let snapshot = collect_bounded_restore_snapshot(transaction)?;
+            if snapshot.structural_counts != self.full_structural_counts
+                || snapshot.retained_metadata != self.retained_metadata
+            {
+                return Err(corrupt());
+            }
+            return Ok(());
+        }
         let meta = transaction.open_table(META).map_err(table_error)?;
         let mut counts = [0u64; STRUCTURAL_TABLE_COUNT];
         counts[0] = meta.len().map_err(precommit_storage_error)?;
@@ -4076,6 +4134,30 @@ struct StartupSnapshot {
     structural_total: u64,
 }
 
+fn collect_bounded_restore_snapshot(
+    transaction: &ReadTransaction,
+) -> Result<StartupSnapshot, StorageError> {
+    validate_table_inventory(transaction, None)?;
+    let retained_metadata = read_retained_metadata(transaction)?;
+    let mut counts = [0; STRUCTURAL_TABLE_COUNT];
+    counts[0] = transaction
+        .open_table(META)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    counts[1] = table_len(transaction, CONTRACT_BUNDLES)?;
+    counts[2] = table_len(transaction, CATALOG_ACTIVE)?;
+    let total = counts.iter().try_fold(1u64, |total, count| {
+        total.checked_add(*count).ok_or_else(limit_exceeded)
+    })?;
+    Ok(StartupSnapshot {
+        retained_metadata,
+        structural_counts: counts,
+        additive_structural_counts: [0; ADDITIVE_STRUCTURAL_TABLE_COUNT],
+        structural_total: total,
+    })
+}
+
 fn collect_startup_snapshot(
     transaction: &ReadTransaction,
     private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
@@ -4280,6 +4362,14 @@ fn table_len(
     transaction: &ReadTransaction,
     definition: TableDefinition<&'static [u8], &'static [u8]>,
 ) -> Result<u64, StorageError> {
+    #[cfg(test)]
+    if definition.name() != CONTRACT_BUNDLES.name()
+        && definition.name() != CATALOG_ACTIVE.name()
+        && definition.name() != QUERY_MODULES.name()
+        && definition.name() != QUERY_MODULE_ACTIVE.name()
+    {
+        POPULATION_COUNTS.with(|count| count.set(count.get() + 1));
+    }
     transaction
         .open_table(definition)
         .map_err(table_error)?
@@ -4411,7 +4501,13 @@ fn inspect_header(
                 StructuralFindingCode::CrossLinkMismatch,
             )));
         }
-    } else if table_len(transaction, CAPABILITIES)? != 0 {
+    } else if transaction
+        .open_table(CAPABILITIES)
+        .map_err(table_error)?
+        .first()
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
     Ok(None)
@@ -9144,7 +9240,13 @@ fn has_application_authoritative_state(
         EVENTS,
         OUTBOX,
     ] {
-        if table_len(transaction, definition)? != 0 {
+        if transaction
+            .open_table(definition)
+            .map_err(table_error)?
+            .first()
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
             return Ok(true);
         }
     }

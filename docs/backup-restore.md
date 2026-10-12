@@ -188,15 +188,26 @@ For an empty, unreadable, or corrupt target, the restricted recovery path
 validates the staged backup and authorizes only against that staged database.
 It does not claim a trustworthy current authorization state.
 
-Publication occurs only after complete artifact checksum, storage structure,
-catalog, allocator, capability, audit, and active-contract validation. RiffDB
-then performs a fresh validation of the published target before readiness.
+Ordinary self-contained restore verifies every immutable artifact checksum,
+refuses private engine repair, checks physical engine integrity, recovers the
+complete journal and required history, and validates bounded metadata roots,
+active catalog, bootstrap lifecycle and allocators before staged authorization.
+It then stamps and publishes the restored incarnation and performs a fresh,
+receipt-bound bounded startup before readiness. Success proves authorized
+materialization and bounded recoverability; it does not certify a complete
+semantic scrub of every entity, audit, outcome or other population row.
+First access still validates each record and fails closed on corruption. The
+ordinary background scrub runs after readiness and degrades Health on failure.
+Operators requiring complete semantic assurance can request the existing
+[offline scrub](operations/STARTUP-INTEGRITY.md#background-and-offline-scrubs).
+Supported legacy formats that need migration retain complete validation.
+Archive replay, follower bootstrap and promotion retain their complete proofs.
 Complete startup and private offline validation inspect audit rows through the
 same bounded dispatcher: at most four workers, 64 rows and 64 MiB of copied
 input per batch, all on the original immutable validation snapshot. Every
 worker joins before the page returns; findings retain physical row order.
-This adds no operator setting or validation shortcut. Complete restore work
-still scales with retained data; the sustainable TicketDesk recovery-time gate
+There is no operator setting to suppress checks. Copying, hashing, physical
+integrity and journal recovery still scale with retained data; the sustainable TicketDesk recovery-time gate
 remains unqualified.
 
 ### Closed backup inventory
@@ -465,8 +476,8 @@ field for any long-lived cursor, subscription, or sequence-derived assumption.
 
 A backup may physically contain the source database's private clean-close
 lifecycle record, but restore never treats that record as permission to skip
-validation. Destructive restore changes the history incarnation and staged
-restore performs complete validation; the lifecycle is therefore stale and is
+validation. Destructive restore changes the history incarnation; the copied
+lifecycle is therefore stale and is
 consumed or replaced as dirty before the restored database can activate
 writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
@@ -474,10 +485,12 @@ clean eligibility.
 
 Ordinary backup restore and staged-only backup recovery verify the copied
 artifacts before the first private engine open and retain its native exclusion
-through history hydration, complete physical and exact-end logical validation,
+through history hydration, complete physical verification and bounded readiness,
 the existing storage/catalog/retained-metadata/bootstrap/allocator joins, and
 fresh staged bearer authentication. Required native compatibility preparation
-uses the existing transformations and repeats complete validation afterward.
+uses the existing transformations; formats requiring migration retain complete
+validation afterward. Bounded readiness creates no complete proof, checkpoint,
+registry-completion witness or clean certificate.
 No operational source writer or readiness capability is activated for that
 authorization read. Every immutable reader must close before the native owner
 closes its engine and binds the primary, journal and marker byte seals.

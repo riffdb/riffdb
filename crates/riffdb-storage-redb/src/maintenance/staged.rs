@@ -41,7 +41,7 @@ pub use archive::{
 #[path = "archive_restore_tests.rs"]
 mod archive_tests;
 
-/// Move-only private staged restore that has passed complete exact-end validation.
+/// Move-only private restore with native staged-readiness authorization evidence.
 pub struct RedbStagedRestore {
     operation_id: OfflineMaintenanceOperationId,
     backup_name: BackupNameV1,
@@ -279,9 +279,7 @@ impl RedbStagedRestore {
                                 .into_archive_preparation()?,
                         );
                     } else {
-                        let (owner, evidence) = native
-                            .validate_complete(validation_inputs)?
-                            .into_server_authorization()?;
+                        let (owner, evidence) = native.validate_readiness(validation_inputs)?;
                         stage.native_authorization_owner = Some(owner);
                         stage.native_authorization_evidence = Some(evidence);
                     }

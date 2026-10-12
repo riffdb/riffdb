@@ -55,6 +55,8 @@ mod promotion_reconciliation;
 pub(crate) use promotion_reconciliation::PromotionValidationBinding;
 #[path = "promotion_receipt_store.rs"]
 mod promotion_receipts;
+#[path = "restored_readiness.rs"]
+mod restored_readiness;
 
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";

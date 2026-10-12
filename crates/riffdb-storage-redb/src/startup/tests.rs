@@ -160,7 +160,17 @@ fn initialized_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
 }
 
 fn deployed_migration_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
-    let store = initialized_store(path, id);
+    deployed_restore_readiness_fixture(&path.0, id)
+}
+
+pub(super) fn deployed_restore_readiness_fixture(
+    path: &std::path::Path,
+    id: DatabaseId,
+) -> RedbStore {
+    let mut store = RedbStore::open(path).expect("open deployed fixture");
+    store
+        .initialize_legacy_fixture(id)
+        .expect("initialize deployed fixture");
     let dormant = RedbDormantPorts {
         pending_v3_activation: None,
         shared: Arc::clone(&store.shared),
@@ -184,7 +194,7 @@ fn deployed_migration_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStor
         .activate_catalog(&intent)
         .expect("activate migration catalog");
     drop(ports);
-    RedbStore::open(&path.0).expect("reopen deployed migration store")
+    RedbStore::open(path).expect("reopen deployed migration store")
 }
 
 fn compiled_migration_legacy_row(value: u64) -> StoredIndexEntryV1 {

@@ -90,7 +90,7 @@ impl RedbOwnedSnapshot {
         self
     }
 
-    pub(crate) fn verify_complete_logical_read(&self) -> Result<(), StorageError> {
+    pub(crate) fn verify_validated_authorization_read(&self) -> Result<(), StorageError> {
         self.validated_custody
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?

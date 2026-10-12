@@ -512,7 +512,7 @@ fn owned_materialization_preserves_required_catalog_index_migration() {
     assert_eq!(database, manifest.database_id());
     assert!(catalog.matches(database, session));
     assert_eq!(retained.database_id(), database);
-    reader.verify_complete_logical_read().unwrap();
+    reader.verify_validated_authorization_read().unwrap();
     drop(reader);
     let closed = owner.close().unwrap();
     closed.verify().unwrap();

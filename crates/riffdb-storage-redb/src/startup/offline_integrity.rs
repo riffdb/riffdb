@@ -9,7 +9,7 @@ pub(crate) struct CompleteLogicalValidation {
     catalog: riffdb_catalog::ValidatedCatalogHistory,
 }
 
-pub(crate) type CompleteAuthorizationParts = (
+pub(crate) type ValidatedAuthorizationParts = (
     DatabaseId,
     OpenSessionId,
     RetainedMetadataV1,
@@ -448,8 +448,7 @@ impl RedbOfflineIntegrityScrub {
                 history,
             )?;
             session.set_cancellation(Arc::clone(&cancellation));
-            let (outcome, structural_end, historical_end) =
-                Self::walk_complete_session(&mut session)?;
+            let (outcome, structural_end, historical_end) = Self::walk_session(&mut session)?;
             match outcome {
                 CatalogHistoryOutcome::MigrationRequired(context) => {
                     if migrated_indexes || completed_registry {
@@ -492,14 +491,14 @@ impl RedbOfflineIntegrityScrub {
     pub(super) fn validate_complete_session(
         mut session: RedbStructuralEvidenceSession,
     ) -> Result<CompleteLogicalValidation, StorageError> {
-        let (catalog, structural_end, historical_end) = Self::walk_complete_session(&mut session)?;
+        let (catalog, structural_end, historical_end) = Self::walk_session(&mut session)?;
         let CatalogHistoryOutcome::Ready(catalog) = catalog else {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         };
         Self::finish_complete_session(session, catalog, structural_end, historical_end)
     }
 
-    fn walk_complete_session(
+    pub(super) fn walk_session(
         session: &mut RedbStructuralEvidenceSession,
     ) -> Result<
         (

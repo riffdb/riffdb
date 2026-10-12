@@ -343,6 +343,47 @@ pub(crate) fn open_redb_startup_with_commit_profile(
     complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
 }
 
+/// Fresh ordinary restore readiness bound by the native persisted receipt.
+pub(crate) fn open_published_restore_startup(
+    storage: &riffdb_storage_redb::RedbMaintenanceStorage,
+    operation_id: riffdb_types::OfflineMaintenanceOperationId,
+    inputs: StartupValidationInputs,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
+    let (publication, reader) = crate::replication_publication::ReplicationPublication::channel();
+    let session = timed(StartupStage::EvidenceBegin, || {
+        preflight_redb_startup_format(storage.configured_database_file())?;
+        storage
+            .begin_published_restore_readiness(
+                operation_id,
+                inputs,
+                application_commit_profile,
+                publication.clone(),
+            )
+            .map_err(RedbStartupError::from)
+    })?;
+    let database_id = session.database_id();
+    let mut checked = match run_redb_evidence_session(session, database_id)? {
+        RedbStartupPass::Ready {
+            catalog_history,
+            structurally_opened,
+        } => complete_ready_redb_startup(catalog_history, structurally_opened)?,
+        RedbStartupPass::MigrationRequired { .. } => {
+            return Err(RedbStartupError::Integrity(
+                StartupIntegrityFailure::MigrationRepeated,
+            ));
+        }
+    };
+    riffdb_storage_api::ChangelogPublicationPort::observe_published_snapshot_v3(
+        publication.as_ref(),
+        checked
+            .operational_ports
+            .published_changelog_snapshot_v3()?,
+    );
+    checked.replication_publications = Some(reader);
+    Ok(checked)
+}
+
 /// Preserves the ordinary startup proof joins while refusing private-stage repair.
 pub(crate) fn open_staged_redb_startup_with_commit_profile(
     stage: &riffdb_storage_redb::RedbStagedRestore,
@@ -582,6 +623,10 @@ fn run_redb_evidence_session(
 fn report_clean_close_startup_selection(
     session: &riffdb_storage_redb::RedbStructuralEvidenceSession,
 ) {
+    if session.bounded_dirty_startup_path() {
+        eprintln!("[riffdbd-diag] trigger=startup clean_close_fast=false bounded_dirty=true");
+        return;
+    }
     match session.clean_close_declined_reason() {
         None => eprintln!("[riffdbd-diag] trigger=startup clean_close_fast=true"),
         Some(reason) => eprintln!(

@@ -182,7 +182,7 @@ fn complete_logical_reader_clones_retain_the_original_pin_engine_and_mutation_le
         "logical reader clones must retain the completed mutation lease"
     );
     assert!(gate.try_acquire().unwrap().is_none());
-    last_reader.verify_complete_logical_read().unwrap();
+    last_reader.verify_validated_authorization_read().unwrap();
     assert_eq!(owner.upgrade().unwrap().durable_commit_epoch(), epoch);
     assert!(matches!(
         redb::Database::open(scope.join("db.redb")),
@@ -279,10 +279,10 @@ fn complete_logical_reader_keeps_original_bytes_and_refuses_later_mutation_or_ca
                 b"later-native-write"
             );
         }
-        assert!(reader.verify_complete_logical_read().is_err());
+        assert!(reader.verify_validated_authorization_read().is_err());
         cancelled.store(false, Ordering::Release);
         assert!(
-            clone.verify_complete_logical_read().is_err(),
+            clone.verify_validated_authorization_read().is_err(),
             "another clone cannot launder invalidated logical evidence"
         );
         drop(reader);
