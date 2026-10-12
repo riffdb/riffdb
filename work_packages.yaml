@@ -28629,7 +28629,8 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-005, REC-006, REC-007, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0289, ADR-0284, ADR-0285]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0289, ADR-0284, ADR-0285, ADR-0290, ADR-0291, ADR-0292]
+  # Exact ADR-0290, ADR-0291 and ADR-0292 accepted in session, 2026-10-12.
   # Maintainer approved necessary native fixes in session, 2026-10-04.
   # Exact ADR-0269 accepted in session, 2026-10-05; engine, offline scrub and simulator repair scope.
   # Exact revised ADR-0271 accepted in session, 2026-10-05; bounded FIFO source admission and native drain.
@@ -29449,7 +29450,7 @@ work_packages:
     attempts and prove physical reclamation, resource accounting, fault recovery, and
     normal-load service levels without claiming the 72-hour full alpha gate.
   requirements: [END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0292]
   allowed_paths: [release/evidence/ticketdesk-lifecycle/**, docs/architecture/SUSTAINABLE-TICKETDESK.md, docs/getting-started/TICKETDESK-ACCEPTANCE.md, docs/known-limitations.md, work_packages.yaml]
   deliverables:
   - Uninterrupted 24-hour real observations and hash-bound environment/binary/workload identity

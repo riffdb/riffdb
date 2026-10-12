@@ -324,6 +324,9 @@ record with no front matter.
 | [0287](0287-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
 | [0288](0288-bounded-native-bootstrap-source-custody-validation.md) | Bounded Native Bootstrap Source Custody Validation | Accepted | guarantee |
 | [0289](0289-owned-private-restore-validation-custody.md) | Owned Private Restore Validation Custody | Accepted | guarantee |
+| [0290](0290-restore-content-seals-at-mutation-boundaries.md) | Restore Content Seals At Mutation Boundaries | Accepted | guarantee |
+| [0291](0291-bounded-restore-readiness-and-background-validation.md) | Bounded Restore Readiness And Background Validation | Accepted | guarantee |
+| [0292](0292-recovery-clock-begins-at-primary-loss.md) | Recovery Clock Begins At Primary Loss | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
