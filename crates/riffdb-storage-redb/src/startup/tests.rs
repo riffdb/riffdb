@@ -6166,3 +6166,6 @@ fn segment_reuse_follows_the_row_bytes_and_never_remembers_a_refusal() {
         .is_some()
     );
 }
+
+#[path = "../startup_terminal_decode_tests.rs"]
+mod terminal_decode;

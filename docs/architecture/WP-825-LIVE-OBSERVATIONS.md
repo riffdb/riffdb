@@ -2,45 +2,44 @@
 
 ## Current status (2026-10-12 UTC)
 
-Combined-source revision `30d5a1a4` passes full CI and the ordinary 1,500-second
-preparation: 150,000 commands, 600,000 reads, no retries or post-clock work,
-65,536 reconciled tickets and 215,536 reconciled archive records. The three
-normal windows have p95 between 2.827 and 3.035 ms and p99 between 5.502 and
-33.057 ms. The following unchanged whole recovery attempt fails during the
-initial public restore request: backup creation consumes 20.512 seconds and
-recovery admission consumes 1.030 seconds of its original 60-second budget.
-The client timeout does not prove rollback or a terminal server outcome.
+Base revision `47f58e8a` passes combined-source full CI, four-language remote
+conformance, the native crash and resume cases, and the ordinary 1,500-second
+preparation. Preparation reconciles 150,000 commands, 600,000 reads, 65,536
+tickets and 215,536 archive records without retries or post-clock work. These
+results establish preparation only.
 
-Two separate instrumented native diagnostics restore a copy successfully in
-234.617 and 236.098 seconds. They retain the ordinary release profile and all
-production branches, with observation-only timers; their longer private
-observation deadline cannot qualify the public whole-action gate. The original
-failed media, immutable backup and ordinary binaries remain preserved.
+The subsequent whole recovery attempt stops because its private observer does
+not recognize the public offline `storage_unavailable` response. That observer
+failure establishes neither a server timeout nor rollback. A separate ordinary
+release diagnostic observes successful native restore and readiness in 208.211
+seconds on the required 8-vCPU, 32-GiB Linux SSD host. Its longer diagnostic
+observation bound cannot qualify the unchanged 60-second whole public action.
+The original failed media, immutable backup and ordinary binaries are preserved.
 
-The focused diagnostic measures one private complete walk and one fresh
-post-publication startup, each inspecting about 1.75 million physical rows.
-It does not find a second compatibility walk within startup. The private
-complete walk takes 35.334 seconds; fresh startup takes 63.732 seconds. Complete startup
-processes audit rows serially, while the private walk uses the existing bounded
-four-worker dispatcher. Command-history and entity-chain construction each
-take about 1.4 seconds per walk, and repeated table-count checks total 1.057
-seconds across both walks. Those smaller costs do not explain the difference.
+Native diagnostics over a private restored copy inspect the last 4,096 audit
+index rows and a further 4,096 rows distributed across all 434,910 index rows.
+They find no repeated command-segment decoding in either sample. A complete
+unoptimized diagnostic subsequently reaches exact end over 1,743,085 structural
+rows and the catalog stream with zero findings on one immutable pin. Session
+construction and audit validation are the largest measured parts; unoptimized
+phase times do not qualify ordinary release performance.
 
-Other inclusive measurements include 43.257 seconds for restore materialization
-before complete validation and 16.242 seconds for history hydration within it.
-The earlier diagnostic records 52 artifact checksum calls totaling 41.020
-seconds across recovery. Nested times overlap and must not be summed.
+A separate regression demonstrates that terminal census and semantic inspection
+decode the same envelope twice. The candidate shares that decoded record between
+the census, checkpoint classification and original semantic checks. It preserves
+physical-key refusal precedence, digest and command linkage checks, and counts
+execution failures even when their keys are malformed. The regression and scoped
+acceptance pass on the required host, including all 1,505 tests and Clippy.
+Final-source full CI is still required. This correction alone is not expected
+to close the whole recovery gap.
 
-ADR-0289 is accepted and implemented. Full startup now uses the same audit
-dispatcher as private complete validation; exact findings, exact ends and
-native batch bounds are compared with the independent serial walk over healthy
-and corrupt rows. The new regression fails before the correction and passes
-afterward. All 1,158 storage library tests pass, with one existing ignored test;
-deterministic worker schedules, shared-evidence checks and Clippy also pass on
-the required host. Scoped acceptance passes all 1,504 tests and the handbook
-checks. Final combined-source CI remains pending, and this correction has no
-qualified recovery-time result. Copying, hydration, sealing, publication and
-fresh complete startup remain required. Neither the 8-hour nor the 24-hour
+Package: WP-825 (open). Tier: guarantee under the accepted complete-validation
+records, including ADR-0269 and ADR-0289. Compatibility: no public interface,
+format, fixture, dependency, ordering, durability, workload, deadline or resource
+limit changes. Handbook behavior is unchanged: this correction shares an
+in-memory decoded value within the existing validator and adds no operator or
+application choice. The public whole-action gate, storage admission, final-source
+CI and actual rehearsal remain required. Neither the 8-hour nor the 24-hour
 campaign has started.
 
 ## Earlier prerequisite attempt (2026-10-11 UTC)

@@ -616,6 +616,8 @@ pub(crate) fn encode_idempotency_record_v1(
 pub(crate) fn decode_idempotency_record_v1(
     encoded: &[u8],
 ) -> Result<storage::EncodedPageItem<IdempotencyRecordV1>, storage::StorageError> {
+    #[cfg(test)]
+    IDEMPOTENCY_RECORD_DECODES.with(|count| count.set(count.get() + 1));
     match storage::decode_stored_outcome_v1(encoded) {
         Ok(item) => Ok(map_item(item, IdempotencyRecordV1::StoredOutcome)),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
@@ -999,4 +1001,9 @@ mod tests {
             _ => panic!("fixture contains non-lowercase-hex input"),
         }
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static IDEMPOTENCY_RECORD_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

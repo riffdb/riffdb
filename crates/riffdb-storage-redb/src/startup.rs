@@ -3100,7 +3100,11 @@ impl RedbStructuralEvidenceSession {
         key: &[u8],
         value: &[u8],
     ) -> Result<Option<StructuralFinding>, StorageError> {
-        let class = crate::validated_prefix::classify_terminal_row(value);
+        let record = decoded(codec::decode_idempotency_record_v1(value));
+        let class = record
+            .as_ref()
+            .map(crate::validated_prefix::TerminalRowClass::from_record)
+            .unwrap_or(crate::validated_prefix::TerminalRowClass::Undecodable);
         if class == crate::validated_prefix::TerminalRowClass::Failed {
             self.terminal_execution_failure_rows =
                 self.terminal_execution_failure_rows.saturating_add(1);
@@ -3127,7 +3131,7 @@ impl RedbStructuralEvidenceSession {
             &self.inputs,
             self.database_id,
             key,
-            value,
+            record,
         )?;
         Ok(finding)
     }
@@ -4650,12 +4654,12 @@ fn inspect_terminal_row(
     inputs: &StartupValidationInputs,
     database_id: DatabaseId,
     key: &[u8],
-    value: &[u8],
+    record: Result<IdempotencyRecordV1, StructuralFindingCode>,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let Ok(physical) = keys::decode_idempotency_key(key) else {
         return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
     };
-    let record = match decoded(codec::decode_idempotency_record_v1(value)) {
+    let record = match record {
         Ok(value) => value,
         Err(code) => return Ok(Some(authoritative(code))),
     };

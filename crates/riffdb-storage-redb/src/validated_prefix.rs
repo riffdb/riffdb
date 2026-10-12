@@ -1829,6 +1829,19 @@ pub(crate) enum TerminalRowClass {
 }
 
 impl TerminalRowClass {
+    /// Classifies an already decoded terminal without reading its envelope again.
+    pub(crate) fn from_record(record: &crate::codec::IdempotencyRecordV1) -> Self {
+        match record {
+            crate::codec::IdempotencyRecordV1::StoredOutcome(outcome) => {
+                Self::Outcome(outcome.commit_sequence().get())
+            }
+            crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => Self::Failed,
+            crate::codec::IdempotencyRecordV1::CommandLocator(locator) => {
+                Self::Outcome(locator.commit_sequence().get())
+            }
+        }
+    }
+
     /// Whether this row belongs to the validated prefix of a checkpoint at S.
     pub(crate) const fn is_prefix_outcome(self, s: u64) -> bool {
         matches!(self, Self::Outcome(sequence) if sequence <= s)
@@ -1838,16 +1851,7 @@ impl TerminalRowClass {
 /// Classifies one `IDEMPOTENCY` row: the single decode both the checkpointed
 /// prefix skip and the terminal execution-failure census read.
 pub(crate) fn classify_terminal_row(value: &[u8]) -> TerminalRowClass {
-    match codec::decode_idempotency_record_v1(value) {
-        Ok(item) => match item.into_parts().0 {
-            crate::codec::IdempotencyRecordV1::StoredOutcome(outcome) => {
-                TerminalRowClass::Outcome(outcome.commit_sequence().get())
-            }
-            crate::codec::IdempotencyRecordV1::ExecutionFailed(_) => TerminalRowClass::Failed,
-            crate::codec::IdempotencyRecordV1::CommandLocator(locator) => {
-                TerminalRowClass::Outcome(locator.commit_sequence().get())
-            }
-        },
-        Err(_) => TerminalRowClass::Undecodable,
-    }
+    codec::decode_idempotency_record_v1(value)
+        .map(|item| TerminalRowClass::from_record(item.value()))
+        .unwrap_or(TerminalRowClass::Undecodable)
 }
