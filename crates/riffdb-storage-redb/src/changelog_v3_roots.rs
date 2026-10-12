@@ -210,10 +210,7 @@ pub(crate) fn validate_retained_rows(
     let mut first = true;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let receipt = AuthoritativeTransactionV3::decode(
-            &crate::history_stub::resolve_history_value(value.value())?,
-        )
-        .map_err(|_| corrupt())?;
+        let receipt = crate::history_stub::decode_history_value(value.value())?;
         if key.value() != receipt.binding().sequence.get().to_be_bytes()
             || receipt.binding().sequence > history.tail().sequence()
         {

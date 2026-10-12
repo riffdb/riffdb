@@ -809,3 +809,92 @@ fn composite_source_index_finds_full_bounded_suffix_and_releases_retired_ancesto
             .all(|(node, source)| node.upgrade().is_none() && source.upgrade().is_none())
     );
 }
+
+// req: REC-001, REC-005, REC-008
+#[test]
+fn retained_history_native_receipt_preserves_full_checks_without_serialization() {
+    let (scope, _store, anchor) = fixture();
+    let (frame, expected, _) = source(anchor, None, Some(&vec![b'q'; 262144]));
+    let frame = frame.with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+        &expected.binding(),
+        anchor.lineage().catalog_digest(),
+    )));
+    let encoded = frame.encode().unwrap();
+    let placement = crate::journal::frame_placement_after(0, &encoded).unwrap();
+    let database_path = scope.join("retained-history-source.redb");
+    let path = crate::journal::journal_path(&database_path);
+    let header =
+        crate::journal::JournalFileHeader::new(anchor.lineage().database_id(), None, [0; 32]);
+    let lane = crate::journal::JournalLane::open(&path, &header).unwrap();
+    let generation = lane.generation();
+    lane.submit(encoded).unwrap().wait().unwrap();
+    drop(lane);
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        anchor.lineage().database_id(),
+        &database_path,
+        Arc::new(crate::media::RealJournalMedia),
+    );
+    let locator = crate::history_stub::StubLocator {
+        database_id: anchor.lineage().database_id(),
+        generation,
+        placement,
+    };
+    let stub = locator.receipt_stub().unwrap();
+    let legacy = crate::history_stub::resolve_history_value(&stub).unwrap();
+    assert_eq!(
+        AuthoritativeTransactionV3::decode(&legacy).unwrap(),
+        expected
+    );
+    crate::history_stub::RECEIPT_SERIALIZATIONS.with(|count| count.set(0));
+    let native = crate::history_stub::decode_history_value(&stub).unwrap();
+    assert_eq!(native, expected);
+    assert_eq!(native.encode().unwrap().as_slice(), legacy.as_ref());
+    assert_eq!(
+        native.history_hash().unwrap(),
+        expected.history_hash().unwrap()
+    );
+    assert_eq!(
+        anchor.advance(&native).unwrap(),
+        anchor.advance(&expected).unwrap()
+    );
+    crate::history_stub::RECEIPT_SERIALIZATIONS.with(|count| assert_eq!(count.get(), 0));
+    assert_eq!(
+        crate::history_stub::decode_history_value(&legacy).unwrap(),
+        expected
+    );
+    let mut corrupt_receipt = legacy.into_owned();
+    corrupt_receipt[128] ^= 1;
+    assert!(crate::history_stub::decode_history_value(&corrupt_receipt).is_err());
+    let segment_stub = locator
+        .summary_stub(crate::history_stub::SegmentSummary {
+            first_commit_sequence: CommitSequence::new(1),
+            last_commit_sequence: CommitSequence::new(1),
+            command_count: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(crate::history_stub::decode_history_value(&segment_stub).is_err());
+    let mut wrong = crate::history_stub::HistoryStub::decode(&stub)
+        .unwrap()
+        .unwrap();
+    wrong.placement.frame_hash[0] ^= 1;
+    assert!(crate::history_stub::decode_history_value(&wrong.encode().unwrap()).is_err());
+    // Alter the retained payload without changing its claimed frame hash.
+    // The native path must still perform the original complete frame checksum.
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.seek(SeekFrom::Start(placement.position as u64 + 256))
+        .unwrap();
+    let mut byte = [0_u8];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 1;
+    file.seek(SeekFrom::Start(placement.position as u64 + 256))
+        .unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+    assert!(crate::history_stub::decode_history_value(&stub).is_err());
+}
