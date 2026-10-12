@@ -141,6 +141,18 @@ fn stamp_incarnation_on_database(
     incarnation: u64,
     private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
 ) -> Result<(), StorageError> {
+    stamp_incarnation_with_validated_history(database, incarnation, private, None)
+}
+
+fn stamp_incarnation_with_validated_history(
+    database: &Database,
+    incarnation: u64,
+    private: Option<crate::maintenance::PrivateArchiveValidationBinding>,
+    mut validated: Option<(
+        Option<crate::restore_history::CompleteRestoreHistory>,
+        crate::maintenance::RestoreIntegrityBinding,
+    )>,
+) -> Result<(), StorageError> {
     let mut transaction = database.begin_write().map_err(transaction_error)?;
     transaction.set_two_phase_commit(true);
     transaction
@@ -159,18 +171,34 @@ fn stamp_incarnation_on_database(
     if current.is_some_and(|current| current > incarnation) {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
-    let anchor = match private {
-        Some(binding) => Some(v3_restore::PreparedRestoreAnchor::prepare_private(
+    if private.is_some() && validated.is_some() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let anchor = match (private, validated.as_ref()) {
+        (Some(binding), _) => Some(v3_restore::PreparedRestoreAnchor::prepare_private(
             &transaction,
             binding,
             incarnation,
         )?),
-        None => v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?,
+        (None, Some((Some(proof), binding))) => {
+            v3_restore::PreparedRestoreAnchor::prepare_validated_restore(
+                &transaction,
+                proof,
+                binding,
+                incarnation,
+            )?
+        }
+        (None, _) => v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?,
     };
     if current == Some(incarnation) {
         transaction.abort().map_err(precommit_storage_error)?;
         return Ok(());
     }
+    if let Some((_, binding)) = validated.as_mut() {
+        binding.begin_controlled_preparation()?;
+    }
+    // These operation-local proofs cannot survive into the known successor.
+    drop(validated);
     v3_restore::edge("preflight");
     stamp_incarnation_metadata(&transaction, incarnation)?;
     v3_restore::edge("incarnation");
@@ -917,6 +945,7 @@ impl RedbPrivateRestoreAuthorization {
 pub(crate) struct OwnedAuthorizationMaterialization {
     shared: std::sync::Arc<crate::store::SharedRedb>,
     materialization: OwnedMaterialization,
+    complete_history: Option<crate::restore_history::CompleteRestoreHistory>,
 }
 
 /// Unique live engine awaiting only the durable receipt-authorized stamp.
@@ -947,6 +976,7 @@ impl OwnedValidatedMaterialization {
         OwnedAuthorizationMaterialization {
             shared,
             materialization: self.materialization,
+            complete_history: None,
         }
         .close()?
         .into_archive_preparation()
@@ -991,6 +1021,7 @@ impl OwnedValidatedMaterialization {
             OwnedAuthorizationMaterialization {
                 shared,
                 materialization: self.materialization,
+                complete_history: None,
             },
             parts,
         ))
@@ -1045,7 +1076,9 @@ impl OwnedAuthorizationMaterialization {
         let Self {
             shared,
             mut materialization,
+            complete_history,
         } = self;
+        drop(complete_history);
         // Bytes checked immediately before the only known engine-close
         // transition. That transition may clean allocator/header state, never
         // substitute an earlier changed primary, journal or marker artifact.
@@ -1122,6 +1155,7 @@ impl OwnedStampPreparation {
         let OwnedAuthorizationMaterialization {
             mut shared,
             mut materialization,
+            complete_history,
         } = self.owner;
         let result = (|| {
             materialization.verify_full_seal()?;
@@ -1133,8 +1167,13 @@ impl OwnedStampPreparation {
             // subordinate authorization lease may survive this transition.
             let engine = std::sync::Arc::get_mut(&mut shared)
                 .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-            engine.begin_receipt_authorized_restore_stamp()?;
-            stamp_incarnation_on_database(&engine.database, incarnation, None)?;
+            let binding = engine.take_receipt_authorized_restore_binding()?;
+            stamp_incarnation_with_validated_history(
+                &engine.database,
+                incarnation,
+                None,
+                Some((complete_history, binding)),
+            )?;
             crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
             drop(shared);
             materialization.custody.freeze_prepared_artifact()?;
@@ -1725,14 +1764,20 @@ impl OwnedMaterialization {
         )?;
         store.prepare_owned_restore_before_validation()?;
         self.verify()?;
-        let (shared, parts, assurance) =
+        let (shared, parts, assurance, complete_history) =
             if crate::startup::private_restore_supports_bounded_readiness(&store)? {
-                let (shared, parts) = crate::startup::validate_private_restore_readiness(
-                    store,
-                    inputs.clone(),
-                    self.custody.cancellation(),
-                )?;
-                (shared, parts, PrivateRestoreAssurance::Bounded)
+                let (shared, parts, complete_history) =
+                    crate::startup::validate_private_restore_readiness(
+                        store,
+                        inputs.clone(),
+                        self.custody.cancellation(),
+                    )?;
+                (
+                    shared,
+                    parts,
+                    PrivateRestoreAssurance::Bounded,
+                    Some(complete_history),
+                )
             } else {
                 let logical = crate::RedbOfflineIntegrityScrub::validate_owned_restore(
                     store,
@@ -1741,7 +1786,7 @@ impl OwnedMaterialization {
                 )?;
                 let shared = logical.retain_native_authorization_owner()?;
                 let parts = logical.into_authorization_parts()?;
-                (shared, parts, PrivateRestoreAssurance::Complete)
+                (shared, parts, PrivateRestoreAssurance::Complete, None)
             };
         self.verify()?;
         self.validated_seal = Some(OwnedArtifactSeals::capture(&self)?);
@@ -1750,6 +1795,7 @@ impl OwnedMaterialization {
             OwnedAuthorizationMaterialization {
                 shared,
                 materialization: self,
+                complete_history,
             },
             RedbPrivateRestoreAuthorization {
                 parts,
@@ -5086,6 +5132,173 @@ mod tests {
             assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
             assert!(!root.join("configured.redb").exists());
         }
+    }
+
+    // req: REC-001, REC-004, REC-006, END-001
+    #[test]
+    fn owned_materialization_history_proof_runs_one_complete_constructor_and_refuses_mutation() {
+        let root = TestRoot::new("owned-native-history-proof");
+        let (_, backup, _) = create_backup(&root);
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let (owner, (_, _, _, _, reader)) = owned
+            .validate_complete(owned_validation_inputs())
+            .unwrap()
+            .into_authorization()
+            .unwrap();
+        drop(reader);
+        let read = owner.shared.database.begin_read().unwrap();
+        let binding = owner.shared.restore_integrity.as_ref().unwrap();
+        crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(0));
+        let proof = crate::restore_history::CompleteRestoreHistory::capture(&read, binding)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.get()),
+            1
+        );
+        for _ in 0..8 {
+            proof.verify_read(&read, binding).unwrap();
+        }
+        assert_eq!(
+            crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.get()),
+            1
+        );
+        drop(read);
+        let write = owner.shared.database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert("restore-proof-unclassified", &[1][..])
+            .unwrap();
+        write.commit().unwrap();
+        let read = owner.shared.database.begin_read().unwrap();
+        assert!(proof.verify_read(&read, binding).is_err());
+        assert!(owner.verify_authorization().is_err());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_history_proof_cannot_rebind_to_another_native_owner() {
+        let root = TestRoot::new("owned-native-history-proof-owner");
+        let (_, backup, _) = create_backup(&root);
+        let mut owners = Vec::new();
+        for stage in ["stage-one", "stage-two"] {
+            let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join(stage))
+                .restore_owned_staged_backup(
+                    &root.join("configured.redb"),
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                )
+                .unwrap();
+            let (owner, (_, _, _, _, reader)) = owned
+                .validate_complete(owned_validation_inputs())
+                .unwrap()
+                .into_authorization()
+                .unwrap();
+            drop(reader);
+            owners.push(owner);
+        }
+        let first = &owners[0];
+        let second = &owners[1];
+        let read = first.shared.database.begin_read().unwrap();
+        let proof = crate::restore_history::CompleteRestoreHistory::capture(
+            &read,
+            first.shared.restore_integrity.as_ref().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        drop(read);
+        let other = second.shared.database.begin_read().unwrap();
+        assert!(
+            proof
+                .verify_read(&other, second.shared.restore_integrity.as_ref().unwrap())
+                .is_err()
+        );
+        assert!(first.verify_authorization().is_err());
+        second.verify_authorization().unwrap();
+    }
+
+    // req: REC-001, REC-004, REC-006, END-001
+    #[test]
+    fn owned_materialization_history_proof_cannot_be_minted_from_valid_roots_with_corrupt_middle() {
+        let root = TestRoot::new("owned-native-history-proof-middle");
+        let source = root.join("source.redb");
+        initialize(&source);
+        for name in ["middle-one", "middle-two"] {
+            crate::RedbOfflineRetention::bind(&source)
+                .add_hold(name, 0, "retained")
+                .unwrap();
+        }
+        {
+            let database = Database::open(&source).unwrap();
+            let read = database.begin_read().unwrap();
+            let table = read
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap();
+            let rows = table
+                .iter()
+                .unwrap()
+                .map(|row| {
+                    let (key, value) = row.unwrap();
+                    (key.value().to_vec(), value.value().to_vec())
+                })
+                .collect::<Vec<_>>();
+            assert!(rows.len() >= 3);
+            let (key, mut value) = rows[1].clone();
+            value[0] ^= 1;
+            drop(table);
+            drop(read);
+            let write = database.begin_write().unwrap();
+            write
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap()
+                .insert(key.as_slice(), value.as_slice())
+                .unwrap();
+            write.commit().unwrap();
+            assert!(
+                crate::changelog_v3_roots::read_checkpoint_roots(&database.begin_read().unwrap())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let backup = root.join("backup");
+        RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        let (_, mut owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let engine = std::sync::Arc::try_unwrap(owned.database.take().unwrap())
+            .ok()
+            .unwrap();
+        let MaterializationDatabase::Owned(mut engine) = engine else {
+            panic!("native fixture")
+        };
+        engine.check_owned_restore_integrity().unwrap();
+        let store =
+            RedbStore::from_owned_restore_engine(owned.primary.path(), engine, &owned.manifest)
+                .unwrap();
+        let read = store.shared.database.begin_read().unwrap();
+        assert!(
+            crate::changelog_v3_roots::read_checkpoint_roots(&read)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            crate::restore_history::CompleteRestoreHistory::capture(
+                &read,
+                store.shared.restore_integrity.as_ref().unwrap()
+            )
+            .is_err()
+        );
+        assert!(!root.join("configured.redb").exists());
     }
 
     // req: REC-001, REC-004, REC-006, END-001

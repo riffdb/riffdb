@@ -36,11 +36,22 @@ pub(crate) fn validate_private_restore_readiness(
     store: RedbStore,
     inputs: StartupValidationInputs,
     cancellation: Arc<AtomicBool>,
-) -> Result<(Arc<SharedRedb>, ValidatedAuthorizationParts), StorageError> {
+) -> Result<
+    (
+        Arc<SharedRedb>,
+        ValidatedAuthorizationParts,
+        crate::restore_history::CompleteRestoreHistory,
+    ),
+    StorageError,
+> {
     if !private_restore_supports_bounded_readiness(&store)? {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
-    let history = store.verify_materialized_journals()?;
+    let mut history = store.verify_owned_restore_materialized_journals()?;
+    let complete_history = history
+        .as_mut()
+        .and_then(crate::journal::VerifiedMaterializedHistory::take_restore_history)
+        .ok_or_else(invariant)?;
     let mut session = store.begin_structural_evidence_for_history(
         inputs,
         EvidenceOpenPurpose::PrivateRestoreReadiness,
@@ -75,6 +86,14 @@ pub(crate) fn validate_private_restore_readiness(
     session.shared.verify_private_restore_integrity()?;
     let read = session.validation_read.take().ok_or_else(invariant)?;
     session.verify_structural_continuity(&read)?;
+    complete_history.verify_read(
+        &read,
+        session
+            .shared
+            .restore_integrity
+            .as_ref()
+            .ok_or_else(invariant)?,
+    )?;
     let lease = session.lease.take().ok_or_else(invariant)?;
     let owner = Arc::clone(&session.shared);
     let custody = Arc::new(ValidatedReadCustody {
@@ -96,7 +115,7 @@ pub(crate) fn validate_private_restore_readiness(
         reader,
     );
     drop(session);
-    Ok((owner, parts))
+    Ok((owner, parts, complete_history))
 }
 
 impl RedbStore {

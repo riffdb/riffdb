@@ -142,20 +142,24 @@ impl SharedRedb {
     /// The unique native restore owner has consumed all authorization reads.
     /// This retires its physical-generation proof before the known stamp; the
     /// caller must close this engine and construct a fresh final content seal.
-    pub(crate) fn begin_receipt_authorized_restore_stamp(&mut self) -> Result<(), StorageError> {
+    pub(crate) fn take_receipt_authorized_restore_binding(
+        &mut self,
+    ) -> Result<crate::maintenance::RestoreIntegrityBinding, StorageError> {
         if self.open_mode != OpenMode::OfflineSource
             || !self.write_fenced.load(Ordering::Acquire)
             || self.engine_repaired_at_open
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let binding = self
-            .restore_integrity
-            .as_mut()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        binding.begin_controlled_preparation()?;
-        self.restore_integrity = None;
-        Ok(())
+        self.restore_integrity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .verify()?;
+        // The stamp consumes this binding after transaction-current preflight,
+        // before the first classified mutation. No unrelated caller retains it.
+        self.restore_integrity
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
     pub(crate) fn verify_private_restore_integrity(&self) -> Result<(), StorageError> {

@@ -83,6 +83,7 @@ mod primary_fence_write;
 mod projection_replay;
 mod promotion_cutover;
 mod replication_registration_links;
+mod restore_history;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};

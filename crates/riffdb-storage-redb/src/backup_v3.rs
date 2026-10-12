@@ -38,6 +38,25 @@ impl PreparedRestoreAnchor {
         }
         let corrupt = || storage_error(StorageErrorKind::CorruptData);
         let predecessor = validate_retained_history_for_write(transaction)?.ok_or_else(corrupt)?;
+        Self::prepare_from_history(transaction, predecessor, incarnation)
+    }
+
+    pub(super) fn prepare_validated_restore(
+        transaction: &WriteTransaction,
+        proof: &crate::restore_history::CompleteRestoreHistory,
+        binding: &crate::maintenance::RestoreIntegrityBinding,
+        incarnation: u64,
+    ) -> Result<Option<Self>, StorageError> {
+        let predecessor = proof.history_for_stamp(transaction, binding)?;
+        Self::prepare_from_history(transaction, predecessor, incarnation)
+    }
+
+    fn prepare_from_history(
+        transaction: &WriteTransaction,
+        predecessor: ChangelogHistoryStateV3,
+        incarnation: u64,
+    ) -> Result<Option<Self>, StorageError> {
+        let corrupt = || storage_error(StorageErrorKind::CorruptData);
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
             crate::primary_admission_roots::require_unfenced(&meta)?;

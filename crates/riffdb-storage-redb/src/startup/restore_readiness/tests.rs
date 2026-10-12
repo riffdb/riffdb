@@ -180,3 +180,31 @@ fn restore_readiness_rejects_corrupt_bounded_root_before_authorization() {
     assert!(crate::backup::validate_immutable_backup(&backup).is_ok());
     assert!(!root.join("configured.redb").exists());
 }
+
+#[test]
+fn restore_readiness_reuses_complete_history_only_for_the_same_receipt_stamp() {
+    let (root, backup, _) = fixture(false);
+    let (_, owned) = crate::RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        .restore_owned_staged_backup(
+            &root.join("configured.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    let (owner, evidence) = owned.validate_readiness(inputs()).unwrap();
+    assert!(
+        evidence.archive_snapshot().is_err(),
+        "history proof is not complete scrub assurance"
+    );
+    drop(evidence);
+    let prepared = owner.into_stamp_preparation().unwrap();
+    let incarnation = prepared.history_incarnation() + 1;
+    crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(0));
+    let closed = prepared.stamp_and_close(incarnation).unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::COMPLETE_HISTORY_VALIDATIONS.with(|count| count.get()),
+        1,
+        "only the new one-row RestoreAnchor needs a fresh full validation"
+    );
+    closed.verify_publication_seal().unwrap();
+    assert_eq!(closed.history_incarnation(), incarnation);
+}

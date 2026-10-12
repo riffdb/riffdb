@@ -23,6 +23,11 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static COMPLETE_HISTORY_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Closed V3 metadata shape validation for shared identity probes. This neither
 /// grants activation nor replaces the complete, cross-bound root check below.
 pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, StorageError> {
@@ -131,6 +136,8 @@ pub(crate) fn read_checkpoint_roots_admitted_v1(
 pub(crate) fn validate_retained_history(
     transaction: &ReadTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    #[cfg(test)]
+    COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(count.get() + 1));
     let Some(history) = read_checkpoint_roots(transaction)? else {
         return Ok(None);
     };
@@ -160,6 +167,8 @@ pub(crate) fn validate_retained_history(
 pub(crate) fn validate_retained_history_for_write(
     transaction: &WriteTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    #[cfg(test)]
+    COMPLETE_HISTORY_VALIDATIONS.with(|count| count.set(count.get() + 1));
     let Some(history) = read_checkpoint_roots_for_write(transaction)? else {
         return Ok(None);
     };

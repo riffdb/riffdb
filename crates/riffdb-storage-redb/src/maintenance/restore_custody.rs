@@ -343,7 +343,40 @@ pub(crate) struct RestoreIntegrityBinding {
     validated_mutation: Option<u64>,
 }
 
+/// Nonserialized continuity of one physically checked private engine.
+/// Retains only native custody, never a reader or operational engine capability.
+pub(crate) struct NativeRestoreValidatedGeneration {
+    shared: Arc<Shared>,
+    engine_generation: u64,
+    mutation_generation: u64,
+}
+
+impl NativeRestoreValidatedGeneration {
+    pub(crate) fn verify(&self, binding: &RestoreIntegrityBinding) -> Result<(), StorageError> {
+        binding.verify()?;
+        if !Arc::ptr_eq(&self.shared, &binding.shared)
+            || self.engine_generation != binding.engine_generation
+            || self.mutation_generation != self.shared.mutation_generation.load(Ordering::Acquire)
+        {
+            self.shared.invalid.store(true, Ordering::Release);
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+}
+
 impl RestoreIntegrityBinding {
+    pub(crate) fn validated_generation(
+        &self,
+    ) -> Result<NativeRestoreValidatedGeneration, StorageError> {
+        self.verify()?;
+        Ok(NativeRestoreValidatedGeneration {
+            shared: Arc::clone(&self.shared),
+            engine_generation: self.engine_generation,
+            mutation_generation: self.shared.mutation_generation.load(Ordering::Acquire),
+        })
+    }
+
     fn verify_owner(&self) -> Result<(), StorageError> {
         let result = (|| {
             RestoreCustody {

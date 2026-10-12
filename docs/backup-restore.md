@@ -489,7 +489,7 @@ through history hydration, complete physical verification and bounded readiness,
 the existing storage/catalog/retained-metadata/bootstrap/allocator joins, and
 fresh staged bearer authentication. Required native compatibility preparation
 uses the existing transformations; formats requiring migration retain complete
-validation afterward. Bounded readiness creates no complete proof, checkpoint,
+validation afterward. Bounded readiness creates no complete semantic-scrub proof, checkpoint,
 registry-completion witness or clean certificate.
 No operational source writer or readiness capability is activated for that
 authorization read. Every immutable reader must close before receipt-authorized
@@ -500,8 +500,12 @@ protocols.
 
 The receipt-authorized incarnation stamp verifies the complete primary, journal
 and marker content seals under the same native custody and uses the existing
-immediate two-phase metadata transaction. After the stamp and observed engine
-close, it verifies immutable artifacts and binds a fresh final content seal.
+immediate two-phase metadata transaction. Its complete retained-history evidence
+is bound to the same private engine and native mutation generation; stamping
+checks transaction-current roots before consuming that evidence. This does not
+grant complete semantic-scrub assurance or journal replay permission. After the
+stamp and observed engine close, it verifies immutable artifacts and binds a
+fresh final content seal.
 Publication retains the existing immutable-backup revalidation, target exclusion,
 verified copies, marker-last rename and fresh post-publication startup. A failed
 check or changed artifact refuses the operation and preserves the immutable

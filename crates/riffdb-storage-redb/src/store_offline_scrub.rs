@@ -50,14 +50,40 @@ impl RedbStore {
     pub(crate) fn verify_materialized_journals(
         &self,
     ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
+        self.verify_materialized_journals_for_restore(None)
+    }
+
+    pub(crate) fn verify_owned_restore_materialized_journals(
+        &self,
+    ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
+        if !self.shared.permits_owned_source_compatibility() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let binding = self
+            .shared
+            .restore_integrity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.verify_materialized_journals_for_restore(Some(binding))
+    }
+
+    fn verify_materialized_journals_for_restore(
+        &self,
+        binding: Option<&crate::maintenance::RestoreIntegrityBinding>,
+    ) -> Result<Option<crate::journal::VerifiedMaterializedHistory>, StorageError> {
         let read = self
             .shared
             .database
             .begin_read()
             .map_err(transaction_error)?;
         let database_id = read_identity_from_read_transaction(&read)?;
-        let history = crate::journal::VerifiedMaterializedHistory::capture(read)
-            .map_err(recovery_journal_error)?;
+        let history = match binding {
+            Some(binding) => {
+                crate::journal::VerifiedMaterializedHistory::capture_owned_restore(read, binding)
+            }
+            None => crate::journal::VerifiedMaterializedHistory::capture(read),
+        }
+        .map_err(recovery_journal_error)?;
         // No replay, anchor advance, extent sealing, spare removal or capacity
         // normalization is permitted. Pending recovery needs the ordinary owner.
         for path in [

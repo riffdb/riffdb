@@ -2,7 +2,8 @@
 
 Status: ADR-0293 was accepted exactly as written in session on 2026-10-12.
 The single-engine stamp/close foundation is implemented and focused checks pass.
-Complete-history proof reuse and delayed HISTORY hydration remain pending.
+Complete-history proof reuse into stamping is implemented; watermark reuse and
+delayed HISTORY hydration remain pending.
 ADR-0290, ADR-0291 and ADR-0292
 remain accepted. WP-825 and WP-826 remain open.
 
@@ -33,6 +34,28 @@ neither the whole gate nor campaign qualification. Complete transaction-current
 history validation still runs here; proof reuse and discarded-receipt hydration
 avoidance have not been implemented by this checkpoint. Full acceptance, final
 CI, crash-matrix verification and both campaigns remain pending.
+
+## Complete-history proof checkpoint
+
+A private constructor now performs the entire original retained-history check
+and binds its result to the checked native engine, original custody and mutation
+generation. Bounded ordinary readiness carries that evidence separately from
+its assurance and immutable reader. Exact materialized-journal inspection stays
+unchanged. After all readers are released, the stamp verifies its current bounded
+roots and binding, retains the existing admission/lifecycle preflight, and
+consumes the evidence before mutation. The new canonical RestoreAnchor still
+receives complete validation. Legacy complete and archive construction retain
+their original protocols.
+
+Three constructor/ownership tests, three readiness tests, 34 custody and
+compatibility tests, 12 stamp compatibility tests and the real publication
+test pass on the required host, alongside the ordinary release daemon build.
+The tests reject valid terminal roots with a corrupt middle receipt, an
+unclassified native commit and rebinding to another owner. The stamp count
+asserts that only the new anchor needs another full walk. The faithful whole
+60-second gate still fails during restore; the component attribution is pending.
+This checkpoint does not implement watermark proof reuse, avoid predecessor
+HISTORY serialization, qualify final CI or start either campaign.
 
 ## Measured remaining work
 

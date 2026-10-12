@@ -4401,6 +4401,7 @@ pub(crate) fn recover_journal_path_with_media(
 /// This has no serialized representation, mutation authority or public selector.
 pub(crate) struct VerifiedMaterializedHistory {
     read: ReadTransaction,
+    restore: Option<crate::restore_history::CompleteRestoreHistory>,
 }
 
 impl VerifiedMaterializedHistory {
@@ -4413,7 +4414,31 @@ impl VerifiedMaterializedHistory {
         crate::changelog_v3_roots::validate_retained_history(&read)
             .map_err(|_| JournalIoError::Corrupt)?
             .ok_or(JournalIoError::Corrupt)?;
-        Ok(Some(Self { read }))
+        Ok(Some(Self {
+            read,
+            restore: None,
+        }))
+    }
+
+    pub(crate) fn capture_owned_restore(
+        read: ReadTransaction,
+        binding: &crate::maintenance::RestoreIntegrityBinding,
+    ) -> Result<Option<Self>, JournalIoError> {
+        let Some(restore) = crate::restore_history::CompleteRestoreHistory::capture(&read, binding)
+            .map_err(|_| JournalIoError::Corrupt)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            read,
+            restore: Some(restore),
+        }))
+    }
+
+    pub(crate) fn take_restore_history(
+        &mut self,
+    ) -> Option<crate::restore_history::CompleteRestoreHistory> {
+        self.restore.take()
     }
 
     pub(crate) fn verify_journal(
