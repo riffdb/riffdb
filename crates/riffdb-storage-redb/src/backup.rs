@@ -694,28 +694,163 @@ pub(crate) struct OwnedValidatedMaterialization {
     materialization: OwnedMaterialization,
 }
 
-/// Native byte binding established after complete validation, before any
-/// authorization reader is handed out. Checks use the original retained FDs.
+/// Full content seals and operation-local continuity evidence. Metadata only
+/// admits immutable handoffs; every mutation/publication boundary checks bytes.
 struct OwnedArtifactSeals {
     primary: BackupIntegrityChecksumV1,
     journal: BackupIntegrityChecksumV1,
     marker: BackupIntegrityChecksumV1,
+    continuity: [Option<ArtifactContinuity>; 3],
+    mutation_generation: u64,
+    sealed: Vec<OwnedExtentSeal>,
+}
+
+struct OwnedExtentSeal {
+    generation: u64,
+    checksum: BackupIntegrityChecksumV1,
+    continuity: Option<ArtifactContinuity>,
+}
+
+/// Unix descriptor identity and write observations; never a content proof.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ArtifactContinuity {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl ArtifactContinuity {
+    fn read(file: &File) -> Result<Option<Self>, StorageError> {
+        let metadata = file.metadata().map_err(io_unavailable)?;
+        if !metadata.is_file() {
+            return Err(corrupt());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Some(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                length: metadata.len(),
+                modified: (metadata.mtime(), metadata.mtime_nsec()),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            }))
+        }
+        #[cfg(not(unix))]
+        Ok(None)
+    }
 }
 
 impl OwnedArtifactSeals {
     fn capture(owner: &OwnedMaterialization) -> Result<Self, StorageError> {
-        Ok(Self {
-            primary: owner.primary.checksum()?,
-            journal: owner.journal.checksum()?,
-            marker: owner.marker.checksum()?,
-        })
-    }
-    fn verify(&self, owner: &OwnedMaterialization) -> Result<(), StorageError> {
-        if owner.primary.checksum()? != self.primary
-            || owner.journal.checksum()? != self.journal
-            || owner.marker.checksum()? != self.marker
+        let mutation_generation = owner.custody.mutation_generation()?;
+        let continuity = owner.artifact_continuity()?;
+        let primary = owner.primary.checksum()?;
+        let journal = owner.journal.checksum()?;
+        let marker = owner.marker.checksum()?;
+        let paths = sealed_extents_beside(owner.primary.path())?;
+        // Known history hydration consumes backup extents before this proof.
+        // Seal the actual post-preparation inventory, not its predecessor's
+        // manifest ordinals. Subsequent handoffs must retain this exact set.
+        let mut sealed = Vec::with_capacity(paths.len());
+        for (generation, path) in &paths {
+            let file = owner.open_extent(path)?;
+            let before = ArtifactContinuity::read(&file)?;
+            let checksum = sha256_reader(&file)?;
+            crate::journal::read_sealed_extent_with_media(
+                &crate::media::RealJournalMedia,
+                path,
+                owner.manifest.database_id(),
+            )
+            .map_err(|_| corrupt())?;
+            if ArtifactContinuity::read(&file)? != before {
+                return Err(corrupt());
+            }
+            sealed.push(OwnedExtentSeal {
+                generation: *generation,
+                checksum,
+                continuity: before,
+            });
+        }
+        if owner.artifact_continuity()? != continuity
+            || owner.custody.mutation_generation()? != mutation_generation
         {
             return Err(corrupt());
+        }
+        Ok(Self {
+            primary,
+            journal,
+            marker,
+            continuity,
+            mutation_generation,
+            sealed,
+        })
+    }
+
+    fn verify(&self, owner: &OwnedMaterialization) -> Result<(), StorageError> {
+        if owner.custody.mutation_generation()? != self.mutation_generation {
+            return Err(corrupt());
+        }
+        let actual = owner.artifact_continuity()?;
+        for ((expected, actual), (artifact, checksum)) in self.continuity.iter().zip(actual).zip([
+            (&owner.primary, &self.primary),
+            (&owner.journal, &self.journal),
+            (&owner.marker, &self.marker),
+        ]) {
+            match expected {
+                Some(expected) if Some(*expected) != actual => return Err(corrupt()),
+                None if artifact.checksum()? != *checksum => return Err(corrupt()),
+                _ => {}
+            }
+        }
+        self.verify_extents(owner, false)?;
+        if owner.artifact_continuity()? != actual
+            || owner.custody.mutation_generation()? != self.mutation_generation
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    fn verify_full(&self, owner: &OwnedMaterialization) -> Result<(), StorageError> {
+        self.verify(owner)?;
+        if owner.primary.checksum()? != self.primary {
+            return Err(corrupt());
+        }
+        self.verify_immutable(owner)?;
+        self.verify(owner)
+    }
+
+    /// A known primary transition cannot authorize changes to immutable files.
+    fn verify_immutable(&self, owner: &OwnedMaterialization) -> Result<(), StorageError> {
+        if owner.journal.checksum()? != self.journal || owner.marker.checksum()? != self.marker {
+            return Err(corrupt());
+        }
+        self.verify_extents(owner, true)
+    }
+
+    fn verify_extents(&self, owner: &OwnedMaterialization, full: bool) -> Result<(), StorageError> {
+        let paths = sealed_extents_beside(owner.primary.path())?;
+        if paths.len() != self.sealed.len() {
+            return Err(corrupt());
+        }
+        for ((generation, path), seal) in paths.iter().zip(&self.sealed) {
+            if *generation != seal.generation {
+                return Err(corrupt());
+            }
+            let file = owner.open_extent(path)?;
+            let before = ArtifactContinuity::read(&file)?;
+            if seal.continuity.is_some() && before != seal.continuity {
+                return Err(corrupt());
+            }
+            if (full || seal.continuity.is_none()) && sha256_reader(&file)? != seal.checksum {
+                return Err(corrupt());
+            }
+            if ArtifactContinuity::read(&file)? != before {
+                return Err(corrupt());
+            }
         }
         Ok(())
     }
@@ -847,7 +982,7 @@ impl OwnedAuthorizationMaterialization {
         // Bytes checked immediately before the only known engine-close
         // transition. That transition may clean allocator/header state, never
         // substitute an earlier changed primary, journal or marker artifact.
-        materialization.verify()?;
+        materialization.verify_full_seal()?;
         shared.verify_private_restore_integrity()?;
         drop(shared);
         materialization.custody.freeze_prepared_artifact()?;
@@ -855,11 +990,9 @@ impl OwnedAuthorizationMaterialization {
             .validated_seal
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if materialization.journal.checksum()? != prior.journal
-            || materialization.marker.checksum()? != prior.marker
-        {
+        if let Err(error) = prior.verify_immutable(&materialization) {
             materialization.custody.invalidate();
-            return Err(corrupt());
+            return Err(error);
         }
         materialization.validated_seal = Some(OwnedArtifactSeals::capture(&materialization)?);
         materialization.verify()?;
@@ -875,7 +1008,7 @@ impl OwnedClosedMaterialization {
     /// This retains only native custody, never authorization or publication
     /// evidence. Complete validation must follow the known archive writes.
     pub(crate) fn into_archive_preparation(self) -> Result<OwnedArchivePreparation, StorageError> {
-        self.verify()?;
+        self.materialization.verify_full_seal()?;
         self.materialization
             .custody
             .begin_controlled_closed_mutation()?;
@@ -889,7 +1022,7 @@ impl OwnedClosedMaterialization {
         &mut self,
         incarnation: u64,
     ) -> Result<(), StorageError> {
-        self.verify()?;
+        self.materialization.verify_full_seal()?;
         if incarnation < HISTORY_INCARNATION_INITIAL {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
@@ -913,11 +1046,7 @@ impl OwnedClosedMaterialization {
                 None,
             )?;
             self.materialization.custody.freeze_prepared_artifact()?;
-            if self.materialization.journal.checksum()? != old.journal
-                || self.materialization.marker.checksum()? != old.marker
-            {
-                return Err(corrupt());
-            }
+            old.verify_immutable(&self.materialization)?;
             self.materialization.validated_seal =
                 Some(OwnedArtifactSeals::capture(&self.materialization)?);
             self.materialization.verify()?;
@@ -932,6 +1061,9 @@ impl OwnedClosedMaterialization {
 
     pub(crate) fn verify(&self) -> Result<(), StorageError> {
         self.materialization.verify()
+    }
+    pub(crate) fn verify_publication_seal(&self) -> Result<(), StorageError> {
+        self.materialization.verify_full_seal()
     }
     pub(crate) fn history_incarnation(&self) -> u64 {
         self.history_incarnation
@@ -1313,6 +1445,44 @@ impl OwnedMaterialization {
         result
     }
 
+    fn artifact_continuity(&self) -> Result<[Option<ArtifactContinuity>; 3], StorageError> {
+        Ok([
+            ArtifactContinuity::read(self.primary.private_file()?)?,
+            ArtifactContinuity::read(self.journal.private_file()?)?,
+            ArtifactContinuity::read(self.marker.private_file()?)?,
+        ])
+    }
+
+    fn open_extent(&self, path: &Path) -> Result<File, StorageError> {
+        let (parent, _) = self
+            .primary
+            .identity
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        parent.verify()?;
+        let name = path.file_name().ok_or_else(corrupt)?;
+        let file = parent.open_file(name)?.into_std();
+        if !parent.regular_file_matches(name, &file)? {
+            return Err(corrupt());
+        }
+        parent.verify()?;
+        Ok(file)
+    }
+
+    fn verify_full_seal(&self) -> Result<(), StorageError> {
+        let result = (|| {
+            self.verify()?;
+            self.validated_seal
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .verify_full(self)
+        })();
+        if result.is_err() {
+            self.custody.invalidate();
+        }
+        result
+    }
+
     fn pin_prepared_read(&mut self) -> Result<PreparedMaterializationRead, StorageError> {
         self.verify()?;
         let engine = self
@@ -1445,6 +1615,7 @@ struct MaterializationTestBarrier {
 
 #[cfg(test)]
 std::thread_local! {
+    static MATERIALIZATION_CHECKSUM_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static MATERIALIZATION_TEST_BARRIER: std::cell::RefCell<Option<MaterializationTestBarrier>> = const {
         std::cell::RefCell::new(None)
     };
@@ -3479,6 +3650,13 @@ impl MaterializationArtifact {
 
     fn checksum(&self) -> Result<BackupIntegrityChecksumV1, StorageError> {
         self.verify()?;
+        #[cfg(test)]
+        MATERIALIZATION_CHECKSUM_PASSES.with(|passes| passes.set(passes.get() + 1));
+        let before = self
+            .identity
+            .as_ref()
+            .map(|(_, file)| ArtifactContinuity::read(file))
+            .transpose()?;
         let checksum = match &self.identity {
             Some((_, file)) => {
                 use std::io::{Seek, SeekFrom};
@@ -3489,6 +3667,15 @@ impl MaterializationArtifact {
             None => sha256_file(self.path())?,
         };
         self.verify()?;
+        if self
+            .identity
+            .as_ref()
+            .map(|(_, file)| ArtifactContinuity::read(file))
+            .transpose()?
+            != before
+        {
+            return Err(corrupt());
+        }
         Ok(checksum)
     }
 
@@ -4386,6 +4573,212 @@ mod tests {
     fn owned_materialization_validated_bytes_refuse_changed_marker() {
         owned_materialization_validated_byte_change_refused(FORMAT_MARKER_ARTIFACT_FILE_NAME);
     }
+    // req: REC-001, REC-006, END-001
+    #[cfg(unix)]
+    #[test]
+    fn owned_materialization_immutable_handoffs_reuse_seal_without_content_reads() {
+        let root = TestRoot::new("owned-native-continuity");
+        let (_, backup, _) = create_backup(&root);
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        MATERIALIZATION_CHECKSUM_PASSES.with(|passes| passes.set(0));
+        for _ in 0..10 {
+            validated.materialization.verify().unwrap();
+        }
+        assert_eq!(
+            MATERIALIZATION_CHECKSUM_PASSES.with(std::cell::Cell::get),
+            0
+        );
+        validated.materialization.verify_full_seal().unwrap();
+        assert_eq!(
+            MATERIALIZATION_CHECKSUM_PASSES.with(std::cell::Cell::get),
+            3
+        );
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_seals_post_hydration_extent_inventory() {
+        let root = TestRoot::new("owned-native-hydrated-inventory");
+        let source = root.join("source.redb");
+        initialize(&source);
+        crate::journal::reset_journal(
+            &crate::journal::journal_path(&source),
+            &crate::journal::JournalFileHeader::new(database_id(), None, [0; 32]),
+        )
+        .unwrap();
+        fs::rename(
+            crate::journal::journal_path(&source),
+            crate::journal::sealing_journal_path(&source),
+        )
+        .unwrap();
+        crate::journal::seal_extent_with_media(
+            &crate::media::RealJournalMedia,
+            &source,
+            database_id(),
+        )
+        .unwrap()
+        .unwrap();
+        crate::journal::recreate_missing_active_with_media(
+            &crate::media::RealJournalMedia,
+            &source,
+        )
+        .unwrap();
+        let backup = root.join("backup");
+        let manifest = RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        assert!(
+            manifest.checksums().len() > 3,
+            "the immutable backup includes a sealed extent"
+        );
+        let before = validate_immutable_backup(&backup).unwrap();
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert!(
+            sealed_extents_beside(owned.primary.path())
+                .unwrap()
+                .is_empty(),
+            "known hydration consumes copied extents before validation"
+        );
+        let validated = owned
+            .validate_complete(owned_validation_inputs())
+            .expect("post-hydration inventory must admit unchanged validated materialization");
+        let (owner, parts) = validated.into_authorization().unwrap();
+        drop(parts);
+        let mut closed = owner.close().unwrap();
+        closed.stamp_history_incarnation(2).unwrap();
+        closed.verify_publication_seal().unwrap();
+        assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_continuity_refuses_an_added_extent() {
+        let root = TestRoot::new("owned-native-added-extent");
+        let closed = closed_continuity_fixture(&root);
+        fs::write(
+            crate::journal::sealed_journal_path(closed.materialization.primary.path(), 99),
+            b"unclassified-extent",
+        )
+        .unwrap();
+        assert!(closed.verify().is_err());
+        assert!(closed.verify_publication_seal().is_err());
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    fn closed_continuity_fixture(root: &TestRoot) -> OwnedClosedMaterialization {
+        let (_, backup, _) = create_backup(root);
+        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let validated = owned.validate_complete(owned_validation_inputs()).unwrap();
+        let (owner, parts) = validated.into_authorization().unwrap();
+        drop(parts);
+        owner.close().unwrap()
+    }
+
+    fn change_same_length_preserving_mtime(path: &Path) {
+        use std::io::{Seek, SeekFrom};
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+        let mut byte = [0];
+        file.read_exact(&mut byte).unwrap();
+        byte[0] ^= 1;
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&byte).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        file.sync_all().unwrap();
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_unsupported_continuity_falls_back_to_content() {
+        let root = TestRoot::new("owned-native-continuity-fallback");
+        let mut closed = closed_continuity_fixture(&root);
+        closed
+            .materialization
+            .validated_seal
+            .as_mut()
+            .unwrap()
+            .continuity = [None; 3];
+        MATERIALIZATION_CHECKSUM_PASSES.with(|passes| passes.set(0));
+        closed.verify().unwrap();
+        assert_eq!(
+            MATERIALIZATION_CHECKSUM_PASSES.with(std::cell::Cell::get),
+            3
+        );
+        change_same_length_preserving_mtime(closed.materialization.journal.path());
+        assert!(closed.verify().is_err());
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_full_boundary_refuses_even_unchanged_metadata() {
+        let root = TestRoot::new("owned-native-full-seal");
+        let mut closed = closed_continuity_fixture(&root);
+        change_same_length_preserving_mtime(closed.materialization.journal.path());
+        // Model a platform whose metadata observations cannot distinguish the
+        // write. This is deliberately not a content proof or a new seal.
+        closed
+            .materialization
+            .validated_seal
+            .as_mut()
+            .unwrap()
+            .continuity = closed.materialization.artifact_continuity().unwrap();
+        assert!(closed.verify_publication_seal().is_err());
+        assert!(
+            closed.verify().is_err(),
+            "a bad full seal permanently invalidates custody"
+        );
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[cfg(unix)]
+    #[test]
+    fn owned_materialization_continuity_refuses_same_length_with_restored_mtime() {
+        let root = TestRoot::new("owned-native-restored-mtime");
+        let closed = closed_continuity_fixture(&root);
+        change_same_length_preserving_mtime(closed.materialization.journal.path());
+        assert!(closed.verify().is_err());
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn owned_materialization_continuity_refuses_stale_generation() {
+        let root = TestRoot::new("owned-native-stale-generation");
+        let mut closed = closed_continuity_fixture(&root);
+        closed
+            .materialization
+            .validated_seal
+            .as_mut()
+            .unwrap()
+            .mutation_generation += 1;
+        assert!(closed.verify().is_err());
+        assert!(closed.verify_publication_seal().is_err());
+    }
+
     fn owned_materialization_validated_byte_change_refused(artifact: &str) {
         use std::io::Write;
         {

@@ -266,7 +266,7 @@ impl PinnedDirectory {
     }
 
     /// Opens one direct regular-file child through the retained capability.
-    pub(super) fn open_file(&self, name: &OsStr) -> Result<CapFile, StorageError> {
+    pub(crate) fn open_file(&self, name: &OsStr) -> Result<CapFile, StorageError> {
         self.open_file_with(name, CapOpenOptions::new().read(true))
     }
 

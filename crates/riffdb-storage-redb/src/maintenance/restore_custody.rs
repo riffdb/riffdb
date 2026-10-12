@@ -133,6 +133,11 @@ impl RestoreCustody {
         Ok(owner)
     }
 
+    pub(crate) fn mutation_generation(&self) -> Result<u64, StorageError> {
+        self.verify_identity()?;
+        Ok(self.shared.mutation_generation.load(Ordering::Acquire))
+    }
+
     pub(crate) fn cancellation(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.shared.cancellation)
     }

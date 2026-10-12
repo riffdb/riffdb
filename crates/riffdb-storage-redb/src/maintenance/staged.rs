@@ -702,6 +702,9 @@ impl RedbSealedStagedRestore {
             return Err(corrupt());
         }
         self.backup_directory_guard.verify()?;
+        if let Some(owner) = &self.native_closed {
+            owner.verify_publication_seal()?;
+        }
         self.verify_sealed_artifacts()?;
         let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
         let staged_format_marker_name = self
