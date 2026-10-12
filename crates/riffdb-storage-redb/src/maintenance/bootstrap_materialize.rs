@@ -2,6 +2,7 @@
 //! publication, source-writer, or follower-applier capability.
 use super::{RedbBootstrapMaterializationInput, path_guard::PinnedDirectory};
 use crate::error::storage_error;
+use crate::native_file_custody::LegacyFileCustody;
 use redb::{
     Database, Durability, ReadableDatabase, ReadableTableMetadata, TableDefinition, TableHandle,
 };
@@ -48,7 +49,7 @@ pub struct RedbBootstrapMaterializer {
 struct ConstructionOwner {
     directory: PinnedDirectory,
     file: File,
-    lock: File,
+    lock: LegacyFileCustody,
     path: PathBuf,
 }
 impl ConstructionOwner {
@@ -59,7 +60,7 @@ impl ConstructionOwner {
             .regular_file_matches(OsStr::new(FILE), &self.file)?
             || !self
                 .directory
-                .regular_file_matches(OsStr::new(LOCK), &self.lock)?
+                .regular_file_matches(OsStr::new(LOCK), self.lock.file())?
             || self.directory.regular_file_length(OsStr::new(LOCK))? != Some(0)
         {
             return Err(corrupt());
@@ -78,8 +79,8 @@ impl RedbBootstrapMaterializer {
         let directory = parent.create_private_child(path.file_name().ok_or_else(corrupt)?)?;
         crash_edge("initial-directory-created");
         let lock = directory.create_new_file(OsStr::new(LOCK))?.into_std();
-        lock.try_lock().map_err(unavailable)?;
-        lock.sync_all().map_err(unavailable)?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(unavailable)?;
+        lock.file().sync_all().map_err(unavailable)?;
         let database_path = path.join(FILE);
         let preflight = crate::preflight_durable_format_path(&database_path).map_err(invalid)?;
         crate::format_preflight::publish_initialized_current_marker_with_media(
@@ -168,7 +169,7 @@ impl RedbBootstrapMaterializer {
             return Err(corrupt());
         }
         let lock = directory.open_file_read_write(OsStr::new(LOCK))?.into_std();
-        lock.try_lock().map_err(unavailable)?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(unavailable)?;
         let database_path = path.join(FILE);
         if crate::preflight_durable_format_path(&database_path).map_err(invalid)?
             != crate::RedbDurableFormatPreflight::OpenCurrent
@@ -539,4 +540,33 @@ fn check_cancellation(flag: Option<&std::sync::atomic::AtomicBool>) -> Result<()
         return Err(storage_error(StorageErrorKind::Unavailable));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    // req: REC-001, REP-002, REP-003
+    #[test]
+    fn construction_close_releases_lock_with_an_inherited_description() {
+        let scope = crate::test_path::ScopedDirectory::new("construction-inherited-custody");
+        let transfer = crate::maintenance::bootstrap_materialize_tests::transfer(&scope);
+        let root = scope.join("candidate");
+        let owner = RedbBootstrapMaterializer::create(&root, transfer).unwrap();
+        let inherited = owner.owner.lock.file().try_clone().unwrap();
+        let observer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(LOCK))
+            .unwrap();
+        assert!(matches!(
+            observer.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(owner);
+        observer
+            .try_lock()
+            .expect("ended construction custody must release an inherited flock");
+        observer.unlock().unwrap();
+        assert_eq!(inherited.metadata().unwrap().len(), 0);
+    }
 }

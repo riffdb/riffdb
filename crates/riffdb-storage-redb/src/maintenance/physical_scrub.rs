@@ -20,7 +20,7 @@ pub(crate) struct PhysicalScrubCopy {
     parent: PinnedDirectory,
     source_name: OsString,
     source: File,
-    source_backend: redb::backends::FileBackend,
+    _source_custody: crate::native_file_custody::NativeFileCustody,
     marker_name: OsString,
     marker: File,
     directory: PinnedDirectory,
@@ -45,16 +45,9 @@ impl PhysicalScrubCopy {
         let source = parent.open_file_read_write(&source_name)?.into_std();
         // Exclude older flock-based engines and the reviewed range-lock engine.
         // Neither constructor nor lock acquisition opens or repairs a database.
-        source.try_lock().map_err(unavailable)?;
-        let source_backend =
-            redb::backends::FileBackend::new(source.try_clone().map_err(unavailable)?)
-                .map_err(database_error)?;
-        if !source_backend
-            .try_lock_range(Bound::Unbounded, Bound::Unbounded)
-            .map_err(unavailable)?
-        {
-            return Err(unavailable(()));
-        }
+        let source_custody = crate::native_file_custody::NativeFileCustody::acquire(
+            source.try_clone().map_err(unavailable)?,
+        )?;
         let marker_name = crate::durable_format_marker_path(path)
             .file_name()
             .ok_or_else(corrupt)?
@@ -92,7 +85,7 @@ impl PhysicalScrubCopy {
             parent,
             source_name,
             source,
-            source_backend,
+            _source_custody: source_custody,
             marker_name,
             marker,
             directory,
@@ -265,7 +258,6 @@ impl Read for CancellableReader {
 impl Drop for PhysicalScrubCopy {
     fn drop(&mut self) {
         let _ = self.cleanup();
-        let _ = self.source_backend.close();
     }
 }
 
@@ -371,4 +363,70 @@ fn corrupt() -> StorageError {
 }
 fn unavailable<T>(_: T) -> StorageError {
     storage_error(StorageErrorKind::Unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riffdb_storage_api::DatabaseInitializationPort;
+
+    // req: REC-001, REC-005, STO-032
+    #[test]
+    fn scrub_releases_native_locks_with_an_inherited_description_on_every_exit() {
+        for exit in ["drop", "finish", "cancel"] {
+            let scope = crate::test_path::ScopedDirectory::new("scrub-inherited-lock");
+            let path = scope.join("source.redb");
+            let mut store = crate::RedbStore::open(&path).unwrap();
+            store
+                .initialize_database(
+                    riffdb_types::DatabaseId::from_unix_milliseconds_and_random(
+                        1_700_000_000_000,
+                        [0x6d; 10],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            drop(store);
+            let before = std::fs::read(&path).unwrap();
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let copy = PhysicalScrubCopy::capture(&path, Arc::clone(&cancellation)).unwrap();
+            // A descriptor inherited during concurrent process creation shares
+            // the same open-file description. Retain that exact ownership
+            // deterministically, without a timing-dependent process schedule.
+            let inherited = copy.source.try_clone().unwrap();
+            let observer = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            assert!(matches!(
+                observer.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+            match exit {
+                "finish" => copy.finish().unwrap(),
+                "cancel" => {
+                    cancellation.store(true, Ordering::Release);
+                    assert_eq!(
+                        copy.finish().unwrap_err().kind(),
+                        StorageErrorKind::Unavailable
+                    );
+                }
+                _ => drop(copy),
+            }
+            observer
+                .try_lock()
+                .expect("completed scrub must release flock despite an inherited description");
+            observer.unlock().unwrap();
+            let backend = redb::backends::FileBackend::new(observer).unwrap();
+            assert!(
+                backend
+                    .try_lock_range(Bound::Unbounded, Bound::Unbounded)
+                    .unwrap()
+            );
+            backend.close().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(inherited.metadata().unwrap().len(), before.len() as u64);
+        }
+    }
 }

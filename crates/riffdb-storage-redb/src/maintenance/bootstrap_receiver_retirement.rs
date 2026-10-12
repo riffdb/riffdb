@@ -3,6 +3,7 @@
 use super::*;
 use crate::maintenance::FollowerNamespace;
 use riffdb_storage_api::ChangelogHistoryStateV3;
+use std::fs::File;
 
 impl RedbBootstrapReceiverRepository {
     /// Recovers the original attachment manifest after validated live-follower
@@ -99,6 +100,7 @@ impl ReceiverRepositoryInner {
 struct Scratch {
     directory: PinnedDirectory,
     files: Vec<(&'static str, File)>,
+    _custody: Vec<crate::native_file_custody::LegacyFileCustody>,
 }
 impl Scratch {
     fn prepare(directory: PinnedDirectory, candidate: bool) -> Result<Self, StorageError> {
@@ -121,11 +123,17 @@ impl Scratch {
             return Err(corrupt());
         }
         let mut files = Vec::with_capacity(entries.len());
+        let mut custody = Vec::with_capacity(entries.len());
         for &name in allowed {
             if entries.iter().any(|(entry, _)| entry == OsStr::new(name)) {
                 let file = directory.open_file(OsStr::new(name))?.into_std();
                 if !candidate || name == "construction.lock" {
-                    file.try_lock().map_err(|_| unavailable())?;
+                    custody.push(
+                        crate::native_file_custody::LegacyFileCustody::acquire(
+                            file.try_clone().map_err(|_| unavailable())?,
+                        )
+                        .map_err(|_| unavailable())?,
+                    );
                 }
                 files.push((name, file));
             }
@@ -136,7 +144,11 @@ impl Scratch {
         {
             return Err(corrupt());
         }
-        Ok(Self { directory, files })
+        Ok(Self {
+            directory,
+            files,
+            _custody: custody,
+        })
     }
 
     fn remove(

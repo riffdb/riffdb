@@ -1,5 +1,6 @@
 //! Append-only external archives; no database writer or acknowledgement port.
 use super::path_guard::PinnedDirectory;
+use crate::native_file_custody::LegacyFileCustody;
 use riffdb_storage_api::{
     ARCHIVE_MANIFEST_V1_BYTES, ArchiveConsumerErrorV1 as Error, ArchiveEncryptionPostureV1,
     ArchiveFrameSinkV1, ArchiveFrameV1, ArchiveManifestV1, ArchiveRestoreSelectionV3,
@@ -26,7 +27,7 @@ const CURRENT_TEMP: &str = "current.tmp";
 /// All reads and writes stay beneath one private retained directory capability.
 pub struct RedbArchiveRepository {
     directory: PinnedDirectory,
-    lock: File,
+    lock: LegacyFileCustody,
     lineage: ChangelogLineageV3,
     backup_fence: ChangelogHistoryPointV3,
     backup_digest: [u8; 32],
@@ -199,8 +200,8 @@ impl RedbArchiveRepository {
             }
             _ => return Err(Error::InvalidManifest),
         };
-        lock.try_lock().map_err(|_| Error::SinkUnavailable)?;
-        lock.sync_all().map_err(io)?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(|_| Error::SinkUnavailable)?;
+        lock.file().sync_all().map_err(io)?;
         directory.sync().map_err(storage)?;
         let mut repository = Self {
             directory,
@@ -291,10 +292,10 @@ impl RedbArchiveRepository {
 
     fn verify(&self) -> Result<(), Error> {
         self.directory.verify_private().map_err(storage)?;
-        if self.lock.metadata().map_err(io)?.len() != 0
+        if self.lock.file().metadata().map_err(io)?.len() != 0
             || !self
                 .directory
-                .regular_file_matches(OsStr::new(LOCK), &self.lock)
+                .regular_file_matches(OsStr::new(LOCK), self.lock.file())
                 .map_err(storage)?
         {
             return Err(Error::ResyncRequired);
@@ -709,10 +710,44 @@ fn storage(error: StorageError) -> Error {
 fn io(_: std::io::Error) -> Error {
     Error::SinkUnavailable
 }
+
 fn cancelled(cancellation: &AtomicBool) -> Result<(), Error> {
     if cancellation.load(Ordering::Acquire) {
         Err(Error::ResyncRequired)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+
+    // req: REC-001, REC-005, REP-007, AFC-007
+    #[test]
+    fn archive_close_releases_inventory_lock_with_an_inherited_description() {
+        let scope = crate::test_path::ScopedDirectory::new("archive-inherited-lock");
+        let path = scope.join("archive");
+        let (lineage, fence) = crate::maintenance::archive_repository_tests::fixture::fixture();
+        let open = || {
+            RedbArchiveRepository::open(
+                &path,
+                lineage,
+                fence,
+                [0x33; 32],
+                ArchiveEncryptionPostureV1::Unencrypted,
+            )
+        };
+        let repository = open().unwrap();
+        let inherited = repository.lock.file().try_clone().unwrap();
+        assert!(open().is_err());
+        drop(repository);
+        let reopened = open().expect(
+            "closed archive must release inventory custody despite an inherited description",
+        );
+        assert_eq!(reopened.position(), fence);
+        assert!(reopened.head().is_none());
+        assert_eq!(inherited.metadata().unwrap().len(), 0);
+        assert!(!path.join(CURRENT).exists());
     }
 }

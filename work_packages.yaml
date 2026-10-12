@@ -28672,6 +28672,24 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      Native lock-lifetime correction under standing necessary-fix approval:
+      preserve the failed combined-source CI and concurrent storage repeats.
+      Exact isolated tests pass, while a diagnostic reproduction identifies
+      DatabaseAlreadyOpen during bootstrap publication. A deterministic cloned
+      descriptor proves completed offline verification retains legacy flock
+      until the inherited description closes. Use one scoped raw-file custody
+      owner for scrub and format upgrade, explicitly releasing legacy and native
+      range locks on completion and refusal. Apply the same scoped legacy
+      owner to archive/bootstrap inventories, construction and follower scratch,
+      cleanup, staged targets and publication; retain shared reconciliation
+      and actual clone lifetimes. Private restore and maintenance acquisition
+      also release partial owners on refusal. Preserve another native owner's
+      lock when admission fails. Return the original upgrade custody assertions
+      to the concurrent suite without test-only child isolation. Preserve all
+      validation, durable bytes, public refusal classes, deadlines and measured
+      gates. Required-host checks and fresh committed-source full CI remain
+      required; neither real rehearsal has started.
+    - >-
       Build hygiene consequence under standing approval for necessary fixes:
       optimize only the existing sha2 dependency in dev and test profiles.
       The unchanged promoted backup/restore regression fails in full CI and
@@ -29122,6 +29140,8 @@ work_packages:
       original complete custody proof after exec in one child; preserve all
       assertions, native fail-closed locking and original suite concurrency.
       Preserve the failed suite and repeat concurrent/process checks.
+      This historical fixture isolation is superseded by the native scoped
+      lock-release correction; the original proof now runs concurrently.
     - >-
       D-003 implementation choices under ADR-0279 decisions 2 and 6: refresh an
       already exact fixed byte prefix on the original cadence using a current

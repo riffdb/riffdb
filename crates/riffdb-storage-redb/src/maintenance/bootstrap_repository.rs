@@ -3,6 +3,7 @@
 //! after the exact bootstrap-to-follower hold handoff has completed durably.
 use super::{bootstrap_source::*, path_guard::PinnedDirectory};
 use crate::RedbOperationalPorts;
+use crate::native_file_custody::LegacyFileCustody;
 use riffdb_storage_api::{
     ChangelogCursorErrorV3 as Refusal, ChangelogHistoryPointV3,
     ReplicationBootstrapManifestV1 as Manifest, ReplicationSourceHoldIdV1 as HoldId, StorageError,
@@ -10,7 +11,6 @@ use riffdb_storage_api::{
 };
 use std::{
     ffi::OsStr,
-    fs::File,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -30,7 +30,7 @@ pub(super) struct RepositoryInner {
     _source_control: Arc<Mutex<crate::store::ReplicationSourceControl>>,
     path: PathBuf,
     directory: PinnedDirectory,
-    lock: File,
+    lock: LegacyFileCustody,
     admission: Mutex<()>,
 }
 impl RedbOperationalPorts {
@@ -57,8 +57,8 @@ impl RedbOperationalPorts {
             Some(0) => directory.open_file_read_write(OsStr::new(LOCK))?.into_std(),
             Some(_) => return Err(corrupt()),
         };
-        lock.try_lock().map_err(|_| unavailable())?;
-        lock.sync_all().map_err(|_| unavailable())?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(|_| unavailable())?;
+        lock.file().sync_all().map_err(|_| unavailable())?;
         directory.sync()?;
         let source_control = self.shared_source_control()?;
         let inner = Arc::new(RepositoryInner {
@@ -81,7 +81,7 @@ impl RepositoryInner {
         if self.directory.regular_file_length(OsStr::new(LOCK))? != Some(0)
             || !self
                 .directory
-                .regular_file_matches(OsStr::new(LOCK), &self.lock)?
+                .regular_file_matches(OsStr::new(LOCK), self.lock.file())?
         {
             return Err(corrupt());
         }
@@ -259,7 +259,7 @@ impl RedbBootstrapRepository {
 // opens an engine for writing and cannot change another hardlink's file bytes.
 struct ArtifactLock {
     directory: PinnedDirectory,
-    file: Option<File>,
+    file: Option<LegacyFileCustody>,
 }
 impl ArtifactLock {
     fn open(directory: PinnedDirectory) -> Result<Self, StorageError> {
@@ -277,8 +277,7 @@ impl ArtifactLock {
             let file = directory
                 .open_file_read_write(OsStr::new(TRANSFER))?
                 .into_std();
-            file.try_lock().map_err(|_| unavailable())?;
-            Some(file)
+            Some(LegacyFileCustody::acquire(file).map_err(|_| unavailable())?)
         };
         let value = Self { directory, file };
         value.verify()?;
@@ -289,7 +288,7 @@ impl ArtifactLock {
         if let Some(file) = &self.file {
             if !self
                 .directory
-                .regular_file_matches(OsStr::new(TRANSFER), file)?
+                .regular_file_matches(OsStr::new(TRANSFER), file.file())?
             {
                 return Err(corrupt());
             }
@@ -345,3 +344,24 @@ fn crash_edge(edge: &str) {
 #[cfg(test)]
 #[path = "bootstrap_repository_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod custody_tests {
+    // req: REC-001, REP-002, REP-003
+    #[test]
+    fn source_inventory_close_releases_lock_with_an_inherited_description() {
+        let (scope, ports, _) = crate::changelog_v3_control_tests::fixture();
+        let root = scope.join("source-inherited-inventory");
+        let repository = ports.bootstrap_repository(&root).unwrap();
+        let inherited = repository.inner.lock.file().try_clone().unwrap();
+        let retained = repository.clone();
+        drop(repository);
+        assert!(ports.bootstrap_repository(&root).is_err());
+        drop(retained);
+        let reopened = ports
+            .bootstrap_repository(&root)
+            .expect("ended source inventory custody must release an inherited flock");
+        assert_eq!(inherited.metadata().unwrap().len(), 0);
+        reopened.inner.verify().unwrap();
+    }
+}

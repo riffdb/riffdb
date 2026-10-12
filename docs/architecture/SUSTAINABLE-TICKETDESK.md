@@ -8,12 +8,35 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-11 UTC)
+## Current status (2026-10-12 UTC)
 
 WP-825 remains open. The public entry point implements the fixed 8-hour
 rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process
 ownership, shared workload epochs and independent resource reconciliation.
 Neither measured campaign has started.
+
+The latest combined-source full CI stops on intermittent native storage-open
+refusals in concurrent crash tests. Both original failing tests pass alone, but
+the complete storage suite reproduces the refusal. A separate diagnostic build
+identifies `DatabaseAlreadyOpen` during bootstrap publication. A deterministic
+descriptor-clone test then proves that offline verification can finish while
+its legacy `flock` remains held by an inherited open-file description.
+
+The repair gives offline verification, format upgrade and private restore
+custody one scoped owner that explicitly releases both legacy and native
+byte-range locks, including partially acquired owners on refusal. Inventory,
+construction, scratch, cleanup and publication locks use the same scoped legacy
+owner; shared reconciliation retains shared exclusion. Actual repository clones
+continue retaining custody until the final owner ends. Deterministic tests keep
+an inherited description alive across owner release, verify live-owner exclusion
+and preserve another owner's lock on refusal. The original upgrade custody
+assertions return to the concurrent suite without child-process isolation.
+
+Required-host checks are underway. Full committed-source CI, fresh preparation
+and the original whole-action restore gate remain required; these checks grant
+no measured campaign qualification.
+
+## Earlier qualified preparation (2026-10-11 UTC)
 
 Runtime revision `c2428736` passes the complete combined-source acceptance and CI
 battery, native gRPC regressions, the original operational-adapter checks and
@@ -46,8 +69,8 @@ Curated numbers and original private-receipt digests are recorded in
 `release/evidence/ticketdesk-lifecycle/2026-10-11-prerequisite-attempt.json`.
 Earlier failed attempts remain retained, including the unexplained restricted
 promotion startup refusal from CI428. A later test pass does not establish that
-refusal's cause. The private-stage custody proposal remains unaccepted and
-unimplemented.
+refusal's cause. The private-stage custody redesign is now accepted as ADR-0289
+and implemented; its original measured recovery gate remains open.
 
 A successful whole-action restore, retained TypeScript execution, fresh frozen
 bindings and a complete real 8-hour rehearsal remain required for WP-825. The

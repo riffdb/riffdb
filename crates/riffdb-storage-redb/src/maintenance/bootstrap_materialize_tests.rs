@@ -34,7 +34,9 @@ fn source(path: &std::path::Path) -> crate::RedbOperationalPorts {
         shared: store.shared,
     }
 }
-fn transfer(scope: &crate::test_path::ScopedDirectory) -> RedbBootstrapMaterializationInput {
+pub(super) fn transfer(
+    scope: &crate::test_path::ScopedDirectory,
+) -> RedbBootstrapMaterializationInput {
     let ports = source(&scope.join("source.redb"));
     transfer_from_ports(scope, ports)
 }

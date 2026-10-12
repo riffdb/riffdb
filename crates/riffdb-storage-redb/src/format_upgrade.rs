@@ -5,13 +5,11 @@
 
 //! Restartable, backup-bound offline durable-format transition.
 
-use redb::StorageBackend;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::ops::Bound;
 use std::path::{Path, PathBuf};
 
 use riffdb_storage_api::{
@@ -252,9 +250,17 @@ impl RedbDurableFormatUpgrade {
             .write(true)
             .open(&self.database_path)
             .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
-        source_custody
-            .try_lock()
-            .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?;
+        let _source_lock = crate::native_file_custody::NativeFileCustody::acquire(
+            source_custody
+                .try_clone()
+                .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?,
+        )
+        .map_err(|error| match error.kind() {
+            riffdb_storage_api::StorageErrorKind::Unavailable => {
+                RedbDurableFormatUpgradeError::Unavailable
+            }
+            _ => RedbDurableFormatUpgradeError::Storage(error),
+        })?;
         let backend = redb::backends::FileBackend::new(
             source_custody
                 .try_clone()
@@ -262,12 +268,6 @@ impl RedbDurableFormatUpgrade {
         )
         .map_err(crate::error::database_error)
         .map_err(RedbDurableFormatUpgradeError::Storage)?;
-        if !backend
-            .try_lock_range(Bound::Unbounded, Bound::Unbounded)
-            .map_err(|_| RedbDurableFormatUpgradeError::Unavailable)?
-        {
-            return Err(RedbDurableFormatUpgradeError::Unavailable);
-        }
         if preflight_durable_format_path(&self.database_path)
             .map_err(RedbDurableFormatUpgradeError::Preflight)?
             != observed
@@ -923,28 +923,6 @@ mod tests {
     // req: AFC-001, AFC-002, REC-001, STO-032
     #[test]
     fn offline_upgrade_requires_source_custody_before_accepted_receipt() {
-        const CHILD: &str = "RIFFDB_OFFLINE_UPGRADE_CUSTODY_TEST_CHILD";
-        if std::env::var_os(CHILD).is_none() {
-            // Parallel crash tests can fork while this fixture owns an OS lock.
-            // Such children retain inherited file descriptions until exec/exit,
-            // so closing our descriptor does not prove that custody is free.
-            // Own the complete lock-lifetime proof after exec in one child.
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "format_upgrade::tests::offline_upgrade_requires_source_custody_before_accepted_receipt",
-                    "--nocapture",
-                ])
-                .env(CHILD, "1")
-                .stdin(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            assert!(
-                status.success(),
-                "isolated native source-custody proof failed"
-            );
-            return;
-        }
         let root = TestRoot::new("custody-before-accepted");
         let (database, backup) = predecessor_fixture(&root, 0x94);
         let before = fs::read(&database).unwrap();
@@ -955,16 +933,7 @@ mod tests {
             .write(true)
             .open(&database)
             .unwrap();
-        source.try_lock().unwrap();
-        let custody = redb::backends::FileBackend::new(source).unwrap();
-        assert!(
-            redb::StorageBackend::try_lock_range(
-                &custody,
-                std::ops::Bound::Unbounded,
-                std::ops::Bound::Unbounded
-            )
-            .unwrap()
-        );
+        let custody = crate::native_file_custody::NativeFileCustody::acquire(source).unwrap();
         assert!(
             RedbDurableFormatUpgrade::bind(&database, &backup)
                 .run()

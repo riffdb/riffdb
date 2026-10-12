@@ -5,12 +5,12 @@ mod retirement;
 use super::{
     RedbBootstrapMaterializer, bootstrap_stage::RedbBootstrapStage, path_guard::PinnedDirectory,
 };
+use crate::native_file_custody::LegacyFileCustody;
 use riffdb_storage_api::{
     ReplicationBootstrapManifestV1 as Manifest, StorageError, StorageErrorKind,
 };
 use std::{
     ffi::OsStr,
-    fs::File,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -40,7 +40,7 @@ pub struct RedbBootstrapReceiverRepository {
 pub(super) struct ReceiverRepositoryInner {
     path: PathBuf,
     directory: PinnedDirectory,
-    lock: File,
+    lock: LegacyFileCustody,
     admission: Mutex<()>,
 }
 impl RedbBootstrapReceiverRepository {
@@ -67,8 +67,8 @@ impl RedbBootstrapReceiverRepository {
             None if entries.is_empty() => directory.create_new_file(OsStr::new(LOCK))?.into_std(),
             _ => return Err(corrupt()),
         };
-        lock.try_lock().map_err(|_| unavailable())?;
-        lock.sync_all().map_err(|_| unavailable())?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(|_| unavailable())?;
+        lock.file().sync_all().map_err(|_| unavailable())?;
         directory.sync()?;
         let value = Self {
             inner: Arc::new(ReceiverRepositoryInner {
@@ -196,7 +196,7 @@ impl ReceiverRepositoryInner {
         if self.directory.regular_file_length(OsStr::new(LOCK))? != Some(0)
             || !self
                 .directory
-                .regular_file_matches(OsStr::new(LOCK), &self.lock)?
+                .regular_file_matches(OsStr::new(LOCK), self.lock.file())?
         {
             return Err(corrupt());
         }
@@ -262,20 +262,20 @@ impl ReceiverRepositoryInner {
             // Read-only descriptors plus redb's actual EX lock: no engine is
             // opened or repaired, and other hardlinks' bytes cannot be changed.
             let file = directory.open_file(&name)?.into_std();
-            file.try_lock().map_err(|_| unavailable())?;
+            let file = LegacyFileCustody::acquire(file).map_err(|_| unavailable())?;
             files.push((name, file));
         }
         self.verify()?;
         directory.verify_private()?;
         for (name, file) in &files {
-            if !directory.regular_file_matches(name, file)? {
+            if !directory.regular_file_matches(name, file.file())? {
                 return Err(corrupt());
             }
         }
         for (name, file) in &files {
             self.verify()?;
             directory.verify_private()?;
-            if !directory.regular_file_matches(name, file)? {
+            if !directory.regular_file_matches(name, file.file())? {
                 return Err(corrupt());
             }
             directory.remove_file_if_present(name)?;
@@ -344,4 +344,25 @@ fn crash_edge(edge: &str) {
     }
     #[cfg(not(test))]
     let _ = edge;
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    // req: REC-001, REP-002, REP-003
+    #[test]
+    fn receiver_inventory_close_releases_lock_with_an_inherited_description() {
+        let scope = crate::test_path::ScopedDirectory::new("receiver-inherited-inventory");
+        let root = scope.join("receiver");
+        let repository = RedbBootstrapReceiverRepository::open(&root).unwrap();
+        let inherited = repository.inner.lock.file().try_clone().unwrap();
+        let retained = repository.clone();
+        drop(repository);
+        assert!(RedbBootstrapReceiverRepository::open(&root).is_err());
+        drop(retained);
+        let reopened = RedbBootstrapReceiverRepository::open(&root)
+            .expect("ended receiver inventory custody must release an inherited flock");
+        assert_eq!(inherited.metadata().unwrap().len(), 0);
+        reopened.inner.verify().unwrap();
+    }
 }

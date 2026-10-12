@@ -17,6 +17,7 @@ use crate::backup::{
     validate_backup_journal, validate_immutable_backup, validate_sealed_database_semantics,
 };
 use crate::error::storage_error;
+use crate::native_file_custody::LegacyFileCustody;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -882,12 +883,12 @@ fn target_file_state(
 fn lock_existing_target(
     parent: &PinnedDirectory,
     name: &std::ffi::OsStr,
-) -> Result<Option<File>, StorageError> {
+) -> Result<Option<LegacyFileCustody>, StorageError> {
     if parent.regular_file_length(name)?.is_none() {
         return Ok(None);
     }
     let file = parent.open_file_read_write(name)?.into_std();
-    file.try_lock()
+    let file = LegacyFileCustody::acquire(file)
         .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
     Ok(Some(file))
 }
@@ -895,11 +896,11 @@ fn lock_existing_target(
 fn target_lock_matches(
     parent: &PinnedDirectory,
     name: &std::ffi::OsStr,
-    target_lock: Option<&File>,
+    target_lock: Option<&LegacyFileCustody>,
 ) -> Result<bool, StorageError> {
     match target_lock {
         None => Ok(parent.regular_file_length(name)?.is_none()),
-        Some(file) => parent.regular_file_matches(name, file),
+        Some(file) => parent.regular_file_matches(name, file.file()),
     }
 }
 

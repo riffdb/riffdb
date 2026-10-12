@@ -39,6 +39,7 @@ use crate::backup::{
     RedbOfflineBackup, lock_existing_target, validate_database_semantics, validate_immutable_backup,
 };
 use crate::error::storage_error;
+use crate::native_file_custody::LegacyFileCustody;
 
 #[path = "archive_reconciliation.rs"]
 mod archive_reconciliation;
@@ -294,7 +295,7 @@ pub struct RedbMaintenanceStorage {
     promotion_directory_guard: Option<PinnedDirectory>,
     reconciled_promotion: Option<promotion_reconciliation::ReconciledPromotionReceipt>,
     ownership_lock_path: PathBuf,
-    ownership_lock: File,
+    ownership_lock: LegacyFileCustody,
     test_controller: Option<RedbMaintenanceTestController>,
 }
 
@@ -304,14 +305,6 @@ impl std::fmt::Debug for RedbMaintenanceStorage {
             .debug_struct("RedbMaintenanceStorage")
             .field("paths", &"[REDACTED]")
             .finish()
-    }
-}
-
-impl Drop for RedbMaintenanceStorage {
-    fn drop(&mut self) {
-        // A fork may briefly retain a duplicate descriptor. Explicitly releasing
-        // ownership prevents that descriptor from extending this owner's lifetime.
-        let _ = self.ownership_lock.unlock();
     }
 }
 
@@ -469,7 +462,7 @@ impl RedbMaintenanceStorage {
             }
             None => {}
         }
-        verify_regular_file_path(&self.ownership_lock, &self.ownership_lock_path)
+        verify_regular_file_path(self.ownership_lock.file(), &self.ownership_lock_path)
     }
 
     /// Returns the exact configured database file for server-private validation.
@@ -2447,7 +2440,7 @@ fn create_checked_directory(path: &Path) -> Result<(), StorageError> {
     }
 }
 
-fn acquire_exclusive_ownership_lock(path: &Path) -> Result<File, StorageError> {
+fn acquire_exclusive_ownership_lock(path: &Path) -> Result<LegacyFileCustody, StorageError> {
     let file = match OpenOptions::new()
         .read(true)
         .write(true)
@@ -2476,9 +2469,9 @@ fn acquire_exclusive_ownership_lock(path: &Path) -> Result<File, StorageError> {
         Err(error) => return Err(io_unavailable(error)),
     };
     verify_regular_file_path(&file, path)?;
-    file.try_lock()
+    let file = LegacyFileCustody::acquire(file)
         .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-    verify_regular_file_path(&file, path)?;
+    verify_regular_file_path(file.file(), path)?;
     Ok(file)
 }
 
@@ -3126,6 +3119,7 @@ mod tests {
             RedbMaintenanceStorage::open(&database, &backup_root).expect("open maintenance");
         let inherited = storage
             .ownership_lock
+            .file()
             .try_clone()
             .expect("model inherited lock descriptor");
 

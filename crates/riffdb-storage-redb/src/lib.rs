@@ -77,6 +77,7 @@ mod layout;
 mod maintenance;
 mod media;
 mod migration_stage;
+mod native_file_custody;
 mod primary_admission_roots;
 mod primary_fence_write;
 mod projection_replay;

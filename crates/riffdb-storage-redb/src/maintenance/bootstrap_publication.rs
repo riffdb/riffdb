@@ -197,6 +197,7 @@ impl RedbValidatedBootstrapCandidate {
 struct OldTarget {
     // Hold any old follower engine (or the empty-file lock) through publication.
     _database: Option<redb::ReadOnlyDatabase>,
+    _legacy_custody: Option<crate::native_file_custody::LegacyFileCustody>,
     file: File,
 }
 
@@ -222,9 +223,13 @@ fn lock_target(
     };
     let file = parent.open_file_read_write(name)?.into_std();
     if length == 0 {
-        file.try_lock().map_err(unavailable)?;
+        let custody = crate::native_file_custody::LegacyFileCustody::acquire(
+            file.try_clone().map_err(unavailable)?,
+        )
+        .map_err(unavailable)?;
         return Ok(Some(OldTarget {
             _database: None,
+            _legacy_custody: Some(custody),
             file,
         }));
     }
@@ -253,6 +258,7 @@ fn lock_target(
     }
     Ok(Some(OldTarget {
         _database: Some(database),
+        _legacy_custody: None,
         file,
     }))
 }

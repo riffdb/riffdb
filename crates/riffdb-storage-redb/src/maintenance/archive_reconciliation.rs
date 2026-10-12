@@ -158,11 +158,15 @@ impl RedbMaintenanceStorage {
         let database = super::super::archive_backup::read_only_database(&staged_files[0])?;
         // A raw target pin also works before journal/engine recovery. It never
         // repairs a target merely to decide whether publication occurred.
-        let target_lock = target_files.first();
-        if let Some(file) = target_lock {
-            file.try_lock_shared()
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        }
+        let _target_custody = target_files
+            .first()
+            .map(|file| {
+                crate::native_file_custody::LegacyFileCustody::acquire_shared(
+                    file.try_clone().map_err(io_unavailable)?,
+                )
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
         for (staged, target) in staged_files.iter().zip(&target_files) {
             if checksum(staged)? != checksum(target)? {
                 return Ok(None);

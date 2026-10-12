@@ -94,7 +94,7 @@ fn receiver_retirement_preflights_both_inventories_and_locks_before_unlink() {
             "receiver/transfer/transfer.redb"
         });
         let lock = std::fs::File::open(locked).unwrap();
-        lock.try_lock().unwrap();
+        let lock = crate::native_file_custody::LegacyFileCustody::acquire(lock).unwrap();
         assert!(applier.retire_bootstrap_scratch(&repository).is_err());
         assert!(scope.join("receiver/candidate/follower.redb").exists());
         assert!(scope.join("receiver/transfer/transfer.redb").exists());

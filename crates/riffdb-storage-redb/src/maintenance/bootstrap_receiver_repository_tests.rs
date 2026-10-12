@@ -54,7 +54,7 @@ fn receiver_repository_unknown_or_locked_initial_files_refuse_before_cleanup() {
     let path = pending.join("transfer.redb");
     std::fs::write(&path, b"unpublished scratch").unwrap();
     let file = std::fs::File::open(&path).unwrap();
-    file.try_lock().unwrap();
+    let file = crate::native_file_custody::LegacyFileCustody::acquire(file).unwrap();
     assert!(repository.recover_transfer().is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"unpublished scratch");
     drop(file);

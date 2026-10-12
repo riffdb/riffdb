@@ -1,9 +1,9 @@
 //! Exclusive disposable follower build files, with no database or control ports.
 use super::path_guard::PinnedDirectory;
+use crate::native_file_custody::LegacyFileCustody;
 use riffdb_storage_api::{StorageError, StorageErrorKind};
 use std::{
     ffi::OsStr,
-    fs::File,
     num::{NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
 };
@@ -21,7 +21,7 @@ const SCRATCH: &str = ".rebuild-scratch-v1";
 pub struct RedbFollowerColumnarScratch {
     path: PathBuf,
     directory: PinnedDirectory,
-    lock: File,
+    lock: LegacyFileCustody,
     maximum_files: NonZeroUsize,
     maximum_bytes: NonZeroU64,
 }
@@ -56,8 +56,8 @@ impl RedbFollowerColumnarScratch {
             None if entries.is_empty() => directory.create_new_file(OsStr::new(LOCK))?.into_std(),
             _ => return Err(corrupt()),
         };
-        lock.try_lock().map_err(|_| unavailable())?;
-        lock.sync_all().map_err(|_| unavailable())?;
+        let lock = LegacyFileCustody::acquire(lock).map_err(|_| unavailable())?;
+        lock.file().sync_all().map_err(|_| unavailable())?;
         directory.sync()?;
         let owner = Self {
             path: projections_root.join(AREA),
@@ -88,10 +88,16 @@ impl RedbFollowerColumnarScratch {
 
     fn verify(&self) -> Result<(), StorageError> {
         self.directory.verify_private()?;
-        if self.lock.metadata().map_err(|_| unavailable())?.len() != 0
+        if self
+            .lock
+            .file()
+            .metadata()
+            .map_err(|_| unavailable())?
+            .len()
+            != 0
             || !self
                 .directory
-                .regular_file_matches(OsStr::new(LOCK), &self.lock)?
+                .regular_file_matches(OsStr::new(LOCK), self.lock.file())?
         {
             return Err(corrupt());
         }
@@ -186,4 +192,30 @@ fn corrupt() -> StorageError {
 }
 fn unavailable() -> StorageError {
     StorageError::new(StorageErrorKind::Unavailable, None)
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    // req: REC-001, REP-004, PRJ-007
+    #[test]
+    fn follower_scratch_close_releases_lock_with_an_inherited_description() {
+        let scope = crate::test_path::ScopedDirectory::new("follower-inherited-inventory");
+        let root = scope.join("");
+        let open = || {
+            RedbFollowerColumnarScratch::open(
+                &root,
+                NonZeroUsize::new(4).unwrap(),
+                NonZeroU64::new(1024).unwrap(),
+            )
+        };
+        let owner = open().unwrap();
+        let inherited = owner.lock.file().try_clone().unwrap();
+        assert!(open().is_err());
+        drop(owner);
+        let reopened =
+            open().expect("ended follower scratch custody must release an inherited flock");
+        assert_eq!(inherited.metadata().unwrap().len(), 0);
+        reopened.verify().unwrap();
+    }
 }

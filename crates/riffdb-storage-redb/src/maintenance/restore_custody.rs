@@ -31,7 +31,7 @@ struct Shared {
     parent: Arc<PinnedDirectory>,
     name: RwLock<OsString>,
     file: File,
-    native_guard: redb::backends::FileBackend,
+    _native_custody: crate::native_file_custody::NativeFileCustody,
     // Zero is the private preparation phase, before any validation proof.
     // A frozen verifier is bounded by the exact completed artifact length.
     maximum_bytes: AtomicU64,
@@ -95,15 +95,10 @@ impl RestoreCustody {
         if !parent.regular_file_matches(&name, &file)? {
             return Err(corrupt());
         }
-        file.try_lock().map_err(unavailable)?;
-        let native_guard = redb::backends::FileBackend::new(file.try_clone().map_err(unavailable)?)
-            .map_err(unavailable)?;
-        if !native_guard
-            .try_lock_range(Bound::Unbounded, Bound::Unbounded)
-            .map_err(unavailable)?
-        {
-            return Err(unavailable(()));
-        }
+        let native_custody = crate::native_file_custody::NativeFileCustody::acquire(
+            file.try_clone().map_err(unavailable)?,
+        )
+        .map_err(unavailable)?;
         let maximum_bytes = file.metadata().map_err(unavailable)?.len();
         if maximum_bytes == 0 {
             return Err(corrupt());
@@ -113,7 +108,7 @@ impl RestoreCustody {
                 parent,
                 name: RwLock::new(name),
                 file,
-                native_guard,
+                _native_custody: native_custody,
                 maximum_bytes: AtomicU64::new(if preparing { 0 } else { maximum_bytes }),
                 cancellation,
                 mutation_generation: AtomicU64::new(0),
@@ -327,15 +322,6 @@ impl Shared {
             ));
         }
         Ok(())
-    }
-}
-
-impl Drop for Shared {
-    fn drop(&mut self) {
-        // All engine descriptors retain this owner. Native exclusion ends only
-        // after the last owner/engine handle is gone, even during cancellation.
-        let _ = self.native_guard.close();
-        let _ = self.file.unlock();
     }
 }
 
