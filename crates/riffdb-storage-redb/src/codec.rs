@@ -688,7 +688,105 @@ pub(crate) fn decode_administration_audit_record_v1(
     storage::EncodedPageItem<storage::StoredAdministrationAuditRecordV1>,
     storage::StorageError,
 > {
-    match storage::decode_catalog_administration_v1(encoded) {
+    let Some(record_type) =
+        riffdb_proto::durable::readable_record_registry().peek_compact_record_type(encoded)
+    else {
+        return decode_administration_audit_record_compat(encoded);
+    };
+    // The header selects a decoder; it supplies no validation authority. Every
+    // selected decoder still checks identity, bounds, checksum, canonicality
+    // and its original semantic invariants before this function returns a row.
+    match record_type {
+        "riffdb.storage.v1.StoredCatalogAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_catalog_administration_v1)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Catalog))
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.CapabilityAdministrationAuditV1" => {
+            decode_audit_variant(encoded, storage::decode_capability_administration_v1)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Capability))
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredQueryModuleAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_query_module_administration_v1)
+                .map(|item| {
+                    map_item(
+                        item,
+                        storage::StoredAdministrationAuditRecordV1::QueryModule,
+                    )
+                })
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredReactiveModuleAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_reactive_module_administration_v1)
+                .map(|item| {
+                    map_item(
+                        item,
+                        storage::StoredAdministrationAuditRecordV1::ReactiveModule,
+                    )
+                })
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredReplicationAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_replication_administration_v1)
+                .map(|item| {
+                    map_item(item, |record| {
+                        storage::StoredAdministrationAuditRecordV1::Replication(Box::new(record))
+                    })
+                })
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredPrimaryFenceAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_primary_fence_administration_v1)
+                .map(|item| {
+                    map_item(item, |record| {
+                        storage::StoredAdministrationAuditRecordV1::PrimaryFence(Box::new(record))
+                    })
+                })
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredPromotionAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_promotion_administration_v1)
+                .map(|item| {
+                    map_item(item, |record| {
+                        storage::StoredAdministrationAuditRecordV1::Promotion(Box::new(record))
+                    })
+                })
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.StoredRetentionAdministrationV1" => {
+            decode_audit_variant(encoded, storage::decode_retention_administration_v1)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Retention))
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.ServiceAuditRecordV1" => {
+            decode_audit_variant(encoded, storage::decode_service_audit_record_v1)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Service))
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.ServiceAuditRecordV2" => {
+            decode_audit_variant(encoded, storage::decode_service_audit_record_v2)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Service))
+                .map_err(codec_error)
+        }
+        "riffdb.storage.v1.ServiceAuditRecordV3" => {
+            decode_audit_variant(encoded, storage::decode_service_audit_record_v3)
+                .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Service))
+                .map_err(codec_error)
+        }
+        // Preserve the existing compatibility and refusal behavior for legacy
+        // framing, unresolved identities and records outside this closed table.
+        _ => decode_administration_audit_record_compat(encoded),
+    }
+}
+
+fn decode_administration_audit_record_compat(
+    encoded: &[u8],
+) -> Result<
+    storage::EncodedPageItem<storage::StoredAdministrationAuditRecordV1>,
+    storage::StorageError,
+> {
+    match decode_audit_variant(encoded, storage::decode_catalog_administration_v1) {
         Ok(item) => {
             return Ok(map_item(
                 item,
@@ -699,7 +797,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_capability_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_capability_administration_v1) {
         Ok(item) => {
             return Ok(map_item(
                 item,
@@ -710,7 +808,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_query_module_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_query_module_administration_v1) {
         Ok(item) => {
             return Ok(map_item(
                 item,
@@ -721,7 +819,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_reactive_module_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_reactive_module_administration_v1) {
         Ok(item) => {
             return Ok(map_item(
                 item,
@@ -732,7 +830,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_replication_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_replication_administration_v1) {
         Ok(item) => {
             return Ok(map_item(item, |record| {
                 storage::StoredAdministrationAuditRecordV1::Replication(Box::new(record))
@@ -742,7 +840,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_primary_fence_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_primary_fence_administration_v1) {
         Ok(item) => {
             return Ok(map_item(item, |record| {
                 storage::StoredAdministrationAuditRecordV1::PrimaryFence(Box::new(record))
@@ -752,7 +850,7 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_promotion_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_promotion_administration_v1) {
         Ok(item) => {
             return Ok(map_item(item, |record| {
                 storage::StoredAdministrationAuditRecordV1::Promotion(Box::new(record))
@@ -762,18 +860,47 @@ pub(crate) fn decode_administration_audit_record_v1(
         Err(error) => return Err(codec_error(error)),
     }
 
-    match storage::decode_retention_administration_v1(encoded) {
+    match decode_audit_variant(encoded, storage::decode_retention_administration_v1) {
         Ok(item) => Ok(map_item(
             item,
             storage::StoredAdministrationAuditRecordV1::Retention,
         )),
         Err(error) if error.kind() == storage::DurableCodecErrorKind::UnexpectedRecordType => {
-            storage::decode_service_audit_record(encoded)
+            decode_audit_variant(encoded, storage::decode_service_audit_record)
                 .map(|item| map_item(item, storage::StoredAdministrationAuditRecordV1::Service))
                 .map_err(codec_error)
         }
         Err(error) => Err(codec_error(error)),
     }
+}
+
+fn decode_audit_variant<T>(
+    encoded: &[u8],
+    decode: impl FnOnce(&[u8]) -> Result<storage::EncodedPageItem<T>, storage::DurableCodecError>,
+) -> Result<storage::EncodedPageItem<T>, storage::DurableCodecError> {
+    #[cfg(test)]
+    ADMINISTRATION_DECODE_PROBES.with(|count| count.set(count.get() + 1));
+    decode(encoded)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static ADMINISTRATION_DECODE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Avoid a failed whole-envelope probe for a known non-locator compact row.
+/// A positive header match is still decoded fully; legacy and unresolved
+/// headers retain the original strict probe. Absence grants no row authority.
+pub(crate) fn decode_command_audit_locator_if_present(
+    encoded: &[u8],
+) -> Option<storage::EncodedPageItem<storage::StoredCommandAuditLocatorV1>> {
+    if riffdb_proto::durable::readable_record_registry()
+        .peek_compact_record_type(encoded)
+        .is_some_and(|record_type| record_type != "riffdb.storage.v1.StoredCommandAuditLocatorV1")
+    {
+        return None;
+    }
+    decode_command_audit_locator_v1(encoded).ok()
 }
 
 pub(crate) fn decode_administration_audit_with_command_tables<C, E>(
@@ -815,7 +942,7 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    if let Ok(locator) = storage::decode_command_audit_locator_v1(encoded) {
+    if let Some(locator) = decode_command_audit_locator_if_present(encoded) {
         let (locator, charge) = locator.into_parts();
         let key = super::keys::encode_application_sequence_key(locator.commit_sequence());
         let mut range = commits
@@ -970,6 +1097,182 @@ mod tests {
                 .kind(),
             storage::StorageErrorKind::CorruptData
         );
+    }
+
+    // req: REC-006, STO-031
+    #[test]
+    fn compact_administration_dispatch_checks_exact_variant_once() {
+        let legacy = fixture_envelope("riffdb.storage.v1.ServiceAuditRecordV1");
+        let expected = storage::decode_service_audit_record(&legacy)
+            .unwrap()
+            .into_parts()
+            .0;
+        let current = storage::encode_service_audit_record_v2(&expected).unwrap();
+        let before = ADMINISTRATION_DECODE_PROBES.with(std::cell::Cell::get);
+        let actual = decode_administration_audit_record_v1(current.as_bytes()).unwrap();
+        let attempts = ADMINISTRATION_DECODE_PROBES.with(std::cell::Cell::get) - before;
+        assert_eq!(
+            actual.value(),
+            &storage::StoredAdministrationAuditRecordV1::Service(expected)
+        );
+        assert_eq!(
+            actual.encoded_content_charge().get(),
+            current.as_bytes().len()
+        );
+        assert_eq!(
+            attempts, 1,
+            "compact administration routing must decode only its exact variant"
+        );
+    }
+
+    // req: REC-006, STO-031
+    #[test]
+    fn compact_administration_routing_matches_strict_compatibility_oracle() {
+        let mut corpus = Vec::new();
+        for name in [
+            "riffdb.storage.v1.StoredCatalogAdministrationV1",
+            "riffdb.storage.v1.CapabilityAdministrationAuditV1",
+            "riffdb.storage.v1.ServiceAuditRecordV1",
+        ] {
+            let compact = fixture_envelope(name);
+            corpus.push(
+                storage::transcode_durable_record_to_v1(&compact)
+                    .unwrap()
+                    .into_bytes(),
+            );
+            corpus.push(compact);
+        }
+        let service = storage::decode_service_audit_record(&fixture_envelope(
+            "riffdb.storage.v1.ServiceAuditRecordV1",
+        ))
+        .unwrap()
+        .into_parts()
+        .0;
+        corpus.push(
+            storage::encode_service_audit_record_v2(&service)
+                .unwrap()
+                .into_bytes(),
+        );
+        corpus.push(
+            storage::encode_service_audit_record_v3(&replication_service_audit_fixture())
+                .unwrap()
+                .into_bytes(),
+        );
+        let current = storage::encode_service_audit_record_v2(&service)
+            .unwrap()
+            .into_bytes();
+        corpus.push(current.clone());
+        for offset in [4, 5, 6, 7, 8, 12, 16] {
+            let mut changed = current.clone();
+            changed[offset] ^= 0xff;
+            corpus.push(changed);
+        }
+        corpus.push(current[..current.len() - 1].to_vec());
+        corpus.push(current[..8].to_vec());
+        corpus.push(Vec::new());
+        corpus.push(fixture_envelope("riffdb.storage.v1.StoredCommitRecordV1"));
+        // Correct CRC and framing cannot replace semantic or canonical checks.
+        assert_eq!(&current[16..18], &[8, 1]);
+        let without_sequence = &current[18..];
+        let mut semantic = current[..16].to_vec();
+        semantic[8..12]
+            .copy_from_slice(&u32::try_from(without_sequence.len()).unwrap().to_be_bytes());
+        semantic[12..16].copy_from_slice(
+            &riffdb_proto::envelope::payload_crc32c(without_sequence).to_be_bytes(),
+        );
+        semantic.extend_from_slice(without_sequence);
+        assert!(decode_administration_audit_record_v1(&semantic).is_err());
+        corpus.push(semantic);
+        let mut duplicate = current[16..].to_vec();
+        duplicate.extend_from_slice(&[8, 1]);
+        let mut noncanonical = current[..16].to_vec();
+        noncanonical[8..12].copy_from_slice(&u32::try_from(duplicate.len()).unwrap().to_be_bytes());
+        noncanonical[12..16]
+            .copy_from_slice(&riffdb_proto::envelope::payload_crc32c(&duplicate).to_be_bytes());
+        noncanonical.extend_from_slice(&duplicate);
+        assert!(decode_administration_audit_record_v1(&noncanonical).is_err());
+        corpus.push(noncanonical);
+        for encoded in corpus {
+            let original = decode_administration_audit_record_compat(&encoded)
+                .map(|item| item.into_parts())
+                .map_err(|error| error.kind());
+            let selected = decode_administration_audit_record_v1(&encoded)
+                .map(|item| item.into_parts())
+                .map_err(|error| error.kind());
+            assert_eq!(
+                selected, original,
+                "routing preserves complete values, charge and refusal classification"
+            );
+            assert!(
+                decode_command_audit_locator_if_present(&encoded).is_none(),
+                "negative locator routing must grant no authority for another table variant"
+            );
+        }
+    }
+
+    // req: REC-006, STO-031
+    #[test]
+    fn compact_locator_routing_requires_complete_positive_decode() {
+        for member in [
+            storage::StoredCommandAuditMemberV1::Started,
+            storage::StoredCommandAuditMemberV1::Terminal,
+        ] {
+            let expected = storage::StoredCommandAuditLocatorV1::new(
+                riffdb_types::CommitSequence::first(),
+                member,
+            );
+            let compact = storage::encode_command_audit_locator_v1(expected)
+                .unwrap()
+                .into_bytes();
+            let legacy = storage::transcode_durable_record_to_v1(&compact)
+                .unwrap()
+                .into_bytes();
+            for encoded in [compact, legacy] {
+                let actual = decode_command_audit_locator_if_present(&encoded)
+                    .expect("complete locator decode");
+                assert_eq!(*actual.value(), expected);
+                assert_eq!(actual.encoded_content_charge().get(), encoded.len());
+                let mut changed = encoded;
+                let last = changed.len() - 1;
+                changed[last] ^= 0xff;
+                assert!(
+                    decode_command_audit_locator_if_present(&changed).is_none(),
+                    "a locator hint cannot admit corruption"
+                );
+            }
+        }
+    }
+
+    fn replication_service_audit_fixture() -> storage::StoredServiceAuditRecordV1 {
+        let base = storage::decode_service_audit_record(&fixture_envelope(
+            "riffdb.storage.v1.ServiceAuditRecordV1",
+        ))
+        .unwrap()
+        .into_parts()
+        .0;
+        let mut targets = base.targets().as_slice().to_vec();
+        targets.push(riffdb_types::ServiceAuditTargetV1::ReplicationFollower(
+            riffdb_types::ReplicationFollowerAuditTargetV1::new(
+                riffdb_types::DatabaseId::from_bytes(*base.request_id().as_bytes()).unwrap(),
+                7,
+                riffdb_types::LeadershipEpochV1::new(9).unwrap(),
+                riffdb_types::ReplicationSourceHoldIdV1::new([0x81; 16]).unwrap(),
+            )
+            .unwrap(),
+        ));
+        storage::StoredServiceAuditRecordV1::from_stored_parts(
+            base.administration_sequence(),
+            base.request_id(),
+            base.timestamp(),
+            base.operation(),
+            base.phase(),
+            base.principal().cloned(),
+            base.ingress(),
+            riffdb_types::ServiceAuditTargetsV1::new(targets).unwrap(),
+            base.approval_id().cloned(),
+            base.link(),
+        )
+        .unwrap()
     }
 
     fn fixture_envelope(record_type: &str) -> Vec<u8> {

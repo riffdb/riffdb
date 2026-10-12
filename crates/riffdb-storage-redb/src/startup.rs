@@ -5307,7 +5307,7 @@ fn inspect_cached_command_audit_row(
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<Option<StructuralFinding>>, StorageError> {
-    let Ok(locator) = codec::decode_command_audit_locator_v1(value) else {
+    let Some(locator) = codec::decode_command_audit_locator_if_present(value) else {
         return Ok(None);
     };
     let locator = locator.into_parts().0;
@@ -6665,7 +6665,7 @@ fn decode_non_command_administration_audit(
     >,
     StorageError,
 > {
-    if codec::decode_command_audit_locator_v1(encoded).is_ok() {
+    if codec::decode_command_audit_locator_if_present(encoded).is_some() {
         return Ok(None);
     }
     codec::decode_administration_audit_record_v1(encoded).map(Some)

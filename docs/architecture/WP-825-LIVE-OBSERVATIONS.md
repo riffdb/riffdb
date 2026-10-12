@@ -30,17 +30,38 @@ the census, checkpoint classification and original semantic checks. It preserves
 physical-key refusal precedence, digest and command linkage checks, and counts
 execution failures even when their keys are malformed. The regression and scoped
 acceptance pass on the required host, including all 1,505 tests and Clippy.
-Final-source full CI is still required. This correction alone is not expected
-to close the whole recovery gap.
+The committed terminal correction at `29826e79` also passes combined-source full
+CI, four-language remote conformance, all 18 native archive stop cases and three
+resume cases. Its four ordinary release binaries are frozen. This establishes
+source qualification, not a new restore measurement.
+
+A further native regression shows that an ordinary compact service-audit row
+passes through nine administration decoder attempts. Each unrelated typed
+decoder can invoke the complete envelope registry before rejecting its type.
+The correction uses the existing compact identity hint to select the original
+full typed decoder. Legacy and unresolved framing retain the original dispatch;
+matching headers never replace checksum, canonicality or semantic checks. Known
+non-locator rows also avoid an ignored locator probe before their full validator.
+
+The regression fails with nine attempts before the correction and passes with
+one afterward. Native compatibility oracles compare complete values, byte
+charges and refusal kinds against the original dispatcher, including legacy
+framing, current service variants, damaged headers, valid-checksum semantic
+violations and noncanonical payloads. Positive locator hints still require a
+complete successful decode. Scoped acceptance, the storage suite and Clippy pass
+on the required host. Final-source full CI and a complete release measurement
+are still required for this further correction; decoder-level timing cannot
+qualify the whole recovery gate.
 
 Package: WP-825 (open). Tier: guarantee under the accepted complete-validation
 records, including ADR-0269 and ADR-0289. Compatibility: no public interface,
 format, fixture, dependency, ordering, durability, workload, deadline or resource
 limit changes. Handbook behavior is unchanged: this correction shares an
 in-memory decoded value within the existing validator and adds no operator or
-application choice. The public whole-action gate, storage admission, final-source
-CI and actual rehearsal remain required. Neither the 8-hour nor the 24-hour
-campaign has started.
+application choice. Audit routing likewise retains the original full validators
+and introduces no cache or worker pool. The public whole-action gate, storage
+admission, final-source CI and actual rehearsal remain required. Neither the
+8-hour nor the 24-hour campaign has started.
 
 ## Earlier prerequisite attempt (2026-10-11 UTC)
 
