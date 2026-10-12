@@ -180,3 +180,48 @@ The handbook check first exposed a missing navigation entry for this review;
 examples but exceeded the diagnostic runner's 60-second limit. Complete handbook
 verification remains pending with final acceptance; that timeout is not recorded
 as a pass.
+
+## Follow-up verification without changing the accepted assurances
+
+Package: WP-825. Tier: guarantee. WP-825 remains open.
+
+Published ordinary readiness now reads the bounded canonical manifest binding
+instead of repeating complete immutable-backup validation after publication.
+The full immutable validator remains required before publication and for crash
+reconciliation. A regression proves the distinction: metadata binding still
+identifies a backup whose primary bytes were changed, while complete artifact
+validation refuses it. Metadata binding is never an artifact-validity proof.
+
+Native publication computes the source SHA-256 while copying from the retained
+original descriptor. It checks the result against the final seal before rename
+and retains the separate full readback of the synchronized destination. Native
+custody continuity also runs before and after copying. Tests refuse changed
+primary, journal and marker files without publishing a target; successful
+publication retains the exact seal and chosen incarnation. Archive and legacy
+publication keep their existing full verification path.
+
+Journal recovery now carries a private borrowed hash-admission token from
+allocation admission to complete decoding of exactly the same immutable buffer.
+The token grants no semantic proof and cannot enable the retained-frame decoder's
+command-count shortcut. Tests prove one logical hash pass, rejection of a
+correctly hashed frame with false command counts, and refusal to bind the token
+to another buffer. V2 and unbound frames retain complete ordinary decoding;
+physical and logical checksum domains remain separate and unchanged.
+
+On the required host the manifest regression, two native publication regressions,
+three journal-admission regressions and ordinary release daemon builds pass.
+The manifest change measured 76.327187458 seconds for restore alone; publication
+streaming measured 75.779075303 seconds; the journal change measured
+75.815435474 seconds. These separate observations show no measurable timing
+improvement from the journal change. Each candidate's focused primary-loss
+60-second attempt still failed during restore. All original failed observations
+and immutable source fixtures remain preserved. None qualifies the whole gate.
+
+Compatibility: no durable format, frozen fixture, cryptographic algorithm,
+resource ceiling, authorization, ordering, command acknowledgement or deadline
+changed. The full required physical and journal/history checks, hydration,
+controlled mutation seals, publication input checks and destination readback
+remain. Scoped acceptance, compatibility/crash verification and final full CI
+remain pending on the final source. The eight-hour and 24-hour runs have not
+started. Private phase instrumentation is diagnostic only and is excluded from
+the production candidate and repository.

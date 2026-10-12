@@ -27,8 +27,13 @@ impl RedbMaintenanceStorage {
         {
             return Err(invariant());
         }
-        let (manifest, identity) =
-            validate_immutable_backup(&self.named_backup_directory(receipt.backup_name()))?;
+        // Publication already verified every immutable artifact and the copied
+        // destination. Reopen binds bounded metadata to that durable receipt;
+        // this lookup grants no new artifact validation or scrub assurance.
+        // Crash reconciliation retains its complete immutable-backup checks.
+        let (manifest, identity) = crate::backup::read_backup_manifest_binding(
+            &self.named_backup_directory(receipt.backup_name()),
+        )?;
         let incarnation = receipt
             .published_history_incarnation()
             .ok_or_else(invariant)?;

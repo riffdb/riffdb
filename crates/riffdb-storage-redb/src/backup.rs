@@ -1097,6 +1097,7 @@ impl OwnedClosedMaterialization {
     pub(crate) fn verify(&self) -> Result<(), StorageError> {
         self.materialization.verify()
     }
+    #[cfg(test)]
     pub(crate) fn verify_publication_seal(&self) -> Result<(), StorageError> {
         self.materialization.verify_full_seal()
     }
@@ -2413,7 +2414,9 @@ fn validate_manifest_format_marker(
     Ok(())
 }
 
-pub(crate) fn validate_immutable_backup(
+/// Reads the bounded canonical manifest binding, not artifact content evidence.
+/// Only a receipt that already authorizes publication may use this for reopen.
+pub(crate) fn read_backup_manifest_binding(
     directory: &Path,
 ) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
     validate_backup_inventory(directory)?;
@@ -2421,6 +2424,21 @@ pub(crate) fn validate_immutable_backup(
         read_bounded_file(&directory.join(MANIFEST_FILE_NAME), MANIFEST_MAX_BYTES)?;
     let manifest = decode_manifest(&manifest_bytes)?;
     validate_manifest_inventory(directory, &manifest)?;
+    let manifest_checksum =
+        BackupIntegrityChecksumV1::new(Sha256::digest(&manifest_bytes).to_vec())
+            .map_err(value_error)?;
+    let identity = OfflineBackupManifestIdentityV1::new(
+        manifest_checksum,
+        manifest.database_id(),
+        manifest.last_commit_sequence(),
+    );
+    Ok((manifest, identity))
+}
+
+pub(crate) fn validate_immutable_backup(
+    directory: &Path,
+) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
+    let (manifest, identity) = read_backup_manifest_binding(directory)?;
     let artifact = directory.join(DATABASE_ARTIFACT_FILE_NAME);
     if sha256_file(&artifact)? != manifest_checksum(&manifest)? {
         return Err(corrupt());
@@ -2443,14 +2461,6 @@ pub(crate) fn validate_immutable_backup(
         }
         validate_manifest_format_marker(&marker, &manifest)?;
     }
-    let manifest_checksum =
-        BackupIntegrityChecksumV1::new(Sha256::digest(&manifest_bytes).to_vec())
-            .map_err(value_error)?;
-    let identity = OfflineBackupManifestIdentityV1::new(
-        manifest_checksum,
-        manifest.database_id(),
-        manifest.last_commit_sequence(),
-    );
     Ok((manifest, identity))
 }
 
@@ -4331,6 +4341,42 @@ mod tests {
             vec!["alpha".to_owned(), "zeta".to_owned()],
         )
         .expect("build metadata")
+    }
+
+    // req: REC-001, REC-004, REC-006, END-001
+    #[test]
+    fn published_restore_manifest_binding_is_not_artifact_validation() {
+        use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+        let root = TestRoot::new("published-manifest-binding");
+        let source = root.join("source.redb");
+        initialize(&source);
+        let backup = root.join("backup");
+        RedbOfflineBackup::bind(&source, &backup)
+            .create_offline_backup(&build_metadata())
+            .unwrap();
+        let expected = validate_immutable_backup(&backup).unwrap();
+        assert_eq!(read_backup_manifest_binding(&backup).unwrap(), expected);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(backup.join(DATABASE_ARTIFACT_FILE_NAME))
+            .unwrap();
+        let mut byte = [0];
+        file.read_exact(&mut byte).unwrap();
+        byte[0] ^= 1;
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(&byte).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(
+            read_backup_manifest_binding(&backup).unwrap(),
+            expected,
+            "receipt identity lookup must not repeat complete artifact validation"
+        );
+        assert!(matches!(validate_immutable_backup(&backup), Err(error)
+            if error.kind() == StorageErrorKind::CorruptData));
+        fs::write(backup.join(MANIFEST_FILE_NAME), b"invalid manifest").unwrap();
+        assert!(read_backup_manifest_binding(&backup).is_err());
     }
 
     fn initialize(path: &Path) {

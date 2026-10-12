@@ -109,16 +109,16 @@ pub(super) fn admit_native_layout(count: usize, payload: usize) -> Result<(), Jo
 /// The complete physical checksum has already passed. Validate the bounded
 /// logical framing and recorded hash before admitting any decoded allocations.
 /// Retained stub reads have their separate one-window owner and do not call this.
-pub(super) fn admit_physical_recovery(
-    logical: &[u8],
+pub(super) fn admit_physical_recovery<'a>(
+    logical: &'a [u8],
     recorded: &[u8; HASH_BYTES],
-) -> Result<(), JournalIoError> {
+) -> Result<Option<LogicalFrameHashAdmission<'a>>, JournalIoError> {
     let corrupt = || JournalIoError::Corrupt;
     if logical.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES || logical[..8] != FRAME_MAGIC {
         return Err(corrupt());
     }
     match read_u16(logical, 8).map_err(|_| corrupt())? {
-        FRAME_VERSION_V2 => return Ok(()),
+        FRAME_VERSION_V2 => return Ok(None),
         FRAME_VERSION_V3 | FRAME_VERSION_V4 | FRAME_VERSION_V5 => (),
         _ => return Err(corrupt()),
     }
@@ -129,7 +129,7 @@ pub(super) fn admit_physical_recovery(
         .map_err(|_| corrupt())?
         .is_none()
     {
-        return Ok(());
+        return Ok(None);
     }
     let count =
         usize::try_from(read_u32(logical, 68).map_err(|_| corrupt())?).map_err(|_| corrupt())?;
@@ -142,7 +142,7 @@ pub(super) fn admit_physical_recovery(
         || logical[footer..footer + 8] != FOOTER_MAGIC
         || usize::try_from(read_u64(logical, footer + 8).map_err(|_| corrupt())?).ok()
             != Some(logical.len())
-        || digest(&logical[..footer]) != *recorded
+        || logical_frame_digest(&logical[..footer]) != *recorded
         || read_array::<HASH_BYTES>(logical, footer + 16).map_err(|_| corrupt())? != *recorded
     {
         return Err(corrupt());
@@ -154,7 +154,32 @@ pub(super) fn admit_physical_recovery(
                 .ok_or_else(corrupt)?,
         )
         .ok_or_else(corrupt)?;
-    admit_native_layout(count, payload).map_err(|_| JournalIoError::Capacity)
+    admit_native_layout(count, payload).map_err(|_| JournalIoError::Capacity)?;
+    Ok(Some(LogicalFrameHashAdmission {
+        bytes: logical,
+        hash: *recorded,
+    }))
+}
+
+/// A checked hash and allocation admission for exactly one borrowed buffer.
+/// It proves neither semantic validity nor a previously validated frame, and
+/// cannot authorize the retained decoder's command-count shortcut.
+pub(super) struct LogicalFrameHashAdmission<'a> {
+    bytes: &'a [u8],
+    hash: [u8; HASH_BYTES],
+}
+
+impl<'a> LogicalFrameHashAdmission<'a> {
+    pub(super) fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub(super) fn hash_for(self, bytes: &[u8]) -> Result<[u8; HASH_BYTES], JournalCodecError> {
+        if !std::ptr::eq(self.bytes, bytes) {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        Ok(self.hash)
+    }
 }
 
 pub(super) fn verify_legacy_tail(

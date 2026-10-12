@@ -1901,7 +1901,7 @@ impl JournalFrame {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
-        Self::decode_with(bytes, None)
+        Self::decode_with(bytes, None, None)
     }
 
     /// Decodes a retained frame a history stub names (ADR-0263 Amendment 3).
@@ -1913,12 +1913,21 @@ impl JournalFrame {
         bytes: &[u8],
         proven: &[u8; HASH_BYTES],
     ) -> Result<Self, JournalCodecError> {
-        Self::decode_with(bytes, Some(proven)).map(|(frame, _)| frame)
+        Self::decode_with(bytes, Some(proven), None).map(|(frame, _)| frame)
     }
 
-    fn decode_with(
-        bytes: &[u8],
+    /// Reuses only the digest already checked for this immutable borrow. Every
+    /// ordinary semantic check, including deep command counts, still runs.
+    fn decode_admitted(
+        admitted: recovery_memory::LogicalFrameHashAdmission<'_>,
+    ) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
+        Self::decode_with(admitted.bytes(), None, Some(admitted))
+    }
+
+    fn decode_with<'a>(
+        bytes: &'a [u8],
         proven: Option<&[u8; HASH_BYTES]>,
+        admitted: Option<recovery_memory::LogicalFrameHashAdmission<'a>>,
     ) -> Result<(Self, [u8; HASH_BYTES]), JournalCodecError> {
         if bytes.len() < FRAME_HEADER_BYTES_V2 + FRAME_FOOTER_BYTES {
             return Err(JournalCodecError::Truncated);
@@ -1964,7 +1973,10 @@ impl JournalFrame {
         {
             return Err(JournalCodecError::InvalidValue);
         }
-        let frame_hash = digest(&bytes[..footer]);
+        let frame_hash = match admitted {
+            Some(admitted) => admitted.hash_for(bytes)?,
+            None => logical_frame_digest(&bytes[..footer]),
+        };
         if frame_hash != read_array::<HASH_BYTES>(bytes, footer + 16)?
             || proven.is_some_and(|proven| *proven != frame_hash)
         {
@@ -3766,20 +3778,22 @@ fn decode_physical_frame(
         return Err(JournalIoError::Corrupt);
     }
     let logical = &physical[EXTENT_FRAME_HEADER_BYTES..EXTENT_FRAME_HEADER_BYTES + encoded_len];
-    if proven.is_none() {
+    let admitted = if proven.is_none() {
         recovery_memory::admit_physical_recovery(
             logical,
             &read_array::<HASH_BYTES>(physical, 36).map_err(|_| JournalIoError::Corrupt)?,
-        )?;
-    }
-    let (frame, frame_hash) = match proven {
-        Some(proven) => (JournalFrame::decode_proven(logical, proven), *proven),
-        None => match JournalFrame::decode(logical) {
-            Ok((frame, hash)) => (Ok(frame), hash),
-            Err(error) => (Err(error), [0; HASH_BYTES]),
-        },
+        )?
+    } else {
+        None
     };
-    let frame = frame.map_err(|_| JournalIoError::Corrupt)?;
+    let (frame, frame_hash) = match (proven, admitted) {
+        (Some(proven), _) => {
+            JournalFrame::decode_proven(logical, proven).map(|frame| (frame, *proven))
+        }
+        (None, Some(admitted)) => JournalFrame::decode_admitted(admitted),
+        (None, None) => JournalFrame::decode(logical),
+    }
+    .map_err(|_| JournalIoError::Corrupt)?;
     if frame_hash.as_slice() != &physical[36..68] {
         return Err(JournalIoError::Corrupt);
     }
@@ -5546,6 +5560,17 @@ pub(crate) fn content_digest(bytes: &[u8]) -> [u8; HASH_BYTES] {
 
 fn digest(bytes: &[u8]) -> [u8; HASH_BYTES] {
     Sha256::digest(bytes).into()
+}
+
+#[cfg(test)]
+thread_local! {
+    static LOGICAL_FRAME_HASH_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn logical_frame_digest(bytes: &[u8]) -> [u8; HASH_BYTES] {
+    #[cfg(test)]
+    LOGICAL_FRAME_HASH_PASSES.with(|passes| passes.set(passes.get() + 1));
+    digest(bytes)
 }
 
 fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalCodecError> {
@@ -7440,6 +7465,88 @@ mod tests {
             Err(JournalCodecError::Checksum),
             "a frame is never accepted under another frame's hash"
         );
+    }
+
+    // req: REC-001, REC-005, REC-006
+    #[test]
+    fn physical_recovery_admission_hashes_the_same_logical_bytes_once() {
+        let frame =
+            recovery_frame(database_id(34)).with_changelog(Some(sample_changelog_binding()));
+        let encoded = frame.encode().unwrap();
+        let physical = EncodedExtentFrame::encode(1, EXTENT_DATA_OFFSET, &encoded).unwrap();
+        LOGICAL_FRAME_HASH_PASSES.with(|passes| passes.set(0));
+        let (decoded, hash) = decode_physical_frame(
+            &physical.bytes,
+            1,
+            EXTENT_DATA_OFFSET,
+            encoded.as_bytes().len(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(decoded, frame);
+        assert_eq!(hash, encoded.frame_hash());
+        assert_eq!(
+            LOGICAL_FRAME_HASH_PASSES.with(|passes| passes.get()),
+            1,
+            "admission and complete decoding share one checked immutable logical buffer"
+        );
+    }
+
+    // req: REC-001, REC-005, REC-006
+    #[test]
+    fn physical_recovery_admission_preserves_complete_semantic_count_validation() {
+        let frame =
+            recovery_frame(database_id(35)).with_changelog(Some(sample_changelog_binding()));
+        let mut encoded = frame.encode().unwrap();
+        // A correct checksum does not prove the claimed command count: replace
+        // its only commit mutation by a different, correctly framed namespace.
+        std::sync::Arc::make_mut(&mut encoded.bytes)[FRAME_HEADER_BYTES] =
+            JournalTable::Entities as u8;
+        let footer = encoded.bytes.len() - FRAME_FOOTER_BYTES;
+        let hash = digest(&encoded.bytes[..footer]);
+        std::sync::Arc::make_mut(&mut encoded.bytes)[footer + 16..footer + 16 + HASH_BYTES]
+            .copy_from_slice(&hash);
+        encoded.frame_hash = hash;
+        assert!(matches!(
+            JournalFrame::decode(encoded.as_bytes()),
+            Err(JournalCodecError::InvalidValue)
+        ));
+        let physical = EncodedExtentFrame::encode(1, EXTENT_DATA_OFFSET, &encoded).unwrap();
+        assert!(matches!(
+            decode_physical_frame(
+                &physical.bytes,
+                1,
+                EXTENT_DATA_OFFSET,
+                encoded.as_bytes().len(),
+                None
+            ),
+            Err(JournalIoError::Corrupt)
+        ));
+    }
+
+    // req: REC-001, REC-005, REC-006
+    #[test]
+    fn physical_recovery_admission_cannot_be_rebound_to_another_buffer() {
+        let frame =
+            recovery_frame(database_id(36)).with_changelog(Some(sample_changelog_binding()));
+        let encoded = frame.encode().unwrap();
+        let admitted =
+            recovery_memory::admit_physical_recovery(encoded.as_bytes(), &encoded.frame_hash())
+                .unwrap()
+                .unwrap();
+        let other = encoded.as_bytes().to_vec();
+        assert_eq!(JournalFrame::decode(&other).unwrap().0, frame);
+        assert!(matches!(
+            JournalFrame::decode_with(&other, None, Some(admitted)),
+            Err(JournalCodecError::InvalidValue)
+        ));
+        let mut damaged = other;
+        damaged[FRAME_HEADER_BYTES + MUTATION_HEADER_BYTES] ^= 1;
+        assert!(matches!(
+            recovery_memory::admit_physical_recovery(&damaged, &encoded.frame_hash()),
+            Err(JournalIoError::Corrupt)
+        ));
     }
 
     // req: REC-005

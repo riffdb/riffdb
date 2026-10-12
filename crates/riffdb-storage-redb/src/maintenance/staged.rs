@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -700,9 +701,10 @@ impl RedbSealedStagedRestore {
             return Err(corrupt());
         }
         self.backup_directory_guard.verify()?;
-        if let Some(owner) = &self.native_closed {
-            owner.verify_publication_seal()?;
-        }
+        // The ordinary native source's full publication check is performed
+        // while copying its pinned input below. No target is published before
+        // that hash and the independent destination readback both match.
+        let verify_input_during_copy = self.native_closed.is_some();
         self.verify_sealed_artifacts()?;
         let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
         let staged_format_marker_name = self
@@ -740,19 +742,31 @@ impl RedbSealedStagedRestore {
         let mut staged_file = self
             .stage_cleanup
             .open_file(std::ffi::OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?;
-        copy_and_sync(&mut staged_file, &mut temporary_file)?;
+        copy_and_sync(
+            &mut staged_file,
+            &mut temporary_file,
+            verify_input_during_copy.then_some(&self.sealed_artifact_checksum),
+        )?;
         drop(temporary_file);
         if sha256_reader(temporary.reopen()?)? != self.sealed_artifact_checksum {
             return Err(corrupt());
         }
         let mut staged_journal = self.stage_cleanup.open_file(staged_journal_name)?;
-        copy_and_sync(&mut staged_journal, &mut journal_temporary_file)?;
+        copy_and_sync(
+            &mut staged_journal,
+            &mut journal_temporary_file,
+            verify_input_during_copy.then_some(&self.sealed_journal_checksum),
+        )?;
         drop(journal_temporary_file);
         if sha256_reader(journal_temporary.reopen()?)? != self.sealed_journal_checksum {
             return Err(corrupt());
         }
         let mut staged_format_marker = self.stage_cleanup.open_file(staged_format_marker_name)?;
-        copy_and_sync(&mut staged_format_marker, &mut format_marker_temporary_file)?;
+        copy_and_sync(
+            &mut staged_format_marker,
+            &mut format_marker_temporary_file,
+            verify_input_during_copy.then_some(&self.sealed_format_marker_checksum),
+        )?;
         drop(format_marker_temporary_file);
         if sha256_reader(format_marker_temporary.reopen()?)? != self.sealed_format_marker_checksum {
             return Err(corrupt());
@@ -820,6 +834,9 @@ impl RedbSealedStagedRestore {
 
     fn verify_paths(&self) -> Result<(), StorageError> {
         let result = (|| {
+            if let Some(owner) = &self.native_closed {
+                owner.verify()?;
+            }
             if let Some(owner) = &self.native_archive_closed {
                 owner.verify()?;
             }
@@ -1021,18 +1038,31 @@ pub(super) fn target_temporary_name(
 fn copy_and_sync(
     source: &mut cap_std::fs::File,
     destination: &mut cap_std::fs::File,
+    expected_input: Option<&BackupIntegrityChecksumV1>,
 ) -> Result<(), StorageError> {
     let mut buffer = [0u8; COPY_BUFFER_BYTES];
+    let mut hash = expected_input.map(|_| Sha256::new());
     loop {
         let read = source.read(&mut buffer).map_err(io_unavailable)?;
         if read == 0 {
             break;
         }
+        if let Some(hash) = &mut hash {
+            hash.update(&buffer[..read]);
+        }
         destination
             .write_all(&buffer[..read])
             .map_err(io_unavailable)?;
     }
-    destination.sync_all().map_err(io_unavailable)
+    destination.sync_all().map_err(io_unavailable)?;
+    if let Some((hash, expected)) = hash.zip(expected_input) {
+        let actual =
+            BackupIntegrityChecksumV1::new(hash.finalize().to_vec()).map_err(|_| invariant())?;
+        if &actual != expected {
+            return Err(corrupt());
+        }
+    }
+    Ok(())
 }
 
 fn io_unavailable(_error: std::io::Error) -> StorageError {
@@ -1053,6 +1083,7 @@ fn unknown() -> StorageError {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use redb::ReadableDatabase as _;
     use std::ffi::OsStr;
     use std::fs;
     use std::io::Write as _;
@@ -1068,6 +1099,133 @@ mod tests {
     use crate::maintenance::path_guard::PinnedDirectory;
 
     static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+
+    // req: REC-001, REC-006, END-001
+    #[test]
+    fn publication_copy_stream_refuses_unsealed_input_and_keeps_destination_readback() {
+        use riffdb_storage_api::{BackupIntegrityChecksumV1, StorageErrorKind};
+        use sha2::{Digest as _, Sha256};
+        let scope = crate::test_path::ScopedDirectory::new("publication-copy-stream");
+        let original = vec![0x63; super::COPY_BUFFER_BYTES + 17];
+        fs::write(scope.join("input"), &original).unwrap();
+        let parent = PinnedDirectory::open(&scope.join("")).unwrap();
+        let expected = BackupIntegrityChecksumV1::new(Sha256::digest(&original).to_vec()).unwrap();
+        let mut wrong = expected.as_bytes().to_vec();
+        wrong[0] ^= 1;
+        let wrong = BackupIntegrityChecksumV1::new(wrong).unwrap();
+        let mut source = parent.open_file(OsStr::new("input")).unwrap();
+        let mut target = parent
+            .create_new_file(OsStr::new("rejected-private-copy"))
+            .unwrap();
+        assert!(
+            matches!(super::copy_and_sync(&mut source, &mut target, Some(&wrong)),
+            Err(error) if error.kind() == StorageErrorKind::CorruptData)
+        );
+        assert!(!scope.join("published").exists());
+        drop(target);
+        let mut source = parent.open_file(OsStr::new("input")).unwrap();
+        let mut target = parent
+            .create_new_file(OsStr::new("accepted-private-copy"))
+            .unwrap();
+        super::copy_and_sync(&mut source, &mut target, Some(&expected)).unwrap();
+        drop(target);
+        assert_eq!(
+            crate::backup::sha256_file(&scope.join("accepted-private-copy")).unwrap(),
+            expected
+        );
+        let mut changed = original;
+        changed[super::COPY_BUFFER_BYTES] ^= 1;
+        fs::write(scope.join("accepted-private-copy"), changed).unwrap();
+        assert_ne!(
+            crate::backup::sha256_file(&scope.join("accepted-private-copy")).unwrap(),
+            expected
+        );
+    }
+
+    // req: REC-001, REC-004, REC-006, END-001
+    #[test]
+    fn ordinary_publication_copy_preserves_native_seals_and_refuses_changed_artifacts() {
+        use riffdb_storage_api::{
+            OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1,
+            ReadableCapabilityDigestInventory, ReadableDigestKey,
+            ReadableIdempotencyDigestInventory, StartupValidationInputs, StorageErrorKind,
+        };
+        use riffdb_types::{BackupNameV1, DigestKeyId, Timestamp};
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        for changed in [None, Some("primary"), Some("journal"), Some("marker")] {
+            let scope = crate::test_path::ScopedDirectory::new("ordinary-publication-copy");
+            let (backup, _) =
+                crate::maintenance::archive_backup_tests::backup_current_source(&scope);
+            let original_backup = crate::backup::validate_immutable_backup(&backup).unwrap();
+            let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
+            let inputs = StartupValidationInputs::new(
+                Timestamp::new(1, 0).unwrap(),
+                ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
+                ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
+            );
+            let configured = scope.join("configured.redb");
+            let mut stage = super::RedbStagedRestore::materialize_owned(
+                operation_id(0x67),
+                BackupNameV1::new("ordinary-copy").unwrap(),
+                backup.clone(),
+                scope.join("stage"),
+                configured.clone(),
+                inputs,
+                None,
+            )
+            .unwrap();
+            drop(stage.take_owned_authorization_evidence().unwrap());
+            let database_id = stage.manifest_identity().database_id();
+            let mut sealed = stage.seal_after_validation(database_id).unwrap();
+            sealed.apply_published_history_incarnation(2).unwrap();
+            let expected = sealed.sealed_artifact_checksum.clone();
+            if let Some(changed) = changed {
+                let path = match changed {
+                    "primary" => &sealed.staged_database_file,
+                    "journal" => &sealed.staged_journal_file,
+                    "marker" => &sealed.staged_format_marker_file,
+                    _ => unreachable!(),
+                };
+                let mut file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path)
+                    .unwrap();
+                let mut byte = [0];
+                file.read_exact(&mut byte).unwrap();
+                byte[0] ^= 1;
+                file.seek(SeekFrom::Start(0)).unwrap();
+                file.write_all(&byte).unwrap();
+                file.sync_all().unwrap();
+            }
+            let result = sealed
+                .publish_to_configured_database(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty);
+            if changed.is_some() {
+                assert!(
+                    matches!(result, Err(error) if error.kind() == StorageErrorKind::CorruptData)
+                );
+                assert!(!configured.exists());
+            } else {
+                assert!(matches!(
+                    result,
+                    Ok(OfflineRestoreResultV1::Restored { .. })
+                ));
+                assert_eq!(crate::backup::sha256_file(&configured).unwrap(), expected);
+                let store = crate::RedbStore::open(&configured).unwrap();
+                let read = store.shared.database.begin_read().unwrap();
+                assert_eq!(
+                    crate::startup::read_retained_metadata_pub(&read)
+                        .unwrap()
+                        .history_incarnation(),
+                    2
+                );
+            }
+            assert_eq!(
+                crate::backup::validate_immutable_backup(&backup).unwrap(),
+                original_backup
+            );
+        }
+    }
 
     struct TestRoot(PathBuf);
 
