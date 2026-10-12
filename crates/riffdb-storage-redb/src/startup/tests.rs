@@ -3721,7 +3721,7 @@ fn collect_historical_plan_sequence(
     let store = RedbStore::open(path).expect("open");
     let transaction = store.shared.database.begin_read().expect("read");
     let validation = inputs_at(70);
-    let mut plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
+    let mut plan = build_historical_evidence_plan(&transaction, &validation, None).expect("plan");
     let tables = HistoricalMaterializationTables::open(&transaction).expect("tables");
     let mut sequence = Vec::new();
     while let Some(PendingHistoricalEvidence {
@@ -4118,7 +4118,7 @@ fn historical_plan_retained_shape(entity_rows: u64) -> (usize, usize) {
     }
     write.commit().expect("commit plan-shape fixture");
     let transaction = store.shared.database.begin_read().expect("read plan shape");
-    let plan = build_historical_evidence_plan(&transaction, &inputs_at(70)).expect("plan");
+    let plan = build_historical_evidence_plan(&transaction, &inputs_at(70), None).expect("plan");
     (plan.persisted_groups.len(), plan.retained_bytes)
 }
 
@@ -6269,4 +6269,139 @@ fn commit_phase_and_command_history_decode_a_shared_segment_once() {
         3,
         "the intact segment is still remembered"
     );
+}
+
+/// Installs consecutive segments of `count` fixture commands starting at each
+/// `first` sequence.
+fn install_segments(
+    label: &str,
+    segments: &[(u64, u64)],
+) -> (
+    crate::derived::TestDatabasePath,
+    crate::store::RedbOperationalPorts,
+) {
+    use crate::derived::follower_indexes::{capsule, segment};
+    let (path, ports) = crate::derived::operational(label);
+    let write = ports.shared.database.begin_write().expect("begin write");
+    {
+        let mut commits = write.open_table(COMMITS).expect("commits");
+        let mut prior = None;
+        for &(first, count) in segments {
+            let commands = (first..first + count)
+                .map(|sequence| capsule(CommitSequence::new(sequence).expect("sequence")))
+                .collect::<Vec<_>>();
+            let (decoded, encoded) = segment(commands, prior);
+            prior = Some(decoded.segment_digest());
+            commits
+                .insert(
+                    keys::encode_application_sequence_key(
+                        CommitSequence::new(first).expect("first sequence"),
+                    )
+                    .as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("install segment");
+        }
+    }
+    write.commit().expect("commit segments");
+    (path, ports)
+}
+
+fn historical_plan_entries(plan: &HistoricalEvidencePlan) -> String {
+    format!(
+        "{:?} {:?} {}",
+        plan.prefix_entries, plan.suffix_entries, plan.retained_bytes
+    )
+}
+
+// req: REC-007
+/// ADR-0287: one `COMMITS` pass serves the command history, the entity chains
+/// and the historical plan's commit plans, decoding each row once, and every
+/// result equals its own separate pass, with and without a checkpoint floor
+/// and with a malformed row present.
+#[test]
+fn single_commit_pass_matches_the_separate_passes_and_decodes_each_row_once() {
+    let decodes = || crate::history_stub::RETAINED_SEGMENT_DECODES.with(std::cell::Cell::get);
+    for malformed in [false, true] {
+        let (_path, ports) = install_segments(
+            if malformed {
+                "single-commit-pass-malformed"
+            } else {
+                "single-commit-pass"
+            },
+            &[(1, 4), (5, 4), (9, 4)],
+        );
+        if malformed {
+            let write = ports.shared.database.begin_write().expect("begin write");
+            write
+                .open_table(COMMITS)
+                .expect("commits")
+                .insert(
+                    keys::encode_application_sequence_key(CommitSequence::new(13).unwrap())
+                        .as_slice(),
+                    b"corrupt segment".as_slice(),
+                )
+                .expect("malformed row");
+            write.commit().expect("commit malformed row");
+        }
+        let read = ports.shared.database.begin_read().expect("begin read");
+        for floor in [0_u64, 4] {
+            let seed = || {
+                (floor > 0)
+                    .then(std::collections::BTreeMap::new)
+                    .map(|heads| (floor, heads))
+            };
+
+            let before = decodes();
+            let history = command_history::CommandHistory::build(
+                &read,
+                floor,
+                MAX_STARTUP_EVIDENCE_INDEX_BYTES,
+            )
+            .expect("separate history");
+            let chains = build_entity_chains(&read, 3, seed()).expect("separate chains");
+            let separate_plan =
+                build_historical_evidence_plan(&read, &inputs(), None).expect("separate plan");
+            let separate = decodes() - before;
+
+            let before = decodes();
+            let (fused_history, fused_chains, fused_plans) =
+                single_commit_pass(&read, floor, Some((3, seed())), true).expect("single pass");
+            let fused = decodes() - before;
+
+            assert_eq!(fused_history.rows_decoded(), history.rows_decoded());
+            assert_eq!(fused_history.audit_entries(), history.audit_entries());
+            assert_eq!(fused_history.retained_bytes(), history.retained_bytes());
+            assert_eq!(
+                fused_chains.expect("chains requested").expect("chains"),
+                chains
+            );
+            let fused_plans = fused_plans.expect("plans within the ceiling");
+            assert!(fused_plans.error.is_none());
+            assert!(
+                !fused_plans.plans.is_empty(),
+                "the fixture commands carry plans"
+            );
+            assert!(
+                history.audit_entries() > 0,
+                "the fixture commands carry audits"
+            );
+            let fused_plan = build_historical_evidence_plan(&read, &inputs(), Some(fused_plans))
+                .expect("plan from the single pass");
+            assert_eq!(
+                historical_plan_entries(&fused_plan),
+                historical_plan_entries(&separate_plan)
+            );
+            if malformed {
+                // A refused row is decoded again by every consumer.
+                assert!(fused < separate, "{fused} vs {separate}");
+            } else {
+                // Three segment rows: once each in the single pass; the
+                // separate history and chains decode the suffix, the plan all.
+                let suffix = if floor == 0 { 3 } else { 2 };
+                assert_eq!(fused, 3, "floor {floor}");
+                assert_eq!(separate, 2 * suffix + 3, "floor {floor}");
+            }
+        }
+    }
 }

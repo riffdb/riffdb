@@ -556,6 +556,7 @@ struct StructuralCursors {
 }
 
 /// One entity's continuity state built from a single forward COMMITS pass.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct EntityChain {
     version: riffdb_types::EntityVersion,
     /// Known after a command commit; absent after an archive-proven migration transition.
@@ -779,6 +780,12 @@ pub struct RedbStructuralEvidenceSession {
     binding_bundles: BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
+    /// Entity chains (or their build refusal) from the command cache's
+    /// single `COMMITS` pass, installed at ENTITIES phase entry (ADR-0287).
+    prebuilt_entity_chains: Option<Result<EntityChainState, StorageError>>,
+    /// `COMMITS` plan references from the same pass, read by the historical
+    /// evidence plan over this snapshot (ADR-0287).
+    prebuilt_commit_plans: Option<PrecollectedCommitPlans>,
     /// Non-command `AUDIT` rows decoded for publication proofs this session.
     /// One whole physical pass serves every catalog, query-module, and reactive
     /// module check; the counter excludes command locators skipped by dispatch.
@@ -814,6 +821,7 @@ pub struct RedbStructuralEvidenceSession {
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct EntityChainState {
     chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
     migrations: Vec<EntityMigrationEvidence>,
@@ -833,6 +841,7 @@ struct EntityChainState {
 
 /// Bounded permanent evidence for one successful catalog migration.
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct EntityMigrationEvidence {
     operation_id: ContractMigrationOperationId,
     migration: MigrationBundleHash,
@@ -996,6 +1005,8 @@ impl RedbStore {
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
+                prebuilt_entity_chains: None,
+                prebuilt_commit_plans: None,
                 reactive_publication_audit_decodes: 0,
                 pending_entity_orphan_findings: VecDeque::new(),
                 historical_plan: None,
@@ -1145,6 +1156,8 @@ impl RedbStore {
                 publication_audits: None,
                 binding_bundles,
                 entity_chains: None,
+                prebuilt_entity_chains: None,
+                prebuilt_commit_plans: None,
                 reactive_publication_audit_decodes: 0,
                 pending_entity_orphan_findings: VecDeque::new(),
                 historical_plan: None,
@@ -1318,6 +1331,8 @@ impl RedbStore {
             publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,
+            prebuilt_entity_chains: None,
+            prebuilt_commit_plans: None,
             reactive_publication_audit_decodes,
             pending_entity_orphan_findings: VecDeque::new(),
             historical_plan: None,
@@ -1470,7 +1485,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 }
                 plan
             } else {
-                build_historical_evidence_plan(transaction, &self.inputs)?
+                build_historical_evidence_plan(
+                    transaction,
+                    &self.inputs,
+                    self.prebuilt_commit_plans.take(),
+                )?
             };
             self.note_recovery_owned_bytes(plan.retained_bytes);
             self.historical_plan = Some(plan);
@@ -1855,6 +1874,8 @@ impl RedbStructuralEvidenceSession {
     fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
         self.check_cancellation()?;
         if self.validation_read.is_none() {
+            // Commit plans read from an earlier snapshot never describe this one.
+            self.prebuilt_commit_plans = None;
             self.validation_read = Some(self.open_snapshot_read()?);
         }
         if self.historical_tables.is_none() {
@@ -2592,16 +2613,11 @@ impl RedbStructuralEvidenceSession {
         if self.command_cache_built {
             return Ok(());
         }
-        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         let floor = self
             .checkpoint
             .as_ref()
             .map_or(0, |checkpoint| checkpoint.checkpoint_commit_sequence);
-        let history = command_history::CommandHistory::build(
-            transaction,
-            floor,
-            MAX_STARTUP_EVIDENCE_INDEX_BYTES,
-        )?;
+        let history = self.build_command_history_with_companions(floor)?;
         self.command_audit_bytes = history.retained_bytes();
         self.command_history_rows_decoded = history.rows_decoded();
         self.command_history = history;
@@ -2612,6 +2628,44 @@ impl RedbStructuralEvidenceSession {
         self.note_recovery_owned_bytes(plan_bytes);
         self.command_cache_built = true;
         Ok(())
+    }
+
+    /// The command history, built in one `COMMITS` pass that also builds the
+    /// entity chains and reads the historical plan's commit plans when this
+    /// session still needs them (ADR-0287). Each row is decoded once for all
+    /// three. The history's refusals return here as they always did; the
+    /// companions' refusals are held for the point at which their own passes
+    /// would have returned them.
+    fn build_command_history_with_companions(
+        &mut self,
+        floor: u64,
+    ) -> Result<command_history::CommandHistory, StorageError> {
+        let bounded = self.clean_close_fast || self.bounded_dirty_startup;
+        let collect_plans = !bounded && self.historical_plan.is_none();
+        // The checkpoint seed is consumed once, exactly as the ENTITIES-phase
+        // build would consume it; without it that build reports the invariant.
+        let entity_seed = if self.entity_chains.is_some() || self.prebuilt_entity_chains.is_some() {
+            None
+        } else {
+            match self.checkpoint.as_mut() {
+                Some(checkpoint) => checkpoint
+                    .entity_heads_at_s
+                    .take()
+                    .map(|heads| Some((checkpoint.checkpoint_commit_sequence, heads))),
+                None => Some(None),
+            }
+        };
+        let live_entity_count = self.full_structural_counts.get(5).copied().unwrap_or(0);
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let (history, entity, plans) = single_commit_pass(
+            transaction,
+            floor,
+            entity_seed.map(|seed| (live_entity_count, seed)),
+            collect_plans,
+        )?;
+        self.prebuilt_entity_chains = entity;
+        self.prebuilt_commit_plans = plans;
+        Ok(history)
     }
 
     fn ensure_publication_audit_cache(&mut self) -> Result<(), StorageError> {
@@ -2627,6 +2681,10 @@ impl RedbStructuralEvidenceSession {
 
     fn ensure_entity_chains_built(&mut self) -> Result<(), StorageError> {
         if self.entity_chains.is_some() {
+            return Ok(());
+        }
+        if let Some(prebuilt) = self.prebuilt_entity_chains.take() {
+            self.entity_chains = Some(prebuilt?);
             return Ok(());
         }
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
@@ -5153,6 +5211,7 @@ const HISTORICAL_GROUP_PREFETCH_ITEMS: usize = 500;
 fn build_historical_evidence_plan(
     transaction: &ReadTransaction,
     inputs: &StartupValidationInputs,
+    commit_plans: Option<PrecollectedCommitPlans>,
 ) -> Result<HistoricalEvidencePlan, StorageError> {
     let mut ordered: std::collections::BTreeMap<Vec<u8>, EvidenceLocator> =
         std::collections::BTreeMap::new();
@@ -5177,7 +5236,7 @@ fn build_historical_evidence_plan(
 
         collect_bundle_locators(transaction, &mut insert)?;
         collect_contract_migration_edge_locators(transaction, &mut insert)?;
-        collect_plan_locators(transaction, &mut insert)?;
+        collect_plan_locators(transaction, commit_plans, &mut insert)?;
         collect_active_catalog_locator(transaction, &mut insert)?;
     }
 
@@ -5345,6 +5404,7 @@ fn collect_bundle_locators(
 
 fn collect_plan_locators(
     transaction: &ReadTransaction,
+    commit_plans: Option<PrecollectedCommitPlans>,
     insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let mut push_plan = |plan: riffdb_storage_api::ExecutablePlanRef| -> Result<(), StorageError> {
@@ -5390,22 +5450,29 @@ fn collect_plan_locators(
         }
         push_plan(record.plan().clone())?;
     }
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    for entry in commits.iter().map_err(precommit_storage_error)? {
-        let (key, value) = entry.map_err(precommit_storage_error)?;
-        let physical_sequence =
-            keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-        let records = match commits_in_physical_row(value.value(), &events, physical_sequence) {
-            Ok(records) => records,
-            // Historical semantic ordering is an auxiliary view. The
-            // structural commit phase reports this malformed row; omitting it
-            // here avoids converting a typed finding into an aborted scan.
-            Err(error) if error.kind() == StorageErrorKind::CorruptData => continue,
-            Err(error) => return Err(error),
-        };
-        for record in records {
-            push_plan(record.value().plan().clone())?;
+    match commit_plans {
+        // ADR-0287: the walk's single COMMITS pass already read every row's
+        // plans from this snapshot, in this order, and stopped where this
+        // loop would have stopped.
+        Some(precollected) => {
+            for plan in precollected.plans {
+                push_plan(plan)?;
+            }
+            if let Some(error) = precollected.error {
+                return Err(error);
+            }
+        }
+        None => {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            let events = transaction.open_table(EVENTS).map_err(table_error)?;
+            for entry in commits.iter().map_err(precommit_storage_error)? {
+                let (key, value) = entry.map_err(precommit_storage_error)?;
+                if let Some(plans) = commit_row_plans(key.value(), value.value(), &events, None)? {
+                    for plan in plans {
+                        push_plan(plan)?;
+                    }
+                }
+            }
         }
     }
     let provenance = transaction.open_table(PROVENANCE).map_err(table_error)?;
@@ -5426,6 +5493,229 @@ fn collect_plan_locators(
         push_plan(record.plan().clone())?;
     }
     Ok(())
+}
+
+/// What [`single_commit_pass`] returns: the command history, the entity
+/// chains or their build refusal when requested, and the historical plan's
+/// commit plans when requested and within the evidence-index ceiling.
+type SingleCommitPass = (
+    command_history::CommandHistory,
+    Option<Result<EntityChainState, StorageError>>,
+    Option<PrecollectedCommitPlans>,
+);
+
+/// Entity chain seed for [`single_commit_pass`]: the live entity count and
+/// the checkpoint seed the ENTITIES-phase build would use.
+type EntityChainRequest = (
+    u64,
+    Option<(
+        u64,
+        std::collections::BTreeMap<
+            riffdb_storage_api::EntityTarget,
+            riffdb_storage_api::EntityChainHeadV1,
+        >,
+    )>,
+);
+
+/// One forward `COMMITS` pass serving the command history, the entity chains
+/// and the historical plan's commit plans, each row decoded once for all
+/// three through one byte-keyed segment memo (ADR-0287). Each consumer sees
+/// exactly the rows, in the order, and through the decoder its own pass used:
+/// the history and chains the rows above `floor`, the plans every row. Only
+/// the history's refusals return; the others are carried in the result.
+fn single_commit_pass(
+    transaction: &ReadTransaction,
+    floor: u64,
+    entity_request: Option<EntityChainRequest>,
+    collect_plans: bool,
+) -> Result<SingleCommitPass, StorageError> {
+    if entity_request.is_none() && !collect_plans {
+        return Ok((
+            command_history::CommandHistory::build(
+                transaction,
+                floor,
+                MAX_STARTUP_EVIDENCE_INDEX_BYTES,
+            )?,
+            None,
+            None,
+        ));
+    }
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let mut history =
+        command_history::CommandHistoryBuilder::new(floor, MAX_STARTUP_EVIDENCE_INDEX_BYTES)?;
+    let mut entity = entity_request.map(|(live_entity_count, seed)| {
+        let chain_head_count = transaction
+            .open_table(crate::layout::ENTITY_CHAIN_HEADS)
+            .map_err(table_error)?
+            .len()
+            .map_err(precommit_storage_error)?;
+        EntityChainBuilder::new(transaction, live_entity_count.max(chain_head_count), seed)
+    });
+    let mut plans = collect_plans.then(CommitPlanCollector::default);
+    let segments = crate::command_authority::RetainedSegmentMemo::default();
+    let history_floor = history.lower_bound().map(<[u8]>::to_vec);
+    // Rows at or below the history floor belong to the historical plan
+    // alone; an iteration failure there is the plan's, never the history's.
+    if let (Some(collector), Some(floor_key)) = (plans.as_mut(), history_floor.as_ref()) {
+        match commits.range::<&[u8]>(..=floor_key.as_slice()) {
+            Ok(rows) => {
+                for entry in rows {
+                    match entry {
+                        Ok((key, value)) => {
+                            collector.row(key.value(), value.value(), &events, Some(&segments));
+                        }
+                        Err(error) => {
+                            collector.fail(precommit_storage_error(error));
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => collector.fail(precommit_storage_error(error)),
+        }
+    }
+    let rows = match history_floor.as_ref() {
+        None => commits.iter().map_err(precommit_storage_error)?,
+        Some(floor_key) => commits
+            .range::<&[u8]>((Excluded(floor_key.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?,
+    };
+    for entry in rows {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let (key, value) = (key.value(), value.value());
+        history.row(&commits, &events, key, value, Some(&segments))?;
+        if let Some(Ok(builder)) = entity.as_mut()
+            && builder.lower_bound().is_none_or(|lower| key > lower)
+            && let Err(error) = builder.row(transaction, &events, key, value, Some(&segments))
+        {
+            entity = Some(Err(error));
+        }
+        if let Some(collector) = plans.as_mut() {
+            collector.row(key, value, &events, Some(&segments));
+        }
+    }
+    let history = history.finish()?;
+    Ok((
+        history,
+        entity.map(|builder| builder.and_then(|builder| builder.finish(transaction))),
+        plans.and_then(CommitPlanCollector::finish),
+    ))
+}
+
+/// The plan references one `COMMITS` row contributes to the historical
+/// evidence plan, or `None` for a malformed row the plan omits: the
+/// historical semantic ordering is an auxiliary view, and the structural
+/// commit phase reports the row, so omitting it avoids converting a typed
+/// finding into an aborted scan. The segment is decoded through `segments`
+/// when given (ADR-0287).
+fn commit_row_plans<E>(
+    key: &[u8],
+    value: &[u8],
+    events: &E,
+    segments: Option<&crate::command_authority::RetainedSegmentMemo>,
+) -> Result<Option<Vec<riffdb_storage_api::ExecutablePlanRef>>, StorageError>
+where
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let physical_sequence = keys::decode_application_sequence_key(key).map_err(|_| corrupt())?;
+    match crate::command_authority::commits_in_physical_row_checked(
+        value,
+        events,
+        physical_sequence,
+        segments,
+        |_| Ok(()),
+    ) {
+        Ok(records) => Ok(Some(
+            records
+                .into_iter()
+                .map(|record| record.value().plan().clone())
+                .collect(),
+        )),
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The `COMMITS` plan references read by the walk's single pass for the
+/// historical evidence plan (ADR-0287): the distinct plans up to the first
+/// refusal, in first-seen order, and that refusal.
+struct PrecollectedCommitPlans {
+    plans: Vec<riffdb_storage_api::ExecutablePlanRef>,
+    error: Option<StorageError>,
+}
+
+/// Collects [`PrecollectedCommitPlans`] one row at a time. It stops at the
+/// first refusal, as the historical plan's own loop does, and gives up (the
+/// historical plan then reads `COMMITS` itself) if its distinct plans would
+/// exceed the evidence-index ceiling.
+#[derive(Default)]
+struct CommitPlanCollector {
+    seen: BTreeSet<Vec<u8>>,
+    plans: Vec<riffdb_storage_api::ExecutablePlanRef>,
+    bytes: usize,
+    error: Option<StorageError>,
+    abandoned: bool,
+}
+
+impl CommitPlanCollector {
+    fn row<E>(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+        events: &E,
+        segments: Option<&crate::command_authority::RetainedSegmentMemo>,
+    ) where
+        E: ReadableTable<&'static [u8], &'static [u8]>,
+    {
+        if self.abandoned || self.error.is_some() {
+            return;
+        }
+        match commit_row_plans(key, value, events, segments) {
+            Ok(Some(plans)) => {
+                for plan in plans {
+                    self.push(plan);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => self.error = Some(error),
+        }
+    }
+
+    /// Records a row-iteration failure, which the historical plan's own loop
+    /// would have returned at this row.
+    fn fail(&mut self, error: StorageError) {
+        if !self.abandoned && self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
+    fn push(&mut self, plan: riffdb_storage_api::ExecutablePlanRef) {
+        let order_key =
+            historical_order_key(&HistoricalSemanticEvidence::PlanReference(plan.clone()));
+        if self.seen.contains(&order_key) {
+            return;
+        }
+        let charge = order_key
+            .len()
+            .saturating_add(EvidenceLocator::PlanReference(plan.clone()).retained_bytes());
+        self.bytes = self.bytes.saturating_add(charge);
+        if self.bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            self.abandoned = true;
+            self.seen = BTreeSet::new();
+            self.plans = Vec::new();
+            return;
+        }
+        self.seen.insert(order_key);
+        self.plans.push(plan);
+    }
+
+    fn finish(self) -> Option<PrecollectedCommitPlans> {
+        (!self.abandoned).then_some(PrecollectedCommitPlans {
+            plans: self.plans,
+            error: self.error,
+        })
+    }
 }
 
 fn collect_active_catalog_locator(
@@ -7003,13 +7293,13 @@ fn entity_history_members_in_physical_row<E>(
     encoded: &[u8],
     events: &E,
     physical_sequence: CommitSequence,
+    segments: Option<&crate::command_authority::RetainedSegmentMemo>,
 ) -> Result<Vec<(CommitSequence, EntityHistoryMembers)>, StorageError>
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::history_stub::decode_retained_segment(encoded) {
+    match crate::command_authority::decode_retained_segment(encoded, segments) {
         Ok(segment) => {
-            let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
                 return Err(corrupt());
             }
@@ -7071,107 +7361,164 @@ where
 /// fingerprint-verified exact chain-head map at S, including post-image and
 /// transition hashes. Any migration recorded at write time is already baked
 /// into those heads; the pass advances across the suffix `(S, head]` only.
-fn build_entity_chains(
-    transaction: &ReadTransaction,
-    entity_count: u64,
-    seed: Option<(
-        u64,
-        std::collections::BTreeMap<
-            riffdb_storage_api::EntityTarget,
-            riffdb_storage_api::EntityChainHeadV1,
-        >,
-    )>,
-) -> Result<EntityChainState, StorageError> {
-    let has_exact_head_snapshot = seed.is_some();
-    let migrations = load_entity_migration_evidence(transaction)?;
-    // Chains build from the RETAINED commit range only: below-watermark commit
-    // bodies are tombstone-covered (verified before this walk began).
-    let pruned_floor = retention_watermark_sequence(transaction)?;
-    let table = transaction.open_table(COMMITS).map_err(table_error)?;
-    let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
-        std::collections::BTreeMap::new();
-    let mut transition_heads = std::collections::BTreeMap::<
+struct EntityChainBuilder {
+    has_exact_head_snapshot: bool,
+    migrations: Vec<EntityMigrationEvidence>,
+    pruned_floor: u64,
+    chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain>,
+    transition_heads: std::collections::BTreeMap<
         riffdb_storage_api::EntityTarget,
         riffdb_storage_api::EntityChainHeadV1,
-    >::new();
-    let mut orphan_targets = Vec::new();
-    let mut overflow = false;
-    let mut suffix_is_transition_complete = true;
-    let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
-    let mut walk_lower_bound = None;
-    let mut walk_after = 0_u64;
-    if let Some((s, heads_at_s)) = seed {
-        for (target, head) in heads_at_s {
-            let (version, hash) = match head.state() {
-                riffdb_storage_api::EntityChainStateV1::Live {
-                    version,
-                    value_hash,
-                } => (version, Some(value_hash)),
-                // Recreate restarts entity-local versioning at one. The exact
-                // deleted predecessor remains in `transition_heads`; this
-                // placeholder is never used to authorize a transition.
-                riffdb_storage_api::EntityChainStateV1::Deleted => {
-                    (riffdb_types::EntityVersion::first(), None)
-                }
-                riffdb_storage_api::EntityChainStateV1::NeverExisted => return Err(corrupt()),
-            };
-            chains.insert(
-                target.clone(),
-                EntityChain {
-                    version,
-                    hash,
-                    expected_bundle: None,
-                    // Entity-chain heads describe application-command
-                    // transitions only. Offline contract migrations retain
-                    // their own predecessor evidence and can advance an
-                    // entity version without rewriting this head. Even an
-                    // exact at-S head snapshot must therefore replay the
-                    // bounded migration-evidence sequence before comparing a
-                    // current entity row or a later command transition.
-                    migration_cursor: 0,
-                    intact: true,
-                    consumed: false,
-                },
-            );
-            transition_heads.insert(target, head);
+    >,
+    orphan_targets: Vec<riffdb_storage_api::EntityTarget>,
+    overflow: bool,
+    suffix_is_transition_complete: bool,
+    entity_count_usize: usize,
+    walk_after: u64,
+    walk_lower_bound: Option<[u8; 8]>,
+}
+
+impl EntityChainBuilder {
+    /// The chain state before the forward pass: migrations, the retention
+    /// floor and the checkpoint seed.
+    fn new(
+        transaction: &ReadTransaction,
+        entity_count: u64,
+        seed: Option<(
+            u64,
+            std::collections::BTreeMap<
+                riffdb_storage_api::EntityTarget,
+                riffdb_storage_api::EntityChainHeadV1,
+            >,
+        )>,
+    ) -> Result<Self, StorageError> {
+        let has_exact_head_snapshot = seed.is_some();
+        let migrations = load_entity_migration_evidence(transaction)?;
+        // Chains build from the RETAINED commit range only: below-watermark commit
+        // bodies are tombstone-covered (verified before this walk began).
+        let pruned_floor = retention_watermark_sequence(transaction)?;
+        // Opened for its error only, in the order the single-pass build used.
+        drop(transaction.open_table(COMMITS).map_err(table_error)?);
+        let mut chains: std::collections::BTreeMap<riffdb_storage_api::EntityTarget, EntityChain> =
+            std::collections::BTreeMap::new();
+        let mut transition_heads = std::collections::BTreeMap::<
+            riffdb_storage_api::EntityTarget,
+            riffdb_storage_api::EntityChainHeadV1,
+        >::new();
+        let orphan_targets = Vec::new();
+        let overflow = false;
+        let suffix_is_transition_complete = true;
+        let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
+        let mut walk_lower_bound = None;
+        let mut walk_after = 0_u64;
+        if let Some((s, heads_at_s)) = seed {
+            for (target, head) in heads_at_s {
+                let (version, hash) = match head.state() {
+                    riffdb_storage_api::EntityChainStateV1::Live {
+                        version,
+                        value_hash,
+                    } => (version, Some(value_hash)),
+                    // Recreate restarts entity-local versioning at one. The exact
+                    // deleted predecessor remains in `transition_heads`; this
+                    // placeholder is never used to authorize a transition.
+                    riffdb_storage_api::EntityChainStateV1::Deleted => {
+                        (riffdb_types::EntityVersion::first(), None)
+                    }
+                    riffdb_storage_api::EntityChainStateV1::NeverExisted => return Err(corrupt()),
+                };
+                chains.insert(
+                    target.clone(),
+                    EntityChain {
+                        version,
+                        hash,
+                        expected_bundle: None,
+                        // Entity-chain heads describe application-command
+                        // transitions only. Offline contract migrations retain
+                        // their own predecessor evidence and can advance an
+                        // entity version without rewriting this head. Even an
+                        // exact at-S head snapshot must therefore replay the
+                        // bounded migration-evidence sequence before comparing a
+                        // current entity row or a later command transition.
+                        migration_cursor: 0,
+                        intact: true,
+                        consumed: false,
+                    },
+                );
+                transition_heads.insert(target, head);
+            }
+            if s > 0 {
+                walk_after = s;
+                let sequence = CommitSequence::new(s).ok_or_else(corrupt)?;
+                walk_lower_bound = Some(keys::encode_application_sequence_key(sequence));
+            }
         }
-        if s > 0 {
-            walk_after = s;
-            let sequence = CommitSequence::new(s).ok_or_else(corrupt)?;
-            walk_lower_bound = Some(keys::encode_application_sequence_key(sequence));
-        }
+        Ok(Self {
+            has_exact_head_snapshot,
+            migrations,
+            pruned_floor,
+            chains,
+            transition_heads,
+            orphan_targets,
+            overflow,
+            suffix_is_transition_complete,
+            entity_count_usize,
+            walk_after,
+            walk_lower_bound,
+        })
     }
-    let range = match walk_lower_bound.as_ref() {
-        Some(lower) => table
-            .range::<&[u8]>((Excluded(lower.as_slice()), Unbounded))
-            .map_err(precommit_storage_error)?,
-        None => table.range::<&[u8]>(..).map_err(precommit_storage_error)?,
-    };
-    let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    for entry in range {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(physical_sequence) = keys::decode_application_sequence_key(physical_key.value())
-        else {
-            continue;
+
+    /// The exclusive lower `COMMITS` key the pass starts after, if any.
+    fn lower_bound(&self) -> Option<&[u8]> {
+        self.walk_lower_bound.as_ref().map(<[u8; 8]>::as_slice)
+    }
+
+    /// Advances the chains across one `COMMITS` row, decoding its segment
+    /// through `segments` when given (ADR-0287).
+    fn row<E>(
+        &mut self,
+        transaction: &ReadTransaction,
+        events: &E,
+        physical_key: &[u8],
+        value: &[u8],
+        segments: Option<&crate::command_authority::RetainedSegmentMemo>,
+    ) -> Result<(), StorageError>
+    where
+        E: ReadableTable<&'static [u8], &'static [u8]>,
+    {
+        let walk_after = self.walk_after;
+        let pruned_floor = self.pruned_floor;
+        let entity_count_usize = self.entity_count_usize;
+        let Self {
+            migrations,
+            chains,
+            transition_heads,
+            orphan_targets,
+            overflow,
+            suffix_is_transition_complete,
+            ..
+        } = self;
+        let Ok(physical_sequence) = keys::decode_application_sequence_key(physical_key) else {
+            return Ok(());
         };
         // Decode failures are covered by inspect_commit_row (MalformedRecord /
         // CrossLinkMismatch). Continue so sibling entities still validate.
-        let histories =
-            match entity_history_members_in_physical_row(value.value(), &events, physical_sequence)
-            {
-                Ok(histories) => histories,
-                Err(_) => {
-                    let Ok(references) =
-                        decoded(codec::decode_commit_entity_references(value.value()))
-                    else {
-                        continue;
-                    };
-                    vec![(
-                        physical_sequence,
-                        EntityHistoryMembers::References(references),
-                    )]
-                }
-            };
+        let histories = match entity_history_members_in_physical_row(
+            value,
+            events,
+            physical_sequence,
+            segments,
+        ) {
+            Ok(histories) => histories,
+            Err(_) => {
+                let Ok(references) = decoded(codec::decode_commit_entity_references(value)) else {
+                    return Ok(());
+                };
+                vec![(
+                    physical_sequence,
+                    EntityHistoryMembers::References(references),
+                )]
+            }
+        };
         for (commit_sequence, members) in histories {
             if commit_sequence.get() <= walk_after {
                 continue;
@@ -7179,10 +7526,10 @@ fn build_entity_chains(
             let references = match members {
                 EntityHistoryMembers::Transitions(transitions) => {
                     apply_entity_transitions_to_startup_chains(
-                        &mut chains,
-                        &mut transition_heads,
-                        &mut orphan_targets,
-                        &mut overflow,
+                        chains,
+                        transition_heads,
+                        orphan_targets,
+                        overflow,
                         entity_count_usize,
                         walk_after.max(pruned_floor),
                         pruned_floor > 0 && pruned_floor >= walk_after,
@@ -7196,7 +7543,7 @@ fn build_entity_chains(
             // Frozen predecessor commit formats carry post-image references
             // but no transition heads. Their entities can legitimately have
             // migrated durable heads that this suffix walk cannot derive.
-            suffix_is_transition_complete = false;
+            *suffix_is_transition_complete = false;
             let mut seen_in_commit = std::collections::BTreeSet::new();
             for reference in references {
                 let target_key = reference.target().clone();
@@ -7220,7 +7567,7 @@ fn build_entity_chains(
                             },
                         );
                     } else {
-                        record_orphan_target(&mut orphan_targets, &mut overflow, target_key);
+                        record_orphan_target(orphan_targets, overflow, target_key);
                     }
                     continue;
                 }
@@ -7229,7 +7576,7 @@ fn build_entity_chains(
                     while chain.intact && expected_next != Some(reference.entity_version()) {
                         match advance_entity_chain_through_migration(
                             transaction,
-                            &migrations,
+                            migrations,
                             &target_key,
                             chain,
                             Some(commit_sequence),
@@ -7270,25 +7617,62 @@ fn build_entity_chains(
                     );
                 } else {
                     // At capacity: never grow the map; bound orphan reporting.
-                    record_orphan_target(&mut orphan_targets, &mut overflow, target_key);
+                    record_orphan_target(orphan_targets, overflow, target_key);
                 }
             }
         }
+        Ok(())
     }
-    validate_transition_chain_heads(
-        transaction,
-        &mut chains,
-        &transition_heads,
-        has_exact_head_snapshot && suffix_is_transition_complete,
-    )?;
-    Ok(EntityChainState {
-        chains,
-        migrations,
-        orphan_targets,
-        overflow,
-        orphans_queued: false,
-        pruned_floor,
-    })
+
+    fn finish(mut self, transaction: &ReadTransaction) -> Result<EntityChainState, StorageError> {
+        validate_transition_chain_heads(
+            transaction,
+            &mut self.chains,
+            &self.transition_heads,
+            self.has_exact_head_snapshot && self.suffix_is_transition_complete,
+        )?;
+        Ok(EntityChainState {
+            chains: self.chains,
+            migrations: self.migrations,
+            orphan_targets: self.orphan_targets,
+            overflow: self.overflow,
+            orphans_queued: false,
+            pruned_floor: self.pruned_floor,
+        })
+    }
+}
+
+fn build_entity_chains(
+    transaction: &ReadTransaction,
+    entity_count: u64,
+    seed: Option<(
+        u64,
+        std::collections::BTreeMap<
+            riffdb_storage_api::EntityTarget,
+            riffdb_storage_api::EntityChainHeadV1,
+        >,
+    )>,
+) -> Result<EntityChainState, StorageError> {
+    let mut builder = EntityChainBuilder::new(transaction, entity_count, seed)?;
+    let table = transaction.open_table(COMMITS).map_err(table_error)?;
+    let range = match builder.lower_bound() {
+        Some(lower) => table
+            .range::<&[u8]>((Excluded(lower), Unbounded))
+            .map_err(precommit_storage_error)?,
+        None => table.range::<&[u8]>(..).map_err(precommit_storage_error)?,
+    };
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    for entry in range {
+        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
+        builder.row(
+            transaction,
+            &events,
+            physical_key.value(),
+            value.value(),
+            None,
+        )?;
+    }
+    builder.finish(transaction)
 }
 
 #[allow(clippy::too_many_arguments)]
