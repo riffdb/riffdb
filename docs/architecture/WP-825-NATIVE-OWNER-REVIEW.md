@@ -1,7 +1,9 @@
 # WP-825 native restore owner review
 
 Status: ADR-0293 was accepted exactly as written in session on 2026-10-12.
-Implementation and verification are pending. ADR-0290, ADR-0291 and ADR-0292
+The single-engine stamp/close foundation is implemented and focused checks pass.
+Complete-history proof reuse and delayed HISTORY hydration remain pending.
+ADR-0290, ADR-0291 and ADR-0292
 remain accepted. WP-825 and WP-826 remain open.
 
 The approved restore work is checkpointed. The ordinary daemon reaches restored
@@ -11,6 +13,26 @@ focused native regressions, the ordinary release daemon build, allowed paths
 and whitespace pass on the required host. Full acceptance, final-source CI,
 actual scheduled-fault qualification, eight-hour rehearsal and 24-hour campaign
 remain pending. No old failure has been revised into a success.
+
+## First implementation checkpoint
+
+The ordinary controller now retains a unique live preparation owner until its
+receipt authorizes the existing incarnation stamp. It consumes all authorization
+readers, verifies full artifact content, stamps on that same engine and observes
+its one close before minting the final publication seal. A private live/closed/
+invalidated capability distinction refuses publication before stamping and
+prevents retrying a failed transition through the legacy branch. Direct closed
+stage, archive and promotion workflows preserve their previous close protocols.
+
+Three new lifecycle tests, 31 existing custody/compatibility tests (including
+those three), one real publication test and six maintenance polling tests pass
+on the required host. The release daemon build uses its ordinary profile. The
+stronger primary-loss whole gate still fails during restore; a subsequent
+restore-only diagnostic measures 72.304798916 seconds. That diagnostic proves
+neither the whole gate nor campaign qualification. Complete transaction-current
+history validation still runs here; proof reuse and discarded-receipt hydration
+avoidance have not been implemented by this checkpoint. Full acceptance, final
+CI, crash-matrix verification and both campaigns remain pending.
 
 ## Measured remaining work
 

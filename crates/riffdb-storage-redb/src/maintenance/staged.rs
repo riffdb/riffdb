@@ -415,23 +415,45 @@ impl RedbStagedRestore {
     /// The server-supplied identity is reread by its staged authorization open;
     /// this final check freezes exact post-open bytes for publication.
     pub fn seal_after_validation(
+        self,
+        validated_database_id: DatabaseId,
+    ) -> Result<RedbSealedStagedRestore, StorageError> {
+        self.finish_validation(validated_database_id, false)
+    }
+
+    /// Retains the unique native engine until the server's durable receipt
+    /// authorizes stamping. The returned preparation cannot publish while live.
+    #[doc(hidden)]
+    pub fn prepare_receipt_authorized_stamp(
+        self,
+        validated_database_id: DatabaseId,
+    ) -> Result<RedbSealedStagedRestore, StorageError> {
+        self.finish_validation(validated_database_id, true)
+    }
+
+    fn finish_validation(
         mut self,
         validated_database_id: DatabaseId,
+        retain_native_engine: bool,
     ) -> Result<RedbSealedStagedRestore, StorageError> {
         self.verify_paths()?;
         self.verify_promoted_authorization_seal()?;
         if validated_database_id != self.manifest.database_id() {
             return Err(corrupt());
         }
-        let native_closed = if let Some(owner) = self.native_authorization_owner.take() {
+        let native_owner = if let Some(owner) = self.native_authorization_owner.take() {
             // Direct native storage callers consume any unused immutable
             // evidence. Production first joins and authenticates that reader.
             drop(self.native_authorization_evidence.take());
-            Some(owner.close()?)
+            Some(if retain_native_engine {
+                NativeStagedOwner::StampPreparation(owner.into_stamp_preparation()?)
+            } else {
+                NativeStagedOwner::Closed(owner.close()?)
+            })
         } else {
             None
         };
-        let staged_history_incarnation = if let Some(owner) = &native_closed {
+        let staged_history_incarnation = if let Some(owner) = &native_owner {
             owner.history_incarnation()
         } else {
             let database =
@@ -455,7 +477,7 @@ impl RedbStagedRestore {
             return Err(corrupt());
         }
         let (sealed_artifact_checksum, sealed_journal_checksum, sealed_format_marker_checksum) =
-            if let Some(owner) = &native_closed {
+            if let Some(owner) = &native_owner {
                 owner.checksums()?
             } else {
                 (
@@ -476,7 +498,7 @@ impl RedbStagedRestore {
             manifest: self.manifest,
             manifest_identity: self.manifest_identity,
             staged_history_incarnation,
-            native_closed,
+            native_owner,
             native_archive_closed: None,
             sealed_artifact_checksum,
             sealed_journal_checksum,
@@ -540,6 +562,63 @@ impl std::fmt::Debug for RedbStagedRestore {
     }
 }
 
+/// Preparation and publication capabilities have distinct private variants.
+/// A failed consuming transition leaves a permanently unusable variant.
+enum NativeStagedOwner {
+    StampPreparation(crate::backup::OwnedStampPreparation),
+    Closed(crate::backup::OwnedClosedMaterialization),
+    Invalidated,
+}
+
+impl NativeStagedOwner {
+    fn verify(&self) -> Result<(), StorageError> {
+        match self {
+            Self::StampPreparation(owner) => owner.verify(),
+            Self::Closed(owner) => owner.verify(),
+            Self::Invalidated => Err(invariant()),
+        }
+    }
+
+    fn history_incarnation(&self) -> u64 {
+        match self {
+            Self::StampPreparation(owner) => owner.history_incarnation(),
+            Self::Closed(owner) => owner.history_incarnation(),
+            Self::Invalidated => 0,
+        }
+    }
+
+    fn checksums(
+        &self,
+    ) -> Result<
+        (
+            BackupIntegrityChecksumV1,
+            BackupIntegrityChecksumV1,
+            BackupIntegrityChecksumV1,
+        ),
+        StorageError,
+    > {
+        match self {
+            Self::StampPreparation(owner) => owner.checksums(),
+            Self::Closed(owner) => owner.checksums(),
+            Self::Invalidated => Err(invariant()),
+        }
+    }
+
+    fn stamp_history_incarnation(&mut self, incarnation: u64) -> Result<(), StorageError> {
+        let old = std::mem::replace(self, Self::Invalidated);
+        let closed = match old {
+            Self::StampPreparation(owner) => owner.stamp_and_close(incarnation)?,
+            Self::Closed(mut owner) => {
+                owner.stamp_history_incarnation(incarnation)?;
+                owner
+            }
+            Self::Invalidated => return Err(invariant()),
+        };
+        *self = Self::Closed(closed);
+        Ok(())
+    }
+}
+
 /// Move-only checksum seal for one fully validated private staged database.
 pub struct RedbSealedStagedRestore {
     operation_id: OfflineMaintenanceOperationId,
@@ -552,7 +631,7 @@ pub struct RedbSealedStagedRestore {
     manifest: OfflineBackupManifestV1,
     manifest_identity: OfflineBackupManifestIdentityV1,
     staged_history_incarnation: u64,
-    native_closed: Option<crate::backup::OwnedClosedMaterialization>,
+    native_owner: Option<NativeStagedOwner>,
     native_archive_closed: Option<crate::backup::OwnedArchiveClosed>,
     sealed_artifact_checksum: BackupIntegrityChecksumV1,
     sealed_journal_checksum: BackupIntegrityChecksumV1,
@@ -601,7 +680,7 @@ impl RedbSealedStagedRestore {
         // A new checksum may describe only the intended incarnation write;
         // it cannot launder changed primary, journal, or marker bytes.
         self.verify_sealed_artifacts()?;
-        if let Some(owner) = &mut self.native_closed {
+        if let Some(owner) = &mut self.native_owner {
             owner.stamp_history_incarnation(incarnation)?;
             let (primary, journal, marker) = owner.checksums()?;
             if journal != self.sealed_journal_checksum
@@ -628,7 +707,7 @@ impl RedbSealedStagedRestore {
     fn verify_sealed_artifacts(&self) -> Result<(), StorageError> {
         let result = (|| {
             self.verify_paths()?;
-            if let Some(owner) = &self.native_closed {
+            if let Some(owner) = &self.native_owner {
                 let (primary, journal, marker) = owner.checksums()?;
                 if primary != self.sealed_artifact_checksum
                     || journal != self.sealed_journal_checksum
@@ -685,6 +764,13 @@ impl RedbSealedStagedRestore {
         overwrite_policy: OfflineRestoreOverwritePolicyV1,
     ) -> Result<OfflineRestoreResultV1, StorageError> {
         self.verify_paths()?;
+        if self
+            .native_owner
+            .as_ref()
+            .is_some_and(|owner| !matches!(owner, NativeStagedOwner::Closed(_)))
+        {
+            return Err(invariant());
+        }
         let target_name = self
             .configured_database_file
             .file_name()
@@ -704,7 +790,7 @@ impl RedbSealedStagedRestore {
         // The ordinary native source's full publication check is performed
         // while copying its pinned input below. No target is published before
         // that hash and the independent destination readback both match.
-        let verify_input_during_copy = self.native_closed.is_some();
+        let verify_input_during_copy = self.native_owner.is_some();
         self.verify_sealed_artifacts()?;
         let staged_journal_name = self.staged_journal_file.file_name().ok_or_else(invariant)?;
         let staged_format_marker_name = self
@@ -834,7 +920,7 @@ impl RedbSealedStagedRestore {
 
     fn verify_paths(&self) -> Result<(), StorageError> {
         let result = (|| {
-            if let Some(owner) = &self.native_closed {
+            if let Some(owner) = &self.native_owner {
                 owner.verify()?;
             }
             if let Some(owner) = &self.native_archive_closed {
@@ -1152,7 +1238,13 @@ mod tests {
         };
         use riffdb_types::{BackupNameV1, DigestKeyId, Timestamp};
         use std::io::{Read as _, Seek as _, SeekFrom};
-        for changed in [None, Some("primary"), Some("journal"), Some("marker")] {
+        for changed in [
+            None,
+            Some("primary"),
+            Some("journal"),
+            Some("marker"),
+            Some("unstamped"),
+        ] {
             let scope = crate::test_path::ScopedDirectory::new("ordinary-publication-copy");
             let (backup, _) =
                 crate::maintenance::archive_backup_tests::backup_current_source(&scope);
@@ -1176,7 +1268,19 @@ mod tests {
             .unwrap();
             drop(stage.take_owned_authorization_evidence().unwrap());
             let database_id = stage.manifest_identity().database_id();
-            let mut sealed = stage.seal_after_validation(database_id).unwrap();
+            let mut sealed = stage.prepare_receipt_authorized_stamp(database_id).unwrap();
+            if changed == Some("unstamped") {
+                assert!(
+                    matches!(sealed.publish_to_configured_database(OfflineRestoreOverwritePolicyV1::RefuseNonEmpty),
+                    Err(e) if e.kind() == StorageErrorKind::InvariantViolation)
+                );
+                assert!(!configured.exists());
+                assert_eq!(
+                    crate::backup::validate_immutable_backup(&backup).unwrap(),
+                    original_backup
+                );
+                continue;
+            }
             sealed.apply_published_history_incarnation(2).unwrap();
             let expected = sealed.sealed_artifact_checksum.clone();
             if let Some(changed) = changed {

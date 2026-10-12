@@ -1416,12 +1416,13 @@ fn validate_and_authorize_stage(
     )
     .map_err(|_| DriverFault::StagedAuthorization)?;
     // The existing helper consumes every reader, bearer and authorization
-    // value. The native owner observes their release before closing its engine.
+    // value. The native owner observes their release before receipt-authorized
+    // stamping and the one engine close.
     dependencies
         .recovery
         .reached(MaintenanceRecoveryBoundary::StagedAuthorizationComplete);
     let sealed = stage
-        .seal_after_validation(staged_database_id)
+        .prepare_receipt_authorized_stamp(staged_database_id)
         .map_err(DriverFault::ArtifactStorage)?;
     Ok(PreparedStagedRestore { sealed, admission })
 }

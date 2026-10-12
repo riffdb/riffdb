@@ -138,6 +138,11 @@ impl RestoreCustody {
         Ok(self.shared.mutation_generation.load(Ordering::Acquire))
     }
 
+    #[cfg(test)]
+    pub(crate) fn engine_generation_for_test(&self) -> u64 {
+        self.shared.leases.read().unwrap().generation
+    }
+
     pub(crate) fn cancellation(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.shared.cancellation)
     }

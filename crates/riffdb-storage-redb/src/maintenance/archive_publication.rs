@@ -296,7 +296,7 @@ impl RedbSealedArchiveRestore {
             manifest: stage.manifest,
             manifest_identity: stage.manifest_identity,
             staged_history_incarnation: incarnation,
-            native_closed: None,
+            native_owner: None,
             native_archive_closed: stage.native_archive_closed,
             sealed_artifact_checksum,
             sealed_journal_checksum,

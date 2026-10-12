@@ -139,6 +139,25 @@ impl SharedRedb {
         self.open_mode == OpenMode::OfflineSource && self.restore_integrity.is_some()
     }
 
+    /// The unique native restore owner has consumed all authorization reads.
+    /// This retires its physical-generation proof before the known stamp; the
+    /// caller must close this engine and construct a fresh final content seal.
+    pub(crate) fn begin_receipt_authorized_restore_stamp(&mut self) -> Result<(), StorageError> {
+        if self.open_mode != OpenMode::OfflineSource
+            || !self.write_fenced.load(Ordering::Acquire)
+            || self.engine_repaired_at_open
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let binding = self
+            .restore_integrity
+            .as_mut()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        binding.begin_controlled_preparation()?;
+        self.restore_integrity = None;
+        Ok(())
+    }
+
     pub(crate) fn verify_private_restore_integrity(&self) -> Result<(), StorageError> {
         match &self.restore_integrity {
             Some(binding) => binding.verify(),

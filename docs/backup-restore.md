@@ -492,11 +492,16 @@ uses the existing transformations; formats requiring migration retain complete
 validation afterward. Bounded readiness creates no complete proof, checkpoint,
 registry-completion witness or clean certificate.
 No operational source writer or readiness capability is activated for that
-authorization read. Every immutable reader must close before the native owner
-closes its engine and binds the primary, journal and marker byte seals.
+authorization read. Every immutable reader must close before receipt-authorized
+stamping. The ordinary maintenance controller retains that unique private engine
+through the stamp and then closes it once. Its live preparation state cannot
+publish. Direct closed-stage and archive workflows retain their existing close
+protocols.
 
-The receipt-authorized incarnation stamp verifies those seals under the same
-native custody and uses the existing immediate two-phase metadata transaction.
+The receipt-authorized incarnation stamp verifies the complete primary, journal
+and marker content seals under the same native custody and uses the existing
+immediate two-phase metadata transaction. After the stamp and observed engine
+close, it verifies immutable artifacts and binds a fresh final content seal.
 Publication retains the existing immutable-backup revalidation, target exclusion,
 verified copies, marker-last rename and fresh post-publication startup. A failed
 check or changed artifact refuses the operation and preserves the immutable
