@@ -405,6 +405,18 @@ from deleting another sandbox's live fixtures when they share temporary
 storage. Kept evidence remains outside sweep scope. Allow for the namespace
 component when choosing short roots for local-socket tests.
 
+Ordinary tests keep their scratch databases in RAM, not on disk. Under
+`cargo nextest` (the `test-scratch` setup script) and `./scripts/ci-all`,
+`scripts/test-scratch-env` exports `RIFFDB_TEST_DATA_ROOT=/dev/shm/riffdb-tests`
+and a `TMPDIR` below it when `/dev/shm` is tmpfs with at least 8 GiB free.
+Test code resolves its roots through `riffdb_bench_root::test_data_root`
+(re-exported as `riffdb_testkit::scratch::test_data_root`), which applies the
+same rule under a plain `cargo test`; `ScratchDir::new` uses it too. Set
+`RIFFDB_TEST_DATA_ROOT` to a disk path to force disk. Benchmarks are unaffected:
+they place databases through `riffdb-bench-root`, which refuses tmpfs. A full
+`riffdb-storage-redb` and `riffdb-server` run peaked near 1 GiB of RAM-backed
+scratch on the development workstation.
+
 Install and verify the pinned local tools before running the handbook check:
 
 ```bash

@@ -478,8 +478,19 @@ mod fixture {
             migration: MigrationBundleHash,
             rows: Vec<StoredEntityRecordV1>,
         ) -> Result<Self, StorageError> {
-            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/riffdb-test-data/storage-redb-fixtures");
+            // The test runners export RIFFDB_TEST_DATA_ROOT (RAM-backed when
+            // available, scripts/test-scratch-env); fixtures cannot depend on
+            // riffdb-bench-root, so only that explicit root is honored here.
+            let root = std::env::var_os("RIFFDB_TEST_DATA_ROOT")
+                .filter(|root| !root.is_empty())
+                .map_or_else(
+                    || {
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../target/riffdb-test-data")
+                    },
+                    std::path::PathBuf::from,
+                )
+                .join("storage-redb-fixtures");
             std::fs::create_dir_all(&root).map_err(|_| invalid())?;
             let scope = tempfile::TempDir::new_in(root).map_err(|_| invalid())?;
             let path = scope.path().join("db.redb");

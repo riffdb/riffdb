@@ -31,6 +31,9 @@
 
 use std::fs;
 use std::io;
+
+/// The shared test scratch root; see [`riffdb_bench_root::test_data_root`].
+pub use riffdb_bench_root::test_data_root;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -58,13 +61,15 @@ pub struct ScratchDir {
 }
 
 impl ScratchDir {
-    /// Creates a scratch directory under the platform temporary directory
-    /// (`TMPDIR` when set), sweeping dead same-prefix siblings first.
+    /// Creates a scratch directory under the test data root
+    /// ([`test_data_root`]: RAM-backed `/dev/shm` when available, else the
+    /// platform temporary directory, `TMPDIR` when set), sweeping dead
+    /// same-prefix siblings first.
     ///
     /// `prefix` must be non-empty ASCII alphanumerics/`.`/`_`/`-` so swept
     /// names stay unambiguous.
     pub fn new(prefix: &str) -> io::Result<Self> {
-        Self::new_in(std::env::temp_dir(), prefix)
+        Self::new_in(test_data_root("scratch", std::env::temp_dir()), prefix)
     }
 
     /// Creates a scratch directory under `root` (e.g. `CARGO_TARGET_TMPDIR`),

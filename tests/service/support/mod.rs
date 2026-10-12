@@ -2316,10 +2316,13 @@ impl AuditDatabase {
 }
 
 fn new_database_scope() -> riffdb_testkit::scratch::ScratchDir {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target")
-        .join("service-harness");
+    let root = riffdb_testkit::scratch::test_data_root(
+        "service-harness",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target")
+            .join("service-harness"),
+    );
     // A fresh directory cannot inherit a durable-format side file from an
     // interrupted run whose process ID was later reused.
     riffdb_testkit::scratch::ScratchDir::new_in(root, "service-harness")
@@ -5681,10 +5684,13 @@ fn board_ticket_input(
 }
 
 fn board_projection_directory() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target")
-        .join("service-harness");
+    let root = riffdb_testkit::scratch::test_data_root(
+        "service-harness",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target")
+            .join("service-harness"),
+    );
     std::fs::create_dir_all(&root).expect("create service harness directory");
     let path = root.join(format!(
         "riffdb-service-board-{}-{}",

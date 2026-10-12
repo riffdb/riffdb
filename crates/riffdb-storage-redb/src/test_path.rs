@@ -34,8 +34,13 @@ const MAX_STALE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn root() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/riffdb-test-data/storage-redb-unit");
+    // RAM-backed when available (riffdb_bench_root::test_data_root); benchmarks,
+    // not tests, measure the device.
+    let root = riffdb_bench_root::test_data_root(
+        "storage-redb-unit",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/riffdb-test-data/storage-redb-unit"),
+    );
     // A pid is meaningful only inside its PID namespace. Independent sandbox
     // runs share this checkout but cannot observe each other's /proc entries.
     // Sweeping a shared flat root would delete another run's live databases.

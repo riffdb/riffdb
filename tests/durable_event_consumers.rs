@@ -68,8 +68,10 @@ struct ConsumerDatabase {
 
 impl ConsumerDatabase {
     fn create(label: &str) -> Self {
-        let root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wp417-consumer-tests");
+        let root = riffdb_testkit::scratch::test_data_root(
+            "wp417-consumer-tests",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wp417-consumer-tests"),
+        );
         std::fs::create_dir_all(&root).expect("create WP-417 test root");
         let root = std::fs::canonicalize(root).expect("canonicalize WP-417 test root");
         let path = root.join(format!(

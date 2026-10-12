@@ -807,7 +807,12 @@ fn empty_operational_database(
     database_id: DatabaseId,
 ) -> (ProtectedTestDatabase, RedbOperationalPorts) {
     let test_root = std::env::var_os("RIFFDB_TEST_TMP_ROOT").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        || {
+            riffdb_testkit::scratch::test_data_root(
+                "row-policy-conformance",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            )
+        },
         PathBuf::from,
     );
     assert!(

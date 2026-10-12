@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-bench-root = { version = "0.1.0", path = "../riffdb-bench-root", default-features = false }
 riffdb-auth = { path = "../riffdb-auth", version = "0.1.0", default-features = false }
 riffdb-catalog = { path = "../riffdb-catalog", version = "0.1.0", default-features = false }
 riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.1.0" }

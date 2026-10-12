@@ -318,10 +318,13 @@ struct TestRoot(PathBuf);
 impl TestRoot {
     fn new() -> TestResult<Self> {
         let unique = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::current_dir()?
-            .join("target")
-            .join("remote-ingress-tests")
-            .join(format!("{}-{unique}", std::process::id()));
+        let root = riffdb_testkit::scratch::test_data_root(
+            "remote-ingress-tests",
+            std::env::current_dir()?
+                .join("target")
+                .join("remote-ingress-tests"),
+        )
+        .join(format!("{}-{unique}", std::process::id()));
         fs::create_dir_all(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         Ok(Self(root))

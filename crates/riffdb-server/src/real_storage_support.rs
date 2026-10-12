@@ -27,9 +27,13 @@ use crate::storage::SharedRedbOperationalPorts;
 /// checkpoint, spare, durable-format marker, …) on pass, fail, or panic.
 #[must_use]
 pub(crate) fn temporary_database_scope(label: &str) -> (tempfile::TempDir, PathBuf) {
-    let base = option_env!("CARGO_TARGET_TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = riffdb_testkit::scratch::test_data_root(
+        "server-real-storage",
+        option_env!("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir),
+    );
+    std::fs::create_dir_all(&base).expect("create test database root");
     let scope = tempfile::Builder::new()
         .prefix(&format!("riffdb-server-{label}-"))
         .tempdir_in(base)

@@ -176,7 +176,8 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn temp_dir(label: &str) -> PathBuf {
     let ordinal = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let base =
+        riffdb_bench_root::test_data_root("columnar", PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
     let path = base.join(format!(
         "riffdb-columnar-{label}-{}-{ordinal}",
         std::process::id()

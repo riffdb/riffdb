@@ -652,7 +652,10 @@ mod tests {
     /// again; the scrub runs over the shared read handle.
     fn scratch_source(label: &str) -> Scratch {
         let directory = riffdb_testkit::scratch::ScratchDir::new_in(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            riffdb_testkit::scratch::test_data_root(
+                "server-scrub-worker",
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            ),
             "scrub-worker",
         )
         .expect("scratch directory");

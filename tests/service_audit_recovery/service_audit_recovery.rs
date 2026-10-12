@@ -41,7 +41,11 @@ struct TestPath(
 impl TestPath {
     fn new() -> Self {
         let ordinal = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        let dir = riffdb_bench_root::test_data_root(
+            "service-audit-recovery",
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR")),
+        )
+        .join(format!(
             "riffdb-service-audit-recovery-{}-{ordinal}",
             std::process::id()
         ));

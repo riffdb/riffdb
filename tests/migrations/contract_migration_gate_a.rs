@@ -1020,7 +1020,10 @@ struct TemporaryDirectory {
 impl TemporaryDirectory {
     fn new() -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-tmp");
+        let base = riffdb_testkit::scratch::test_data_root(
+            "contract-migration-gate-a",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-tmp"),
+        );
         fs::create_dir_all(&base)?;
         let base = fs::canonicalize(base)?;
         for _ in 0..1_024 {

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# req: TEST-003
+# Prints KEY=VALUE lines that place ordinary test scratch on RAM-backed
+# /dev/shm, so a test run does not saturate the disk. Benchmarks are
+# unaffected: they resolve their own real-disk root (riffdb-bench-root, which
+# refuses tmpfs).
+#
+# The rule mirrors riffdb_bench_root::test_data_root:
+#   1. RIFFDB_TEST_DATA_ROOT, when set, is kept (set it to a disk path to force
+#      disk);
+#   2. else /dev/shm/riffdb-tests, when /dev/shm is tmpfs with at least 8 GiB
+#      free;
+#   3. else nothing is printed and tests keep their on-disk defaults.
+# TMPDIR is set below the chosen root only when the caller has not set it.
+#
+# Used by scripts/ci-all and as the nextest setup script (with NEXTEST_ENV set,
+# the lines are appended to that file instead of printed).
+set -euo pipefail
+
+min_free_bytes=$((8 * 1024 * 1024 * 1024))
+root="${RIFFDB_TEST_DATA_ROOT:-}"
+if [[ -z "$root" ]]; then
+  if [[ -d /dev/shm ]] && [[ "$(stat -f -c %T /dev/shm 2>/dev/null)" == "tmpfs" ]]; then
+    free_bytes="$(df -P -B1 /dev/shm 2>/dev/null | awk 'NR == 2 { print $4 }')"
+    if [[ "$free_bytes" =~ ^[0-9]+$ ]] && (( free_bytes >= min_free_bytes )); then
+      root=/dev/shm/riffdb-tests
+    fi
+  fi
+fi
+
+lines=()
+if [[ -n "$root" ]]; then
+  lines+=("RIFFDB_TEST_DATA_ROOT=$root")
+  if [[ -z "${TMPDIR:-}" ]]; then
+    mkdir -p -- "$root/tmp"
+    lines+=("TMPDIR=$root/tmp")
+  fi
+fi
+
+if [[ -n "${NEXTEST_ENV:-}" ]]; then
+  if ((${#lines[@]} > 0)); then
+    printf '%s\n' "${lines[@]}" >> "$NEXTEST_ENV"
+  fi
+else
+  if ((${#lines[@]} > 0)); then
+    printf '%s\n' "${lines[@]}"
+  fi
+fi
