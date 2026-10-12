@@ -1,11 +1,11 @@
 ---
 adr: "0286"
 title: Validation Walks Validate Each Contract Bundle Once
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-11
-accepted: null
-acceptance: null
+accepted: '2026-10-11'
+acceptance: 'maintainer, in session, 2026-10-11: "i accept", in response to the exact-text acceptance request for ADR-0286 as committed at e4d3d4836'
 requires: [ADR-0283, ADR-0182, ADR-0203]
 amends: []
 supersedes: []
