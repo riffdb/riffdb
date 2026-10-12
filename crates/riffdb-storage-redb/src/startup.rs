@@ -808,6 +808,9 @@ pub struct RedbStructuralEvidenceSession {
     /// The last command segment the structural walk decoded, reused by the
     /// service-audit link checks that resolve the same row again.
     segments: SegmentMemo,
+    /// The last contract bundle the commit phase validated, reused for the
+    /// following rows whose stored bundle record is equal (ADR-0286).
+    bundles: crate::command_prefix::BundleMemo,
 }
 
 /// Cached single-pass entity history state for the ENTITIES structural phase.
@@ -1004,6 +1007,7 @@ impl RedbStore {
                 walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 terminal_execution_failure_rows: 0,
                 segments: SegmentMemo::default(),
+                bundles: crate::command_prefix::BundleMemo::default(),
             });
         }
         // ADR-0182 Decision 1: a startup without a valid clean-close
@@ -1152,6 +1156,7 @@ impl RedbStore {
                 walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
                 terminal_execution_failure_rows: 0,
                 segments: SegmentMemo::default(),
+                bundles: crate::command_prefix::BundleMemo::default(),
             });
         }
         // The CLEAN branch above checks bounded terminal roots only. A full
@@ -1324,6 +1329,7 @@ impl RedbStore {
             walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
             terminal_execution_failure_rows: 0,
             segments: SegmentMemo::default(),
+            bundles: crate::command_prefix::BundleMemo::default(),
         })
     }
 }
@@ -2186,6 +2192,7 @@ fn run_checkpoint_sample_windows(
     // complete command history before inspecting a handful of windows.
     let sampled_command_capsules = std::collections::BTreeMap::new();
     if s > 0 {
+        let bundles = crate::command_prefix::BundleMemo::default();
         let starts = crate::validated_prefix::sample_window_starts(checkpoint_hash, s);
         for start in starts {
             if start == 0 || start > s {
@@ -2235,6 +2242,7 @@ fn run_checkpoint_sample_windows(
                         capsules: &command_capsules,
                         embedded: &embedded_command_authority,
                     },
+                    &bundles,
                     binding_bundles,
                     seq,
                     key.value(),
@@ -2507,6 +2515,7 @@ impl RedbStructuralEvidenceSession {
             let (finding, last) = inspect_commit_row(
                 transaction,
                 &self.command_history,
+                &self.bundles,
                 &self.binding_bundles,
                 expected,
                 &key,
@@ -4367,6 +4376,7 @@ fn inspect_pending_row(
 fn inspect_commit_row(
     transaction: &ReadTransaction,
     commands: &dyn CommandLookup,
+    bundles: &crate::command_prefix::BundleMemo,
     binding_bundles: &BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     expected_first: CommitSequence,
     key: &[u8],
@@ -4383,7 +4393,14 @@ fn inspect_commit_row(
         value,
         &events,
         sequence,
-        |commands| crate::command_prefix::validate_catalog_images(transaction, commands.iter()),
+        commands.retained_segments(),
+        |commands| {
+            crate::command_prefix::validate_catalog_images(
+                transaction,
+                commands.iter(),
+                Some(bundles),
+            )
+        },
     ) {
         Ok(records) => records,
         Err(error) => {

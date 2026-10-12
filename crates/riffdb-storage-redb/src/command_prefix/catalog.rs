@@ -8,6 +8,7 @@ use riffdb_catalog::ValidatedContractBundle;
 use riffdb_storage_api::CatalogRepository;
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, StorageError, StorageErrorKind, StoredCommandCapsuleV2,
+    StoredContractBundleV1,
 };
 
 use crate::error::storage_error;
@@ -16,11 +17,66 @@ fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
+/// A validated contract bundle and the exact stored record it was validated
+/// from.
+type RememberedBundle = (StoredContractBundleV1, ValidatedContractBundle);
+
+/// The last contract bundle a validation walk validated, remembered by the
+/// exact stored record (identity and canonical bytes) it was validated from.
+///
+/// Validation of a stored bundle is a function of that record alone, so a
+/// lookup whose stored record equals the remembered one reuses the validated
+/// bundle instead of decoding and validating the same canonical bytes again;
+/// any other record is validated and replaces it. Only a successful validation
+/// is remembered, so a refused record is re-validated and refused on every
+/// lookup exactly as without the memo (ADR-0286).
+///
+/// Every `COMMITS` row of a walk otherwise validated its command's bundle
+/// afresh. It holds one bundle, so its memory is bounded by one stored bundle.
+#[derive(Default)]
+pub(crate) struct BundleMemo {
+    last: std::cell::RefCell<Option<RememberedBundle>>,
+}
+
+impl BundleMemo {
+    /// The bundle validated from `stored`, unless it was the last one
+    /// validated.
+    pub(crate) fn validate(
+        &self,
+        stored: &StoredContractBundleV1,
+    ) -> Result<ValidatedContractBundle, StorageError> {
+        if let Some((remembered, bundle)) = self.last.borrow().as_ref()
+            && remembered == stored
+        {
+            return Ok(bundle.clone());
+        }
+        let bundle = validate_stored(stored)?;
+        *self.last.borrow_mut() = Some((stored.clone(), bundle.clone()));
+        Ok(bundle)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Stored bundle validations on this thread, with or without a memo.
+    pub(crate) static BUNDLE_VALIDATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+fn validate_stored(
+    stored: &StoredContractBundleV1,
+) -> Result<ValidatedContractBundle, StorageError> {
+    #[cfg(test)]
+    BUNDLE_VALIDATIONS.with(|count| count.set(count.get() + 1));
+    ValidatedContractBundle::from_stored(stored).map_err(|_| corrupt())
+}
+
 pub(crate) fn validate_catalog_images<'a>(
     transaction: &redb::ReadTransaction,
     commands: impl IntoIterator<Item = &'a StoredCommandCapsuleV2>,
+    bundles: Option<&BundleMemo>,
 ) -> Result<(), StorageError> {
-    validate_catalog_sequence(CatalogRead::Retained(transaction), commands, None)
+    validate_catalog_sequence(CatalogRead::Retained(transaction), commands, None, bundles)
 }
 
 pub(super) fn validate_received_catalog_images<'a>(
@@ -32,6 +88,7 @@ pub(super) fn validate_received_catalog_images<'a>(
         CatalogRead::Received(transaction, tables),
         commands,
         Some((transaction, tables)),
+        None,
     )
 }
 
@@ -39,6 +96,7 @@ fn validate_catalog_sequence<'a>(
     repository: CatalogRead<'_>,
     commands: impl IntoIterator<Item = &'a StoredCommandCapsuleV2>,
     physical: super::predecessor::PhysicalPrior<'_>,
+    bundles: Option<&BundleMemo>,
 ) -> Result<(), StorageError> {
     let mut prior = super::predecessor::PriorImages::new();
     // Keep one direct bundle and at most one bounded resolved lineage. Load
@@ -58,7 +116,10 @@ fn validate_catalog_sequence<'a>(
             let stored = repository
                 .read_contract_bundle(plan.contract_lineage(), plan.contract_version())?
                 .ok_or_else(corrupt)?;
-            let bundle = ValidatedContractBundle::from_stored(&stored).map_err(|_| corrupt())?;
+            let bundle = match bundles {
+                Some(bundles) => bundles.validate(&stored)?,
+                None => validate_stored(&stored)?,
+            };
             if bundle.lineage() != plan.contract_lineage()
                 || bundle.contract_version() != plan.contract_version()
                 || bundle.bundle_hash() != plan.contract_bundle_hash()

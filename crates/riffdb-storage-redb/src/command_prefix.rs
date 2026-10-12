@@ -9,7 +9,9 @@ mod secondary;
 mod vector;
 mod vector_counts;
 
-pub(crate) use catalog::validate_catalog_images;
+#[cfg(test)]
+pub(crate) use catalog::BUNDLE_VALIDATIONS;
+pub(crate) use catalog::{BundleMemo, validate_catalog_images};
 pub(crate) use rows::{decode_capsule, decode_segment};
 
 use redb::WriteTransaction;

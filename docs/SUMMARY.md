@@ -162,6 +162,7 @@
 - [WP-828 Extent Pacing and Writer Hashing](performance/wp-828-extent-pacing-and-writer-hashing.md)
 - [Checkpoint Root Validation Once per Batch](performance/checkpoint-root-validation-2026-10.md)
 - [Scrub Segment Reuse](performance/scrub-segment-reuse-2026-10.md)
+- [Scrub Bundle and Row Reuse](performance/scrub-bundle-reuse-2026-10.md)
 - [Outbox Claim Groups](performance/outbox-claim-groups-2026-10.md)
 - [Open Writer-evidence Defects](performance/wp749-writer-census-defects.md)
 - [WP-749 Receipt-wait Repair and Checkpoint Investigation](performance/wp749-receipt-wait-repair-2026-09.md)

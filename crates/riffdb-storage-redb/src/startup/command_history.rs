@@ -23,7 +23,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{AdministrationSequence, CommitSequence};
 
-use crate::command_authority::{CommandAuthorityMember, command_member_at};
+use crate::command_authority::{CommandAuthorityMember, RetainedSegmentMemo, command_member_at};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::keys;
 use crate::layout::{COMMITS, EVENTS};
@@ -50,6 +50,12 @@ pub(super) trait CommandLookup {
         transaction: &ReadTransaction,
         sequence: CommitSequence,
     ) -> Result<Option<LoadedCommand>, StorageError>;
+
+    /// The walk's memo of the last segment decoded from a `COMMITS` row, when
+    /// this lookup resolves rows the commit phase also decodes (ADR-0286).
+    fn retained_segments(&self) -> Option<&RetainedSegmentMemo> {
+        None
+    }
 }
 
 /// The derived command-audit members the administration continuity proof
@@ -79,6 +85,9 @@ pub(super) struct CommandHistory {
     floor: u64,
     audits: Vec<CompactAudit>,
     recent: RefCell<VecDeque<(CommitSequence, LoadedCommand)>>,
+    /// The last segment decoded by an on-demand lookup or by the commit
+    /// phase, shared so a row both resolve is decoded once.
+    segments: RetainedSegmentMemo,
     rows_decoded: u64,
     retained_bytes: usize,
 }
@@ -90,6 +99,7 @@ impl CommandHistory {
             floor: 0,
             audits: Vec::new(),
             recent: RefCell::new(VecDeque::new()),
+            segments: RetainedSegmentMemo::default(),
             rows_decoded: 0,
             retained_bytes: 0,
         }
@@ -127,7 +137,7 @@ impl CommandHistory {
                 keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
             // The physical commit phase owns malformed-row reporting; an
             // undecodable row contributes no derived members here.
-            let Some((commands, _)) = decode_row(&commits, &events, physical, value.value())?
+            let Some((commands, _)) = decode_row(&commits, &events, physical, value.value(), None)?
             else {
                 continue;
             };
@@ -168,6 +178,7 @@ impl CommandHistory {
             floor,
             audits,
             recent: RefCell::new(VecDeque::new()),
+            segments: RetainedSegmentMemo::default(),
             rows_decoded,
             retained_bytes,
         })
@@ -257,7 +268,13 @@ impl CommandLookup for CommandHistory {
         if physical.get() <= self.floor {
             return Ok(None);
         }
-        let Some((commands, embedded)) = decode_row(&commits, &events, physical, value.value())?
+        let Some((commands, embedded)) = decode_row(
+            &commits,
+            &events,
+            physical,
+            value.value(),
+            Some(&self.segments),
+        )?
         else {
             return Ok(None);
         };
@@ -278,6 +295,10 @@ impl CommandLookup for CommandHistory {
             recent.push_back((commit, loaded));
         }
         Ok(found)
+    }
+
+    fn retained_segments(&self) -> Option<&RetainedSegmentMemo> {
+        Some(&self.segments)
     }
 }
 
@@ -337,14 +358,14 @@ fn decode_row<C, E>(
     events: &E,
     physical: CommitSequence,
     row: &[u8],
+    segments: Option<&RetainedSegmentMemo>,
 ) -> Result<Option<(Vec<StoredCommandCapsuleV1>, bool)>, StorageError>
 where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::history_stub::decode_retained_segment(row) {
+    match crate::command_authority::decode_retained_segment(row, segments) {
         Ok(segment) => {
-            let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical {
                 return Err(corrupt());
             }

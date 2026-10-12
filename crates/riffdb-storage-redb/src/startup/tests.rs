@@ -6126,3 +6126,147 @@ fn segment_reuse_follows_the_row_bytes_and_never_remembers_a_refusal() {
         .is_some()
     );
 }
+
+// req: REC-007
+/// ADR-0286: the commit phase validates a stored contract bundle once for the
+/// rows that share it. A record with any other identity or bytes is validated
+/// from itself, and a refused record is refused again on every lookup and never
+/// replaces the remembered bundle.
+#[test]
+fn bundle_reuse_follows_the_stored_record_and_never_remembers_a_refusal() {
+    let validations = || crate::command_prefix::BUNDLE_VALIDATIONS.with(std::cell::Cell::get);
+    let stored = validated_migration_bundle()
+        .to_stored()
+        .expect("stored migration bundle");
+    let memo = crate::command_prefix::BundleMemo::default();
+    let before = validations();
+    for _ in 0..16 {
+        let bundle = memo.validate(&stored).expect("remembered validation");
+        assert_eq!(bundle.lineage(), stored.lineage());
+        assert_eq!(bundle.contract_version(), stored.contract_version());
+        assert_eq!(bundle.bundle_hash(), stored.bundle_hash());
+    }
+    assert_eq!(validations() - before, 1, "sixteen rows, one validation");
+
+    // Same identity, different canonical bytes: refused, on every lookup.
+    let mut bytes = stored.canonical_bytes().to_vec();
+    let last = bytes.last_mut().expect("non-empty bundle");
+    *last ^= 0x01;
+    let tampered = StoredContractBundleV1::new(
+        stored.lineage().clone(),
+        stored.contract_version(),
+        stored.bundle_hash(),
+        bytes,
+    )
+    .expect("tampered record");
+    // Same bytes, another identity: refused as an identity conflict.
+    let relabeled = StoredContractBundleV1::new(
+        stored.lineage().clone(),
+        ContractVersion::new(stored.contract_version().get() + 1).expect("version"),
+        stored.bundle_hash(),
+        stored.canonical_bytes().to_vec(),
+    )
+    .expect("relabeled record");
+    for refused in [&tampered, &relabeled] {
+        for _ in 0..3 {
+            let error = memo.validate(refused).expect_err("refused record");
+            assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+            assert!(ValidatedContractBundle::from_stored(refused).is_err());
+        }
+    }
+    assert_eq!(
+        validations() - before,
+        7,
+        "each refused lookup validated its own record"
+    );
+
+    // The intact record is still served from the memo: no refusal replaced it.
+    memo.validate(&stored)
+        .expect("intact record after refusals");
+    assert_eq!(validations() - before, 7);
+}
+
+// req: REC-007
+/// ADR-0286: the commit phase and the walk's command history decode a shared
+/// `COMMITS` row once, return the same commands as separate decodes, and never
+/// remember a refused row.
+#[test]
+fn commit_phase_and_command_history_decode_a_shared_segment_once() {
+    let (_path, ports, commands) = install_one_segment("retained-segment-memo", 16);
+    let read = ports.shared.database.begin_read().expect("begin read");
+    let commits = read.open_table(COMMITS).expect("commits");
+    let events = read.open_table(EVENTS).expect("events");
+    let row = commits
+        .get(keys::encode_application_sequence_key(CommitSequence::first()).as_slice())
+        .expect("read row")
+        .expect("segment row")
+        .value()
+        .to_vec();
+    let decodes = || crate::history_stub::RETAINED_SEGMENT_DECODES.with(std::cell::Cell::get);
+    let walk = |shared: bool| {
+        let history =
+            command_history::CommandHistory::build(&read, 0, usize::MAX).expect("history");
+        let segments = if shared {
+            history.retained_segments()
+        } else {
+            None
+        };
+        let before = decodes();
+        let records = crate::command_authority::commits_in_physical_row_checked(
+            &row,
+            &events,
+            CommitSequence::first(),
+            segments,
+            |_| Ok(()),
+        )
+        .expect("commit phase");
+        let resolved = records
+            .iter()
+            .map(|record| {
+                let loaded = history
+                    .command(&read, record.value().commit_sequence())
+                    .expect("history lookup")
+                    .expect("command");
+                assert!(loaded.embedded);
+                assert!(loaded.capsule.commit() == record.value());
+                loaded.capsule
+            })
+            .collect::<Vec<_>>();
+        (decodes() - before, resolved)
+    };
+    let (shared_decodes, shared) = walk(true);
+    let (separate_decodes, separate) = walk(false);
+    assert_eq!(shared.len(), commands.len());
+    assert!(
+        shared
+            .iter()
+            .zip(&separate)
+            .zip(&commands)
+            .all(|((shared, separate), command)| **shared == **separate
+                && **shared == *command.base())
+    );
+    assert_eq!(
+        shared_decodes, 1,
+        "one decode for both sides of the commit phase"
+    );
+    assert_eq!(
+        separate_decodes, 2,
+        "the commit phase and the history each decode"
+    );
+
+    // A refused row is decoded and refused again on every lookup and does not
+    // replace the remembered segment.
+    let memo = crate::command_authority::RetainedSegmentMemo::default();
+    memo.decode(&row).expect("intact row");
+    let before = decodes();
+    for _ in 0..3 {
+        assert!(memo.decode(b"corrupt segment").is_err());
+    }
+    assert_eq!(decodes() - before, 3);
+    memo.decode(&row).expect("intact row after refusals");
+    assert_eq!(
+        decodes() - before,
+        3,
+        "the intact segment is still remembered"
+    );
+}
