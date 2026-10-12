@@ -858,8 +858,11 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
     // command on demand; the decoded whole history is never retained.
     let history = production_source(crate_root().join("src/startup/command_history.rs"));
     // ADR-0263 Amendment 3: a history stub is resolved first; the resolved
-    // segment is still decoded by the exact embedded-authority decoder.
-    assert!(history.contains("crate::history_stub::decode_retained_segment"));
+    // segment is still decoded by the exact embedded-authority decoder, through
+    // the walk's byte-keyed segment memo (ADR-0286).
+    assert!(history.contains("crate::command_authority::decode_retained_segment(row, segments)"));
+    let authority = production_source(crate_root().join("src/command_authority.rs"));
+    assert!(authority.contains("crate::history_stub::decode_retained_segment(row)"));
     let stubs = production_source(crate_root().join("src/history_stub.rs"));
     assert!(stubs.contains("crate::command_prefix::decode_segment(&resolved)"));
     assert!(history.contains("if last_claimed.is_some_and(|last| sequence <= last)"));

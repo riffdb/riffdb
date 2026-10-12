@@ -29090,7 +29090,7 @@ work_packages:
     crates/riffdb-storage-redb/src/command_prefix.rs, crates/riffdb-storage-redb/src/command_prefix/catalog.rs,
     crates/riffdb-storage-redb/src/history_stub.rs, crates/riffdb-storage-redb/src/startup.rs,
     crates/riffdb-storage-redb/src/startup/command_history.rs, crates/riffdb-storage-redb/src/startup/tests.rs,
-    docs/performance/**, docs/SUMMARY.md]
+    crates/riffdb-storage-redb/tests/architecture.rs, docs/performance/**, docs/SUMMARY.md]
   deliverables:
   - The one-bundle memo keyed by the exact stored bundle record, held by the walk session and the sampled checkpoint pass
   - The row-validating segment memo shared by the commit phase and the walk's command history
