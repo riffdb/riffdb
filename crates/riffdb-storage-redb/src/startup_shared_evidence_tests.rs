@@ -507,9 +507,18 @@ fn offline_parallel_audit_pages_match_complete_serial_findings_and_exact_end() {
             let mut cursor =
                 StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
             let mut findings = Vec::new();
+            let mut largest_audit_batch = 0;
             loop {
+                let audit_batch = session.structural_cursors.as_ref().is_some_and(|cursors| {
+                    matches!(cursors.phase, 21 | 22)
+                        && cursors.consumed_in_phase < session.structural_counts[cursors.phase]
+                });
+                // Ordinary startup requests larger evidence pages. Its audit
+                // inspections must retain the native worker/input bound even
+                // when the caller requests more than one worker batch.
+                let requested = if audit_batch { 500 } else { 64 };
                 match session
-                    .read_structural_evidence(cursor, EvidencePageLimit::new(64).unwrap())
+                    .read_structural_evidence(cursor, EvidencePageLimit::new(requested).unwrap())
                     .unwrap()
                 {
                     StructuralEvidencePage::Page {
@@ -519,19 +528,38 @@ fn offline_parallel_audit_pages_match_complete_serial_findings_and_exact_end() {
                     } => {
                         assert_eq!(start, cursor);
                         assert!(next.position() > cursor.position());
+                        if audit_batch {
+                            largest_audit_batch =
+                                largest_audit_batch.max(next.position() - start.position());
+                        }
                         findings.extend(page);
                         cursor = next;
                     }
                     StructuralEvidencePage::ExactEnd(end) => {
                         assert_eq!(end.cursor(), cursor);
-                        return (cursor.position(), findings);
+                        return (cursor.position(), findings, largest_audit_batch);
                     }
                 }
             }
         };
         let serial = inspect(EvidenceOpenPurpose::BackgroundScrub);
         let parallel = inspect(EvidenceOpenPurpose::OfflineIntegrityScrub);
-        assert_eq!(parallel, serial, "corruption case {corruption}");
+        let startup = inspect(EvidenceOpenPurpose::Startup);
+        for (purpose, actual) in [("offline", &parallel), ("startup", &startup)] {
+            assert!(
+                actual.2 > 0 && actual.2 <= offline_parallel::MAX_ROWS as u64,
+                "{purpose} audit batch exceeded native bound: {}",
+                actual.2,
+            );
+            assert_eq!(
+                actual.0, serial.0,
+                "{purpose} exact end, corruption {corruption}"
+            );
+            assert_eq!(
+                actual.1, serial.1,
+                "{purpose} findings, corruption {corruption}"
+            );
+        }
         assert_eq!(parallel.1.is_empty(), corruption == 0);
     }
 }

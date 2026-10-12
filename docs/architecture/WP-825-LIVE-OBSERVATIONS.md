@@ -1,6 +1,49 @@
 # WP-825 native lifecycle investigation and observations
 
-## Current status (2026-10-11 UTC)
+## Current status (2026-10-12 UTC)
+
+Combined-source revision `30d5a1a4` passes full CI and the ordinary 1,500-second
+preparation: 150,000 commands, 600,000 reads, no retries or post-clock work,
+65,536 reconciled tickets and 215,536 reconciled archive records. The three
+normal windows have p95 between 2.827 and 3.035 ms and p99 between 5.502 and
+33.057 ms. The following unchanged whole recovery attempt fails during the
+initial public restore request: backup creation consumes 20.512 seconds and
+recovery admission consumes 1.030 seconds of its original 60-second budget.
+The client timeout does not prove rollback or a terminal server outcome.
+
+Two separate instrumented native diagnostics restore a copy successfully in
+234.617 and 236.098 seconds. They retain the ordinary release profile and all
+production branches, with observation-only timers; their longer private
+observation deadline cannot qualify the public whole-action gate. The original
+failed media, immutable backup and ordinary binaries remain preserved.
+
+The focused diagnostic measures one private complete walk and one fresh
+post-publication startup, each inspecting about 1.75 million physical rows.
+It does not find a second compatibility walk within startup. The private
+complete walk takes 35.334 seconds; fresh startup takes 63.732 seconds. Complete startup
+processes audit rows serially, while the private walk uses the existing bounded
+four-worker dispatcher. Command-history and entity-chain construction each
+take about 1.4 seconds per walk, and repeated table-count checks total 1.057
+seconds across both walks. Those smaller costs do not explain the difference.
+
+Other inclusive measurements include 43.257 seconds for restore materialization
+before complete validation and 16.242 seconds for history hydration within it.
+The earlier diagnostic records 52 artifact checksum calls totaling 41.020
+seconds across recovery. Nested times overlap and must not be summed.
+
+ADR-0289 is accepted and implemented. Full startup now uses the same audit
+dispatcher as private complete validation; exact findings, exact ends and
+native batch bounds are compared with the independent serial walk over healthy
+and corrupt rows. The new regression fails before the correction and passes
+afterward. All 1,158 storage library tests pass, with one existing ignored test;
+deterministic worker schedules, shared-evidence checks and Clippy also pass on
+the required host. Scoped acceptance passes all 1,504 tests and the handbook
+checks. Final combined-source CI remains pending, and this correction has no
+qualified recovery-time result. Copying, hydration, sealing, publication and
+fresh complete startup remain required. Neither the 8-hour nor the 24-hour
+campaign has started.
+
+## Earlier prerequisite attempt (2026-10-11 UTC)
 
 WP-825 remains open. The public entry point implements the fixed 8-hour
 rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process

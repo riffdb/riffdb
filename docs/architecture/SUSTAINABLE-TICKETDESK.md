@@ -15,26 +15,26 @@ rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process
 ownership, shared workload epochs and independent resource reconciliation.
 Neither measured campaign has started.
 
-The latest combined-source full CI stops on intermittent native storage-open
-refusals in concurrent crash tests. Both original failing tests pass alone, but
-the complete storage suite reproduces the refusal. A separate diagnostic build
-identifies `DatabaseAlreadyOpen` during bootstrap publication. A deterministic
-descriptor-clone test then proves that offline verification can finish while
-its legacy `flock` remains held by an inherited open-file description.
+Combined-source revision `30d5a1a4` passes full CI and a fresh ordinary
+1,500-second preparation: 150,000 commands, 600,000 reads, no retries or
+post-clock work, all 65,536 tickets reconciled and all 215,536 archive records
+checked. The native file-lock lifetime correction passes its deterministic
+custody tests and the concurrent storage suite.
 
-The repair gives offline verification, format upgrade and private restore
-custody one scoped owner that explicitly releases both legacy and native
-byte-range locks, including partially acquired owners on refusal. Inventory,
-construction, scratch, cleanup and publication locks use the same scoped legacy
-owner; shared reconciliation retains shared exclusion. Actual repository clones
-continue retaining custody until the final owner ends. Deterministic tests keep
-an inherited description alive across owner release, verify live-owner exclusion
-and preserve another owner's lock on refusal. The original upgrade custody
-assertions return to the concurrent suite without child-process isolation.
+The following whole public recovery attempt still fails its unchanged
+60-second gate during the initial restore request. Two separate native
+diagnostics observe successful restoration in about 235–236 seconds; those
+longer diagnostic observations grant no qualification. Complete startup now
+uses the same bounded four-worker audit inspection as private complete
+validation, with exact findings and exact ends checked against a serial oracle.
+The correction passes the storage library suite and Clippy; final combined-
+source CI and whole-action timing remain required.
 
-Required-host checks are underway. Full committed-source CI, fresh preparation
-and the original whole-action restore gate remain required; these checks grant
-no measured campaign qualification.
+[The native lifecycle observations](WP-825-LIVE-OBSERVATIONS.md) record the
+measured phases, original failure and remaining recovery costs. Copying,
+history hydration, sealing, publication and fresh complete startup still need
+an implementation that satisfies the original deadline before either measured
+campaign can begin.
 
 ## Earlier qualified preparation (2026-10-11 UTC)
 

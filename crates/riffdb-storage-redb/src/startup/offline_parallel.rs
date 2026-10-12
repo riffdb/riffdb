@@ -1,4 +1,4 @@
-//! Bounded same-pin offline row inspection. No writer or evidence authority.
+//! Bounded same-pin row inspection for complete validation. No writer or evidence authority.
 use super::*;
 use crate::error::storage_error;
 use riffdb_storage_api::{StorageError, StorageErrorKind};
@@ -73,13 +73,15 @@ enum AuditInspection {
 }
 
 impl RedbStructuralEvidenceSession {
-    pub(super) fn inspect_offline_audit_page(
+    pub(super) fn inspect_parallel_audit_page(
         &mut self,
         position: u64,
         requested: u64,
     ) -> Result<AuditPage, StorageError> {
-        if self.purpose != EvidenceOpenPurpose::OfflineIntegrityScrub
-            || self.clean_close_fast
+        if !matches!(
+            self.purpose,
+            EvidenceOpenPurpose::OfflineIntegrityScrub | EvidenceOpenPurpose::Startup
+        ) || self.clean_close_fast
             || self.bounded_dirty_startup
             || self.checkpoint.is_some()
         {

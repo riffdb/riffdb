@@ -191,6 +191,13 @@ It does not claim a trustworthy current authorization state.
 Publication occurs only after complete artifact checksum, storage structure,
 catalog, allocator, capability, audit, and active-contract validation. RiffDB
 then performs a fresh validation of the published target before readiness.
+Complete startup and private offline validation inspect audit rows through the
+same bounded dispatcher: at most four workers, 64 rows and 64 MiB of copied
+input per batch, all on the original immutable validation snapshot. Every
+worker joins before the page returns; findings retain physical row order.
+This adds no operator setting or validation shortcut. Complete restore work
+still scales with retained data; the sustainable TicketDesk recovery-time gate
+remains unqualified.
 
 ### Closed backup inventory
 
