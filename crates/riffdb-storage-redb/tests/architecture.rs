@@ -590,8 +590,16 @@ fn dedicated_storage_threads_apply_the_fixed_stack_budget() {
 }
 
 #[test]
+// req: REC-001, REC-008
 fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
     let source = crate_root().join("src");
+    assert!(
+        read(source.join("backup_owned_history.rs"))
+            .contains("#[cfg(test)]\n#[path = \"backup_owned_history_tests.rs\"]\nmod tests;")
+    );
+    assert!(read(source.join("backup_publication_artifacts.rs")).contains(
+        "#[cfg(all(test, unix))]\n#[path = \"backup_publication_artifacts_tests.rs\"]\nmod tests;"
+    ));
     for entry in fs::read_dir(source).expect("read source directory") {
         let path = entry.expect("source entry").path();
         if path.file_name().is_some_and(|name| {
@@ -599,6 +607,9 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
                 name.to_str(),
                 Some(
                     "backup.rs"
+                        | "backup_owned_history.rs" // ADR-0299 original backup integrity owner.
+                        | "backup_owned_history_tests.rs" // Same owner's test-only integrity checks.
+                        | "backup_publication_artifacts_tests.rs" // ADR-0294 publication integrity tests.
                         | "benchmark_support.rs"
                         | "changelog_v3.rs" // ADR-0186 exact allocator precondition, no new primitive.
                         | "format_upgrade.rs"
@@ -633,6 +644,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
 }
 
 #[test]
+// req: REC-001, REC-008
 fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let sources = rust_sources();
     for forbidden in ["riffdb_contract_ir", "riffdb_invariant"] {
@@ -648,6 +660,12 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
     let migration_backend = source.join("startup/index_migration_backend.rs");
     let prefix_catalog = source.join("command_prefix/catalog.rs");
     let offline_catalog = source.join("startup/offline_integrity.rs");
+    let publication_tests = source.join("maintenance/publication_startup_tests.rs");
+    assert!(
+        read(source.join("maintenance/restored_readiness.rs")).contains(
+            "#[cfg(test)]\n#[path = \"publication_startup_tests.rs\"]\nmod native_transfer_tests;"
+        )
+    );
     let mut paths = Vec::new();
     collect_rust_sources(&source, &mut paths);
     for path in paths {
@@ -665,6 +683,7 @@ fn only_catalog_adapters_import_catalog_and_storage_never_imports_ir() {
             || path == migration_backend
             || path == prefix_catalog
             || path == offline_catalog
+            || path == publication_tests
         {
             continue;
         }
