@@ -213,9 +213,35 @@ impl OwnedBackupHistory {
         })
     }
 
+    /// Reuse the acquired closed inventory for private-file operations. The
+    /// pinned namespace and manifest must remain unchanged; original artifact
+    /// reads and ownership handoffs still verify their own complete seals.
+    fn verify_namespace(&self) -> Result<(), StorageError> {
+        self.checked(|| {
+            self.directory.verify()?;
+            if directory_observation(&self.path)? != self.directory_observation
+                || self
+                    .manifest_file
+                    .metadata()
+                    .map_err(io_unavailable)?
+                    .nlink()
+                    != 1
+                || ArtifactContinuity::read(&self.manifest_file)? != Some(self.manifest_continuity)
+                || !self
+                    .directory
+                    .regular_file_matches(OsStr::new(MANIFEST_FILE_NAME), &self.manifest_file)?
+            {
+                return Err(corrupt());
+            }
+            self.directory.verify()
+        })
+    }
+
     pub(crate) fn verify(&self) -> Result<(), StorageError> {
         self.checked(|| {
             self.directory.verify()?;
+            #[cfg(test)]
+            OWNED_BACKUP_INVENTORY_PASSES.with(|count| count.set(count.get() + 1));
             validate_backup_inventory(&self.path)?;
             // Closed exact inventory: manifest plus only our recorded artifacts.
             let mut count = 0;
@@ -613,7 +639,7 @@ impl BorrowedHistoryMedia {
         if crate::journal::sealed_journal_path(&self.database, generation) != path {
             return Ok(false);
         }
-        self.backup.verify().map_err(unavailable)?;
+        self.backup.verify_namespace().map_err(unavailable)?;
         let result = (|| {
             self.stage.verify()?;
             if self
@@ -647,7 +673,7 @@ impl BorrowedHistoryMedia {
         {
             return Err(refused());
         }
-        self.backup.verify().map_err(unavailable)
+        self.backup.verify_namespace().map_err(unavailable)
     }
 }
 impl JournalMedia for BorrowedHistoryMedia {
@@ -655,7 +681,7 @@ impl JournalMedia for BorrowedHistoryMedia {
         if Some(path) != self.database.parent() {
             return Err(refused());
         }
-        self.backup.verify().map_err(unavailable)?;
+        self.backup.verify_namespace().map_err(unavailable)?;
         // These private restore consumers never reclaim sealed history; frame
         // resolution uses exact generation names, not directory discovery.
         RealJournalMedia.open_directory(path)
@@ -745,6 +771,7 @@ impl JournalMedia for BorrowedHistoryMedia {
 type ArtifactReadHook = Box<dyn FnOnce()>;
 #[cfg(test)]
 std::thread_local! {
+    static OWNED_BACKUP_INVENTORY_PASSES: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
     static COMPLETE_ARTIFACT_READ_HOOK: std::cell::RefCell<Option<ArtifactReadHook>> = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]

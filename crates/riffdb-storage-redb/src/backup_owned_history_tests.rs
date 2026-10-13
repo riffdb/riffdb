@@ -182,3 +182,47 @@ fn borrowed_history_resolves_anchored_active_frames_after_closed_sealed_absence(
         "a shadowing extent invalidates the source owner"
     );
 }
+
+#[test]
+fn private_journal_reads_reuse_closed_inventory_and_refuse_namespace_change() {
+    let (root, backup, manifest, _) = fixture();
+    let owner =
+        OwnedBackupHistory::acquire(&backup, &manifest, Arc::new(AtomicBool::new(false))).unwrap();
+    let stage = root.join("stage");
+    fs::create_dir(&stage).unwrap();
+    let database = stage.join("database.redb");
+    let active = crate::journal::journal_path(&database);
+    fs::write(&active, b"owned private journal").unwrap();
+    let absent = crate::journal::sealed_journal_path(&database, 99);
+    let media = BorrowedHistoryMedia::new(
+        Arc::clone(&owner),
+        database,
+        Arc::new(PinnedDirectory::open(&stage).unwrap()),
+    );
+    OWNED_BACKUP_INVENTORY_PASSES.with(|count| count.set(0));
+    for _ in 0..5 {
+        assert!(!media.try_exists(&absent).unwrap());
+        assert_eq!(
+            media.open_read(&absent).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(media.try_exists(&active).unwrap());
+        assert_eq!(media.metadata(&active).unwrap().len, 21);
+        let mut file = media.open_read(&active).unwrap();
+        let mut bytes = [0; 21];
+        file.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"owned private journal");
+    }
+    assert_eq!(
+        OWNED_BACKUP_INVENTORY_PASSES.with(|count| count.get()),
+        0,
+        "unchanged private reads must use their owned closed namespace without backup population walks"
+    );
+    fs::write(backup.join("unexpected"), b"changed namespace").unwrap();
+    assert!(media.open_read(&active).is_err());
+    fs::remove_file(backup.join("unexpected")).unwrap();
+    assert!(
+        media.open_read(&active).is_err(),
+        "restoring names cannot launder an invalidated namespace"
+    );
+}

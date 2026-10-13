@@ -195,3 +195,26 @@ The closest populated native materialization retest now passes on the same
 unchanged. This proves only materialization, not full restore or timing. The
 next step remains a new shipping build and the unchanged whole60 gate.
 The handbook's complete-journal behavior is unchanged by this adapter correction.
+
+## Closed namespace reuse for private journal operations
+
+The next shipping attempt at `e9756799` still exceeded the unchanged whole60
+clock, with no successful restore or post-restore acknowledgement. Backup
+creation took 15.89 seconds before primary loss; admission took 11.19 seconds
+after loss. Its failed receipt remains
+`ba99d228fe7b07b7ed6075b200bbc0136e72a15c66a70e1eea8652df6d7406c8`.
+
+A focused regression then proved repeated complete original inventory walks
+while resolving the copied private journal and absent canonical sealed names.
+Private operations now reuse the acquired closed inventory while checking the
+pinned original namespace, directory write metadata and manifest descriptor
+continuity. Namespace changes invalidate the owner permanently. Reads of
+original extents still perform their individual full custody checks; complete
+inventory and content checks remain at acquisition and publication handoffs.
+No semantic walk, artifact checksum, deadline or resource limit changes.
+
+The same regression, real anchored-active-frame regression, four original-owner
+tests and Clippy with warnings denied pass on the required host. Receipt:
+`5e120f05389c64c209e1478c293f110a160582262c8b0d74c9fe7e6a1d316d44`.
+This is a focused implementation check, with shipping timing still unqualified.
+The handbook's public behavior is unchanged.
