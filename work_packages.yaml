@@ -29171,3 +29171,36 @@ work_packages:
   human_review_triggers:
   - A consumer of the single pass sees different rows, order or decoder than its own pass.
   - A held refusal surfaces at a different point or with a different error.
+  closure:
+    status: complete
+    completed_at: '2026-10-13'
+    requirements_satisfied: [REC-007]
+    evidence: Fail-before test single_commit_pass_matches_the_separate_passes_and_decodes_each_row_once
+      (equal history, entity chains and historical plan with and without a
+      checkpoint floor and a malformed row; an intact segment row decoded once
+      instead of up to three times), updated storage architecture scans,
+      package acceptance, the ci-all battery, and a workspace nextest run
+      passing 6,579 of 6,580 tests; the one timeout,
+      every_online_retention_crash_window_recovers_to_a_valid_watermark, is CPU
+      bound, times out on main too and passes in 158 s without the limit.
+      Alternating write-only runs on the second development machine measured
+      the post-start scrub at a 6.6 s median on the base and 3.9 s with the
+      change.
+    decision: Retain the single COMMITS pass for the command history, entity
+      chains and historical commit plans, with held refusals surfaced where
+      their own passes ran. No durable byte, encoding, ordering, atomicity,
+      acknowledgement, health state or public interface change.
+    decisions_taken:
+    - The history and entity chains became row builders; their single-pass wrappers keep the original row ranges, decoders and error order.
+    - Held commit plans are discarded when the walk's snapshot is reopened or when they would exceed the evidence-index ceiling; the historical plan then reads COMMITS itself.
+    known_limitations: In ci-all, cargo test failed
+      equal_key_commands_commit_once_and_replay_exactly once under workspace
+      load (an admission-clock call count); it passed six of six reruns and
+      this package does not touch riffdb-commit. cargo test stops at the first
+      failing binary, so the workspace was rerun under nextest. ci-all steps
+      that need the TypeScript toolchain, check-generated and
+      check-adr-obligations (ADR-0275 to ADR-0277) fail the same way on main
+      on the development workstation.
+    follow_ups:
+    - The commit phase still decodes each segment itself (ADR-0287 Options considered 2).
+    - The second SHA-256 over each resolved frame and receipts encoded only to be decoded remain (ADR-0283 Consequences).
