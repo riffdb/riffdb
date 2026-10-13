@@ -332,6 +332,7 @@ record with no front matter.
 | [0295](0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md) | Consumed Native Restore Uses Ordinary Engine Crash Recovery | Accepted | guarantee |
 | [0296](0296-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
 | [0297](0297-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
+| [0298](0298-native-restore-borrows-sealed-history-from-one-owned-backup.md) | Native Restore Borrows Sealed History From One Owned Backup | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
