@@ -32,6 +32,8 @@ pub(in crate::maintenance) struct RecoveredPublicationArtifacts {
     final_names: [OsString; 3],
     stage: Option<Arc<PinnedDirectory>>,
     backup: PinnedDirectory,
+    #[cfg(unix)]
+    backup_history: Option<Arc<crate::backup::OwnedBackupHistory>>,
     _native: NativeFileCustody,
     invalid: bool,
 }
@@ -93,7 +95,27 @@ impl RedbMaintenanceStorage {
             .ok_or_else(corrupt)?;
         let backup_path = self.named_backup_directory(receipt.backup_name());
         let backup = PinnedDirectory::open(&backup_path)?;
-        let (_, identity) = validate_immutable_backup(&backup_path)?;
+        let (manifest, identity) = if intent.phase == PublicationPhase::StartupConsumed {
+            validate_immutable_backup(&backup_path)?
+        } else {
+            crate::backup::read_backup_manifest_binding(&backup_path)?
+        };
+        #[cfg(unix)]
+        let backup_history = if intent.phase == PublicationPhase::StartupConsumed {
+            None
+        } else {
+            Some(crate::backup::OwnedBackupHistory::acquire(
+                &backup_path,
+                &manifest,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )?)
+        };
+        #[cfg(not(unix))]
+        if intent.phase != PublicationPhase::StartupConsumed {
+            // Native transfer requires Linux custody; refuse its unsupported
+            // cold continuation rather than skipping complete original seals.
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
         if identity != intent.manifest {
             return Err(corrupt());
         }
@@ -172,6 +194,8 @@ impl RedbMaintenanceStorage {
             final_names: finals,
             stage,
             backup,
+            #[cfg(unix)]
+            backup_history,
             _native: native.ok_or_else(invariant)?,
             invalid: false,
         };
@@ -216,6 +240,10 @@ impl RecoveredPublicationArtifacts {
         }
         self.target.verify()?;
         self.backup.verify()?;
+        #[cfg(unix)]
+        if let Some(backup) = &self.backup_history {
+            backup.verify()?;
+        }
         if let Some(stage) = &self.stage {
             stage.verify()?;
         }

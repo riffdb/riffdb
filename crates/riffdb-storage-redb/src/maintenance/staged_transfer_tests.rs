@@ -19,6 +19,13 @@ pub(in crate::maintenance) struct NativeTransferFixture {
 }
 
 pub(in crate::maintenance) fn native_transfer_fixture(scope: &Path) -> NativeTransferFixture {
+    native_transfer_fixture_with_history(scope, false)
+}
+
+pub(in crate::maintenance) fn native_transfer_fixture_with_history(
+    scope: &Path,
+    sealed_history: bool,
+) -> NativeTransferFixture {
     let source = scope.join("source.redb");
     let mut store = crate::RedbStore::open(&source).unwrap();
     store
@@ -27,6 +34,24 @@ pub(in crate::maintenance) fn native_transfer_fixture(scope: &Path) -> NativeTra
         )
         .unwrap();
     drop(store);
+    if sealed_history {
+        let id = DatabaseId::from_unix_milliseconds_and_random(1234, [0x78; 10]).unwrap();
+        let journal = crate::journal::journal_path(&source);
+        crate::journal::reset_journal(
+            &journal,
+            &crate::journal::JournalFileHeader::new(id, None, [0; 32]),
+        )
+        .unwrap();
+        fs::rename(&journal, crate::journal::sealing_journal_path(&source)).unwrap();
+        crate::journal::seal_extent_with_media(&crate::media::RealJournalMedia, &source, id)
+            .unwrap()
+            .unwrap();
+        crate::journal::recreate_missing_active_with_media(
+            &crate::media::RealJournalMedia,
+            &source,
+        )
+        .unwrap();
+    }
     let backup = scope.join("backup");
     crate::RedbOfflineBackup::bind(&source, &backup)
         .create_offline_backup(

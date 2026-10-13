@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 pub(crate) struct OwnedPublicationArtifacts {
     custody: ClosedPublicationCustody,
+    #[cfg(unix)]
+    backup_history: Option<Arc<super::owned_history::OwnedBackupHistory>>,
     artifacts: [MaterializationArtifact; 3],
     checksums: [BackupIntegrityChecksumV1; 3],
     continuity: [Option<ArtifactContinuity>; 3],
@@ -36,6 +38,10 @@ impl OwnedClosedMaterialization {
         self,
     ) -> Result<OwnedPublicationArtifacts, StorageError> {
         self.materialization.verify_full_seal()?;
+        #[cfg(unix)]
+        if let Some(backup) = &self.materialization.backup_history {
+            backup.verify_full()?;
+        }
         let facts = self.publication_facts.ok_or_else(corrupt)?;
         let owner = self.materialization;
         if !self.ordinary_source
@@ -58,6 +64,8 @@ impl OwnedClosedMaterialization {
         }
         let mut publication = OwnedPublicationArtifacts {
             custody: owner.custody.into_closed_publication()?,
+            #[cfg(unix)]
+            backup_history: owner.backup_history,
             artifacts,
             checksums: [seals.primary, seals.journal, seals.marker],
             continuity: seals.continuity,
@@ -125,6 +133,10 @@ impl OwnedPublicationArtifacts {
             return Err(corrupt());
         }
         self.custody.verify()?;
+        #[cfg(unix)]
+        if let Some(backup) = &self.backup_history {
+            backup.verify()?;
+        }
         for (artifact, expected) in self.artifacts.iter().zip(self.continuity) {
             artifact.verify()?;
             let file = artifact.private_file()?;

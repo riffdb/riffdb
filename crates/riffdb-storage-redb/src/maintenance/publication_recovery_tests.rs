@@ -467,3 +467,74 @@ fn native_publication_recovery_returns_polling_uncertainty_after_every_interrupt
         }
     }
 }
+
+#[test]
+fn native_publication_cold_recovery_refuses_corrupted_original_sealed_backup_history() {
+    use crate::maintenance::staged::transfer_tests::native_transfer_fixture_with_history;
+    use std::io::{Seek, SeekFrom, Write};
+    for phase in [PublicationPhase::Prepared, PublicationPhase::Published] {
+        let scope = ScopedDirectory::new("native-cold-original-history");
+        let root = scope.join("fixture");
+        fs::create_dir(&root).unwrap();
+        let mut fixture = native_transfer_fixture_with_history(&root, true);
+        let configured = fixture.configured.clone();
+        let operation = fixture.operation;
+        let named = fixture.named.clone();
+        crate::maintenance::staged::transfer_tests::arm_native_transfer_fixture(
+            &mut fixture,
+            RedbMaintenanceTestController::return_at(
+                RedbMaintenanceFailpoint::BeforeTargetPublication,
+            ),
+        );
+        assert!(
+            fixture
+                .storage
+                .publish_native_transfer_for_qualification(fixture.sealed)
+                .is_err()
+        );
+        if phase == PublicationPhase::Published {
+            fixture
+                .storage
+                .prepare_native_publication_recovery()
+                .unwrap()
+                .unwrap()
+                .resume_publication(&fixture.storage)
+                .unwrap();
+        }
+        let paths = positions(&fixture.storage, operation);
+        let before: Vec<_> = paths
+            .0
+            .iter()
+            .chain(&paths.1)
+            .chain(&paths.2)
+            .filter(|p| p.exists())
+            .map(|p| (p.clone(), crate::backup::sha256_file(p).unwrap()))
+            .collect();
+        let extent = fs::read_dir(&named)
+            .unwrap()
+            .map(|r| r.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("journal.sealed.")
+            })
+            .unwrap();
+        let mut file = fs::OpenOptions::new().write(true).open(&extent).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"invalid!").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        drop(fixture.storage);
+        let storage =
+            RedbMaintenanceStorage::acquire_owner(&configured, &root.join("backups"), None)
+                .unwrap();
+        assert!(
+            storage.prepare_native_publication_recovery().is_err(),
+            "cold native publication must revalidate original sealed backup history before any mutation"
+        );
+        for (path, checksum) in before {
+            assert_eq!(crate::backup::sha256_file(&path).unwrap(), checksum);
+        }
+    }
+}

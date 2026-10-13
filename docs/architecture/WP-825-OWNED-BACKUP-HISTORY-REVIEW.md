@@ -1,8 +1,9 @@
 # WP-825: owned backup history review
 
 ADR-0298 and its WP-825 registration were accepted on 2026-10-13.
-Implementation remains outstanding. The accepted record replaces ADR-0293's copied private sealed extents with owned read-only
-original backup descriptors. It also permits the actual verified backup and
+The implementation replaces ADR-0293's copied private sealed extents with
+owned read-only original backup descriptors. Required-host qualification and
+shipping timing remain in progress. It also permits the actual verified backup and
 publication owners to continue through fresh same-process startup consumption.
 It grants no durable proof, public mode or relaxed validation or timing gate.
 
@@ -89,3 +90,43 @@ deadline, workload, resource gate or earlier failure may be reclassified.
 ADR-0292's campaign-clock integration, final-source full acceptance/CI,
 scheduled-population checks and the eight-hour rehearsal remain required before
 the 24-hour run. Neither measured campaign has started.
+
+## Implementation checkpoint
+
+Eligible receipt-stamped native restoration retains a closed original backup
+inventory before its first copy. Fixed artifacts copy through the original
+read-only descriptors with bounded scratch; sealed history uses exact private
+generation bindings and positional reads. All original SHA-256 checks and
+journal, marker, frame and footer validation remain. Immutable handoffs check
+retained identities, inventory and write observations; mutation and cancellation
+invalidate the owner permanently within that operation.
+
+History hydration and complete retained-chain validation still precede the
+receipt-authorized stamp. Surviving stubs or original read leases refuse source
+retirement. Retirement drops only borrowed leases, preserving original files.
+The original backup owner continues through full pre-transfer revalidation and
+independent target readback. Fresh startup currently uses the existing cold
+publication-owner reconstruction; the optional retained startup handoff remains
+unimplemented.
+
+A new process-recovery regression exposed that the old native Prepared/Published
+path did not check original sealed-backup contents. The new path acquires and
+fully validates the original bounded inventory before target ownership or any
+cleanup. Its regression first failed, then passed for both phases. The consumed
+target protocol and acknowledged-write protection remain unchanged.
+
+Required-host regression checkpoint: 12 readiness/custody tests, 73 backup tests
+and 249 maintenance tests pass, including process crash cuts. These results
+precede final qualification; full CI, latest shipping timing, scheduled
+population and the 45-second campaign window remain outstanding. The unchanged
+saved whole60 and post-ACK crash results above belong to the earlier shipping
+revision, not this implementation.
+
+PR note: Package WP-825; Tier guarantee; Behavior adds accepted ADR-0298 original
+backup ownership and borrowed temporary history with complete cold source
+checks. Checks include fail-first regressions, required-host readiness, backup
+and maintenance tests; remaining checks are tracked above. Compatibility keeps
+all durable encodings, fixtures, public application interfaces and resource
+ceilings. Hazards and follow-ups include full CI, shipping timing, optional
+fresh owner transfer and campaign-clock integration. Handbook page updated:
+`docs/backup-restore.md`. WP-825 remains open without a closure claim.

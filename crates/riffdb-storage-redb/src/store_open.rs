@@ -246,6 +246,20 @@ impl RedbStore {
         engine: OwnedEngineOpen,
         manifest: &riffdb_storage_api::OfflineBackupManifestV1,
     ) -> Result<Self, StorageError> {
+        Self::from_owned_restore_engine_with_media(
+            path,
+            engine,
+            manifest,
+            Arc::new(RealJournalMedia),
+        )
+    }
+
+    pub(crate) fn from_owned_restore_engine_with_media(
+        path: &Path,
+        engine: OwnedEngineOpen,
+        manifest: &riffdb_storage_api::OfflineBackupManifestV1,
+        journal_media: Arc<dyn JournalMedia>,
+    ) -> Result<Self, StorageError> {
         // Derive the existing private-promotion binding from the actual owned
         // engine and immutable manifest, never a supplied authority override.
         let mode = {
@@ -264,7 +278,7 @@ impl RedbStore {
             None,
             default_changelog_port(),
             None,
-            Arc::new(RealJournalMedia),
+            journal_media,
             engine,
         )
     }

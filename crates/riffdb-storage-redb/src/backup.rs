@@ -59,6 +59,11 @@ const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
 const SHA256_BYTES: usize = 32;
+#[cfg(unix)]
+#[path = "backup_owned_history.rs"]
+mod owned_history;
+#[cfg(unix)]
+pub(crate) use owned_history::OwnedBackupHistory;
 #[path = "backup_v3.rs"]
 mod v3_restore;
 const STORAGE_ENGINE_DATA_TAG: u8 = 1;
@@ -790,6 +795,9 @@ pub(crate) struct OwnedMaterialization {
     manifest: OfflineBackupManifestV1,
     deferred_extents: Option<DeferredRestoreExtents>,
     journal_successor: Option<(BackupIntegrityChecksumV1, BackupIntegrityChecksumV1)>,
+    history_media: Option<std::sync::Arc<dyn crate::media::JournalMedia>>,
+    #[cfg(unix)]
+    backup_history: Option<std::sync::Arc<owned_history::OwnedBackupHistory>>,
 }
 
 struct DeferredRestoreExtents {
@@ -816,7 +824,11 @@ struct OwnedArtifactSeals {
 }
 
 struct OwnedExtentSeal {
-    file: File,
+    file: std::sync::Arc<File>,
+    original: Option<(
+        std::sync::Arc<crate::maintenance::PinnedDirectory>,
+        OsString,
+    )>,
     copied_immutable: bool,
     generation: u64,
     checksum: BackupIntegrityChecksumV1,
@@ -867,7 +879,7 @@ impl OwnedArtifactSeals {
         let primary = owner.primary.checksum()?;
         let journal = owner.journal.checksum()?;
         let marker = owner.marker.checksum()?;
-        let paths = sealed_extents_beside(owner.primary.path())?;
+        let paths = owner.extent_paths()?;
         // Known history hydration consumes backup extents before this proof.
         // Seal the actual post-preparation inventory, not its predecessor's
         // manifest ordinals. Subsequent handoffs must retain this exact set.
@@ -896,7 +908,8 @@ impl OwnedArtifactSeals {
                 return Err(corrupt());
             }
             sealed.push(std::sync::Arc::new(OwnedExtentSeal {
-                file,
+                file: std::sync::Arc::new(file),
+                original: None,
                 copied_immutable: false,
                 generation: *generation,
                 checksum,
@@ -961,7 +974,7 @@ impl OwnedArtifactSeals {
     }
 
     fn verify_extents(&self, owner: &OwnedMaterialization, full: bool) -> Result<(), StorageError> {
-        let paths = sealed_extents_beside(owner.primary.path())?;
+        let paths = owner.extent_paths()?;
         if paths.len() != self.sealed.len() {
             return Err(corrupt());
         }
@@ -982,11 +995,17 @@ impl OwnedExtentSeal {
         path: &Path,
         full: bool,
     ) -> Result<(), StorageError> {
-        let (parent, _) = owner
-            .primary
-            .identity
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let (parent, name) = match &self.original {
+            Some((parent, name)) => (parent, name.as_os_str()),
+            None => {
+                let (parent, _) = owner
+                    .primary
+                    .identity
+                    .as_ref()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                (parent, path.file_name().ok_or_else(corrupt)?)
+            }
+        };
         parent.verify()?;
         #[cfg(unix)]
         {
@@ -995,7 +1014,7 @@ impl OwnedExtentSeal {
                 return Err(corrupt());
             }
         }
-        if !parent.regular_file_matches(path.file_name().ok_or_else(corrupt)?, &self.file)? {
+        if !parent.regular_file_matches(name, &self.file)? {
             return Err(corrupt());
         }
         let before = ArtifactContinuity::read(&self.file)?;
@@ -1790,14 +1809,63 @@ struct PreparedMaterializationRead {
     expect(dead_code, reason = "owned restore validation integration is pending")
 )]
 impl OwnedMaterialization {
+    #[cfg(all(test, unix))]
+    pub(crate) fn borrowed_extent_media_for_test(
+        &self,
+    ) -> Result<(std::sync::Arc<dyn crate::media::JournalMedia>, PathBuf), StorageError> {
+        self.verify()?;
+        let (generation, _) = self
+            .extent_paths()?
+            .into_iter()
+            .next()
+            .ok_or_else(corrupt)?;
+        Ok((
+            self.history_media(),
+            crate::journal::sealed_journal_path(self.primary.path(), generation),
+        ))
+    }
+
+    fn history_media(&self) -> std::sync::Arc<dyn crate::media::JournalMedia> {
+        self.history_media.as_ref().map_or_else(
+            || std::sync::Arc::new(crate::media::RealJournalMedia) as _,
+            std::sync::Arc::clone,
+        )
+    }
+
+    fn extent_paths(&self) -> Result<Vec<(u64, PathBuf)>, StorageError> {
+        let actual = sealed_extents_beside(self.primary.path())?;
+        if let Some(deferred) = &self.deferred_extents
+            && deferred.sealed.iter().any(|seal| seal.original.is_some())
+        {
+            if !actual.is_empty() || deferred.sealed.iter().any(|seal| seal.original.is_none()) {
+                return Err(corrupt());
+            }
+            return Ok(deferred
+                .sealed
+                .iter()
+                .map(|seal| {
+                    (
+                        seal.generation,
+                        crate::journal::sealed_journal_path(self.primary.path(), seal.generation),
+                    )
+                })
+                .collect());
+        }
+        Ok(actual)
+    }
+
     fn verify(&self) -> Result<(), StorageError> {
         let result = (|| {
             self.custody.verify_identity()?;
             self.primary.verify()?;
             self.journal.verify()?;
             self.marker.verify()?;
+            #[cfg(unix)]
+            if let Some(backup) = &self.backup_history {
+                backup.verify()?;
+            }
             if let Some(deferred) = &self.deferred_extents {
-                let paths = sealed_extents_beside(self.primary.path())?;
+                let paths = self.extent_paths()?;
                 if paths.len() != deferred.sealed.len() {
                     return Err(corrupt());
                 }
@@ -1828,7 +1896,7 @@ impl OwnedMaterialization {
         let Some(deferred) = self.deferred_extents.as_ref() else {
             return Ok(());
         };
-        let paths = sealed_extents_beside(self.primary.path())?;
+        let paths = self.extent_paths()?;
         if paths.len() != deferred.sealed.len() {
             return Err(corrupt());
         }
@@ -1837,6 +1905,16 @@ impl OwnedMaterialization {
                 return Err(corrupt());
             }
             seal.verify(self, path, false)?;
+        }
+        #[cfg(unix)]
+        if let Some(backup) = &self.backup_history
+            && (std::sync::Arc::strong_count(backup) != 2
+                || self
+                    .history_media
+                    .as_ref()
+                    .is_none_or(|media| std::sync::Arc::strong_count(media) != 1))
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
         }
         let floor = deferred.journal_floor;
         // The current journal was proven empty in the immutable backup and
@@ -1849,6 +1927,9 @@ impl OwnedMaterialization {
         for ((_, path), seal) in paths.iter().zip(&deferred.sealed) {
             self.custody.verify_identity()?;
             seal.verify(self, path, false)?;
+            if seal.original.is_some() {
+                continue;
+            }
             fs::remove_file(path).map_err(io_unavailable)?;
             #[cfg(unix)]
             {
@@ -1891,6 +1972,7 @@ impl OwnedMaterialization {
         }
         self.journal_successor = Some((old.journal.clone(), successor));
         self.deferred_extents = None;
+        self.history_media = None;
         self.custody.verify_identity()
     }
 
@@ -2007,10 +2089,11 @@ impl OwnedMaterialization {
         let MaterializationDatabase::Owned(engine) = engine else {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         };
-        let mut store = crate::RedbStore::from_owned_restore_engine(
+        let mut store = crate::RedbStore::from_owned_restore_engine_with_media(
             self.primary.path(),
             engine,
             &self.manifest,
+            self.history_media(),
         )?;
         store.prepare_owned_restore_before_validation()?;
         self.verify()?;
@@ -2284,6 +2367,39 @@ impl RedbOfflineRestore {
         let target_format_marker = crate::durable_format_marker_path(&target_artifact);
         let target_lock = lock_existing_target(&target_artifact)?;
         let private = matches!(&layout, RestoredHistoryLayout::SelfContained { .. });
+        let receipt_stamp = matches!(
+            &layout,
+            RestoredHistoryLayout::SelfContained {
+                receipt_stamp: true,
+                ..
+            }
+        );
+        #[cfg(unix)]
+        let mut backup_history = if receipt_stamp && manifest_journal_checksum(&manifest)?.is_some()
+        {
+            let cancellation = match &layout {
+                RestoredHistoryLayout::SelfContained {
+                    private_cancellation: Some(c),
+                    ..
+                } => std::sync::Arc::clone(c),
+                _ => return Err(corrupt()),
+            };
+            Some(owned_history::OwnedBackupHistory::acquire(
+                &self.backup_directory,
+                &manifest,
+                cancellation,
+            )?)
+        } else {
+            None
+        };
+        let copy_backup =
+            |artifact: &MaterializationArtifact, name: &str| -> Result<(), StorageError> {
+                #[cfg(unix)]
+                if let Some(backup) = &backup_history {
+                    return backup.copy_into(OsStr::new(name), artifact);
+                }
+                artifact.copy_from(&self.backup_directory.join(name))
+            };
         let mut staged_artifact = MaterializationArtifact::create(
             &self.target_directory,
             OsStr::new(DATABASE_ARTIFACT_FILE_NAME),
@@ -2299,7 +2415,7 @@ impl RedbOfflineRestore {
             OsStr::new(FORMAT_MARKER_ARTIFACT_FILE_NAME),
             private,
         )?;
-        staged_artifact.copy_from(&self.backup_directory.join(DATABASE_ARTIFACT_FILE_NAME))?;
+        copy_backup(&staged_artifact, DATABASE_ARTIFACT_FILE_NAME)?;
         let staged_lock = match &layout {
             RestoredHistoryLayout::Retained => {
                 Some(validate_artifact(staged_artifact.path(), &manifest)?)
@@ -2316,8 +2432,7 @@ impl RedbOfflineRestore {
         };
         match manifest_journal_checksum(&manifest)? {
             Some(expected) => {
-                staged_journal
-                    .copy_from(&self.backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME))?;
+                copy_backup(&staged_journal, JOURNAL_ARTIFACT_FILE_NAME)?;
                 if staged_journal.checksum()? != expected {
                     return Err(corrupt());
                 }
@@ -2340,25 +2455,11 @@ impl RedbOfflineRestore {
         )?;
         let expected_format_marker =
             manifest_format_marker_checksum(&manifest)?.ok_or_else(corrupt)?;
-        staged_format_marker
-            .copy_from(&self.backup_directory.join(FORMAT_MARKER_ARTIFACT_FILE_NAME))?;
+        copy_backup(&staged_format_marker, FORMAT_MARKER_ARTIFACT_FILE_NAME)?;
         if staged_format_marker.checksum()? != expected_format_marker {
             return Err(corrupt());
         }
         validate_manifest_format_marker(staged_format_marker.path(), &manifest)?;
-        let receipt_stamp = matches!(
-            &layout,
-            RestoredHistoryLayout::SelfContained {
-                receipt_stamp: true,
-                ..
-            }
-        );
-        let staged_sealed = stage_restored_sealed_extents(
-            &self.backup_directory,
-            &self.target_directory,
-            &manifest,
-            receipt_stamp,
-        )?;
         // Only this native manifest-verified copy path can mint the input to
         // production custody. It retains the original creation descriptor and
         // directory capability, rather than discovering them from a pathname.
@@ -2403,6 +2504,50 @@ impl RedbOfflineRestore {
             }
         };
 
+        let defer_history = receipt_stamp
+            && cfg!(unix)
+            && crate::startup::private_restore_image_supports_bounded_readiness(&staged_lock)?;
+        #[cfg(unix)]
+        if !defer_history {
+            backup_history = None;
+        }
+        #[cfg(unix)]
+        let borrowed_extents = backup_history
+            .as_ref()
+            .map(|backup| backup.seals())
+            .unwrap_or_default();
+        #[cfg(not(unix))]
+        let borrowed_extents: Vec<std::sync::Arc<OwnedExtentSeal>> = Vec::new();
+        let staged_sealed = if !borrowed_extents.is_empty() {
+            Vec::new()
+        } else {
+            stage_restored_sealed_extents(
+                &self.backup_directory,
+                &self.target_directory,
+                &manifest,
+                receipt_stamp,
+            )?
+        };
+        #[cfg(unix)]
+        let history_media = backup_history
+            .as_ref()
+            .map(
+                |backup| -> Result<std::sync::Arc<dyn crate::media::JournalMedia>, StorageError> {
+                    let stage = std::sync::Arc::clone(
+                        &staged_artifact.identity.as_ref().ok_or_else(corrupt)?.0,
+                    );
+                    Ok(std::sync::Arc::new(
+                        owned_history::BorrowedHistoryMedia::new(
+                            std::sync::Arc::clone(backup),
+                            target_artifact.clone(),
+                            stage,
+                        ),
+                    ))
+                },
+            )
+            .transpose()?;
+        #[cfg(not(unix))]
+        let history_media: Option<std::sync::Arc<dyn crate::media::JournalMedia>> = None;
         if let Some(controller) = &self.test_controller {
             controller.before_commit(RedbTestOperation::Restore)?;
         }
@@ -2422,7 +2567,7 @@ impl RedbOfflineRestore {
         for (_, stale) in sealed_extents_beside(&target_artifact)? {
             fs::remove_file(stale).map_err(io_unavailable)?;
         }
-        let mut copied_extents = Vec::with_capacity(staged_sealed.len());
+        let mut copied_extents = borrowed_extents;
         for (generation, mut staged, original) in staged_sealed {
             if let Some(original) = &original {
                 let parent = crate::maintenance::PinnedDirectory::open(&self.target_directory)?;
@@ -2484,12 +2629,6 @@ impl RedbOfflineRestore {
         if let Some(controller) = &self.test_controller {
             controller.after_commit(RedbTestOperation::Restore)?;
         }
-        let defer_history = match (receipt_stamp && cfg!(unix), private_database.as_ref()) {
-            (true, Some(database)) => {
-                crate::startup::private_restore_image_supports_bounded_readiness(database)?
-            }
-            _ => false,
-        };
         match (&layout, private_database.as_ref()) {
             (
                 RestoredHistoryLayout::SelfContained {
@@ -2504,7 +2643,10 @@ impl RedbOfflineRestore {
                     let _resolver = crate::history_stub::HistoryResolver::register(
                         manifest.database_id(),
                         &target_artifact,
-                        std::sync::Arc::new(crate::media::RealJournalMedia),
+                        history_media.as_ref().map_or_else(
+                            || std::sync::Arc::new(crate::media::RealJournalMedia) as _,
+                            std::sync::Arc::clone,
+                        ),
                     );
                     crate::history_stub::hydrate_surviving_command_stubs(database)?;
                 } else {
@@ -2526,7 +2668,10 @@ impl RedbOfflineRestore {
         let _history_resolver = crate::history_stub::HistoryResolver::register(
             manifest.database_id(),
             &target_artifact,
-            std::sync::Arc::new(crate::media::RealJournalMedia),
+            history_media.as_ref().map_or_else(
+                || std::sync::Arc::new(crate::media::RealJournalMedia) as _,
+                std::sync::Arc::clone,
+            ),
         );
         match private_database.as_ref() {
             Some(_) if defer_history => {}
@@ -2567,6 +2712,9 @@ impl RedbOfflineRestore {
                         None
                     },
                     journal_successor: None,
+                    history_media,
+                    #[cfg(unix)]
+                    backup_history,
                 };
                 owned.verify()?;
                 Some(owned)
@@ -2940,10 +3088,17 @@ fn validate_manifest_format_marker(
     manifest: &OfflineBackupManifestV1,
 ) -> Result<(), StorageError> {
     let bytes = read_bounded_file(path, riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES)?;
+    validate_manifest_format_marker_bytes(&bytes, manifest)
+}
+
+fn validate_manifest_format_marker_bytes(
+    bytes: &[u8],
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
     if bytes.len() != riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES {
         return Err(corrupt());
     }
-    let marker = riffdb_storage_api::decode_durable_format_marker(&bytes).map_err(|_| corrupt())?;
+    let marker = riffdb_storage_api::decode_durable_format_marker(bytes).map_err(|_| corrupt())?;
     let range = manifest.format_compatibility().ok_or_else(incompatible)?;
     if !range.contains(marker.identity())
         || marker.compatibility_fixture_digest() != range.compatibility_fixture_digest()
@@ -4130,7 +4285,8 @@ fn stage_restored_sealed_extents(
             generation,
             checksum: expected,
             continuity: before,
-            file,
+            file: std::sync::Arc::new(file),
+            original: None,
             copied_immutable: true,
         });
         staged.push((generation, artifact, original));

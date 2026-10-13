@@ -202,6 +202,20 @@ Operators requiring complete semantic assurance can request the existing
 [offline scrub](operations/STARTUP-INTEGRITY.md#background-and-offline-scrubs).
 Supported legacy formats that need migration retain complete validation.
 Archive replay, follower bootstrap and promotion retain their complete proofs.
+On eligible native empty-target restores, temporary history reads borrow the
+original backup's verified read-only sealed-extent descriptors. The backup's
+complete manifest and artifact inventory remain pinned and checked; each read
+has an independent position and refuses changed identities, writes or links.
+The primary, active journal and marker are still copied and synchronized.
+Complete retained-history validation and the receipt-authorized RestoreAnchor
+must remove every surviving source reference before temporary readers release.
+Original backup files remain unchanged, and publication contains exactly the
+three self-contained database artifacts. Publication rechecks every original
+backup artifact and independently reads back all three transferred artifacts.
+A Prepared or Published restart reacquires and fully validates the original
+backup; a StartupConsumed restart recovers the actual target and its later
+acknowledged writes. These checks do not grant readiness or replace startup
+validation.
 Complete startup and private offline validation inspect audit rows through the
 same bounded dispatcher: at most four workers, 64 rows and 64 MiB of copied
 input per batch, all on the original immutable validation snapshot. Every
