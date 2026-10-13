@@ -282,3 +282,57 @@ denied. Receipt:
 `31f075c0106b47203bb66c2aabf6821e315daf2de36cdadae39aaf55a940a42f`.
 No public behavior, encoding, provider admission or handbook contract changes.
 A new ordinary shipping build and unchanged whole60 gate remain required.
+
+## Release attribution after the retained-frame correction
+
+Ordinary shipping source `ca7ec010` still fails the unchanged saved whole
+60-second primary-loss gate. Backup creation completes before loss in 21.96
+seconds; replacement setup and recovery admission take 13.86 seconds after
+loss. Restore has not reached durable Succeeded at the deadline. No first
+acknowledgement or full-state oracle qualifies this attempt. Preserve its
+verified receipt `55637dabb0b2c32d1c6e7c4e54480ca48db763d5bfaa9cce9c704f4b736907bc`.
+
+Separate private timing probes on the same ordinary release profile complete
+restore and readiness in 71.77 seconds, excluding replacement setup and
+admission. They change no validator or checksum, and production source is
+restored and all 5,203 tracked hashes checked after building. This diagnostic
+has a longer component timeout and qualifies neither recovery deadline.
+
+| Phase | Seconds | Relationship |
+| --- | ---: | --- |
+| Restore component | 71.77 | Excludes target setup, admission and replay/oracle |
+| Initial materialization | 20.47 | Includes the next three rows |
+| Original backup acquisition | 3.82 | Includes complete artifact hashes and journal validation |
+| Fixed-artifact copies | 7.56 | Primary, active journal and marker, including synchronization |
+| Surviving command hydration | 8.05 | Complete required hydration |
+| Complete retained-history capture | 30.86 | Included in watermark preparation and private readiness |
+| Private materialization and readiness | 56.51 | Includes initial materialization and retained-history capture |
+| Receipt-authorized stamp and close | 4.65 | Includes final seal and source retirement |
+| Native publication | 5.54 | Includes full original backup and target readback |
+| Cold publication-owner reconstruction | 4.90 | Includes fresh original-backup acquisition |
+
+Nested phases are not additive. Large-file hashing across this operation takes
+16.88 seconds, also nested in the phases above. The independently checked phase
+receipt is `600522b2f562a773724b98d4f32de7bf4288cbc8461568dd3144a558f8fe5d34`.
+The independently checked private build receipt is
+`c8a7f0265e9a9026d8300239c8e90327bb3294d0284816506cb8792488486559`.
+
+A same-source diagnostic control changes only original-backup borrowing to
+use the retained complete-copy protocol, with the same backup, release profile,
+probes, validators and polling limits. Restore and readiness take 48.70 seconds;
+complete retained-history capture takes 11.13 seconds and surviving-command
+hydration 1.55 seconds. Initial materialization takes 19.27 seconds, including
+7.29 seconds staging copied sealed extents. Cold publication reconstruction
+remains 4.93 seconds. This isolates a 23.07-second regression in the borrowed
+path; it does not qualify the whole recovery clock or prove that all of the
+additional time belongs to any one syscall.
+
+The independently checked copied-control phase receipt is
+`bafe24b49cadbbcea0555a812fbce7d36c02ffa53f154017df1c4309dc067bca`;
+its private build receipt is
+`69c1603f83f3348a3cccfb6152dc066b2fb81a6eadbe057edf078e35556d0aa5`.
+Both probes preserve all eight selected original backup artifacts and grant no
+shipping or campaign qualification. No validation, workload, clock or campaign
+gate has been relaxed. Full final-source CI, scheduled population, the
+45-second campaign window, resources and both measured campaigns remain
+outstanding.
