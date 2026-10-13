@@ -1,11 +1,11 @@
 ---
 adr: "0298"
 title: CI-All Runs The Test Battery Under Nextest
-status: proposed
+status: accepted
 tier: surface
 date: 2026-10-13
-accepted: null
-acceptance: null
+accepted: '2026-10-13'
+acceptance: 'maintainer, in session, 2026-10-13: "i accept", in response to the exact-text acceptance request for ADR-0298 as committed at 79f910b04'
 requires: [ADR-0184]
 amends: [ADR-0184]
 supersedes: []

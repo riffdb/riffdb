@@ -320,7 +320,7 @@ record with no front matter.
 | [0285](0285-lifecycle-offered-load-arrives-spread-across-each-second.md) | Lifecycle Offered Load Arrives Spread Across Each Second | Accepted | surface |
 | [0286](0286-validation-walks-validate-each-contract-bundle-once.md) | Validation Walks Validate Each Contract Bundle Once | Accepted | guarantee |
 | [0287](0287-validation-walks-read-command-history-in-one-pass.md) | Validation Walks Read Command History In One Pass | Accepted | guarantee |
-| [0298](0298-ci-all-runs-the-test-battery-under-nextest.md) | CI-All Runs The Test Battery Under Nextest | Proposed | surface |
+| [0298](0298-ci-all-runs-the-test-battery-under-nextest.md) | CI-All Runs The Test Battery Under Nextest | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
