@@ -152,6 +152,18 @@ impl RedbMaintenanceStorage {
     /// readiness. Full reconciliation and ordinary server validation must follow.
     /// The caller must supply an existing database with the current format marker.
     pub fn discover_committed_promotion(&self) -> Result<Option<Record>, StorageError> {
+        let publication =
+            super::native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
+        if publication.current.is_some() || publication.temporary_name().is_some() {
+            // An inspection open can change redb even without an application
+            // transaction. Native restore must consume its intent before any
+            // such engine open; defer this optional probe to its owned startup.
+            // No pending or unmatched promotion receipt may be hidden: verify
+            // the ordinary promotion fence and whole closed receipt inventory.
+            self.verify_path_ownership()?;
+            self.read_complete_inventory_mode(true, false)?;
+            return Ok(None);
+        }
         let (file, marker) = self.open_promotion_files()?;
         let found = {
             let database = redb::Database::builder()

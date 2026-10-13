@@ -2231,10 +2231,25 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
+    mod native_driver_tests {
+        include!("maintenance_native_driver_tests.rs");
+    }
+
     fn staged_restore_fixture(
         label: &str,
         seed: u8,
         source_incarnation: u64,
+    ) -> StagedRestoreFixture {
+        staged_restore_fixture_with_mode(label, seed, source_incarnation, false, None)
+    }
+
+    fn staged_restore_fixture_with_mode(
+        label: &str,
+        seed: u8,
+        source_incarnation: u64,
+        empty_recovery: bool,
+        controller: Option<riffdb_storage_redb::RedbMaintenanceTestController>,
     ) -> StagedRestoreFixture {
         use riffdb_storage_api::DatabaseInitializationPort;
         use riffdb_types::{BackupNameV1, DatabaseId, offline_maintenance_input_hash};
@@ -2257,8 +2272,15 @@ mod tests {
         riffdb_storage_redb::stamp_history_incarnation(&database, source_incarnation)
             .expect("stamp source incarnation");
 
-        let (mut storage, _) = RedbMaintenanceStorage::open(&database, &backup_root)
-            .expect("open maintenance storage");
+        let (mut storage, _) = match controller {
+            Some(controller) => RedbMaintenanceStorage::open_with_test_controller(
+                &database,
+                &backup_root,
+                controller,
+            ),
+            None => RedbMaintenanceStorage::open(&database, &backup_root),
+        }
+        .expect("open maintenance storage");
         let backup_name = BackupNameV1::new("driver-restore-fixture").expect("backup name");
 
         let create_confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
@@ -2313,8 +2335,11 @@ mod tests {
             .replace_receipt(&create)
             .expect("persist create completion");
 
-        let restore_confirmation =
-            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget;
+        let restore_confirmation = if empty_recovery {
+            OfflineMaintenanceReplacementConfirmation::NotProvided
+        } else {
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        };
         let mut receipt = OfflineMaintenanceReceiptV1::accepted(
             OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(
                 2,
@@ -2332,9 +2357,11 @@ mod tests {
             fixture_admission(seed),
         )
         .expect("restore receipt");
-        receipt
-            .record_source_database_id(database_id)
-            .expect("restore source identity");
+        if !empty_recovery {
+            receipt
+                .record_source_database_id(database_id)
+                .expect("restore source identity");
+        }
         for phase in [
             OfflineMaintenanceReceiptPhaseV1::Draining,
             OfflineMaintenanceReceiptPhaseV1::Offline,

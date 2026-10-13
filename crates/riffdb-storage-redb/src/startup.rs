@@ -1656,8 +1656,8 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             }
         }
         let mut findings = Vec::new();
-        // One direct schema per page; continuity above pins every row checked
-        // below. A new page starts empty, including after any failed page.
+        // Continuity above pins every row checked below. The walk remembers
+        // only a validated exact stored bundle; command semantics are rechecked.
         if let Some(results) = self.inspect_parallel_audit_page(cursor.position(), inspected)? {
             inspected = u64::try_from(results.len()).map_err(|_| limit_exceeded())?;
             for result in results {

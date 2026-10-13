@@ -520,10 +520,26 @@ alone cannot admit deferred history: all three native command locator tables
 must already exist. Images requiring table preparation retain the complete path;
 unsupported images refuse before authorization or publication. The owner then
 binds a fresh full seal of the three publication artifacts.
-Publication retains the existing immutable-backup revalidation, target exclusion,
-verified copies, marker-last rename and fresh post-publication startup. A failed
-check or changed artifact refuses the operation and preserves the immutable
-backup. Ordinary primary crash recovery retains its existing recovery behavior.
+Publication retains immutable-backup revalidation, target exclusion, full
+artifact checks, marker-last rename and fresh post-publication startup. On Linux,
+an eligible self-contained ordinary restore into an empty target on the same
+filesystem transfers the three original sealed files instead of copying them
+again. A bounded private publication intent records their original identities and
+seals before any move. Full readback of all three transferred files precedes final
+publication. Other restore states retain verified copying; an interrupted transfer
+cannot switch to copying or silently rebuild the target from the backup.
+
+Startup durably consumes that intent before opening the published native engine.
+If startup is interrupted after consumption, recovery uses the actual published
+database, performs ordinary native engine crash recovery when needed, and completes
+current structural, journal and catalog validation before success. It cannot use
+an obsolete pre-startup primary hash or a clean/checkpoint shortcut to admit changed
+content. Private stages and a freshly transferred target still refuse engine repair.
+The server keeps application admission fenced until the ordinary Succeeded receipt
+is durable and matching intent removal and directory synchronization finish. A crash
+after success can finish cleanup and normal startup, preserving subsequent writes.
+A failed ownership or validation check preserves the immutable backup and actual
+failure evidence. Existing timing gates and resource limits remain unchanged.
 
 Private archive conversion, command-prefix reconstruction, archive validation,
 promoted-backup validation and archive incarnation stamping also abort engine

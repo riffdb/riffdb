@@ -306,3 +306,43 @@ the all-target server build check and storage Clippy. Verified receipt SHA-256:
 `497f4e3e05cfc6a23afcc029fa83a0a4b5940ce059107ba9c68bfd010197cb59`.
 Final-source CI and timed restore qualification remain open. No ordering, durability, authorization,
 format, workload, resource ceiling or timing gate changes are proposed.
+
+
+## Shipping restore and server admission checkpoint
+
+The ordinary shipping restore API now selects native transfer for eligible
+self-contained empty-target Linux restores on the same filesystem. Other states
+retain copying, selected before any intent is written. Cold reconciliation
+resumes the original artifacts and reports actual-target ownership separately
+from copied-stage semantic evidence. Previously consumed startup performs the
+accepted engine recovery and complete validation. Server admission follows the
+durable Succeeded receipt and matching intent removal plus directory sync.
+
+An actual server test exposed an early engine open in promotion discovery. That
+optional probe opened and closed the newly published primary before consumption,
+changing sealed native bytes and causing the following readiness check to refuse.
+Native intent inventory now defers that probe without opening an engine. Complete
+closed receipt validation and the existing promotion fence still reject pending
+or unmatched promotion evidence; owned restore startup independently rejects
+promotion or follower state before admission. Copied/promoted paths retain their
+existing discovery behavior. No checksum, authorization or semantic check is
+removed to resolve the failure.
+
+The unchanged failing server test now passes through native transfer with the
+original primary inode, incarnation 8, durable success and completed intent
+cleanup before returning startup. All three cleanup uncertainty hooks return
+typed CommitStatusUnknown and cannot return application startup. A separate test
+proves promotion discovery preserves all three original seals and the Published
+intent before actual startup consumes it. Sixteen server promotion regressions,
+server Clippy, 168 startup tests and 248 maintenance tests pass on the required
+host after the local-main merge. The startup suite's one pre-existing ignored
+case is the large synthetic shutdown-checkpoint timing benchmark, not a skipped
+correctness failure. Verified receipt SHA-256:
+`0667d697e0cfc6afb66387c3430781141f0274074dae2c725b737479a1783c08`.
+
+Package: WP-825. Tier: guarantee. Compatibility: frozen native intent and all
+existing database, journal, registry and public interfaces remain unchanged.
+Updated handbook: `docs/backup-restore.md`. Hazards/follow-ups: final-source CI,
+the unchanged populated 60-second check, fixed campaign windows, post-acknowledgment
+crash coverage and both measured campaigns remain required. This checkpoint is
+not a performance or rehearsal qualification.

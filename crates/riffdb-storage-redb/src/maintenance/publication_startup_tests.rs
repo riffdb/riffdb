@@ -834,3 +834,45 @@ fn native_publication_success_cleanup_refuses_nonterminal_or_foreign_inventory()
 
 #[path = "publication_cleanup_tests.rs"]
 mod cleanup_tests;
+
+#[test]
+fn native_publication_promotion_discovery_cannot_open_or_change_the_unconsumed_target() {
+    let scope = ScopedDirectory::new("native-startup-promotion-probe");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    let (storage, operation) = published(&root);
+    let intent = current(&storage, operation);
+    assert_eq!(intent.phase, PublicationPhase::Published);
+    assert!(storage.discover_committed_promotion().unwrap().is_none());
+    assert_eq!(
+        current(&storage, operation).encode().unwrap(),
+        intent.encode().unwrap()
+    );
+    for (path, seal) in [
+        storage.database_file.clone(),
+        crate::journal::journal_path(&storage.database_file),
+        crate::durable_format_marker_path(&storage.database_file),
+    ]
+    .iter()
+    .zip(&intent.artifacts)
+    {
+        assert_eq!(
+            crate::backup::sha256_file(path).unwrap(),
+            seal.checksum,
+            "optional promotion discovery cannot perform a native open before durable consumption"
+        );
+    }
+    let session = storage
+        .begin_published_restore_readiness(
+            operation,
+            inputs(),
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .unwrap();
+    assert_eq!(
+        current(&storage, operation).phase,
+        PublicationPhase::StartupConsumed
+    );
+    drop(finish_native_session(session));
+}
