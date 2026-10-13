@@ -93,3 +93,6 @@ pub fn validate_migration_receipt_fixture(
 ) -> Result<(), riffdb_storage_api::StorageError> {
     codec::decode_migration_receipt(encoded).map(drop)
 }
+
+#[cfg(test)]
+pub(crate) use restore_custody::ClosedPublicationCustody;

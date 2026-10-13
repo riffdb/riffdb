@@ -7126,3 +7126,8 @@ mod tests {
         drop(Database::open(stage.join(DATABASE_ARTIFACT_FILE_NAME)).unwrap());
     }
 }
+
+// Qualify the closed artifact handoff before activating ADR-0294 publication.
+#[cfg(test)]
+#[path = "backup_publication_artifacts.rs"]
+pub(crate) mod publication_artifacts;

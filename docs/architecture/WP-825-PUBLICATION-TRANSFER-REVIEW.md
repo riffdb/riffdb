@@ -88,14 +88,48 @@ Authorized temporary cleanup recovers approximately 145 GiB and observes roughly
 the original reproduction fixture and the latest failures remain intact.
 Main is fetched and merged again without additional changes.
 
-## Accepted record and remaining fixture review
+## Accepted record and fixtures
 
 AGENTS.md requires a full guarantee record whose exact text a human accepts
 before merge. ADR-0293 Decision 10 expressly preserves the retained stage and
 publication copying and says it does not replace them with links or renames.
 ADR-0294 supplies that separate authority; its exact text was accepted in session
-on 2026-10-12 and recorded in a separate acceptance commit. Fixture review
-remains separately required before merge.
+on 2026-10-12 and recorded in a separate acceptance commit. The maintainer
+separately approved the exact four-file fixture diff linked from
+[its review note](WP-825-ADR-0294-FIXTURE-REVIEW.md).
 
 Exact proposed ADR-0294 text SHA-256:
 `1cb928dca0d928fe9bb11faf2fd0ec1d5576a747925afd69f5501413f60070d3`.
+
+## Native ownership checkpoint
+
+The real receipt-authorized ordinary publication regression reproduces the
+remaining copy: the configured primary has a different inode from the sealed
+stage. The first attempt had a missing test import; it proves no native behavior.
+The corrected native test reaches the inode assertion and fails there.
+
+On the required host, six original-artifact tests and 24 native custody tests
+pass, together with storage Clippy for every target and feature. The new handoff
+consumes the actual unique closed owner and retains its original descriptors and
+native exclusion. Independent child processes observe both native and legacy
+locks across cross-directory moves and final rename. Live or retained engine
+leases, cancellation, writable hard-link aliases and directory substitution
+refuse. The source directory pin remains checked after moving its primary.
+
+Three-file tests preserve every original inode, byte seal and immutable backup.
+They exercise same-length mutations with restored modification times on each
+artifact before handoff, during the known rename span and after complete readback.
+Even deliberately refreshed rename metadata cannot replace the original SHA-256
+seal. All three full readbacks precede any final artifact publication; the marker
+moves last. Failure retains transferred files. A safe API from the existing
+rustix dependency provides atomic non-overwriting rename through retained
+capabilities; no dependency or unsafe first-party code is added.
+
+Verified ownership checkpoint receipt SHA-256:
+`0d2f07a8b8eabf8d52cc9c5c6b5d7221cbc699142d1c322f2b49d2e4f5eab657`.
+
+These helpers remain test-only while durable intent, complete restart recovery,
+startup consumption and success cleanup are connected. They do not enable
+production transfer or prove end-to-end crash recovery. The native publication
+regression, saved populated 60-second gate, actual scheduled fault windows,
+final-source CI and both campaigns remain outstanding. WP-825 stays open.

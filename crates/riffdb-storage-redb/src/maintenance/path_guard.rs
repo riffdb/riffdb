@@ -255,7 +255,7 @@ impl PinnedDirectory {
     ///
     /// `None` means that no directory entry exists. Symlinks and every other
     /// file type fail closed.
-    pub(super) fn regular_file_length(&self, name: &OsStr) -> Result<Option<u64>, StorageError> {
+    pub(crate) fn regular_file_length(&self, name: &OsStr) -> Result<Option<u64>, StorageError> {
         let relative = checked_child_name(name)?;
         match self.directory.symlink_metadata(relative) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -339,6 +339,55 @@ impl PinnedDirectory {
             .map_err(io_unavailable)
     }
 
+    #[cfg(test)]
+    pub(crate) fn child_path(&self, name: &OsStr) -> Result<PathBuf, StorageError> {
+        self.verify()?;
+        Ok(self.path.join(checked_child_name(name)?))
+    }
+
+    /// The transfer preflight cannot fall back after durable intent creation.
+    #[cfg(test)]
+    pub(crate) fn same_filesystem(&self, other: &Self) -> Result<bool, StorageError> {
+        self.verify()?;
+        other.verify()?;
+        #[cfg(unix)]
+        return Ok(self.identity.device == other.identity.device);
+        #[cfg(not(unix))]
+        Ok(false)
+    }
+
+    /// Moves one direct child through two retained directory capabilities.
+    /// The protocol retains original descriptors and owns seal verification.
+    #[cfg(test)]
+    pub(crate) fn rename_to(
+        &self,
+        from: &OsStr,
+        target: &Self,
+        to: &OsStr,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        target.verify()?;
+        if !self.same_filesystem(target)? || target.regular_file_length(to)?.is_some() {
+            return Err(corrupt());
+        }
+        // Atomically refuse a destination that appeared after preflight. This
+        // uses the already required safe rustix API and retained directory FDs;
+        // a competing file must never be overwritten by the move.
+        #[cfg(target_os = "linux")]
+        rustix::fs::renameat_with(
+            &self.directory,
+            checked_child_name(from)?,
+            &target.directory,
+            checked_child_name(to)?,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|error| io_unavailable(error.into()))?;
+        #[cfg(not(target_os = "linux"))]
+        return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        self.verify()?;
+        target.verify()
+    }
+
     /// Links one direct child into another retained directory. The caller owns
     /// file identity checks and publication sync; cross-filesystem links refuse.
     pub(super) fn hard_link_to(
@@ -388,7 +437,7 @@ impl PinnedDirectory {
 
     /// Synchronizes this exact retained directory, independent of its ambient
     /// pathname.
-    pub(super) fn sync(&self) -> Result<(), StorageError> {
+    pub(crate) fn sync(&self) -> Result<(), StorageError> {
         self.sync_handle.sync_all().map_err(io_unavailable)
     }
 
