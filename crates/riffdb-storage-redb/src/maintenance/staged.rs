@@ -470,11 +470,15 @@ impl RedbStagedRestore {
             // Direct native storage callers consume any unused immutable
             // evidence. Production first joins and authenticates that reader.
             drop(self.native_authorization_evidence.take());
-            Some(if retain_native_engine {
-                NativeStagedOwner::StampPreparation(owner.into_stamp_preparation()?)
-            } else {
-                NativeStagedOwner::Closed(owner.close()?)
-            })
+            Some(
+                if retain_native_engine && owner.permits_receipt_authorized_stamp()? {
+                    NativeStagedOwner::StampPreparation(Box::new(owner.into_stamp_preparation()?))
+                } else {
+                    // Promoted images retain the complete close-before-stamp path;
+                    // the ordinary source's live-engine capability cannot own them.
+                    NativeStagedOwner::Closed(Box::new(owner.close()?))
+                },
+            )
         } else {
             None
         };
@@ -590,8 +594,8 @@ impl std::fmt::Debug for RedbStagedRestore {
 /// Preparation and publication capabilities have distinct private variants.
 /// A failed consuming transition leaves a permanently unusable variant.
 enum NativeStagedOwner {
-    StampPreparation(crate::backup::OwnedStampPreparation),
-    Closed(crate::backup::OwnedClosedMaterialization),
+    StampPreparation(Box<crate::backup::OwnedStampPreparation>),
+    Closed(Box<crate::backup::OwnedClosedMaterialization>),
     Invalidated,
 }
 
@@ -643,7 +647,7 @@ impl NativeStagedOwner {
     fn stamp_history_incarnation(&mut self, incarnation: u64) -> Result<(), StorageError> {
         let old = std::mem::replace(self, Self::Invalidated);
         let closed = match old {
-            Self::StampPreparation(owner) => owner.stamp_and_close(incarnation)?,
+            Self::StampPreparation(owner) => Box::new((*owner).stamp_and_close(incarnation)?),
             Self::Closed(mut owner) => {
                 owner.stamp_history_incarnation(incarnation)?;
                 owner

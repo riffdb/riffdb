@@ -515,9 +515,11 @@ The canonical RestoreAnchor removes those references atomically. After checking
 that no command or receipt stub survives and observing engine close, the owner
 retires the original extents and verifies the renewed empty journal above the
 configured target's extent generation. Original descriptors, content seals and
-file/inventory continuity remain checked until retirement. Unsupported images
-retain the complete preparation path. The owner then binds a fresh full seal of
-the three publication artifacts.
+file/inventory continuity remain checked until retirement. Registry completion
+alone cannot admit deferred history: all three native command locator tables
+must already exist. Images requiring table preparation retain the complete path;
+unsupported images refuse before authorization or publication. The owner then
+binds a fresh full seal of the three publication artifacts.
 Publication retains the existing immutable-backup revalidation, target exclusion,
 verified copies, marker-last rename and fresh post-publication startup. A failed
 check or changed artifact refuses the operation and preserves the immutable

@@ -19,6 +19,13 @@ pub(crate) fn private_restore_image_supports_bounded_readiness(
     database: &redb::Database,
 ) -> Result<bool, StorageError> {
     let read = database.begin_read().map_err(transaction_error)?;
+    // A completed registry does not make a promoted or attached image an
+    // ordinary source. Keep its complete preparation and close protocol.
+    if crate::promotion_cutover::current_record(&read)?.is_some()
+        || crate::follower_lifecycle::is_attached(&read)?
+    {
+        return Ok(false);
+    }
     let retained = read_retained_metadata(&read)?;
     let meta = read.open_table(META).map_err(table_error)?;
     let encoded = meta
@@ -27,11 +34,29 @@ pub(crate) fn private_restore_image_supports_bounded_readiness(
         .ok_or_else(corrupt)?;
     let registry = riffdb_storage_api::decode_record_registry(encoded.value())
         .map_err(crate::error::codec_error)?;
-    Ok(registry.value().completed_for(
+    if !registry.value().completed_for(
         retained.database_id(),
         retained.history_incarnation(),
         riffdb_storage_api::current_record_registry_digest(),
-    ) && crate::changelog_v3_roots::read_checkpoint_roots(&read)?.is_some())
+    ) || crate::changelog_v3_roots::read_checkpoint_roots(&read)?.is_none()
+    {
+        return Ok(false);
+    }
+    // Registry completion predates native locator preparation. An older image
+    // must hydrate through the complete compatibility path before any deferred
+    // history proof can be admitted across that preparation write.
+    for table in [
+        crate::layout::IDEMPOTENCY_LOCATORS,
+        crate::layout::PROVENANCE_LOCATORS,
+        crate::layout::AUDIT_BY_REQUEST_LOCATORS,
+    ] {
+        match read.open_table(table) {
+            Ok(_) => {}
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+            Err(error) => return Err(table_error(error)),
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) fn validate_private_restore_readiness(

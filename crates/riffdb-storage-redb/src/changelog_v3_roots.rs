@@ -9,8 +9,7 @@ use redb::{
 };
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N,
-    AuthoritativeTransactionV3, ChangelogHistoryStateV3, StorageError, StorageErrorKind,
-    proto_codec::*,
+    ChangelogHistoryStateV3, StorageError, StorageErrorKind, proto_codec::*,
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DualFrontier};
 

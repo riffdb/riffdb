@@ -2660,10 +2660,10 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         // common incarnation helper consumes the engine opened by ordinary
         // backup restore or receipt-authorized private archive publication;
         // neither caller can serve operational readers during this transaction.
-        ("backup.rs", "stamp_incarnation"),
+        ("backup.rs", "stamp_incarnation_with_validated_history"),
         // Same stopped-file watermark transaction; private materialization now
         // borrows its already owned engine instead of opening another one.
-        ("backup.rs", "stamp_retention_watermark_on_database"),
+        ("backup.rs", "stamp_watermark_with_complete_history"),
         // Test-only downgrade fixture, likewise on a stopped database.
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Test-only corruption planting, likewise on a stopped database.
@@ -2677,7 +2677,7 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("fixtures.rs", "strip_validated_prefix_checkpoint_fixture"),
         // History-stub hydration (ADR-0263 Amendment 1) rewrites a staged
         // maintenance restore copy, which no operational reader can select.
-        ("history_stub.rs", "hydrate_history_stubs"),
+        ("history_stub.rs", "hydrate_stubs"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
         // Bounded V3 replay owns the same exclusive pre-readiness recovery

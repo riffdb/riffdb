@@ -1136,6 +1136,11 @@ impl OwnedValidatedMaterialization {
 }
 
 impl OwnedAuthorizationMaterialization {
+    pub(crate) fn permits_receipt_authorized_stamp(&self) -> Result<bool, StorageError> {
+        self.verify_authorization()?;
+        Ok(self.shared.is_offline_source_mode())
+    }
+
     pub(crate) fn verify_authorization(&self) -> Result<(), StorageError> {
         self.materialization.verify()?;
         self.shared.verify_private_restore_integrity()
@@ -5265,7 +5270,7 @@ mod tests {
     fn owned_materialization_immutable_handoffs_reuse_seal_without_content_reads() {
         let root = TestRoot::new("owned-native-continuity");
         let (_, backup, _) = create_backup(&root);
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5324,7 +5329,7 @@ mod tests {
             "the immutable backup includes a sealed extent"
         );
         let before = validate_immutable_backup(&backup).unwrap();
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5365,7 +5370,7 @@ mod tests {
 
     fn closed_continuity_fixture(root: &TestRoot) -> OwnedClosedMaterialization {
         let (_, backup, _) = create_backup(root);
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5511,7 +5516,7 @@ mod tests {
     fn owned_materialization_history_proof_runs_one_complete_constructor_and_refuses_mutation() {
         let root = TestRoot::new("owned-native-history-proof");
         let (_, backup, _) = create_backup(&root);
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5587,7 +5592,7 @@ mod tests {
         RedbOfflineBackup::bind(&source, &backup)
             .create_offline_backup(&build_metadata())
             .unwrap();
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5653,7 +5658,7 @@ mod tests {
         let (_, backup, _) = create_backup(&root);
         let mut owners = Vec::new();
         for stage in ["stage-one", "stage-two"] {
-            let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join(stage))
+            let (_, owned) = RedbOfflineRestore::bind(&backup, root.join(stage))
                 .restore_owned_staged_backup(
                     &root.join("configured.redb"),
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5734,7 +5739,7 @@ mod tests {
         RedbOfflineBackup::bind(&source, &backup)
             .create_offline_backup(&build_metadata())
             .unwrap();
-        let (_, mut owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, mut owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -5822,7 +5827,7 @@ mod tests {
     fn owned_materialization_live_stamp_refuses_a_surviving_authorization_reader() {
         let root = TestRoot::new("owned-native-live-stamp-reader");
         let (_, backup, _) = create_backup(&root);
-        let (_, owned) = RedbOfflineRestore::bind(&backup, &root.join("stage"))
+        let (_, owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_staged_backup(
                 &root.join("configured.redb"),
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

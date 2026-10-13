@@ -146,6 +146,106 @@ Full state reconciliation does not run. This small elapsed improvement does
 not qualify recovery or either campaign. Independent verification binds the
 actual source, logs, binaries and unchanged original inputs.
 
+## Complete canonical chain validation follow-through
+
+A private phase profile of the checked ordinary source attributes 9.945 seconds
+to the retained-receipt chain and approximately 0.654, 0.655 and 0.663 seconds
+to registration links, primary admission and promotion checks respectively.
+The whole complete-history constructor takes 11.918 seconds. Its probes are
+removed and the production source independently reverified. This component
+profile is diagnostic and does not qualify the whole fault.
+
+Inline history entries previously used the complete owned decoder, then
+regenerated and hashed the same canonical receipt to advance the chain. The
+candidate uses the existing complete borrowed canonical validator directly on
+those entries. It retains every checksum, shape, namespace, order, catalog,
+identity, key and predecessor check. Stub-backed entries retain complete journal
+decoding and native receipt construction. Source holds, registration, admission
+and cutover checks remain unchanged, and no retained semantic decoder or cached
+root replaces full validation.
+
+The focused regression first reproduces owned decoding of inline entries, then
+checks the complete chain without those copies. It refuses a changed checksum,
+a checksum-correct unknown namespace or mutation reordering, a wrong row key and
+validly encoded but discontinuous predecessor binding. Related native tests
+pass on the required host, and the ordinary release build passes. The faithful
+whole gate still fails: restore reports success at 58.772943192 seconds and the
+first-write call times out before a successful response is observed. Exact
+replay and full-state reconciliation are not reached. This provides no measured
+improvement, so the inline-decoder candidate has been removed.
+
+A read-only inventory of that attempt's original backup finds 147,435 HISTORY
+rows: 105,636 journal-backed references and 41,799 inline receipts. The inline
+receipts contain about 27 MB; the references name about 1.3 GB of padded journal
+frames. The remaining investigation measures frame reads, validation and receipt
+construction separately. The inventory does not qualify recovery timing.
+
+## Journal receipt construction attribution
+
+A second private aggregate profile measures the complete history constructor's
+journal-backed work. Native frame resolution takes 3.467 seconds; that includes
+1.438 seconds opening and checking extent headers, 0.189 seconds reading physical
+frames and 1.661 seconds decoding physical frames. Physical decoding includes
+0.757 seconds of logical decoding. Native net-receipt construction then takes
+5.438 seconds, and chain advancement takes 0.642 seconds. These nested durations
+must not be added together. The profile observes 105,636 resolved receipts and
+124,311 candidate extent opens/header checks.
+
+The diagnostic restore takes 51.921262626 seconds. Its probes are excluded from
+shipping source, production bytes are restored exactly, and an independent join
+checks source, logs, binaries, the read-only inventory, unchanged original
+backups and cleanup preservation. An initial verifier refuses a mistaken log
+filename; a corrected independent verifier completes with the actual log.
+Neither result qualifies the whole recovery gate or either campaign.
+
+Receipt folding repeatedly resolves the same physical table through the closed
+63-entry catalog during source-index sorting. A candidate generates table/key
+dispatch from that existing declaration. The frozen inventory, exact metadata
+keys, authority classes, canonical encodings, bounds and receipt validation
+remain unchanged. All 335 storage API tests and the focused native checks pass.
+The faithful populated whole gate then fails during public empty-target restore
+before a successful restore response. An earlier launcher attempt refuses its
+reused case identifier before opening a database; its copied historical result
+is excluded from native evidence. The actual fresh attempt provides no measured
+improvement, so the catalog-dispatch candidate has also been removed.
+
+## Campaign maintenance observation bound
+
+The actual campaign action previously exhausted sixteen polls at fixed two-second
+intervals, although its original fault deadline allowed more time. A virtual-clock
+regression executes that action and reproduces refusal before a restore completing
+at 53 seconds can be observed. The action now distributes the same sixteen polls
+over the remaining original deadline, retaining one response interval. It does
+not resubmit the mutation, add polls or extend a deadline. Both scheduling tests,
+the six maintenance protocol tests and all 367 harness tests pass on the required
+host. This repairs observation scheduling; native restore and campaign timing
+remain unqualified, and ADR-0292's clock integration remains incomplete.
+
+## Native compatibility admission boundary
+
+A new regression removes each of the three native command locator tables from
+an otherwise current registry-complete image. The original eligibility predicate
+still admitted deferred history. Admission now checks those tables explicitly:
+a missing table selects the original complete preparation path, while other
+table errors remain failures. Registry completion cannot substitute for native
+preparation. The constructed current image is unsupported by complete validation;
+the receipt-stamp path preserves its exact `IncompatibleFormat` refusal and
+publishes no target. The genuine legacy preparation tests remain unchanged.
+
+The regression first fails against the prior predicate on the required host.
+The corrected admission test, all seven restore-readiness tests, all 35 owned
+materialization compatibility tests and all 367 harness tests pass. A first
+candidate test incorrectly expected this unsupported image to upgrade; its
+failure is retained and the corrected test independently compares both original
+complete preparation and receipt-stamp refusal. This does not qualify restore
+timing. The now-unused native receipt import has also been removed.
+
+Temporary host cleanup removes obsolete closed working media and test scratch
+while retaining historical observations, original reproduction inputs and the
+latest failed attempts. It recovers approximately 145 GiB, leaving approximately
+157 GiB free and satisfying the unchanged 134-GiB disk prerequisite at that
+observation. Main is refreshed again and remains contained in the branch.
+
 ## Earlier attribution motivating ADR-0293
 
 A private diagnostic build of the same native implementation adds only static
@@ -231,3 +331,34 @@ ADR-0291's staging lifecycle. The earlier broad native-fix approval covers the
 implementation paths. The maintainer separately accepted this exact record;
 acceptance does not qualify its implementation or any timing result. The
 previously accepted clock/controller work remains authorized and independent.
+
+## Acceptance regressions and repair
+
+The package-scoped run completes all 2,222 Rust tests: 2,220 pass and two fail.
+Promoted backup restore fails to regain source readiness. The ordinary receipt
+stamp constructor incorrectly selects a promoted image, and deferred preparation
+also admits its raw image before deriving the private promotion mode. A focused
+process rerun reproduces the failure. Preparation now excludes promoted and
+attached images; promoted authorization retains complete close-before-stamp
+behavior. The same real promoted restore test passes after the repair, including
+rewind, new-lineage writes, exact idempotent replay and process restart.
+
+The other failure is the architecture guard's stale stopped-file function list.
+Its three entries now name the extracted incarnation, watermark and hydration
+helpers. The exact operational commit boundary remains enforced. The repaired
+guard and all 42 selected ordinary readiness/custody regressions pass.
+
+Clippy exposes the live/closed owner's large enum and twelve unnecessary test
+borrows. Both capability variants now use one fixed-size owned box, with no
+change to consumption, exclusion or cancellation. The borrows are removed.
+Required-host Clippy passes for server and storage, all targets and all features,
+with warnings denied. The two maintainer review notes are explicitly excluded
+from the public handbook; the public backup/restore page remains updated and the
+handbook source inventory passes.
+
+The remaining acceptance-commit check failure belongs to the diagnostic working
+checkout, whose Git HEAD predates separately committed ADR acceptance. Final
+qualification must use a fresh checkout of the actual committed source; importing
+objects for a scope check cannot qualify its working-tree commit history. The
+failed run remains recorded. No full acceptance, final CI or recovery timing
+success is claimed by these focused repairs.

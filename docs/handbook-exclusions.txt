@@ -13,3 +13,5 @@ architecture/WP-748-ADMINISTRATION-TAG-REVIEW.md
 architecture/WP-809-VERIFICATION.md
 architecture/WP-813-REVIEW.md
 architecture/WP-817-REVIEW.md
+architecture/WP-825-NATIVE-OWNER-REVIEW.md
+architecture/WP-825-PUBLICATION-TRANSFER-REVIEW.md

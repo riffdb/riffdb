@@ -11,7 +11,7 @@ import stat
 import sys
 import threading
 
-from .ticketdesk_lifecycle_campaign_maintenance import CampaignMaintenance
+from .ticketdesk_lifecycle_campaign_maintenance import CampaignMaintenance, MAX_POLLS
 from .ticketdesk_lifecycle_campaign_quiescence import QuiescentRelease
 from .ticketdesk_lifecycle_faults import LocalArchiveOutage
 from .ticketdesk_lifecycle_campaign_runtime import SECOND, private_write, require
@@ -187,13 +187,18 @@ class CampaignActions:
         owner = CampaignMaintenance(runtime.operator, str(runtime.root / "maintenance.credential"), kind,
                                     "campaign-source", started_ns=started, deadline_ns=deadline)
         owner.start(runtime.elapsed())
-        for _ in range(16):
-            if owner.complete: return
-            until = runtime.elapsed() + 2 * SECOND
+        for index in range(MAX_POLLS):
+            if owner.complete: return owner
+            now = runtime.elapsed()
+            # Share the remaining original budget among the remaining polls
+            # and one final response interval. Unknown results consume that
+            # budget; they cannot create another mutation, poll or deadline.
+            until = now + (deadline - now) // (MAX_POLLS - index + 1)
             self.wait(lambda: runtime.elapsed() >= until, deadline, active=False)
             owner.poll(runtime.elapsed())
             runtime.remaining(deadline)
         require(owner.complete, "campaign_maintenance_poll_bound")
+        return owner
 
     def replace(self, kind, started, deadline, release):
         runtime = self.runtime

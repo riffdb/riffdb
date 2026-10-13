@@ -7,6 +7,7 @@ component owns no server process and grants no extension to the whole fault.
 import re
 
 SECOND = 10**9
+MAX_POLLS = 16
 UUID7 = r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 PHASES = {name: index for index, name in enumerate(("accepted", "draining", "offline", "artifact_published", "validating", "succeeded"))}
 REQUIRED = frozenset({"status", "maintenance_operation_id", "kind", "backup_name", "input_hash", "phase"})
@@ -94,7 +95,7 @@ class CampaignMaintenance:
     def poll(self, now_ns):
         try:
             timeout = self._tick(now_ns)
-            require(self.started and not self.complete and self.operation is not None and self.polls < 16,
+            require(self.started and not self.complete and self.operation is not None and self.polls < MAX_POLLS,
                     "campaign_maintenance_state")
             self.polls += 1
             value = self.operator.run_as(self.credential, "backup.operation",
