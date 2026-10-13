@@ -1,11 +1,11 @@
 ---
 adr: "0287"
 title: Validation Walks Read Command History In One Pass
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-12
-accepted: null
-acceptance: null
+accepted: '2026-10-12'
+acceptance: 'maintainer, in session, 2026-10-12: "may as well do both", in response to the exact-text acceptance request for ADR-0287 as committed at 280abcbd2 (rebased unchanged to 3faf722b6)'
 requires: [ADR-0286, ADR-0283, ADR-0182, ADR-0203]
 amends: []
 supersedes: []

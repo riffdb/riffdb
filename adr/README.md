@@ -319,7 +319,7 @@ record with no front matter.
 | [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Accepted | guarantee |
 | [0285](0285-lifecycle-offered-load-arrives-spread-across-each-second.md) | Lifecycle Offered Load Arrives Spread Across Each Second | Accepted | surface |
 | [0286](0286-validation-walks-validate-each-contract-bundle-once.md) | Validation Walks Validate Each Contract Bundle Once | Accepted | guarantee |
-| [0287](0287-validation-walks-read-command-history-in-one-pass.md) | Validation Walks Read Command History In One Pass | Proposed | guarantee |
+| [0287](0287-validation-walks-read-command-history-in-one-pass.md) | Validation Walks Read Command History In One Pass | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
