@@ -328,6 +328,7 @@ record with no front matter.
 | [0291](0291-bounded-restore-readiness-and-background-validation.md) | Bounded Restore Readiness And Background Validation | Accepted | guarantee |
 | [0292](0292-recovery-clock-begins-at-primary-loss.md) | Recovery Clock Begins At Primary Loss | Accepted | guarantee |
 | [0293](0293-native-restore-uses-one-validated-preparation-owner.md) | Native Restore Uses One Validated Preparation Owner | Accepted | guarantee |
+| [0294](0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md) | Native Restore Transfers One Sealed Artifact Set Into Publication | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
