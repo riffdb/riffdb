@@ -110,7 +110,7 @@
   - [Lifecycle native blockers and repair scope](architecture/WP-825-LIVE-OBSERVATIONS.md)
   - [Registry completion implementation review](architecture/WP-825-REGISTRY-COMPLETION-IMPLEMENTATION.md)
   - [Journaled source reclamation fixture review](architecture/WP-825-ADR-0278-FIXTURE-REVIEW.md)
-  - [Follower acknowledgement validation proposal](architecture/WP-825-ADR-0296-IMPLEMENTATION-REVIEW.md)
+  - [Follower acknowledgement validation implementation (ADR-0296)](architecture/WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
   - [Bootstrap source custody validation implementation](architecture/WP-825-ADR-0284-IMPLEMENTATION-REVIEW.md)
   - [Local main integration review](architecture/WP-825-MAIN-SYNC-2026-10-10-REVIEW.md)
   - [Latest main integration and identifier reconciliation](architecture/WP-825-MAIN-SYNC-2026-10-11-REVIEW.md)

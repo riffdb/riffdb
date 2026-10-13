@@ -346,3 +346,40 @@ Updated handbook: `docs/backup-restore.md`. Hazards/follow-ups: final-source CI,
 the unchanged populated 60-second check, fixed campaign windows, post-acknowledgment
 crash coverage and both measured campaigns remain required. This checkpoint is
 not a performance or rehearsal qualification.
+
+## Saved populated gate and acknowledged-write crash check
+
+The unchanged saved primary-loss check passes on ordinary shipping binaries at
+`aacaaf5469458727dacbb9b86a3c4d46d919dcbc`, including local main's validated bundle
+reuse and fused history walk. All four binaries were rebuilt together from a
+fresh, clean committed checkout; its 5,197 tracked source hashes were verified
+before and after the build. This establishes the focused regression result,
+without claiming final-source full CI or a complete campaign.
+
+The selected 2,823,103,187-byte backup completed before primary loss. Backup
+creation took 17.55 seconds, reported separately. There were 150,000 acknowledged
+commands before loss and none between backup and loss. Recovery admission took
+5.24 seconds from loss, restore succeeded at 52.73 seconds and the first public
+compiled command was acknowledged at 54.59 seconds. Exact replay of that command
+and the original acknowledged command, plus independent reconciliation of all
+65,536 tickets, completed at 58.07 seconds inside the unchanged 60-second clock.
+The original saved fixture and all four binary hashes remained unchanged.
+Verified receipt SHA-256:
+`571ffe7ebe77241aa5a72bfb93fad9d5bc6aff4a124b101692e69f44932783c8`.
+
+A separate copy of the restored target accepted another compiled command and
+then suffered an immediate owned-process kill. Ordinary restart preserved the
+actual target inode, the new acknowledgement, both earlier acknowledged command
+identities and their outcomes and provenance. All three exact replays and the
+full 65,536-ticket oracle passed with 150,002 updates. Backup and maintenance
+receipt bytes remained unchanged; no intent or original-backup republication
+was needed. Verified receipt SHA-256:
+`38ec59b20612c433de3126be9b40ca755092cae7aa06bcfff440e751aeccadbe`.
+
+The fixed 45-second campaign fault window remains unqualified and is a timing
+blocker: the saved first-write result exceeds it. The fixture has 1,500 seconds
+of offered work, not the scheduled 5,400-second campaign population. Further
+local-main CI fixes are integrated separately; campaign-clock integration,
+final-source acceptance and full CI, the scheduled-population checks and both
+measured campaigns remain required. Neither eight-hour nor 24-hour run has
+started. Existing failed attempts remain failures and are preserved separately.

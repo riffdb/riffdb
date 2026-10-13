@@ -1979,7 +1979,7 @@ or a smaller workload. ADR-0283 was accepted exactly in session on 2026-10-07 fo
 extension. Its acceptance and commit-layer scope are recorded separately
 before native implementation. Development validation is in progress; no
 final-source runtime qualification is established. The
-[follower acknowledgement review](WP-825-ADR-0296-IMPLEMENTATION-REVIEW.md)
+[follower acknowledgement review](WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
 records the concrete boundary and remaining proofs. Other earlier intermittent
 failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
 
