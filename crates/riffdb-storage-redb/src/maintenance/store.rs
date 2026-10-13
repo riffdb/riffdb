@@ -62,6 +62,7 @@ mod restored_readiness;
 mod native_publication;
 #[path = "publication_recovery.rs"]
 mod native_recovery;
+pub(super) use native_recovery::{NativePublicationStartup, NativeStartupOwner};
 
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
@@ -313,6 +314,7 @@ pub struct RedbMaintenanceStorage {
     ownership_lock_path: PathBuf,
     ownership_lock: LegacyFileCustody,
     test_controller: Option<RedbMaintenanceTestController>,
+    retained_publication: super::retained_publication::RetainedPublicationSlot,
 }
 
 impl std::fmt::Debug for RedbMaintenanceStorage {
@@ -325,6 +327,13 @@ impl std::fmt::Debug for RedbMaintenanceStorage {
 }
 
 impl RedbMaintenanceStorage {
+    pub(in crate::maintenance) fn retain_verified_publication(
+        &self,
+        owner: super::retained_publication::RetainedPublication,
+    ) -> Result<(), StorageError> {
+        self.retained_publication.install(owner)
+    }
+
     /// Opens, validates, and reconciles the complete reserved maintenance subtree.
     pub fn open(
         database_file: impl AsRef<Path>,
@@ -454,6 +463,7 @@ impl RedbMaintenanceStorage {
             ownership_lock_path,
             ownership_lock,
             test_controller,
+            retained_publication: super::retained_publication::RetainedPublicationSlot::default(),
         };
         storage.verify_path_custody()?;
         Ok(storage)

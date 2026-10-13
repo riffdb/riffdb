@@ -8,6 +8,7 @@ use redb::ReadableTable;
 use riffdb_storage_api::{
     NoChangelogPublicationPort, OfflineMaintenanceReceiptTransitionV1,
     ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StructuralEvidenceOpen,
 };
 use riffdb_types::{DigestKeyId, Timestamp};
 
@@ -18,6 +19,89 @@ fn inputs() -> StartupValidationInputs {
         ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
         ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
     )
+}
+
+#[cfg(unix)]
+fn fresh_published(
+    root: &Path,
+) -> (
+    RedbMaintenanceStorage,
+    OfflineMaintenanceOperationId,
+    Vec<(PathBuf, riffdb_storage_api::BackupIntegrityChecksumV1)>,
+) {
+    use crate::maintenance::staged::transfer_tests::{
+        NativeTransferFixture, native_transfer_fixture_with_prepared_source,
+    };
+    let NativeTransferFixture {
+        mut storage,
+        sealed,
+        operation,
+        named,
+        ..
+    } = native_transfer_fixture_with_prepared_source(root, true, |store| {
+        // Complete the ordinary source startup through its real catalog and
+        // structural session; older incomplete-registry images stay cold.
+        let session = store.begin_structural_evidence(inputs()).unwrap();
+        drop(
+            finish_native_session(session)
+                .into_operational_after_catalog_validation()
+                .unwrap(),
+        );
+    });
+    let originals: Vec<_> = fs::read_dir(&named)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let digest = crate::backup::sha256_file(&path).unwrap();
+            (path, digest)
+        })
+        .collect();
+    storage
+        .publish_sealed_restore(sealed, OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
+        .unwrap();
+    let mut receipt = read_receipt_file(&storage.receipt_path(operation)).unwrap();
+    for phase in [
+        OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        OfflineMaintenanceReceiptPhaseV1::Validating,
+    ] {
+        receipt
+            .advance(OfflineMaintenanceReceiptTransitionV1::phase(phase))
+            .unwrap();
+        storage.replace_receipt(&receipt).unwrap();
+    }
+    (storage, operation, originals)
+}
+
+#[cfg(unix)]
+#[test]
+// req: END-001, END-008, REC-001, REC-006, REC-008
+fn fresh_native_publication_startup_retains_the_original_verified_backup_owner() {
+    let scope = ScopedDirectory::new("fresh-publication-original-backup-owner");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    let (storage, operation, originals) = fresh_published(&root);
+    let acquired = crate::backup::OwnedBackupHistory::test_acquisition_count();
+    let session = storage
+        .begin_published_restore_readiness(
+            operation,
+            inputs(),
+            crate::RedbCommitProfile::Standard,
+            Arc::new(NoChangelogPublicationPort),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::backup::OwnedBackupHistory::test_acquisition_count(),
+        acquired,
+        "fresh publication must retain its actual original backup owner through startup consumption"
+    );
+    assert_eq!(
+        current(&storage, operation).phase,
+        PublicationPhase::StartupConsumed
+    );
+    drop(session);
+    for (path, expected) in originals {
+        assert_eq!(crate::backup::sha256_file(&path).unwrap(), expected);
+    }
 }
 
 fn published(root: &Path) -> (RedbMaintenanceStorage, OfflineMaintenanceOperationId) {
@@ -39,6 +123,180 @@ fn published(root: &Path) -> (RedbMaintenanceStorage, OfflineMaintenanceOperatio
         storage.replace_receipt(&receipt).unwrap();
     }
     (storage, operation)
+}
+
+#[cfg(unix)]
+#[test]
+// req: END-001, END-008, REC-001, REC-006, REC-008
+fn retained_publication_has_one_consumer_and_abandoned_consumption_cannot_reconstruct() {
+    for abandon in [false, true] {
+        let scope = ScopedDirectory::new("retained-publication-single-consumer");
+        let root = scope.join("fixture");
+        fs::create_dir(&root).unwrap();
+        let (storage, operation, originals) = fresh_published(&root);
+        let acquired = crate::backup::OwnedBackupHistory::test_acquisition_count();
+        let first = storage
+            .retained_publication
+            .take(operation)
+            .unwrap()
+            .unwrap();
+        // Deterministic real-thread schedule: the first consuming grant is
+        // retained before the contender runs; neither holds the mutex for I/O.
+        std::thread::scope(|threads| {
+            threads
+                .spawn(|| {
+                    assert!(storage.retained_publication.take(operation).is_err());
+                })
+                .join()
+                .unwrap();
+        });
+        if abandon {
+            drop(first);
+            assert!(
+                storage
+                    .begin_published_restore_readiness(
+                        operation,
+                        inputs(),
+                        crate::RedbCommitProfile::Standard,
+                        Arc::new(NoChangelogPublicationPort),
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                current(&storage, operation).phase,
+                PublicationPhase::Published
+            );
+        } else {
+            let startup = first.consume(&storage).unwrap();
+            assert!(!startup.requires_complete_validation());
+            assert_eq!(
+                current(&storage, operation).phase,
+                PublicationPhase::StartupConsumed
+            );
+            let repeated = storage
+                .consume_native_publication_for_startup(operation)
+                .unwrap()
+                .unwrap();
+            assert!(
+                repeated.requires_complete_validation(),
+                "a consumed original owner cannot grant a second fresh startup shortcut"
+            );
+        }
+        assert_eq!(
+            crate::backup::OwnedBackupHistory::test_acquisition_count(),
+            acquired
+        );
+        for (path, expected) in originals {
+            assert_eq!(crate::backup::sha256_file(&path).unwrap(), expected);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+// req: END-001, END-008, REC-001, REC-006, REC-008
+fn retained_publication_refuses_changed_inputs_and_never_launders_a_failed_owner() {
+    use std::os::unix::fs::FileExt;
+    for mode in 0..9 {
+        let scope = ScopedDirectory::new("retained-publication-sticky-custody");
+        let root = scope.join("fixture");
+        fs::create_dir(&root).unwrap();
+        let (storage, operation, originals) = fresh_published(&root);
+        let acquired = crate::backup::OwnedBackupHistory::test_acquisition_count();
+        let extra = storage
+            .staged_directory
+            .join(operation.to_string())
+            .join("unexpected");
+        let selected = match mode {
+            0 | 6 | 7 => storage.database_file.clone(),
+            1 => crate::journal::journal_path(&storage.database_file),
+            2 => crate::durable_format_marker_path(&storage.database_file),
+            3 => originals
+                .iter()
+                .find(|(p, _)| {
+                    p.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("journal.sealed.")
+                })
+                .unwrap()
+                .0
+                .clone(),
+            4 => originals
+                .iter()
+                .find(|(p, _)| p.file_name().unwrap() == "manifest.riffdb")
+                .unwrap()
+                .0
+                .clone(),
+            _ => extra.clone(),
+        };
+        if mode < 5 {
+            let original = fs::read(&selected).unwrap();
+            let metadata = fs::metadata(&selected).unwrap();
+            let file = OpenOptions::new().write(true).open(&selected).unwrap();
+            file.write_all_at(&[original[0] ^ 1], 0).unwrap();
+            file.write_all_at(&original[..1], 0).unwrap();
+            file.set_modified(metadata.modified().unwrap()).unwrap();
+            file.sync_all().unwrap();
+        } else if mode == 5 {
+            fs::write(&extra, b"unexpected private entry").unwrap();
+        } else if mode == 6 {
+            let original = fs::read(&selected).unwrap();
+            fs::rename(&selected, root.join("replaced-original-primary")).unwrap();
+            fs::write(&selected, original).unwrap();
+        } else if mode == 7 {
+            fs::hard_link(&selected, root.join("extra-primary-link")).unwrap();
+        }
+        let requested = if mode == 8 {
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1234, [0x91; 10])
+                .unwrap()
+        } else {
+            operation
+        };
+        assert!(
+            storage
+                .begin_published_restore_readiness(
+                    requested,
+                    inputs(),
+                    crate::RedbCommitProfile::Standard,
+                    Arc::new(NoChangelogPublicationPort),
+                )
+                .is_err(),
+            "changed original handoff must refuse: {mode}"
+        );
+        if mode == 5 {
+            fs::remove_file(&extra).unwrap();
+        }
+        assert!(
+            storage
+                .begin_published_restore_readiness(
+                    operation,
+                    inputs(),
+                    crate::RedbCommitProfile::Standard,
+                    Arc::new(NoChangelogPublicationPort),
+                )
+                .is_err(),
+            "failure cannot select a new cold owner: {mode}"
+        );
+        assert_eq!(
+            crate::backup::OwnedBackupHistory::test_acquisition_count(),
+            acquired
+        );
+        assert_eq!(
+            current(&storage, operation).phase,
+            PublicationPhase::Published
+        );
+        assert_eq!(
+            read_receipt_file(&storage.receipt_path(operation))
+                .unwrap()
+                .current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::Validating
+        );
+        for (path, expected) in originals {
+            assert_eq!(crate::backup::sha256_file(&path).unwrap(), expected);
+        }
+    }
 }
 
 fn current(
@@ -306,7 +564,13 @@ fn native_publication_startup_process_child() {
         .parse()
         .unwrap();
     assert!(selection <= CONSUMED_CUTS.len() + 1);
-    let (mut storage, operation) = published(root);
+    let (mut storage, operation) =
+        if std::env::var("RIFFDB_TEST_NATIVE_STARTUP_ORIGINAL").as_deref() == Ok("1") {
+            let (storage, operation, _) = fresh_published(root);
+            (storage, operation)
+        } else {
+            published(root)
+        };
     if selection < CONSUMED_CUTS.len() {
         storage.test_controller = Some(RedbMaintenanceTestController::abort_at(
             CONSUMED_CUTS[selection],
@@ -352,6 +616,10 @@ fn native_publication_startup_process_child() {
 }
 
 fn abort_startup_child(root: &Path, selection: usize) {
+    abort_startup_child_with_original(root, selection, false);
+}
+
+fn abort_startup_child_with_original(root: &Path, selection: usize, original: bool) {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -359,6 +627,7 @@ fn abort_startup_child(root: &Path, selection: usize) {
         .args(["--exact", "maintenance::store::restored_readiness::native_transfer_tests::native_publication_startup_process_child", "--nocapture"])
         .env("RIFFDB_TEST_NATIVE_STARTUP_ROOT", root)
         .env("RIFFDB_TEST_NATIVE_STARTUP_CUT", selection.to_string())
+        .env("RIFFDB_TEST_NATIVE_STARTUP_ORIGINAL", if original { "1" } else { "0" })
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
@@ -381,11 +650,21 @@ fn abort_startup_child(root: &Path, selection: usize) {
 
 #[test]
 fn native_publication_startup_process_cuts_preserve_the_preopen_seals_and_recover() {
+    assert_startup_process_cuts(false);
+}
+
+#[test]
+// req: END-001, END-008, REC-001, REC-004, REC-006, REC-008
+fn retained_original_publication_startup_process_cuts_preserve_seals_and_cold_recovery() {
+    assert_startup_process_cuts(true);
+}
+
+fn assert_startup_process_cuts(original: bool) {
     for selection in 0..CONSUMED_CUTS.len() {
         let scope = ScopedDirectory::new("native-startup-crash-consumption");
         let root = scope.join("fixture");
         fs::create_dir(&root).unwrap();
-        abort_startup_child(&root, selection);
+        abort_startup_child_with_original(&root, selection, original);
         let storage = RedbMaintenanceStorage::acquire_owner(
             &root.join("configured.redb"),
             &root.join("backups"),
@@ -437,10 +716,20 @@ fn native_publication_startup_process_cuts_preserve_the_preopen_seals_and_recove
 
 #[test]
 fn native_publication_startup_interrupted_engine_open_recovers_the_consumed_current_target() {
+    assert_interrupted_engine_open(false);
+}
+
+#[test]
+// req: END-001, END-008, REC-001, REC-004, REC-006, REC-008
+fn retained_original_publication_interrupted_engine_open_recovers_the_consumed_current_target() {
+    assert_interrupted_engine_open(true);
+}
+
+fn assert_interrupted_engine_open(original: bool) {
     let scope = ScopedDirectory::new("native-startup-crash-live-engine");
     let root = scope.join("fixture");
     fs::create_dir(&root).unwrap();
-    abort_startup_child(&root, CONSUMED_CUTS.len());
+    abort_startup_child_with_original(&root, CONSUMED_CUTS.len(), original);
     let storage = RedbMaintenanceStorage::acquire_owner(
         &root.join("configured.redb"),
         &root.join("backups"),

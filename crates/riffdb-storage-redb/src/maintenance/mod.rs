@@ -67,6 +67,7 @@ pub use staged::{
     RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedPrivateArchiveRestore,
 };
 pub(crate) use store::PromotionValidationBinding;
+mod retained_publication;
 pub use store::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
     RedbMigrationDiskReservation,

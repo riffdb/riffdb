@@ -26,6 +26,25 @@ impl RedbMaintenanceStorage {
         application_commit_profile: crate::RedbCommitProfile,
         publication: Arc<dyn ChangelogPublicationPort>,
     ) -> Result<crate::RedbStructuralEvidenceSession, StorageError> {
+        let result = self.begin_published_restore_readiness_owned(
+            operation_id,
+            inputs,
+            application_commit_profile,
+            publication,
+        );
+        if result.is_err() {
+            self.retained_publication.invalidate_retained();
+        }
+        result
+    }
+
+    fn begin_published_restore_readiness_owned(
+        &self,
+        operation_id: OfflineMaintenanceOperationId,
+        inputs: StartupValidationInputs,
+        application_commit_profile: crate::RedbCommitProfile,
+        publication: Arc<dyn ChangelogPublicationPort>,
+    ) -> Result<crate::RedbStructuralEvidenceSession, StorageError> {
         self.verify_path_ownership()?;
         let receipt = read_receipt_file(&self.receipt_path(operation_id))?;
         if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup

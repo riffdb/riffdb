@@ -1048,13 +1048,19 @@ fn target_lock_matches(
     }
 }
 
-struct StagedDirectoryCleanup {
+pub(super) struct StagedDirectoryCleanup {
     parent_guard: PinnedDirectory,
     directory_guard: PinnedDirectory,
     armed: bool,
 }
 
 impl StagedDirectoryCleanup {
+    pub(super) fn verify_empty(&self) -> Result<(), StorageError> {
+        self.verify()?;
+        self.directory_guard.bounded_entries(0)?;
+        Ok(())
+    }
+
     fn new(path: PathBuf, parent_guard: PinnedDirectory) -> Result<Self, StorageError> {
         let directory_guard = PinnedDirectory::open(&path)?;
         Ok(Self {

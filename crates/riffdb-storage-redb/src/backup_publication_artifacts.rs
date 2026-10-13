@@ -83,6 +83,56 @@ impl OwnedClosedMaterialization {
 }
 
 impl OwnedPublicationArtifacts {
+    pub(crate) fn has_original_backup_owner(&mut self) -> Result<bool, StorageError> {
+        self.verify_continuity()?;
+        #[cfg(unix)]
+        {
+            Ok(self.backup_history.is_some())
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(false)
+        }
+    }
+
+    pub(crate) fn verify_published_owner(
+        &mut self,
+        intent: &crate::maintenance::PublicationIntent,
+        target: &PinnedDirectory,
+        names: &[OsString; 3],
+    ) -> Result<(), StorageError> {
+        let result = (|| {
+            self.verify_continuity()?;
+            if !self.publishing
+                || !self.readback_complete
+                || !self.has_original_backup_owner()?
+                || self.history != intent.history
+                || self.retention_watermark != intent.retention_watermark
+                || self.incarnation != intent.incarnation
+            {
+                return Err(corrupt());
+            }
+            for (index, name) in names.iter().enumerate() {
+                let artifact = &self.artifacts[index];
+                let file = artifact.private_file()?;
+                let original = &intent.artifacts[index];
+                if original.kind != crate::maintenance::ArtifactKind::ORDERED[index]
+                    || original.checksum != self.checksums[index]
+                    || original.length != file.metadata().map_err(io_unavailable)?.len()
+                    || artifact.path() != target.child_path(name)?
+                    || !target.regular_file_matches(name, file)?
+                {
+                    return Err(corrupt());
+                }
+            }
+            self.verify_continuity()
+        })();
+        if result.is_err() {
+            self.invalid = true;
+        }
+        result
+    }
+
     pub(crate) fn set_test_controller(
         &mut self,
         controller: Option<crate::RedbMaintenanceTestController>,

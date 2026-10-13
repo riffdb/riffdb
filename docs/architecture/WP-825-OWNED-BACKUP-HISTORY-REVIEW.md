@@ -421,3 +421,40 @@ rewriting historical failures. Updated handbook: `docs/backup-restore.md` and
 `docs/architecture/SUSTAINABLE-TICKETDESK.md`. Hazards and follow-ups: the actual
 scheduled-population 45-second gate, final-source full CI, conformance, resource
 admission and eight-hour rehearsal still precede WP-825 closure and 24-hour work.
+
+
+## Continuously retained fresh publication owner
+
+ADR-0299 Decision 9 is now implemented for eligible fresh publication. The
+original verified backup descriptors and actual three-artifact publication owner
+move into one bounded, operation-local consuming slot. Final original-backup
+content revalidation and complete independent post-transfer readback are retained.
+The slot holds the same native exclusion through exact continuity, closed
+receipt/intent inventory checks and durable StartupConsumed; it releases every
+native publication pin before the ordinary engine opens. It grants no complete
+scrub, clean-close or serving certificate. Unsupported ownership states retain
+the complete cold path.
+
+The corrected regression fixture completes actual ordinary source startup and
+uses a genuine backup-bound empty journal for its Immediate-only source. It
+asserts real registry, root, locator and configured-journal eligibility; old
+fixture callers retain their original behavior. Against the unchanged prior
+runtime, fresh startup acquires a second original-backup owner. Verified failing
+baseline: `ec4631341889c67a27c9909e8782ddfb7bdc48198e4091afa861ecfda88a7c37`.
+
+The correction keeps the acquisition count unchanged. Deterministic real-thread
+checks fence competing consumers and abandoned grants. Same-content writes with
+restored modification times, replacement, links, changed stage inventory and a
+wrong operation cannot select a new cold owner after failure. Actual process
+cuts around StartupConsumed and a live engine recover through the original cold
+protocol; consumed targets still require complete current-state validation.
+Required-host focused tests and all-targets native Clippy pass. Verified receipt:
+`5cae160e6cf40fe10a268f2622d5873675ee66e62738667a41705b83ca068a5e`.
+
+This is a correctness and work-bound result, not a timing improvement or campaign
+qualification. The next check is an ordinary release build and the saved public
+restore gate. Actual scheduled population, the fixed 45-second release,
+final-source full CI, conformance and the eight-hour rehearsal remain outstanding.
+Package WP-825; Tier guarantee under accepted ADR-0299; Compatibility unchanged
+for database formats, fixtures and application interfaces; Handbook updated:
+`docs/backup-restore.md`; Hazards and follow-ups remain the unqualified gates above.

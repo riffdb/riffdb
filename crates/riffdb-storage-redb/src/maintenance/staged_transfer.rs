@@ -97,7 +97,7 @@ impl RedbSealedStagedRestore {
         } = self;
         let target = Arc::new(configured_parent_guard);
         artifacts.set_test_controller(test_controller.clone());
-        let transfer: Result<(), StorageError> = (|| {
+        let transfer: Result<crate::maintenance::PublicationIntent, StorageError> = (|| {
             artifacts.move_to_temporaries(
                 Arc::clone(&target),
                 temporary_names.each_ref().map(|n| n.as_os_str()),
@@ -127,13 +127,31 @@ impl RedbSealedStagedRestore {
                     return Err(corrupt());
                 }
             }
-            Ok(())
+            Ok(published)
         })();
-        transfer.map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let published =
+            transfer.map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         // Retain the original independent outer identity FDs until publication
-        // and Published durability have completed, then release every native pin.
+        // and Published durability have completed. The actual inner native owner
+        // may then move into the one operation-local startup handoff (ADR-0299 D9).
         drop(artifact_identities);
-        drop(artifacts);
+        if artifacts
+            .has_original_backup_owner()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+        {
+            let retained = super::super::retained_publication::RetainedPublication::new(
+                published,
+                artifacts,
+                stage_cleanup,
+                backup_directory_guard,
+                target,
+                final_names,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+            storage
+                .retain_verified_publication(retained)
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        }
         Ok(OfflineRestoreResultV1::Restored {
             manifest: Box::new(manifest),
         })

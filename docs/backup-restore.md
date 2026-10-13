@@ -546,6 +546,15 @@ seals before any move. Full readback of all three transferred files precedes fin
 publication. Other restore states retain verified copying; an interrupted transfer
 cannot switch to copying or silently rebuild the target from the backup.
 
+For an eligible fresh publication in the same process, the actual verified
+immutable-backup and three-artifact owners now remain alive through startup
+consumption. Original descriptors, full source seals and completed independent
+transfer readback remain bound; exact file continuity and closed receipt/intent
+inventories are checked again before consumption. The one bounded handoff admits
+one consumer. A failed or abandoned retained owner cannot be replaced by a cold
+owner within that handoff. An actual process restart reconstructs custody and
+performs the complete cold checks.
+
 Startup durably consumes that intent before opening the published native engine.
 If startup is interrupted after consumption, recovery uses the actual published
 database, performs ordinary native engine crash recovery when needed, and completes

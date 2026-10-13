@@ -41,11 +41,18 @@ impl std::fmt::Debug for OwnedBackupHistory {
 }
 
 impl OwnedBackupHistory {
+    #[cfg(test)]
+    pub(crate) fn test_acquisition_count() -> usize {
+        BACKUP_OWNER_ACQUISITIONS.with(std::cell::Cell::get)
+    }
+
     pub(crate) fn acquire(
         path: &Path,
         manifest: &OfflineBackupManifestV1,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Arc<Self>, StorageError> {
+        #[cfg(test)]
+        BACKUP_OWNER_ACQUISITIONS.with(|count| count.set(count.get() + 1));
         validate_backup_inventory(path)?;
         validate_manifest_inventory(path, manifest)?;
         let directory = Arc::new(PinnedDirectory::open(path)?);
@@ -834,6 +841,7 @@ impl JournalMedia for BorrowedHistoryMedia {
 type ArtifactReadHook = Box<dyn FnOnce()>;
 #[cfg(test)]
 std::thread_local! {
+    static BACKUP_OWNER_ACQUISITIONS: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
     static ORIGINAL_ARTIFACT_READ_CHECKS: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
     static OWNED_BACKUP_INVENTORY_PASSES: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
     static RETAINED_FRAME_FINISH_HOOK: std::cell::RefCell<Option<ArtifactReadHook>> = const {std::cell::RefCell::new(None)};

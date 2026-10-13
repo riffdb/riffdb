@@ -26,6 +26,23 @@ pub(in crate::maintenance) fn native_transfer_fixture_with_history(
     scope: &Path,
     sealed_history: bool,
 ) -> NativeTransferFixture {
+    native_transfer_fixture_inner(scope, sealed_history, false, drop)
+}
+
+pub(in crate::maintenance) fn native_transfer_fixture_with_prepared_source(
+    scope: &Path,
+    sealed_history: bool,
+    prepare: fn(crate::RedbStore),
+) -> NativeTransferFixture {
+    native_transfer_fixture_inner(scope, sealed_history, true, prepare)
+}
+
+fn native_transfer_fixture_inner(
+    scope: &Path,
+    sealed_history: bool,
+    prepared_source: bool,
+    prepare: fn(crate::RedbStore),
+) -> NativeTransferFixture {
     let source = scope.join("source.redb");
     let mut store = crate::RedbStore::open(&source).unwrap();
     store
@@ -33,15 +50,49 @@ pub(in crate::maintenance) fn native_transfer_fixture_with_history(
             DatabaseId::from_unix_milliseconds_and_random(1234, [0x78; 10]).unwrap(),
         )
         .unwrap();
-    drop(store);
+    prepare(store);
+    if prepared_source {
+        let database = redb::Database::open(&source).unwrap();
+        assert!(
+            crate::startup::private_restore_image_supports_bounded_readiness(&database).unwrap(),
+            "retained-owner fixture must complete the actual ordinary source startup"
+        );
+        drop(database);
+        let journal = crate::journal::journal_path(&source);
+        if !journal.exists() {
+            // Immediate-only sources have no active journal. Use the genuine
+            // public backup's bound empty extent, as the readiness fixtures do.
+            let initial = scope.join("prepared-source-backup");
+            crate::RedbOfflineBackup::bind(&source, &initial)
+                .create_offline_backup(
+                    &BackupBuildMetadataV1::new("0.1.0", "abc", "rustc", 1, vec![]).unwrap(),
+                )
+                .unwrap();
+            fs::copy(
+                initial.join(crate::backup::JOURNAL_ARTIFACT_FILE_NAME),
+                &journal,
+            )
+            .unwrap();
+            fs::remove_dir_all(initial).unwrap();
+        }
+        assert!(
+            crate::journal::extent_uses_configured_capacity_with_media(
+                &crate::media::RealJournalMedia,
+                &crate::journal::journal_path(&source),
+            )
+            .unwrap()
+        );
+    }
     if sealed_history {
         let id = DatabaseId::from_unix_milliseconds_and_random(1234, [0x78; 10]).unwrap();
         let journal = crate::journal::journal_path(&source);
-        crate::journal::reset_journal(
-            &journal,
-            &crate::journal::JournalFileHeader::new(id, None, [0; 32]),
-        )
-        .unwrap();
+        if !prepared_source {
+            crate::journal::reset_journal(
+                &journal,
+                &crate::journal::JournalFileHeader::new(id, None, [0; 32]),
+            )
+            .unwrap();
+        }
         fs::rename(&journal, crate::journal::sealing_journal_path(&source)).unwrap();
         crate::journal::seal_extent_with_media(&crate::media::RealJournalMedia, &source, id)
             .unwrap()
