@@ -125,6 +125,7 @@
   - [Combined native follow-through](architecture/WP-825-COMBINED-NATIVE-FOLLOWTHROUGH.md)
   - [Restore recovery decisions and implementation](architecture/WP-825-RESTORE-RECOVERY-REVIEW.md)
   - [Owned backup history proposal](architecture/WP-825-OWNED-BACKUP-HISTORY-REVIEW.md)
+  - [CI main synchronization and owned-backup identifier reconciliation](architecture/WP-825-MAIN-SYNC-2026-10-13-REVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)

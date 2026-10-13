@@ -1,6 +1,6 @@
 # WP-825: owned backup history review
 
-ADR-0298 and its WP-825 registration were accepted on 2026-10-13.
+ADR-0299 and its WP-825 registration were accepted on 2026-10-13.
 The implementation replaces ADR-0293's copied private sealed extents with
 owned read-only original backup descriptors. Required-host qualification and
 shipping timing remain in progress. It also permits the actual verified backup and
@@ -77,7 +77,7 @@ promise of an 8.82-second saving or a passing 45-second result.
 
 ## Review and remaining qualification
 
-The maintainer accepted the exact ADR-0298 text and its WP-825 registration
+The maintainer accepted the exact owned-backup text (originally ADR-0298, now ADR-0299) and its WP-825 registration
 in session on 2026-10-13. Its Decision section is unchanged from that review.
 The maintainer's standing approval for necessary fixes covers implementation
 paths.
@@ -122,7 +122,7 @@ population and the 45-second campaign window remain outstanding. The unchanged
 saved whole60 and post-ACK crash results above belong to the earlier shipping
 revision, not this implementation.
 
-PR note: Package WP-825; Tier guarantee; Behavior adds accepted ADR-0298 original
+PR note: Package WP-825; Tier guarantee; Behavior adds accepted ADR-0299 original
 backup ownership and borrowed temporary history with complete cold source
 checks. Checks include fail-first regressions, required-host readiness, backup
 and maintenance tests; remaining checks are tracked above. Compatibility keeps
@@ -133,7 +133,7 @@ fresh owner transfer and campaign-clock integration. Handbook page updated:
 
 ## First shipping retest and targeted correction
 
-The first ADR-0298 shipping build is committed source `dda0d5c7`. All four
+The first ADR-0299 shipping build is committed source `dda0d5c7`. All four
 ordinary release binaries and all 5,200 tracked source files were independently
 verified. The unchanged saved primary-loss gate failed: backup creation took
 17.62 seconds before loss, recovery admission took 10.54 seconds after loss,

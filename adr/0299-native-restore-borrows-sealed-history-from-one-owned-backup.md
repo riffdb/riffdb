@@ -1,5 +1,5 @@
 ---
-adr: "0298"
+adr: "0299"
 title: Native Restore Borrows Sealed History From One Owned Backup
 status: accepted
 tier: guarantee
@@ -19,7 +19,7 @@ review_triggers:
   - A descriptor, memory, scan, worker or timing ceiling increases.
   - A durable encoding, application selector or compatibility boundary changes.
 ---
-# ADR-0298: Native Restore Borrows Sealed History From One Owned Backup
+# ADR-0299: Native Restore Borrows Sealed History From One Owned Backup
 
 ## Context
 

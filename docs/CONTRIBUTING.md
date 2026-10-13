@@ -315,8 +315,11 @@ CI runs the required unit and integration battery as four whole-target
 cargo-nextest jobs. The SHA-256 assignment is stable from each canonical
 nextest binary ID, so every test within one target stays in the same job; the
 coverage check compares Cargo metadata with all four filtersets before those
-jobs run. `./scripts/ci-all` deliberately retains the unpartitioned
-`cargo test --workspace --all-features` merge check.
+jobs run. `./scripts/ci-all` runs the same battery unpartitioned under the
+nextest `ci` profile, one process per test with its per-test limits and RAM
+scratch, followed by `cargo test --workspace --all-features --doc` for the
+doctests nextest does not run (ADR-0298). `cargo test --workspace --all-features`
+remains a valid local command.
 
 ## Legacy records and packages
 
@@ -417,9 +420,11 @@ on disk. Its `test-scratch` setup script (`scripts/test-scratch-env`) exports
 through `riffdb_bench_root::test_data_root` (re-exported as
 `riffdb_testkit::scratch::test_data_root`), and `ScratchDir::new` uses it too.
 Set `RIFFDB_TEST_DATA_ROOT` to a disk path to force disk. A plain `cargo test`
-(including `./scripts/ci-all`) keeps the on-disk defaults: it runs a crate's
-tests as threads of one process, and on tmpfs maintenance tests that reopen a
-database or archive while another test spawns a crash child fail routinely.
+keeps the on-disk defaults: it runs a crate's tests as threads of one process,
+and a test that spawns a crash child briefly shares every open descriptor, so a
+concurrent test reopening its database or archive can find the lock still
+held. On tmpfs that collision is routine; on disk it is a rare flake.
+`./scripts/ci-all` runs its battery under nextest and is not affected.
 Benchmarks are unaffected: they place databases through `riffdb-bench-root`,
 which refuses tmpfs. A full `riffdb-storage-redb` and `riffdb-server` nextest
 run peaked near 1 GiB of RAM-backed scratch on the development workstation.

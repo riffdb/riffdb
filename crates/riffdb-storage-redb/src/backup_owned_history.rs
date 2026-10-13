@@ -1,4 +1,4 @@
-//! ADR-0298: operation-local immutable backup descriptors, never an engine.
+//! ADR-0299: operation-local immutable backup descriptors, never an engine.
 use super::*;
 use crate::maintenance::PinnedDirectory;
 use crate::media::{
