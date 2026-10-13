@@ -584,6 +584,54 @@ impl BorrowedHistoryMedia {
             .find(|(g, _)| crate::journal::sealed_journal_path(&self.database, *g) == path)
             .map(|(_, a)| self.backup.path.join(&a.name))
     }
+    /// A missing canonical sealed candidate is an authoritative absence in
+    /// this closed inventory. Journal readers may then try the copied active
+    /// extent, whose anchored prefix can still contain retained frames.
+    fn absent_sealed(&self, path: &Path) -> io::Result<bool> {
+        if path.parent() != self.database.parent() || self.original(path).is_some() {
+            return Ok(false);
+        }
+        let zero = crate::journal::sealed_journal_path(&self.database, 0);
+        let name = zero.file_name().ok_or_else(refused)?.as_encoded_bytes();
+        let prefix = &name[..name.len() - 20];
+        let Some(digits) = path
+            .file_name()
+            .and_then(|n| n.as_encoded_bytes().strip_prefix(prefix))
+        else {
+            return Ok(false);
+        };
+        if digits.len() != 20 || !digits.iter().all(u8::is_ascii_digit) {
+            return Ok(false);
+        }
+        let generation = std::str::from_utf8(digits)
+            .ok()
+            .and_then(|n| n.parse::<u64>().ok())
+            .filter(|n| *n > 0);
+        let Some(generation) = generation else {
+            return Ok(false);
+        };
+        if crate::journal::sealed_journal_path(&self.database, generation) != path {
+            return Ok(false);
+        }
+        self.backup.verify().map_err(unavailable)?;
+        let result = (|| {
+            self.stage.verify()?;
+            if self
+                .stage
+                .regular_file_length(path.file_name().ok_or_else(corrupt)?)?
+                .is_some()
+            {
+                return Err(corrupt());
+            }
+            self.stage.verify()
+        })();
+        if result.is_err() {
+            self.backup.invalidate();
+        }
+        result.map_err(unavailable)?;
+        Ok(true)
+    }
+
     fn private(&self, path: &Path) -> io::Result<()> {
         let prefix = crate::journal::sealed_journal_path(&self.database, 0)
             .file_name()
@@ -613,6 +661,9 @@ impl JournalMedia for BorrowedHistoryMedia {
         RealJournalMedia.open_directory(path)
     }
     fn try_exists(&self, path: &Path) -> io::Result<bool> {
+        if self.absent_sealed(path)? {
+            return Ok(false);
+        }
         match self.original(path) {
             Some(p) => OriginalMedia(Arc::clone(&self.backup)).try_exists(&p),
             None => {
@@ -622,6 +673,9 @@ impl JournalMedia for BorrowedHistoryMedia {
         }
     }
     fn metadata(&self, path: &Path) -> io::Result<MediaFileMetadata> {
+        if self.absent_sealed(path)? {
+            return Err(io::ErrorKind::NotFound.into());
+        }
         match self.original(path) {
             Some(p) => OriginalMedia(Arc::clone(&self.backup)).metadata(&p),
             None => {
@@ -631,6 +685,9 @@ impl JournalMedia for BorrowedHistoryMedia {
         }
     }
     fn open_read(&self, path: &Path) -> io::Result<MediaFile> {
+        if self.absent_sealed(path)? {
+            return Err(io::ErrorKind::NotFound.into());
+        }
         match self.original(path) {
             Some(p) => {
                 let index = OriginalMedia(Arc::clone(&self.backup)).index(&p)?;

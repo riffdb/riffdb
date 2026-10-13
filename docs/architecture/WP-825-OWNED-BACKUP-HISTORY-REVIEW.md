@@ -167,3 +167,31 @@ seal regression and Clippy with warnings denied. Receipt:
 `29f60caa637b1f637aa2f81ce31a6798da9945fd1ef70f8a2e4da43e9351b79d`.
 The next step is a new ordinary shipping build and the same failed whole60 gate;
 no broader CI or campaign qualification is inferred from these checks.
+
+## Populated active-history refusal
+
+The next ordinary shipping retest at `c5145c1c` returned the public
+`internal_defect` error during restore, before a success observation. Its failed
+receipt remains:
+`8a2ab71100f9dae8600324ba027c8f9a21d233e0296d5f177aecd4c82c598379`.
+A private native probe reproduced `CorruptData` specifically while hydrating
+surviving command stubs. The original backup remained byte-identical and all
+private instrumentation was removed afterward.
+
+The closed borrowed-media adapter returned an I/O refusal for an absent sealed
+candidate, preventing the existing journal reader from trying the active
+journal. A checkpointed active journal can retain valid frames before its
+anchor despite having an empty recovery suffix. A real frame regression first
+failed with `Io`, then passed after restoring authoritative `NotFound` for a
+canonical sealed generation absent from the closed inventory. Physical shadows,
+changed source ownership, malformed names and every mutation attempt still
+refuse; no ambient unknown extent is opened.
+
+Required-host checks pass for that real anchored-frame regression, the three
+original-owner tests and Clippy with warnings denied. Receipt:
+`d91f56b66a89e2864a269a09b24b6719de4c8fbabe218600457e053e217d317b`.
+The closest populated native materialization retest now passes on the same
+150,000-update source with the checked fix; its original backup remains
+unchanged. This proves only materialization, not full restore or timing. The
+next step remains a new shipping build and the unchanged whole60 gate.
+The handbook's complete-journal behavior is unchanged by this adapter correction.

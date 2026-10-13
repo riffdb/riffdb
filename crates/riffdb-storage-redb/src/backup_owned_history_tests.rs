@@ -81,3 +81,104 @@ fn complete_original_artifact_validation_checks_footer_generation_beyond_a_valid
         .unwrap_err();
     assert_eq!(error.kind(), StorageErrorKind::CorruptData);
 }
+
+#[test]
+fn borrowed_history_resolves_anchored_active_frames_after_closed_sealed_absence() {
+    use crate::journal::{
+        self, JournalFileHeader, JournalFrame, JournalLane, JournalMutation, JournalTable,
+    };
+    let (root, backup, manifest, _) = fixture();
+    let owner =
+        OwnedBackupHistory::acquire(&backup, &manifest, Arc::new(AtomicBool::new(false))).unwrap();
+    let stage = root.join("stage");
+    fs::create_dir(&stage).unwrap();
+    let database = stage.join("database.redb");
+    let active = journal::journal_path(&database);
+    let header = JournalFileHeader::new(manifest.database_id(), None, [0; 32]);
+    journal::reset_journal(&active, &header).unwrap();
+    journal::renew_extent_above_with_media(
+        &RealJournalMedia,
+        &active,
+        owner
+            .artifacts
+            .iter()
+            .filter_map(|a| a.generation)
+            .max()
+            .unwrap(),
+    )
+    .unwrap();
+    let lane = JournalLane::open(&active, &header).unwrap();
+    let generation = lane.generation();
+    let sequence = CommitSequence::first();
+    let frame = JournalFrame::new(
+        manifest.database_id(),
+        sequence,
+        sequence,
+        1,
+        [0; 32],
+        vec![
+            JournalMutation::put(
+                JournalTable::Commits,
+                crate::keys::encode_application_sequence_key(sequence).to_vec(),
+                b"checked active frame payload".to_vec(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let fence = lane
+        .submit(frame.encode().unwrap())
+        .unwrap()
+        .wait()
+        .unwrap();
+    drop(lane);
+    let mut placement = None;
+    journal::scan_located_journal_with_media(
+        &RealJournalMedia,
+        &active,
+        manifest.database_id(),
+        |_, p| {
+            placement = p.map(|locator| locator.placement);
+            Ok(())
+        },
+    )
+    .unwrap();
+    journal::advance_journal_anchor_with_media(
+        &RealJournalMedia,
+        &active,
+        &JournalFileHeader::new(manifest.database_id(), Some(sequence), fence.frame_hash),
+    )
+    .unwrap();
+    let media = BorrowedHistoryMedia::new(
+        Arc::clone(&owner),
+        database.clone(),
+        Arc::new(PinnedDirectory::open(&stage).unwrap()),
+    );
+    let resolved = journal::read_retained_frame_with_media(
+        &media,
+        &database,
+        manifest.database_id(),
+        placement.unwrap(),
+        generation,
+    )
+    .expect("closed sealed absence must permit a checked frame in the copied active journal");
+    assert_eq!(resolved, frame);
+    let absent = journal::sealed_journal_path(&database, generation);
+    assert!(!media.try_exists(&absent).unwrap());
+    assert_eq!(
+        media.open_read(&absent).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        media.metadata(&absent).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(media.open_read_write(&absent).is_err());
+    assert!(media.create_new_read_write(&absent).is_err());
+    fs::write(&absent, b"redirected source").unwrap();
+    assert!(media.open_read(&absent).is_err());
+    assert!(
+        media.open_read(&active).is_err(),
+        "a shadowing extent invalidates the source owner"
+    );
+}
