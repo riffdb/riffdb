@@ -167,6 +167,17 @@ pub(crate) fn validate_private_restore_readiness_with_history(
 }
 
 impl RedbStore {
+    #[cfg(test)]
+    pub(crate) fn begin_native_published_restore_recovery(
+        self,
+        inputs: StartupValidationInputs,
+    ) -> Result<RedbStructuralEvidenceSession, StorageError> {
+        if !self.shared.is_source_mode() || self.shared.restore_integrity.is_some() {
+            return Err(invariant());
+        }
+        self.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::PublishedRestoreRecovery)
+    }
+
     pub(crate) fn begin_published_restore_readiness(
         self,
         inputs: StartupValidationInputs,

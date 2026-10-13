@@ -90,6 +90,14 @@ pub enum RedbMaintenanceFailpoint {
     NativePublishFormatMarkerTargetSync,
     /// After all three transferred artifacts pass original-seal readback.
     NativeTransferReadback,
+    /// After durable StartupConsumed, before native engine open or mutation.
+    BeforeNativeStartupOpen,
+    /// After durable Succeeded, immediately before matching intent removal.
+    BeforeNativeIntentRemoval,
+    /// After matching intent removal, before receipts-directory synchronization.
+    AfterNativeIntentRemoval,
+    /// After intent removal and receipts-directory synchronization.
+    AfterNativeIntentDirectorySync,
 }
 
 /// One redaction-safe observation from a maintenance test controller.

@@ -236,6 +236,80 @@ fn validate_receipt_binding(
 }
 
 impl RedbMaintenanceStorage {
+    /// Removes only the consumed record of an already durable successful restore.
+    /// This never opens, repairs, replaces or certifies the published database.
+    /// The caller retains its validated engine until cleanup is durable.
+    pub(in crate::maintenance) fn complete_native_publication_cleanup(
+        &self,
+        operation: OfflineMaintenanceOperationId,
+    ) -> Result<(), StorageError> {
+        self.verify_path_ownership()?;
+        // Refuse all unknown inventories and every unpublished temporary before
+        // unlinking anything. In particular, cleanup cannot finish Validating.
+        let (receipts, _, _, _, _) = self.read_complete_inventory_mode(false, false)?;
+        let receipt = receipts
+            .receipts()
+            .iter()
+            .find(|receipt| receipt.operation_id() == operation)
+            .ok_or_else(corrupt)?;
+        if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup
+            || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Succeeded
+        {
+            return Err(invariant());
+        }
+        let inventory = IntentInventory::read(&self.receipts_directory_guard)?;
+        let directory = &self.receipts_directory_guard;
+        let Some(intent) = &inventory.current else {
+            // An earlier unlink may have succeeded before its sync failed. The
+            // idempotent continuation still synchronizes before admission.
+            directory.sync().map_err(|_| unknown())?;
+            return self.verify_path_ownership();
+        };
+        if intent.operation_id != operation
+            || intent.phase != PublicationPhase::StartupConsumed
+            || inventory.temporary.is_some()
+        {
+            return Err(corrupt());
+        }
+        validate_receipt_binding(intent, receipt)?;
+        let name = format!("{operation}{SUFFIX}");
+        let original = inventory.current_file.as_ref().ok_or_else(corrupt)?;
+        self.hit(RedbMaintenanceFailpoint::BeforeNativeIntentRemoval, true)?;
+        // Keep the original record descriptor through removal, and recheck its
+        // exact canonical bytes and identity after the last interruptible hook.
+        self.verify_path_ownership()?;
+        if !directory.regular_file_matches(OsStr::new(&name), original)? {
+            return Err(corrupt());
+        }
+        use std::io::{Seek, SeekFrom};
+        let mut reader = original.try_clone().map_err(io_unavailable)?;
+        reader.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+        if read_record_bytes(&mut reader)? != intent.encode()?
+            || !directory.regular_file_matches(OsStr::new(&name), original)?
+        {
+            return Err(corrupt());
+        }
+        // The maintenance owner serializes receipt writers. A replaced or
+        // uncertain success receipt cannot authorize deletion of this record.
+        let latest = read_receipt_file(&self.receipt_path(operation))?;
+        if encode_receipt(&latest)? != encode_receipt(receipt)? {
+            return Err(corrupt());
+        }
+        if !directory
+            .remove_file_if_present(OsStr::new(&name))
+            .map_err(|_| unknown())?
+        {
+            return Err(unknown());
+        }
+        self.hit(RedbMaintenanceFailpoint::AfterNativeIntentRemoval, true)?;
+        directory.sync().map_err(|_| unknown())?;
+        self.hit(
+            RedbMaintenanceFailpoint::AfterNativeIntentDirectorySync,
+            true,
+        )?;
+        self.verify_path_ownership().map_err(|_| unknown())
+    }
+
     pub(in crate::maintenance) fn write_native_publication_intent(
         &self,
         expected: Option<&PublicationIntent>,

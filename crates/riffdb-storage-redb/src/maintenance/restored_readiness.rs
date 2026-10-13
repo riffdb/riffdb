@@ -42,6 +42,29 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
+        #[cfg(test)]
+        let native = self.consume_native_publication_for_startup(operation_id)?;
+        #[cfg(test)]
+        // Fresh sealed publication remains nonrepairing. Previously consumed
+        // targets may need ordinary engine crash recovery, but still require
+        // the complete current-state walk selected below (ADR-0295).
+        let store = if native
+            .as_ref()
+            .is_some_and(|native| !native.requires_complete_validation())
+        {
+            crate::RedbStore::open_private_stage_authorization(
+                &self.database_file,
+                application_commit_profile,
+                publication,
+            )?
+        } else {
+            crate::RedbStore::open_with_changelog_publication_port(
+                &self.database_file,
+                application_commit_profile,
+                publication,
+            )?
+        };
+        #[cfg(not(test))]
         let store = crate::RedbStore::open_with_changelog_publication_port(
             &self.database_file,
             application_commit_profile,
@@ -64,8 +87,33 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
+        #[cfg(test)]
+        if let Some(native) = &native {
+            let intent = native.intent();
+            let history =
+                crate::changelog_v3_roots::read_checkpoint_roots(&read)?.ok_or_else(corrupt)?;
+            let watermark = crate::retention::load_watermark(&read)?
+                .map_or(0, |value| value.watermark_sequence());
+            if history.lineage() != intent.history.lineage()
+                || history.tail().frontier().application()
+                    != intent.history.tail().frontier().application()
+                || history.tail().frontier().administration()
+                    < intent.history.tail().frontier().administration()
+                || watermark != intent.retention_watermark
+            {
+                return Err(corrupt());
+            }
+        }
         drop(read);
         self.verify_path_ownership()?;
+        #[cfg(test)]
+        if native.is_some_and(|native| native.requires_complete_validation()) {
+            return store.begin_native_published_restore_recovery(inputs);
+        }
         store.begin_published_restore_readiness(inputs, manifest.history_incarnation().unwrap_or(1))
     }
 }
+
+#[cfg(test)]
+#[path = "publication_startup_tests.rs"]
+mod native_transfer_tests;

@@ -212,3 +212,66 @@ from intent-owned transfers during qualification. Production activation still
 requires StartupConsumed before engine open, complete restarted validation,
 Succeeded cleanup before admission and their process-crash tests. No recovery
 timing gate, final-source CI or measured campaign is claimed by this checkpoint.
+
+
+## Consumed startup crash conflict and proposed correction
+
+ADR-0294's nonrepairing consumed restart refuses a legitimate nested crash.
+The actual process-abort regression commits startup's dirty-generation record,
+retains the live native engine while the receipt is Validating, and aborts.
+Cold artifact ownership checks succeed and the published primary keeps its inode,
+but the native nonrepairing reopen returns CorruptData through the repair callback.
+Verified failing receipt SHA-256:
+`1f8497c3ae8d28ae0744999b0284b76818169f3e1ead7071f39106ea2c1ab45b`.
+
+A separate diagnostic performs the same cut, uses ordinary engine crash recovery
+on the actual target, and completes current structural/catalog validation with
+exact database, incarnation and application-frontier checks. The immutable backup
+is unchanged and the ordinary receipt remains Validating. Verified diagnostic
+receipt SHA-256:
+`eb1ec0c74fa89ce62ac339cb7f2f09b4b515bca56edaa2ce9287b07b55373f65`.
+This diagnostic does not change the native restore policy or qualify its failure.
+
+[Accepted ADR-0295](../../adr/0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md)
+amends only the previously durable StartupConsumed restart: ordinary engine crash
+recovery must precede complete current validation. Fresh publication and private
+opens remain nonrepairing. All publication ownership, immutable-backup, admission,
+format, resource and timing guarantees remain. The maintainer accepted the exact record in session on
+2026-10-13 (proposed text SHA-256
+`bc94b55348da24df345515b5f11e5a5de5818a525ae41928e21577e55957f6a6`). No harness
+workaround, successful timing claim or campaign readiness follows from these tests.
+
+
+## Explicit successful cleanup checkpoint
+
+A focused actual native startup test first reproduces the missing cleanup join:
+validation finishes and the ordinary Succeeded receipt is durable, but copy-only
+restart still refuses the remaining consumed intent. The new explicit cleanup
+helper removes only the matching consumed record after checking the whole closed
+receipt inventory, terminal success, retained original record descriptor, exact
+canonical bytes and unchanged receipt. It synchronizes the receipts directory
+before returning, including an idempotent retry after a previous unlink.
+
+The required host passes eight actual process-abort cuts across the Succeeded
+receipt and intent removal boundaries. Before terminal success, cleanup refuses
+and preserves the target and observations. After success, cleanup completes and
+ordinary native recovery plus complete validation preserves the same actual
+primary inode, database, incarnation and application frontier; the immutable
+backup remains unchanged. Three returned cleanup failures prove typed uncertainty,
+repeatable directory synchronization and no changes to a still-live validated
+engine's artifacts. Nonterminal, foreign-operation and unknown inventories refuse.
+Ten existing intent-store regressions and storage Clippy also pass. Independently
+verified receipt SHA-256:
+`488af4ab99c2529eb6a3852146496f7522da0197ea65f4c358f437981136bdce`.
+
+The helper and native startup protocol remain test-only. The success test calls
+cleanup explicitly before ordinary reconciliation; production automatic cleanup,
+server admission wiring and first-acknowledgement crash coverage remain open.
+The accepted ADR-0295 correction now passes the original dirty-generation
+crash through the native entry point with complete current validation. All nine
+native startup tests, seven existing readiness regressions and storage Clippy
+pass. Verified receipt SHA-256:
+`83e584dfa6e0ac8e7238f2e7fa49c60197548b6b1d934e16e4a4f313ff7c8309`.
+Freshly published targets and private preparation still use nonrepairing opens.
+Neither the diagnostic nor this cleanup checkpoint qualifies a timing gate,
+final-source CI, rehearsal or production activation.

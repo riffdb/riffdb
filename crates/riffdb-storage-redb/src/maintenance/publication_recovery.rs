@@ -36,7 +36,45 @@ pub(in crate::maintenance) struct RecoveredPublicationArtifacts {
     invalid: bool,
 }
 
+/// Derived only while the actual three-artifact native owner is retained.
+/// The restart distinction selects a mandatory complete walk, never a skip
+/// supplied by an application or a durable semantic-validation certificate.
+pub(in crate::maintenance) struct NativePublicationStartup {
+    intent: PublicationIntent,
+    restarted: bool,
+}
+
+impl NativePublicationStartup {
+    pub(in crate::maintenance) fn intent(&self) -> &PublicationIntent {
+        &self.intent
+    }
+    pub(in crate::maintenance) fn requires_complete_validation(&self) -> bool {
+        self.restarted
+    }
+}
+
 impl RedbMaintenanceStorage {
+    pub(in crate::maintenance) fn consume_native_publication_for_startup(
+        &self,
+        operation: OfflineMaintenanceOperationId,
+    ) -> Result<Option<NativePublicationStartup>, StorageError> {
+        let Some(recovered) = self.prepare_native_publication_recovery()? else {
+            return Ok(None);
+        };
+        if recovered.intent.operation_id != operation {
+            return Err(corrupt());
+        }
+        let receipt = read_receipt_file(&self.receipt_path(operation))?;
+        if !matches!(
+            receipt.current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
+                | OfflineMaintenanceReceiptPhaseV1::Validating
+        ) {
+            return Err(invariant());
+        }
+        recovered.into_startup_consumed(self).map(Some)
+    }
+
     pub(in crate::maintenance) fn prepare_native_publication_recovery(
         &self,
     ) -> Result<Option<RecoveredPublicationArtifacts>, StorageError> {
@@ -303,6 +341,41 @@ impl RecoveredPublicationArtifacts {
             self.invalid = true;
         }
         result
+    }
+
+    fn into_startup_consumed(
+        mut self,
+        storage: &RedbMaintenanceStorage,
+    ) -> Result<NativePublicationStartup, StorageError> {
+        if self.intent.phase == PublicationPhase::Prepared {
+            return Err(invariant());
+        }
+        self.verify_continuity()?;
+        storage.read_complete_inventory(true)?;
+        if IntentInventory::read(&storage.receipts_directory_guard)?
+            .current
+            .as_ref()
+            != Some(&self.intent)
+        {
+            return Err(corrupt());
+        }
+        let restarted = self.intent.phase == PublicationPhase::StartupConsumed;
+        if !restarted {
+            let mut consumed = self.intent.clone();
+            consumed.advance(PublicationPhase::StartupConsumed)?;
+            storage
+                .write_native_publication_intent(Some(&self.intent), &consumed)
+                .map_err(|_| unknown())?;
+            self.intent = consumed;
+        }
+        // The native exclusion and exact descriptors are still held. The
+        // caller cannot open its engine until this owner has been dropped.
+        self.verify_continuity().map_err(|_| unknown())?;
+        storage.hit(RedbMaintenanceFailpoint::BeforeNativeStartupOpen, true)?;
+        Ok(NativePublicationStartup {
+            intent: self.intent.clone(),
+            restarted,
+        })
     }
 
     pub(in crate::maintenance) fn resume_publication(

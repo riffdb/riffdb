@@ -118,6 +118,8 @@ enum EvidenceOpenPurpose {
     PublishedRestoreReadiness {
         backup_incarnation: u64,
     },
+    #[cfg(test)]
+    PublishedRestoreRecovery,
     OfflineIntegrityScrub,
     /// ADR-0182 background scrub: the complete exact-end walk over a
     /// least-authority MVCC snapshot while the writer stays live. No mutation
@@ -129,6 +131,14 @@ enum EvidenceOpenPurpose {
 }
 
 impl EvidenceOpenPurpose {
+    fn is_published_restore_recovery(self) -> bool {
+        #[cfg(test)]
+        if self == Self::PublishedRestoreRecovery {
+            return true;
+        }
+        false
+    }
+
     fn is_restore_readiness(self) -> bool {
         matches!(
             self,
@@ -1441,7 +1451,7 @@ impl RedbStore {
         }
         // A new validation session invalidates any previous session's clean claim
         // until this one finishes with zero findings (checkpoint write gate).
-        if purpose == EvidenceOpenPurpose::Startup {
+        if purpose == EvidenceOpenPurpose::Startup || purpose.is_published_restore_recovery() {
             self.shared.set_startup_validation_clean(false);
         }
         let binding_bundles = collect_bundle_bindings(&transaction)?;
@@ -2034,7 +2044,9 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<CompleteRegistryValidation>, StorageError> {
         let native_restore = self.purpose == EvidenceOpenPurpose::OfflineIntegrityScrub
             && self.shared.permits_owned_source_compatibility();
-        if (self.purpose != EvidenceOpenPurpose::Startup && !native_restore)
+        if (self.purpose != EvidenceOpenPurpose::Startup
+            && !self.purpose.is_published_restore_recovery()
+            && !native_restore)
             || !self.structural_finished
             || !self.historical_finished
             || !self.catalog_validation_complete
