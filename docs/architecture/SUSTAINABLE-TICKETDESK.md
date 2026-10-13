@@ -8,33 +8,45 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-12 UTC)
+## Current status (2026-10-13 UTC)
 
-WP-825 remains open. The public entry point implements the fixed 8-hour
-rehearsal and separate 24-hour mode, seven lifecycle faults, bounded process
-ownership, shared workload epochs and independent resource reconciliation.
-Neither measured campaign has started.
+WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
+has started. Both local main and upstream main are integrated through the
+latest recorded source prerequisites.
 
-Combined-source revision `30d5a1a4` passes full CI and a fresh ordinary
-1,500-second preparation: 150,000 commands, 600,000 reads, no retries or
-post-clock work, all 65,536 tickets reconciled and all 215,536 archive records
-checked. The native file-lock lifetime correction passes its deterministic
-custody tests and the concurrent storage suite.
+Ordinary shipping revision `cab031e5` passes the saved primary-loss gate on the
+required host: the first new acknowledged write completes in **53.56 seconds**,
+and exact original replay plus independent reconciliation of all 65,536 tickets
+complete in **56.47 seconds**. Backup creation takes 17.51 seconds before loss;
+there are no later acknowledgements missing from the selected backup. A separate
+actual process kill after another acknowledged write preserves the same target
+inode, both earlier identities and the new identity, all ticket state, and
+unchanged immutable backup and receipt bytes after restart.
 
-The following whole public recovery attempt still fails its unchanged
-60-second gate during the initial restore request. Two separate native
-diagnostics observe successful restoration in about 235–236 seconds; those
-longer diagnostic observations grant no qualification. Complete startup now
-uses the same bounded four-worker audit inspection as private complete
-validation, with exact findings and exact ends checked against a serial oracle.
-The correction passes the storage library suite and Clippy; final combined-
-source CI and whole-action timing remain required.
+These are saved-population results, not scheduled-population or campaign
+qualification. Native scoped acceptance passes 1,620 runtime/recovery tests;
+its only two failures are architecture guards corrected separately, after
+which all 59 architecture tests pass. Final combined-source CI, four-language
+conformance, actual scheduled population and the fixed 45-second campaign
+release still require qualification. That tighter release remains at risk:
+restore alone consumes about 46.5 seconds after the saved helper's target setup.
 
-[The native lifecycle observations](WP-825-LIVE-OBSERVATIONS.md) record the
-measured phases, original failure and remaining recovery costs. Copying,
-history hydration, sealing, publication and fresh complete startup still need
-an implementation that satisfies the original deadline before either measured
-campaign can begin.
+The controller implements accepted ADR-0292's primary-loss method. It pauses the
+original workers before preparing the named backup, binds every acknowledged
+witness record and the public included frontier, and retains the original
+read-only backup descriptors until the unchanged 5,400-second fault. Its one
+60-second deadline includes target setup, public restore, readiness, replay,
+full state reconciliation and the original workers' first new acknowledgement.
+The fixed 45-second release and all other fault clocks remain unchanged.
+
+New qualification uses manifest/receipt V2 and a separately hashed protocol
+artifact, frozen before offered work begins. Preparation, source interruption,
+artifact bytes, original public operation identities and interrupted windows
+remain visible. The checker rejects unspecified, old combined or mixed clock
+methods. Historical failed receipts remain failures. Controller unit checks
+supply no native timing or campaign qualification. The
+[owned-backup review](WP-825-OWNED-BACKUP-HISTORY-REVIEW.md) records the native
+custody boundary and earlier attempts.
 
 ## Earlier qualified preparation (2026-10-11 UTC)
 

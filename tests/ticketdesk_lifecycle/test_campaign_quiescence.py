@@ -13,6 +13,36 @@ SECOND = 1000000000
 
 
 class WorkerHandover(unittest.TestCase):
+    def test_only_bound_restore_preparation_can_bridge_the_original_fault_deadline(self):
+        from test_campaign_restore_clock import prepared, lose, LOSS
+        for mode in ('valid', 'overrun', 'different_start', 'failed_clock'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                started = LOSS - 30 * SECOND
+                controls = []
+                def begin(clock):
+                    control = QuiescentRelease(root, generation=1, version=1, incarnation=1,
+                                               restore_clock=clock)
+                    controls.append(control)
+                    control.begin(started + int(mode == 'different_start'))
+                if mode == 'different_start':
+                    with self.assertRaisesRegex(QuiescenceError, 'quiescence_restore_clock'):
+                        prepared(before_acknowledgements=begin)
+                    continue
+                clock, _, _ = prepared(before_acknowledgements=begin)
+                control = controls[0]
+                self.acknowledgements(root)
+                lose(clock)
+                if mode == 'failed_clock':
+                    with self.assertRaises(ValueError):
+                        clock.observe(LOSS + 60 * SECOND + 1)
+                if mode == 'valid':
+                    self.assertTrue(control.poll(LOSS + 45 * SECOND))
+                    self.assertTrue((root / 'load.quiesce').exists())
+                else:
+                    with self.assertRaises(QuiescenceError):
+                        control.poll(LOSS + (60 * SECOND + 1 if mode == 'overrun' else SECOND))
+
     def acknowledgements(self, root, *, generation=1, version=1, incarnation=1):
         (root / "load.quiesced").write_text(json.dumps({
             "schema": "riffdb.ticketdesk-lifecycle-quiesced/v1",

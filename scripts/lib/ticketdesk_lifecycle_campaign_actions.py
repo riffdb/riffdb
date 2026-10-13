@@ -10,9 +10,12 @@ from pathlib import Path
 import stat
 import sys
 import threading
+import time
 
 from .ticketdesk_lifecycle_campaign_maintenance import CampaignMaintenance, MAX_POLLS
 from .ticketdesk_lifecycle_campaign_quiescence import QuiescentRelease
+from .ticketdesk_lifecycle_campaign_restore_clock import RestoreRecoveryClock
+from .ticketdesk_lifecycle_campaign_restore_inputs import AcknowledgedPrefix, SelectedBackup
 from .ticketdesk_lifecycle_faults import LocalArchiveOutage
 from .ticketdesk_lifecycle_campaign_runtime import SECOND, private_write, require
 
@@ -25,6 +28,68 @@ class CampaignActions:
         self.runtime, self.timeline = runtime, timeline
         self.original = None
         self.records = []
+        self.restore_clock = None
+        self.restore_release = self.restore_witness = self.restore_backup = None
+        self.restore_receipt = None
+
+    def close(self):
+        for owner in (self.restore_witness, self.restore_backup):
+            if owner is not None:
+                owner.close()
+
+    def prepare_restore_if_due(self, elapsed):
+        runtime = self.runtime
+        planned = next(plan['start_s'] * SECOND for plan in runtime.faults
+                       if plan['kind'] == 'backup_restore')
+        if self.restore_clock is not None or elapsed < planned - 60 * SECOND:
+            return False
+        clock = self.restore_clock = RestoreRecoveryClock(planned)
+        clock.begin_preparation(elapsed)
+        release = self.restore_release = self.quiesce(elapsed, planned, restore_clock=clock)
+        count = release.snapshot['load']['completed_commands']
+        def frontier():
+            value = self.call('server.health', ['server', 'health'], planned)
+            result = value.get('result')
+            require(value.get('ok') is True and type(result) is dict
+                    and result.get('status') == 'ready'
+                    and result.get('active_contract_version') == str(runtime.version)
+                    and result.get('history_incarnation') == str(runtime.incarnation),
+                    'campaign_restore_source_health')
+            number = result.get('last_commit_sequence')
+            require(type(number) is str and number.isascii() and number.isdecimal()
+                    and 0 < len(number) <= 20 and 0 < int(number) < 2**64,
+                    'campaign_restore_source_frontier')
+            return int(number)
+        included = frontier()
+        last_observation = time.monotonic_ns()
+        def checkpoint():
+            nonlocal last_observation
+            runtime.remaining(planned)
+            now = time.monotonic_ns()
+            if now - last_observation >= SECOND:
+                self.wait(lambda: True, planned, active=False)
+                last_observation = now
+        self.restore_witness = AcknowledgedPrefix(runtime.root, commands=count,
+            duration_s=runtime.duration, frontier=included, version=runtime.version,
+            incarnation=runtime.incarnation, checkpoint=checkpoint)
+        clock.bind_acknowledgements(runtime.elapsed(), acknowledged_commands=count,
+            acknowledged_frontier=included,
+            acknowledgement_witness_sha256=self.restore_witness.sha256)
+        runtime.tick(force_native=True)
+        operation = self.maintenance('create', runtime.elapsed(), planned)
+        require(frontier() == included and release.poll(runtime.elapsed()),
+                'campaign_restore_source_changed')
+        self.restore_backup = SelectedBackup(runtime.root, operation.name, checkpoint=checkpoint)
+        self.restore_witness.verify_prefix(count, checkpoint)
+        clock.backup_durable(runtime.elapsed(), operation,
+            manifest_sha256=self.restore_backup.manifest_sha256,
+            artifacts=self.restore_backup.artifacts)
+        runtime.tick(force_native=True)
+        private_write(runtime.root, 'campaign-restore-preparation.json', json.dumps(dict(
+            schema='riffdb.ticketdesk-lifecycle-restore-preparation/v2', method=clock.method,
+            acknowledgement_method=self.restore_witness.method, preparation=clock.preparation,
+            backup=clock.backup, qualifies_complete_campaign=False), sort_keys=True).encode()+b'\n')
+        return True
 
     def wait(self, condition, deadline, *, active=True, scheduled_at=None):
         runtime = self.runtime
@@ -98,10 +163,11 @@ class CampaignActions:
         require(result["updates"] == count, "campaign_state_reconciliation")
         runtime.remaining(deadline)
 
-    def quiesce(self, started, deadline, *, pause_load=True):
+    def quiesce(self, started, deadline, *, pause_load=True, restore_clock=None):
         runtime = self.runtime
         release = QuiescentRelease(runtime.root, generation=runtime.generation,
-                                   version=runtime.version, incarnation=runtime.incarnation)
+                                   version=runtime.version, incarnation=runtime.incarnation,
+                                   restore_clock=restore_clock)
         release.begin(started, pause_load=pause_load)
         self.wait(lambda: release.poll(runtime.elapsed()) if pause_load else
                   (release.poll(runtime.elapsed()) or release.observer_snapshot is not None), deadline)
@@ -128,6 +194,11 @@ class CampaignActions:
         observed = runtime.observer()
         release.workers_resumed(runtime.elapsed(), generation=runtime.generation,
                                 incarnation=runtime.incarnation, duplicates=observed["duplicates"])
+        if kind == 'backup_restore':
+            private_write(runtime.root, 'campaign-restore-first-write.json', json.dumps(dict(
+                schema='riffdb.ticketdesk-lifecycle-restore-first-write/v1',
+                elapsed_ns=runtime.elapsed(), acknowledgement=release.resumed_snapshot),
+                sort_keys=True).encode()+b'\n')
 
     def rotate(self, release, deadline):
         runtime = self.runtime
@@ -202,8 +273,14 @@ class CampaignActions:
 
     def replace(self, kind, started, deadline, release):
         runtime = self.runtime
+        if kind == "backup_restore":
+            require(isinstance(self.restore_clock, RestoreRecoveryClock)
+                    and not self.restore_clock.failed
+                    and self.restore_clock.state == "recovering"
+                    and self.restore_clock.loss_ns == started
+                    and self.restore_clock.deadline_ns == deadline,
+                    "campaign_restore_backup_required")
         runtime.stop_sampler(deadline)
-        if kind == "backup_restore": self.maintenance("create", started, deadline)
         runtime.stop_server(kind, deadline)
         if kind == "backup_restore":
             runtime.close_extent_incarnation()
@@ -211,13 +288,18 @@ class CampaignActions:
                 original, retained = runtime.root / name, runtime.root / ("retained-pre-restore-" + name)
                 require(not retained.exists() and original.is_dir() and not original.is_symlink(), "campaign_restore_target")
                 original.rename(retained); original.mkdir(mode=0o700)
+            self.restore_clock.phase_completed('target_setup', runtime.elapsed())
         output = runtime.start_server()
         if kind == "backup_restore":
             runtime.wait_recovery_admission(deadline)
+            self.restore_clock.phase_completed('target_admission', runtime.elapsed())
             self.maintenance("restore", started, deadline)
+            self.restore_clock.phase_completed('restore', runtime.elapsed())
             runtime.incarnation += 1
             runtime.begin_extent_incarnation()
         output.wait_ready(runtime.remaining(deadline))
+        if kind == 'backup_restore':
+            self.restore_clock.phase_completed('readiness', runtime.elapsed())
         if kind != "backup_restore":
             release.pause_load(runtime.elapsed())
             # Original load offers continuously through the actual process fault.
@@ -231,14 +313,34 @@ class CampaignActions:
 
     def execute(self, plan):
         runtime = self.runtime
-        kind, started = plan["kind"], runtime.elapsed()
+        release = None
+        if plan['kind'] == 'backup_restore':
+            require(self.restore_clock is not None and self.restore_release is not None
+                    and self.restore_witness is not None and self.restore_backup is not None,
+                    'campaign_restore_backup_required')
+            release = self.restore_release
+            require(release.poll(runtime.elapsed()), 'campaign_restore_source_changed')
+            witness = self.restore_witness.verify_prefix(
+                release.snapshot['load']['completed_commands'], lambda: runtime.remaining(
+                    self.restore_clock.planned_loss_ns + SECOND))
+            manifest = self.restore_backup.verify_selection()
+            # Everything from this instant, including stopping the primary,
+            # belongs to the one unchanged recovery deadline.
+            started = runtime.elapsed()
+            deadline = self.restore_clock.primary_loss(started,
+                acknowledged_commands=release.snapshot['load']['completed_commands'],
+                acknowledgement_witness_sha256=witness, selected_manifest_sha256=manifest)
+        else:
+            started = runtime.elapsed()
+            deadline = started + 60 * SECOND
+        kind = plan['kind']
         self.timeline.start(kind, started)
         if kind in ("consumer_outage", "sink_outage"):
             self.outage(plan, started)
             return
-        deadline = started + 60 * SECOND
         require(plan["duration_s"] == 45, "campaign_frozen_fault_protocol")
-        release = self.quiesce(started, deadline, pause_load=kind not in ("graceful_restart", "process_kill"))
+        if release is None:
+            release = self.quiesce(started, deadline, pause_load=kind not in ("graceful_restart", "process_kill"))
         if kind in ("graceful_restart", "process_kill", "backup_restore"):
             self.replace(kind, started, deadline, release)
         else:
@@ -253,8 +355,19 @@ class CampaignActions:
                 runtime.tick(force_native=True)
             else: require(False, "campaign_fault_kind")
         self.replay(deadline)
+        if kind == 'backup_restore':
+            self.restore_clock.phase_completed('original_replay', runtime.elapsed())
         self.reconcile(release, deadline)
+        if kind == 'backup_restore':
+            self.restore_clock.phase_completed('state_reconciliation', runtime.elapsed())
         self.release_workers(kind, started, plan["duration_s"], deadline, release, restore=kind == "backup_restore")
+        if kind == 'backup_restore':
+            self.restore_clock.phase_completed('first_write', runtime.elapsed())
+            receipt = self.restore_clock.finish(runtime.elapsed())
+            receipt['protocol_sha256'] = runtime.restore_protocol_sha256
+            self.restore_receipt = receipt
+            private_write(runtime.root, 'campaign-restore-clock.json',
+                json.dumps(receipt, sort_keys=True).encode()+b'\n')
         finished = runtime.elapsed()
         require(finished <= deadline, "campaign_fault_deadline")
         self.timeline.finish(kind, finished, reconciled=True)

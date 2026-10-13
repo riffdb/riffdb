@@ -7,9 +7,11 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/check-ticketdesk-lifecycle"
+sys.path.insert(0, str(SCRIPT.parent))
 LOADER = importlib.machinery.SourceFileLoader("ticketdesk_lifecycle", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 CHECK = importlib.util.module_from_spec(SPEC)
@@ -56,10 +58,38 @@ def fixture():
             "interference": False,
             "resources": {name: 1024 for name in CHECK.RESOURCES},
         })
+    plan = next(row for row in manifest['faults'] if row['kind'] == 'backup_restore')
+    action = next(row for row in receipt['actions'] if row['kind'] == 'backup_restore')
+    receipt['restore_clock'] = restore_clock_fixture(plan, action)
     return manifest, receipt
 
 
+def restore_clock_fixture(plan, action):
+    """Synthetic clock input; never a native operation or measured receipt."""
+    from lib.ticketdesk_lifecycle_campaign_restore_clock import FIXED, SECOND, RECOVERY_PHASE_ORDERS
+    loss = plan['start_s'] * SECOND
+    return dict(schema='riffdb.ticketdesk-lifecycle-restore-clock/v2', method='primary_loss_v1',
+        acknowledgement_method='acknowledged_prefix_v1', protocol_sha256='a' * 64,
+        planned_loss_ns=loss, loss_ns=loss, deadline_ns=loss + 60 * SECOND,
+        completed_ns=loss + (action['duration_s'] + action['recovery_s']) * SECOND,
+        preparation=dict(started_ns=loss - 30 * SECOND, acknowledgements_bound_ns=loss - 29 * SECOND,
+            acknowledged_commands=100, acknowledged_frontier=65636,
+            acknowledgement_witness_sha256='b' * 64),
+        backup=dict(name='campaign-source', maintenance_operation_id='01900000-0000-7000-8000-000000000001',
+            input_hash='c' * 64, manifest_sha256='d' * 64, operation_started_ns=loss - 25 * SECOND,
+            operation_completed_ns=loss - 15 * SECOND, operation_deadline_ns=loss,
+            durable_at_ns=loss - 10 * SECOND, bytes=512,
+            artifacts={name: dict(sha256='d' * 64, bytes=128) for name in FIXED}),
+        phases=[dict(kind=name, completed_ns=loss + (plan['duration_s'] * SECOND if name == 'first_write'
+                else (index + 1) * SECOND // 10))
+                for index, name in enumerate(RECOVERY_PHASE_ORDERS[1])],
+        qualifies_complete_campaign=False)
+
+
 class EvidenceTests(unittest.TestCase):
+    def test_current_qualification_rejects_the_legacy_combined_restore_clock(self):
+        self.rejected(lambda m, r: r.update(schema='riffdb.ticketdesk-lifecycle-receipt/v1'), 'schema')
+
     def rejected(self, mutate, code):
         manifest, receipt = fixture()
         mutate(manifest, receipt)

@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 
+from .ticketdesk_lifecycle_campaign_restore_clock import RestoreRecoveryClock
+
 SECOND = 1000000000
 MAX_U64 = 2**64 - 1
 LOAD_KEYS = {"schema", "generation", "completed_commands", "completed_reads"}
@@ -51,7 +53,7 @@ def unique_object(pairs):
 
 
 class QuiescentRelease:
-    def __init__(self, root, *, generation, version, incarnation):
+    def __init__(self, root, *, generation, version, incarnation, restore_clock=None):
         require(integer(generation) > 0 and integer(incarnation) > 0
                 and type(version) is int and version in (1, 2), "quiescence_identity")
         self.root = Path(root)
@@ -61,7 +63,11 @@ class QuiescentRelease:
         self._started = self._last_ns = self._snapshot = self._release = None
         self._release_version = None
         self._observer = None
+        self._resumed = None
         self._load_paused = False
+        require(restore_clock is None or isinstance(restore_clock, RestoreRecoveryClock),
+                'quiescence_restore_clock')
+        self._restore_clock = restore_clock
 
     @property
     def snapshot(self):
@@ -71,10 +77,23 @@ class QuiescentRelease:
     def observer_snapshot(self):
         return deepcopy(self._observer)
 
+    @property
+    def resumed_snapshot(self):
+        return deepcopy(self._resumed)
+
     def _tick(self, now_ns):
         integer(now_ns)
+        deadline = self._started + 60 * SECOND if self._started is not None else 0
+        if self._restore_clock is not None:
+            clock = self._restore_clock
+            require(not clock.failed and not clock.complete
+                    and clock.preparation is not None
+                    and clock.preparation['started_ns'] == self._started,
+                    'quiescence_restore_clock')
+            deadline = (clock.planned_loss_ns + int(clock.state == 'backup_durable') * (SECOND - 1)
+                        if clock.loss_ns is None else clock.deadline_ns)
         require(self._started is not None and self._state != "complete"
-                and self._last_ns <= now_ns <= self._started + 60 * SECOND,
+                and self._last_ns <= now_ns <= deadline,
                 "quiescence_clock")
         self._last_ns = now_ns
 
@@ -90,6 +109,11 @@ class QuiescentRelease:
                         ("load.quiesced", "observer.quiesced", "observer.restore", "load.resumed")),
                 "quiescence_stale")
         self._started = self._last_ns = now_ns
+        if self._restore_clock is not None:
+            require(pause_load and self._restore_clock.state == 'quiescing'
+                    and self._restore_clock.preparation['started_ns'] == now_ns,
+                    'quiescence_restore_clock')
+            self._tick(now_ns)
         if pause_load:
             self._marker("load.quiesce")
             self._load_paused = True
@@ -193,6 +217,7 @@ class QuiescentRelease:
                 and acknowledged["completed_commands"] > self._snapshot["load"]["completed_commands"]
                 and acknowledged["completed_reads"] >= self._snapshot["load"]["completed_reads"],
                 "quiescence_resume")
+        self._resumed = deepcopy(acknowledged)
         (self.root / "load.quiesced").unlink()
         (self.root / "observer.quiesced").unlink()
         (self.root / "load.resumed").unlink()

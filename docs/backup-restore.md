@@ -587,7 +587,15 @@ sealed alongside the primary; only the receipt-authorized journal creation and
 marker restoration retire those bindings. The original incarnation transaction
 is followed by a fresh complete source proof under continuous custody before
 publication. A witnessed failure permanently invalidates that private candidate.
-The complete ADR and unchanged public rehearsal gates remain unqualified.
+The complete rehearsal remains unqualified. Its saved-population primary-loss
+restore gate passes; the scheduled-population 45-second release, final-source
+CI and both measured campaigns remain outstanding. The
+[TicketDesk milestone handoff](architecture/SUSTAINABLE-TICKETDESK.md) reports
+the exact limits and evidence protocol. Backup preparation precedes deliberate
+primary loss and remains separately visible, including its service interruption
+and affected offered-work windows. Recovery retains one 60-second deadline from
+primary loss through the first acknowledged write, exact replay and full state
+reconciliation. Old combined-clock failures cannot be reclassified.
 
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete

@@ -24,6 +24,10 @@ def execute(runtime):
         runtime.prepare_population()
         while runtime.elapsed() < runtime.duration*SECOND:
             elapsed = runtime.elapsed()
+            if actions.prepare_restore_if_due(elapsed):
+                # Preparation consumes the original offered clock. Re-read it
+                # before dispatch; a late backup cannot move the fixed fault.
+                continue
             kind = timeline.due(elapsed)
             if kind is not None:
                 actions.execute(by_kind[kind])
@@ -37,4 +41,7 @@ def execute(runtime):
         private_write(runtime.root,"campaign-execution.json",json.dumps(result,sort_keys=True).encode()+b"\n")
         return result
     finally:
-        runtime.close()
+        try:
+            actions.close()
+        finally:
+            runtime.close()

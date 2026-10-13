@@ -16,6 +16,9 @@ from .ticketdesk_lifecycle_campaign_runtime import CampaignRuntime
 from .ticketdesk_lifecycle_load_stream import CampaignLoadStream
 from .ticketdesk_lifecycle_history_components import native_record
 from .ticketdesk_lifecycle_native_observer import FIELDS as NATIVE_FIELDS
+from .ticketdesk_lifecycle_campaign_restore_evidence import (
+    protocol_snapshot, validate_protocol, validate_clock, public_operation_witnesses, first_write_witness,
+)
 import io
 
 SECOND=10**9
@@ -211,12 +214,32 @@ def reconcile(runtime,result):
     root,duration=runtime.root,runtime.duration
     raw,final_input=read_private(root,'campaign-execution.json',maximum=1024**2)
     require(decode(raw)==result and type(result) is dict
-            and result.get('schema')=='riffdb.ticketdesk-lifecycle-finalization/v1'
+            and result.get('schema')=='riffdb.ticketdesk-lifecycle-finalization/v2'
             and result.get('qualifies_complete_campaign') is False,
             'campaign_reconciliation_finalization')
     require(artifacts(root,runtime.artifacts)==runtime.resource_model['artifacts'],
             'campaign_reconciliation_artifacts')
     inputs={'finalization':final_input}
+    raw, inputs['restore_protocol'] = read_private(root, 'campaign-restore-protocol.json', maximum=65536)
+    protocol = decode(raw)
+    validate_protocol(protocol)
+    require(protocol == protocol_snapshot(runtime.repository)
+            and inputs['restore_protocol']['sha256'] == runtime.restore_protocol_sha256,
+            'campaign_reconciliation_restore_protocol')
+    raw, inputs['restore_clock'] = read_private(root, 'campaign-restore-clock.json', maximum=1024**2)
+    clock = decode(raw)
+    require(clock == result['restore_clock'], 'campaign_reconciliation_restore_clock')
+    plan = next(row for row in runtime.faults if row['kind'] == 'backup_restore')
+    action = next(row for row in result['actions'] if row['kind'] == 'backup_restore')
+    preparation_interval = validate_clock(clock, protocol_sha256=runtime.restore_protocol_sha256,
+                                         plan=plan, action=action)
+    raw, inputs['restore_preparation'] = read_private(root, 'campaign-restore-preparation.json', maximum=1024**2)
+    require(decode(raw) == dict(schema='riffdb.ticketdesk-lifecycle-restore-preparation/v2',
+        method=clock['method'], acknowledgement_method=clock['acknowledgement_method'],
+        preparation=clock['preparation'], backup=clock['backup'], qualifies_complete_campaign=False),
+        'campaign_reconciliation_restore_preparation')
+    restore_operations = public_operation_witnesses(root, clock, duration_s=duration)
+    restore_first_write = first_write_witness(root, clock)
     raw,inputs['load']=read_private(root,'original-load/load.stdout',maximum=290*4096)
     parser=CampaignLoadStream(duration_s=duration,require_shared_clock=True)
     source=io.BytesIO(raw);load_rows=[]
@@ -265,10 +288,13 @@ def reconcile(runtime,result):
             'campaign_reconciliation_retirements')
     windows=window_observations(load_rows[1:-1],progress_result['windows'],resource_result['windows'],
         history_rows['logical'],duration_s=duration)
-    return dict(schema='riffdb.ticketdesk-lifecycle-closed-reconciliation/v1',duration_s=duration,
+    return dict(schema='riffdb.ticketdesk-lifecycle-closed-reconciliation/v2',duration_s=duration,
         origin_monotonic_ns=runtime.origin,inputs=inputs,owners=owner_result,resources=resource_result,
         progress=progress_result,interference=interference_result,history=history_result,
         provider=provider_result,measured_extents=extents,windows=windows,
+        restore_clock=clock, restore_preparation_interval_s=preparation_interval,
+        restore_public_operations=restore_operations,
+        restore_first_write=restore_first_write,
         consumer_backlog_basis='conservative_offered_organization_zero_matches_less_observed_acknowledgements',
         eligible_history_basis='canonical_logical_history_and_removed_keys_only',
         qualifies_complete_campaign=False)

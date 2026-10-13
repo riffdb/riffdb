@@ -25,6 +25,7 @@ from .ticketdesk_lifecycle_campaign_resource_model import (
     ARTIFACT_NAMES,MAX_ARTIFACT_BYTES,MAX_ARTIFACT_SUM_BYTES,PROCESS_LIMITS,PUBLIC_LIMITS,artifacts,
 )
 from .ticketdesk_lifecycle_campaign_owner_reconciliation import read_private,decode
+from .ticketdesk_lifecycle_campaign_restore_evidence import protocol_snapshot
 from .ticketdesk_lifecycle_resources import ProcessMemory
 
 DURATION=28800
@@ -173,6 +174,10 @@ def run(root,source,repository,*,duration_s=DURATION):
     resource.setrlimit(resource.RLIMIT_AS,(PROCESS_LIMITS['controller'],PROCESS_LIMITS['controller']))
     descriptor,frozen=prepare(root,source,repository)
     runtime=CampaignRuntime(root,Path(root)/'artifacts',descriptor,duration_s=duration_s,faults=schedule())
+    runtime.repository = Path(repository)
+    protocol = json.dumps(protocol_snapshot(repository), sort_keys=True).encode()+b'\n'
+    runtime.restore_protocol_sha256 = hashlib.sha256(protocol).hexdigest()
+    private_write(root, 'campaign-restore-protocol.json', protocol)
     result=execute(runtime)
     closed=reconcile(runtime,result)
     require(artifacts(root,Path(root)/'artifacts')==frozen,'campaign_entry_artifact_changed')

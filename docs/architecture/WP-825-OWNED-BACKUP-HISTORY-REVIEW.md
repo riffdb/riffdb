@@ -383,3 +383,41 @@ handbook contract remains accurate. Shipping whole60 retesting, complete scoped
 acceptance, full final-source CI, scheduled population, campaign45, resources and
 both measured campaigns remain outstanding. These focused checks establish no
 performance or campaign qualification.
+
+
+## Shipping interval result and campaign clock integration
+
+The ordinary four-binary release build of `cab031e5` independently matches all
+5,206 tracked source hashes. The unchanged saved whole60 helper passes: first
+new acknowledgement at 53.561545717 seconds, complete original replay and
+65,536-ticket reconciliation at 56.472650689 seconds after loss. The selected
+eight-artifact backup is 2,823,103,187 bytes and completes 17.511481300 seconds
+before loss, with no unaccounted acknowledgement gap. Verified shipping receipt:
+`e459aea287c6b89cbe8e009ef74d315e64f7c83ff02a479d7587aadd4918d76c`.
+
+An actual SIGKILL after another acknowledged write, followed by restart of that
+same target inode, preserves the new write and both earlier replay identities,
+all ticket state, and original backup/receipt bytes. Verified crash receipt:
+`f7e94f1e060f286fea31353aea3b0e78b27c90e127decd25ff23a2fa786a18e7`.
+Native scoped acceptance's 1,620 passing tests and two guard failures are retained;
+the guard correction then passes all 59 architecture tests. No production
+validation, durable format or failure boundary is removed to repair those guards.
+
+ADR-0292 controller integration separates the actual pre-fault worker pause,
+public backup operation and artifact/acknowledgement capture from the one
+primary-loss deadline. It retains fixed fault placement and the 45-second
+release. V2 qualification records bind the source-frozen protocol, complete
+acknowledged prefix, selected backup, public terminal operation outputs and
+original worker resumption evidence. Independent checking includes preparation
+windows and rejects mixed or unspecified methods. Synthetic controller tests
+are explicitly separate from native recovery and campaign qualification.
+
+Package WP-825; Tier guarantee; Behavior implements accepted recovery-clock
+evidence and preserves native custody. Checks include required-host shipping,
+actual process crash, native runtime/recovery and architecture checks, and
+controller fail-first coverage. Compatibility preserves all database formats
+and frozen durable vectors; new qualification evidence uses V2 without
+rewriting historical failures. Updated handbook: `docs/backup-restore.md` and
+`docs/architecture/SUSTAINABLE-TICKETDESK.md`. Hazards and follow-ups: the actual
+scheduled-population 45-second gate, final-source full CI, conformance, resource
+admission and eight-hour rehearsal still precede WP-825 closure and 24-hour work.
