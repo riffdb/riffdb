@@ -1,0 +1,39 @@
+{
+  "artifact_count": 3,
+  "cases": [
+    {
+      "bytes": 470,
+      "path": "fixtures/compatibility/native-publication-intent-v1/prepared.hex",
+      "phase": "prepared",
+      "sha256": "5515c328d02ca445d2e06ba80b2c3c6a6e3d083c1763dc0641588a58e61ae3c6",
+      "text_sha256": "6cf0587b9b74dae050a7fa71e43368725051b2c2579658c0ec2264e4be385e46"
+    },
+    {
+      "bytes": 470,
+      "path": "fixtures/compatibility/native-publication-intent-v1/published.hex",
+      "phase": "published",
+      "sha256": "57770fe6ff47e5575c76b38049f74562c5992a2efd96284ea95dbc75d009e4a4",
+      "text_sha256": "0b3dfbe287b151471e51e29c65a028322287fbf672ece787c91d105f52b9ca45"
+    },
+    {
+      "bytes": 470,
+      "path": "fixtures/compatibility/native-publication-intent-v1/startup-consumed.hex",
+      "phase": "startup-consumed",
+      "sha256": "ccb1863ea29428b60a13bdd7a235315ec8b77f19f093558eb1d22a4318d697c9",
+      "text_sha256": "3cae6209cbebd93f2518fb80db91a5788c10e912007a590f03e331643dc7260f"
+    }
+  ],
+  "format_version": 1,
+  "maximum_bytes": 4096,
+  "prior_reader": {
+    "binary_sha256": "d905a66f04a6883f4042f32449ed3ee1beea46595689571fae83cda86c947c5e",
+    "configured_database_unchanged": true,
+    "ordinary_temporary_unchanged": true,
+    "record_and_temporary_suffixes_refused": true,
+    "storage_source_sha256": "07eb84e8819c7ade4fbc168d1a8ae2a468178a91ca48913312079253b8fa518f",
+    "test": "publication_intent_prior_reader_refuses_inventory_before_cleanup_or_database_open",
+    "unadmitted_stage_unchanged": true
+  },
+  "qualification": "codec and prior-reader refusal only; native transfer and recovery timing remain unqualified",
+  "schema": "riffdb.native-publication-intent-fixtures/v1"
+}

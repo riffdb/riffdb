@@ -40,6 +40,11 @@ pub(super) use promotion_receipt::{
     MAX_PROMOTION_RECEIPT_BYTES, decode_promotion_receipt, encode_promotion_receipt,
 };
 
+// ADR-0294 codec qualification precedes activation of the transfer protocol.
+#[cfg(test)]
+#[path = "publication_intent.rs"]
+mod publication_intent;
+
 pub(super) const RECEIPT_FILE_SUFFIX: &str = ".receipt-v1";
 pub(super) const RECEIPT_TEMP_SUFFIX: &str = ".receipt-v1.tmp";
 pub(super) const RETIRE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v2";
