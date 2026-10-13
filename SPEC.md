@@ -7108,7 +7108,7 @@ implementing package exists.
 |---|---|
 | Formatting | `cargo fmt --check` |
 | Static analysis | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
-| Unit and integration | `cargo nextest run --workspace --all-features` in four fixed hash partitions per ADR-0184 (`TEST-003`); `cargo test --workspace --all-features` remains the local and `scripts/ci-all` form |
+| Unit and integration | `cargo nextest run --workspace --all-features` in four fixed hash partitions per ADR-0184 (`TEST-003`); `scripts/ci-all` runs the same battery unpartitioned under the nextest ci profile plus `cargo test --workspace --all-features --doc` (ADR-0298); `cargo test --workspace --all-features` remains a valid local command |
 | Documentation | `cargo doc --workspace --no-deps` with warnings denied where practical |
 | Dependency policy | `cargo deny check` for advisories, bans, licenses, and source policy |
 | Supply-chain audit | `cargo audit` or equivalent advisory scan |

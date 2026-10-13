@@ -6,10 +6,6 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 source scripts/tool-versions
-# `cargo test` here keeps test scratch on disk: one multi-threaded test process
-# on tmpfs turns rare maintenance-test lock collisions into routine failures.
-# `cargo nextest` (one process per test) uses RAM scratch; see
-# scripts/test-scratch-env.
 
 require_tool_version() {
     local label="$1"
@@ -26,12 +22,16 @@ require_tool_version() {
 require_tool_version cargo-deny "$RIFFDB_CARGO_DENY_VERSION" cargo deny
 require_tool_version cargo-audit "$RIFFDB_CARGO_AUDIT_VERSION" cargo audit
 require_tool_version cargo-machete "$RIFFDB_CARGO_MACHETE_VERSION" cargo machete
+require_tool_version cargo-nextest "$RIFFDB_CARGO_NEXTEST_VERSION" cargo nextest
 
 cargo fmt --all -- --check
 cargo fmt --manifest-path xtask/Cargo.toml -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked --manifest-path xtask/Cargo.toml --all-targets -- -D warnings
-cargo test --workspace --all-features
+# ADR-0298: one process per test (nextest's ci profile, with its per-test
+# limits and RAM test scratch), and the doctests nextest does not run.
+cargo nextest run --locked --workspace --all-features --profile ci
+cargo test --locked --workspace --all-features --doc
 ./scripts/check-archive-cli
 cargo test --locked --manifest-path xtask/Cargo.toml
 cargo riffdb --help >/dev/null 2>&1
