@@ -94,6 +94,14 @@ filter = 'package(=riffdb-storage-redb) & (test(=maintenance::bootstrap_material
 threads-required = "num-test-threads"
 priority = 90
 
+[[profile.ci.overrides]]
+# 160 seeded crash windows, each a full simulated open, crash, recovery and
+# complete validation. About 80 s alone with the simulator optimized (it was
+# about 160 s before), so a loaded runner still needs margin over 120 s. Keep
+# every window and assertion.
+filter = 'binary_id(=riffdb-sim::recovery_oracle) & test(=online_retention::every_online_retention_crash_window_recovers_to_a_valid_watermark)'
+slow-timeout = { period = "30s", terminate-after = 8, grace-period = "10s" }
+
 [[profile.ci.scripts]]
 filter = 'binary_id(=riffdb-testkit-server::full_recovery_matrix) | binary_id(=riffdb-testkit-server::offline_maintenance_matrix) | binary_id(=riffdb-testkit-server::contract_migration_gate_a) | binary_id(=riffdb-testkit-server::remote_ingress) | binary_id(=riffdb-testkit-server::remote_deployment_rotation)'
 list-wrapper = "harnessless"

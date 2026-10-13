@@ -437,6 +437,13 @@ configured `rustc-wrapper` such as `sccache` is optional, but if a Cargo config
 names one it must be installed or that stale setting must be removed. RiffDB
 does not silently change user Cargo configuration.
 
+`install` also installs the pinned TypeScript checker into
+`clients/typescript/runtime/node_modules` with
+`npm ci --prefix clients/typescript/runtime --ignore-scripts`, as the CI
+workflows do, and `check` reports whether it is present. `./scripts/ci-all`'s
+binding, generated-artifact, lifecycle-preparation and operator-acceptance
+steps fail without it. Each worktree needs its own install.
+
 Then run:
 
 ```bash

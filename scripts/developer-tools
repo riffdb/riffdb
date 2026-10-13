@@ -128,6 +128,22 @@ check_all() {
     fi
     printf 'Developer tools are ready: Rust 1.98.1, mdbook %s, lychee %s.\n' \
         "$RIFFDB_MDBOOK_VERSION" "$RIFFDB_LYCHEE_VERSION"
+    check_typescript_checker
+}
+
+# The pinned TypeScript checker the ci-all binding, generation and operator
+# acceptance steps use (the CI workflows install it the same way). Advisory
+# here: the handbook needs only Rust, mdbook and lychee.
+typescript_runtime="clients/typescript/runtime"
+check_typescript_checker() {
+    if [[ -x "$typescript_runtime/node_modules/.bin/tsc" ]]; then
+        printf 'Pinned TypeScript checker: %s\n' \
+            "$("$typescript_runtime/node_modules/.bin/tsc" --version)"
+    else
+        printf '%s\n' \
+            'note: the pinned TypeScript checker is not installed; ./scripts/ci-all needs it:' \
+            "  npm ci --prefix $typescript_runtime --ignore-scripts" >&2
+    fi
 }
 
 install_all() {
@@ -139,6 +155,11 @@ install_all() {
         --version "$RIFFDB_MDBOOK_VERSION" mdbook
     RUSTC_WRAPPER= "$cargo_bin" +1.98.1 install --locked \
         --version "$RIFFDB_LYCHEE_VERSION" lychee
+    if command -v npm >/dev/null 2>&1; then
+        npm ci --prefix "$typescript_runtime" --ignore-scripts
+    else
+        printf '%s\n' 'note: npm is unavailable; the pinned TypeScript checker was not installed.' >&2
+    fi
     printf '%s\n' \
         'Pinned developer tools are installed.' \
         'Ensure the rustup proxies are first on PATH, then run:' \
