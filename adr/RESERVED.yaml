@@ -32,3 +32,53 @@ reserved:
     note: >-
       Allocated on an unmerged branch before ADR-0280 was written. Remove this
       entry when the record lands.
+  - adr: "0288"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0289"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0290"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0291"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0292"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0293"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0294"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0295"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0296"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
+  - adr: "0297"
+    status: in-flight
+    note: >-
+      Allocated on unmerged WP-825 branches. Remove this entry when the record
+      lands.
