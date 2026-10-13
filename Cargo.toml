@@ -147,3 +147,14 @@ incremental = false
 
 [profile.test.package."*"]
 debug = false
+
+# The deterministic simulator hashes every simulated read and write (FNV-1a
+# trace digests) and zero-fills grown files. Unoptimized, that byte-at-a-time
+# work dominated its crash-window campaigns and pushed one past the 120 s
+# nextest limit. Optimizing only the simulator keeps product crates at the
+# normal debug profile; the trace digests are unchanged.
+[profile.dev.package.riffdb-sim]
+opt-level = 2
+
+[profile.test.package.riffdb-sim]
+opt-level = 2

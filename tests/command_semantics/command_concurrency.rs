@@ -1074,10 +1074,20 @@ fn equal_key_commands_commit_once_and_replay_exactly() {
     );
     assert_eq!(changed, CommandExecutionResult::InputMismatch);
     assert_eq!(notifications.sequences(), vec![CommitSequence::first()]);
-    // Both concurrently observed vacancies receive a proposed logical time;
-    // the grouped atomic admission retains the FIFO winner and rebinds the
-    // equal-input follower to that exact durable Pending record.
-    assert_eq!(admission_clock.calls(), 2);
+    // Two schedules are valid and both commit once. When the writer groups
+    // both submissions, each concurrently observed vacancy receives a proposed
+    // logical time and the grouped atomic admission retains the FIFO winner,
+    // rebinding the equal-input follower to that exact durable Pending record
+    // (two clock reads). When the writer takes the first submission alone, the
+    // follower is admitted after the commit and replays the stored outcome
+    // without a new vacancy (one clock read). The second submission is sent
+    // right after the first with no hold on the writer, so which schedule runs
+    // depends on thread timing; either way exactly one provenance is drawn.
+    let clock_reads = admission_clock.calls();
+    assert!(
+        clock_reads == 1 || clock_reads == 2,
+        "one clock read per observed vacancy, got {clock_reads}"
+    );
     assert_eq!(provenance_source.calls(), 1);
 
     let durable = left.into_stored_outcome();
