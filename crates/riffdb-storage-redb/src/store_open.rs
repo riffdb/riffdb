@@ -328,12 +328,16 @@ impl RedbStore {
         use crate::restore_history::CompleteRestoreHistory;
         let capture = |shared: &SharedRedb| {
             let read = shared.database.begin_read().map_err(transaction_error)?;
-            CompleteRestoreHistory::capture(
+            shared.register_history_resolver(crate::store::read_identity_from_read_transaction(
+                &read,
+            )?);
+            CompleteRestoreHistory::capture_with_resolver(
                 &read,
                 shared
                     .restore_integrity
                     .as_ref()
                     .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                shared.history_resolver.get().map(std::sync::Arc::as_ref),
             )?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
         };

@@ -2651,7 +2651,7 @@ impl RedbOfflineRestore {
                 #[cfg(test)]
                 materialization_test_boundary(MaterializationTestBoundary::BeforeHydration)?;
                 if defer_history {
-                    let _resolver = crate::history_stub::HistoryResolver::register(
+                    let resolver = crate::history_stub::HistoryResolver::register(
                         manifest.database_id(),
                         &target_artifact,
                         history_media.as_ref().map_or_else(
@@ -2659,7 +2659,14 @@ impl RedbOfflineRestore {
                             std::sync::Arc::clone,
                         ),
                     );
-                    crate::history_stub::hydrate_surviving_command_stubs(database)?;
+                    match &custody {
+                        Some(custody) => {
+                            crate::history_stub::hydrate_surviving_command_stubs_owned(
+                                database, &resolver, custody,
+                            )?
+                        }
+                        None => crate::history_stub::hydrate_surviving_command_stubs(database)?,
+                    }
                 } else {
                     hydrate_staged_history_on_database(
                         database,

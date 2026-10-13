@@ -50,7 +50,8 @@ pub(crate) use physical_scrub::PhysicalScrubCopy;
 #[cfg(test)]
 pub(crate) use restore_custody::tests::probe as probe_restore_custody;
 pub(crate) use restore_custody::{
-    NativeRestoreValidatedGeneration, RestoreCustody, RestoreEngineBackend, RestoreIntegrityBinding,
+    NativeRestorePreparationGeneration, NativeRestoreValidatedGeneration, RestoreCustody,
+    RestoreEngineBackend, RestoreIntegrityBinding,
 };
 mod staged;
 mod store;

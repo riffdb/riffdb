@@ -351,6 +351,62 @@ pub(crate) struct NativeRestoreValidatedGeneration {
     mutation_generation: u64,
 }
 
+/// One actual unpublished preparation engine, before any physical proof.
+/// Read inputs must finish before the closed hydration transaction may write.
+pub(crate) struct NativeRestorePreparationGeneration {
+    shared: Arc<Shared>,
+    engine_generation: u64,
+    mutation_generation: u64,
+}
+
+impl RestoreCustody {
+    pub(crate) fn preparation_read_generation(
+        &self,
+    ) -> Result<NativeRestorePreparationGeneration, StorageError> {
+        self.verify_identity()?;
+        let leases = self.shared.leases.read().map_err(|_| unavailable(()))?;
+        let engine_generation = leases.active.ok_or_else(corrupt)?;
+        if self.shared.maximum_bytes.load(Ordering::Acquire) != 0 {
+            return Err(corrupt());
+        }
+        Ok(NativeRestorePreparationGeneration {
+            shared: Arc::clone(&self.shared),
+            engine_generation,
+            mutation_generation: self.shared.mutation_generation.load(Ordering::Acquire),
+        })
+    }
+}
+
+impl NativeRestorePreparationGeneration {
+    pub(crate) fn verify_preparation_owner(&self) -> Result<(), StorageError> {
+        let result = (|| {
+            RestoreCustody {
+                shared: Arc::clone(&self.shared),
+            }
+            .verify_identity()?;
+            let leases = self.shared.leases.read().map_err(|_| unavailable(()))?;
+            if leases.active != Some(self.engine_generation)
+                || self.shared.maximum_bytes.load(Ordering::Acquire) != 0
+            {
+                return Err(corrupt());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.shared.invalid.store(true, Ordering::Release);
+        }
+        result
+    }
+    pub(crate) fn verify_read(&self) -> Result<(), StorageError> {
+        self.verify_preparation_owner()?;
+        if self.shared.mutation_generation.load(Ordering::Acquire) != self.mutation_generation {
+            self.shared.invalid.store(true, Ordering::Release);
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+}
+
 impl NativeRestoreValidatedGeneration {
     pub(crate) fn verify(&self, binding: &RestoreIntegrityBinding) -> Result<(), StorageError> {
         binding.verify()?;

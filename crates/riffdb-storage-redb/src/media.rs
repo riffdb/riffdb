@@ -193,6 +193,20 @@ pub trait JournalMedia: std::fmt::Debug + Send + Sync {
     fn open_retained_frame_read(&self, path: &Path) -> io::Result<MediaFile> {
         self.open_read(path)
     }
+    /// Native private restore may retain unfinished input under one actual
+    /// immutable owner. Ordinary media keeps its existing individual reads.
+    fn begin_owned_restore_reads(&self) -> io::Result<Option<Box<dyn OwnedRestoreReads>>> {
+        Ok(None)
+    }
+    /// Supplies the bounded physical work of one candidate frame, including
+    /// extent-header reads. The default retains the checked frame protocol.
+    fn open_owned_retained_frame_read(
+        &self,
+        path: &Path,
+        _physical_bytes: usize,
+    ) -> io::Result<MediaFile> {
+        self.open_retained_frame_read(path)
+    }
     /// Opens an existing file read-write.
     fn open_read_write(&self, path: &Path) -> io::Result<MediaFile>;
     /// Creates a new file read-write, failing with `AlreadyExists` if present
@@ -209,6 +223,15 @@ pub trait JournalMedia: std::fmt::Debug + Send + Sync {
     fn sync_parent_data(&self, path: &Path) -> io::Result<()>;
     /// Opens the parent directory and flushes it with `fsync`.
     fn sync_parent_all(&self, path: &Path) -> io::Result<()>;
+}
+
+/// Low-level native restore input custody. This alone grants no engine,
+/// completed validation proof, authorization or operational admission.
+#[doc(hidden)]
+pub trait OwnedRestoreReads {
+    fn media(&self) -> std::sync::Arc<dyn JournalMedia>;
+    fn finish(&mut self) -> io::Result<()>;
+    fn verify_finished(&self) -> io::Result<()>;
 }
 
 /// The production journal media: plain `std::fs` with exactly the syscalls

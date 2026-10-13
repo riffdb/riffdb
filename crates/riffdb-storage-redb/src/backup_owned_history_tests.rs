@@ -481,3 +481,539 @@ fn another_extent_generation_finishes_its_read_before_trying_another_candidate()
         expected
     );
 }
+
+#[test]
+fn borrowed_private_history_read_work_scales_with_completed_bounded_intervals() {
+    let (_root, owner, media, database, placement, generation, expected) = retained_frame_fixture();
+    ORIGINAL_ARTIFACT_READ_CHECKS.with(|count| count.set(0));
+    let mut scope = media.begin_owned_restore_reads().unwrap();
+    let scoped_media = scope.as_ref().map(|scope| scope.media());
+    let source = scoped_media.as_deref().unwrap_or(&media);
+    // Cross the frame-count boundary without caching any decoded frame.
+    for _ in 0..257 {
+        let frame = crate::journal::read_retained_frame_with_media(
+            source,
+            &database,
+            expected.database_id(),
+            placement,
+            generation,
+        )
+        .unwrap();
+        assert_eq!(frame, expected);
+    }
+    if let Some(scope) = &mut scope {
+        scope.finish().unwrap();
+        scope.verify_finished().unwrap();
+    }
+    assert!(
+        ORIGINAL_ARTIFACT_READ_CHECKS.with(|count| count.get()) <= owner.artifacts.len() * 8,
+        "bounded private history reads must check original custody at interval boundaries, not around every decoded frame"
+    );
+    owner.verify_full().unwrap();
+}
+
+#[test]
+fn bounded_private_reads_refuse_mutated_originals_or_shadow_before_finishing() {
+    for mode in 0..7 {
+        let (root, owner, media, database, placement, generation, expected) =
+            retained_frame_fixture();
+        let mut scope = media.begin_owned_restore_reads().unwrap().unwrap();
+        let input = scope.media();
+        assert_eq!(
+            crate::journal::read_retained_frame_with_media(
+                input.as_ref(),
+                &database,
+                expected.database_id(),
+                placement,
+                generation
+            )
+            .unwrap(),
+            expected
+        );
+        let artifact = owner
+            .artifacts
+            .iter()
+            .find(|a| a.generation == Some(generation))
+            .unwrap();
+        let original = owner.path.join(&artifact.name);
+        match mode {
+            0 => {
+                let saved = fs::metadata(&original).unwrap().modified().unwrap();
+                let file = OpenOptions::new().write(true).open(&original).unwrap();
+                let mut byte = [0];
+                artifact.file.read_exact_at(&mut byte, 0).unwrap();
+                file.write_all_at(&[byte[0] ^ 1], 0).unwrap();
+                file.write_all_at(&byte, 0).unwrap();
+                file.set_modified(saved).unwrap();
+                file.sync_all().unwrap();
+            }
+            1 => {
+                let saved = root.join("replaced");
+                fs::rename(&original, &saved).unwrap();
+                fs::copy(&saved, &original).unwrap();
+            }
+            2 => fs::hard_link(&original, root.join("extra-link")).unwrap(),
+            3 => fs::rename(&original, root.join("missing")).unwrap(),
+            4 => {
+                fs::write(owner.path.join("unexpected"), b"extra").unwrap();
+            }
+            5 => {
+                fs::write(
+                    crate::journal::sealed_journal_path(&database, generation),
+                    b"shadow",
+                )
+                .unwrap();
+            }
+            _ => owner.cancelled.store(true, Ordering::Release),
+        }
+        assert!(
+            scope.finish().is_err(),
+            "unfinished parsed input cannot authorize changed original custody: {mode}"
+        );
+        owner.cancelled.store(false, Ordering::Release);
+        assert!(owner.verify().is_err());
+        assert!(media.begin_owned_restore_reads().is_err());
+    }
+}
+
+#[test]
+fn bounded_private_read_drop_io_failure_and_cross_thread_cannot_restore_authority() {
+    for mode in 0..4 {
+        let (_root, owner, media, database, placement, generation, expected) =
+            retained_frame_fixture();
+        let mut scope = media.begin_owned_restore_reads().unwrap().unwrap();
+        let input = scope.media();
+        let path = crate::journal::sealed_journal_path(&database, generation);
+        match mode {
+            0 => {
+                drop(scope);
+            }
+            1 => {
+                let mut file = input.open_owned_retained_frame_read(&path, 4096).unwrap();
+                assert!(file.read_exact_at(&mut [0; 8], usize::MAX).is_err());
+                drop(file);
+                assert!(scope.finish().is_err());
+            }
+            2 => {
+                let mut file = input.open_owned_retained_frame_read(&path, 1).unwrap();
+                assert!(file.read_exact_at(&mut [0; 2], 0).is_err());
+                drop(file);
+                assert!(scope.finish().is_err());
+            }
+            _ => {
+                let id = expected.database_id();
+                std::thread::scope(|threads| {
+                    let result = threads
+                        .spawn(move || {
+                            crate::journal::read_retained_frame_with_media(
+                                input.as_ref(),
+                                &database,
+                                id,
+                                placement,
+                                generation,
+                            )
+                        })
+                        .join()
+                        .unwrap();
+                    assert!(result.is_err());
+                });
+                assert!(scope.finish().is_err());
+            }
+        }
+        assert!(
+            owner.verify().is_err(),
+            "failed or unfinished scope remains invalid: {mode}"
+        );
+        assert!(media.begin_owned_restore_reads().is_err());
+    }
+}
+
+#[test]
+fn bounded_private_read_physical_budget_rotates_before_the_next_frame() {
+    let (_root, owner, media, database, placement, generation, expected) = retained_frame_fixture();
+    let mut scope = media.begin_owned_restore_reads().unwrap().unwrap();
+    let input = scope.media();
+    let path = crate::journal::sealed_journal_path(&database, generation);
+    ORIGINAL_ARTIFACT_READ_CHECKS.with(|count| count.set(0));
+    let mut endpoint_counts = Vec::new();
+    for _ in 0..5 {
+        // Conservatively reserve sixteen MiB for each small, actually read
+        // frame. The fifth reservation must finish the prior byte interval.
+        let mut file = input
+            .open_owned_retained_frame_read(&path, 16 * 1024 * 1024)
+            .unwrap();
+        let mut bytes = vec![0; placement.padded_len];
+        file.read_exact_at(&mut bytes, placement.position).unwrap();
+        file.finish_retained_frame_read().unwrap();
+        endpoint_counts.push(ORIGINAL_ARTIFACT_READ_CHECKS.with(|count| count.get()));
+    }
+    assert_eq!(endpoint_counts[0], endpoint_counts[3]);
+    assert!(endpoint_counts[4] > endpoint_counts[3]);
+    scope.finish().unwrap();
+    owner.verify_full().unwrap();
+    assert_eq!(
+        expected.database_id(),
+        decode_manifest(&fs::read(owner.path.join(MANIFEST_FILE_NAME)).unwrap())
+            .unwrap()
+            .database_id()
+    );
+}
+
+#[test]
+fn private_scope_never_uses_a_competing_same_database_resolver_after_custody_failure() {
+    let (_root, owner, media, database, placement, generation, expected) = retained_frame_fixture();
+    let id = expected.database_id();
+    let selected = crate::history_stub::HistoryResolver::register(id, &database, Arc::new(media));
+    let _competing = crate::history_stub::HistoryResolver::register_backup(id, &owner.path);
+    let stub = crate::history_stub::HistoryStub {
+        kind: crate::history_stub::StubKind::Receipt,
+        database_id: id,
+        generation,
+        placement,
+        summary: Default::default(),
+    };
+    let result = crate::history_stub::private_read_probe(&selected, || {
+        let first = crate::history_stub::read_private_frame_probe(&stub)?;
+        assert_eq!(first, expected);
+        owner.cancelled.store(true, Ordering::Release);
+        assert!(crate::history_stub::read_private_frame_probe(&stub).is_err());
+        owner.cancelled.store(false, Ordering::Release);
+        assert!(
+            crate::history_stub::read_private_frame_probe(&stub).is_err(),
+            "clearing cancellation cannot authorize fallback to another valid same-database image"
+        );
+        Ok(first)
+    });
+    assert!(result.is_err());
+    assert!(owner.verify().is_err());
+    assert_eq!(
+        crate::history_stub::read_private_frame_probe(&stub).unwrap(),
+        expected,
+        "the competing ordinary resolver is valid, but could not rescue private custody"
+    );
+}
+
+#[test]
+fn a_nested_unrelated_private_scope_cannot_replace_the_current_owner() {
+    let (_root, owner, media, database, placement, generation, expected) = retained_frame_fixture();
+    let (_other_root, other_owner, other_media, other_database, _, _, _) = retained_frame_fixture();
+    let selected = crate::history_stub::HistoryResolver::register(
+        expected.database_id(),
+        &database,
+        Arc::new(media),
+    );
+    let other = crate::history_stub::HistoryResolver::register(
+        expected.database_id(),
+        &other_database,
+        Arc::new(other_media),
+    );
+    let stub = crate::history_stub::HistoryStub {
+        kind: crate::history_stub::StubKind::Receipt,
+        database_id: expected.database_id(),
+        generation,
+        placement,
+        summary: Default::default(),
+    };
+    let frame = crate::history_stub::private_read_probe(&selected, || {
+        assert!(crate::history_stub::private_read_probe(&other, || Ok(())).is_err());
+        crate::history_stub::read_private_frame_probe(&stub)
+    })
+    .unwrap();
+    assert_eq!(frame, expected);
+    owner.verify_full().unwrap();
+    assert!(other_owner.verify().is_err());
+}
+
+struct NativeHydrationFixture {
+    engine: MaterializationDatabase,
+    _artifact: MaterializationArtifact,
+    custody: crate::maintenance::RestoreCustody,
+    resolver: Arc<crate::history_stub::HistoryResolver>,
+    key: Vec<u8>,
+    stub: Vec<u8>,
+}
+
+fn native_hydration_fixture(
+    owner: &Arc<OwnedBackupHistory>,
+    media: BorrowedHistoryMedia,
+    database: &Path,
+    placement: crate::journal::FramePlacement,
+    generation: u64,
+    expected: &crate::journal::JournalFrame,
+) -> NativeHydrationFixture {
+    use redb::ReadableDatabase as _;
+    let mut artifact = MaterializationArtifact::create(
+        database.parent().unwrap(),
+        OsStr::new(DATABASE_ARTIFACT_FILE_NAME),
+        true,
+    )
+    .unwrap();
+    owner
+        .copy_into(OsStr::new(DATABASE_ARTIFACT_FILE_NAME), &artifact)
+        .unwrap();
+    assert_eq!(artifact.checksum().unwrap(), owner.artifacts[0].checksum);
+    let custody = crate::maintenance::RestoreCustody::from_verified_copy(
+        artifact.verified_primary().unwrap(),
+        Arc::clone(&owner.cancelled),
+    )
+    .unwrap();
+    artifact.rename_under_custody(database, &custody).unwrap();
+    let engine = MaterializationDatabase::Owned(
+        crate::store::OwnedEngineOpen::from_private_restore_backend(custody.lease().unwrap())
+            .unwrap(),
+    );
+    let sequence = CommitSequence::first();
+    let key = crate::keys::encode_application_sequence_key(sequence).to_vec();
+    let stub = crate::history_stub::HistoryStub {
+        kind: crate::history_stub::StubKind::Segment,
+        database_id: expected.database_id(),
+        generation,
+        placement,
+        summary: crate::history_stub::SegmentSummary {
+            first_commit_sequence: Some(sequence),
+            last_commit_sequence: Some(sequence),
+            command_count: 1,
+            ..Default::default()
+        },
+    }
+    .encode()
+    .unwrap();
+    let mut write = engine.begin_write().unwrap();
+    write.set_two_phase_commit(true);
+    write.set_durability(redb::Durability::Immediate).unwrap();
+    {
+        write
+            .open_table(crate::layout::COMMITS)
+            .unwrap()
+            .insert(key.as_slice(), stub.as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    assert_eq!(
+        crate::store::read_identity_from_read_transaction(&engine.begin_read().unwrap()).unwrap(),
+        expected.database_id()
+    );
+    let resolver = crate::history_stub::HistoryResolver::register(
+        expected.database_id(),
+        database,
+        Arc::new(media),
+    );
+    NativeHydrationFixture {
+        engine,
+        _artifact: artifact,
+        custody,
+        resolver,
+        key,
+        stub,
+    }
+}
+
+#[test]
+fn native_hydration_finishes_original_custody_before_its_batch_commits() {
+    use redb::ReadableDatabase as _;
+    for mutate in [false, true] {
+        let (_root, owner, media, database, placement, generation, expected) =
+            retained_frame_fixture();
+        let fixture =
+            native_hydration_fixture(&owner, media, &database, placement, generation, &expected);
+        if mutate {
+            let path = owner.path.join(
+                &owner
+                    .artifacts
+                    .iter()
+                    .find(|a| a.generation == Some(generation))
+                    .unwrap()
+                    .name,
+            );
+            crate::history_stub::set_hydration_commit_hook(Box::new(move || {
+                let metadata = fs::metadata(&path).unwrap();
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+                let mut byte = [0];
+                file.read_exact_at(&mut byte, 0).unwrap();
+                file.write_all_at(&[byte[0] ^ 1], 0).unwrap();
+                file.write_all_at(&byte, 0).unwrap();
+                file.set_modified(metadata.modified().unwrap()).unwrap();
+                file.sync_all().unwrap();
+            }));
+        }
+        let result = crate::history_stub::hydrate_surviving_command_stubs_owned(
+            &fixture.engine,
+            &fixture.resolver,
+            &fixture.custody,
+        );
+        let read = fixture.engine.begin_read().unwrap();
+        let table = read.open_table(crate::layout::COMMITS).unwrap();
+        let encoded = table.get(fixture.key.as_slice()).unwrap().unwrap();
+        if mutate {
+            assert!(result.is_err());
+            assert_eq!(encoded.value(), fixture.stub);
+            assert!(owner.verify().is_err());
+        } else {
+            result.unwrap();
+            assert_eq!(encoded.value(), b"owned frame value");
+            owner.verify_full().unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn private_owned_read_crash_child() {
+    let Some(backup) = std::env::var_os("RIFFDB_TEST_OWNED_READ_BACKUP") else {
+        return;
+    };
+    let backup = PathBuf::from(backup);
+    let database = PathBuf::from(std::env::var_os("RIFFDB_TEST_OWNED_READ_DATABASE").unwrap());
+    let stub_path = PathBuf::from(std::env::var_os("RIFFDB_TEST_OWNED_READ_STUB").unwrap());
+    let stub_bytes = read_bounded_file(&stub_path, crate::history_stub::STUB_BYTES).unwrap();
+    let stub = crate::history_stub::HistoryStub::decode(&stub_bytes)
+        .unwrap()
+        .unwrap();
+    let manifest = decode_manifest(
+        &read_bounded_file(&backup.join(MANIFEST_FILE_NAME), MANIFEST_MAX_BYTES).unwrap(),
+    )
+    .unwrap();
+    let owner =
+        OwnedBackupHistory::acquire(&backup, &manifest, Arc::new(AtomicBool::new(false))).unwrap();
+    let artifact = owner
+        .artifacts
+        .iter()
+        .find(|a| a.generation == Some(stub.generation))
+        .unwrap();
+    let expected = crate::journal::read_retained_frame_from_with_media(
+        &OriginalMedia(Arc::clone(&owner)),
+        &[backup.join(&artifact.name)],
+        stub.database_id,
+        stub.placement,
+        stub.generation,
+    )
+    .unwrap();
+    let media = BorrowedHistoryMedia::new(
+        Arc::clone(&owner),
+        database.clone(),
+        Arc::new(PinnedDirectory::open(database.parent().unwrap()).unwrap()),
+    );
+    let fixture = native_hydration_fixture(
+        &owner,
+        media,
+        &database,
+        stub.placement,
+        stub.generation,
+        &expected,
+    );
+    let phase = std::env::var("RIFFDB_TEST_OWNED_READ_CRASH_PHASE").unwrap();
+    if phase == "read" {
+        let _ = crate::history_stub::private_read_probe::<()>(&fixture.resolver, || {
+            let frame = crate::history_stub::read_private_frame_probe(&stub)?;
+            assert_eq!(frame, expected);
+            std::process::abort()
+        });
+    } else {
+        assert_eq!(phase, "hydrate");
+        crate::history_stub::set_hydration_commit_hook(Box::new(|| std::process::abort()));
+        crate::history_stub::hydrate_surviving_command_stubs_owned(
+            &fixture.engine,
+            &fixture.resolver,
+            &fixture.custody,
+        )
+        .unwrap();
+    }
+    panic!("private owned-read crash boundary was not reached");
+}
+
+#[cfg(unix)]
+#[test]
+fn private_owned_read_process_crashes_preserve_originals_and_uncommitted_hydration() {
+    use redb::ReadableDatabase as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    for phase in ["read", "hydrate"] {
+        let (root, owner, _media, database, placement, generation, expected) =
+            retained_frame_fixture();
+        let before = owner
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                (
+                    artifact.name.clone(),
+                    sha256_open_file(&artifact.file).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let sequence = CommitSequence::first();
+        let stub = crate::history_stub::HistoryStub {
+            kind: crate::history_stub::StubKind::Segment,
+            database_id: expected.database_id(),
+            generation,
+            placement,
+            summary: crate::history_stub::SegmentSummary {
+                first_commit_sequence: Some(sequence),
+                last_commit_sequence: Some(sequence),
+                command_count: 1,
+                ..Default::default()
+            },
+        }
+        .encode()
+        .unwrap();
+        let stub_path = root.join("crash-stub.bin");
+        fs::write(&stub_path, &stub).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backup::owned_history::tests::private_owned_read_crash_child",
+                "--nocapture",
+            ])
+            .env("RIFFDB_TEST_OWNED_READ_BACKUP", &owner.path)
+            .env("RIFFDB_TEST_OWNED_READ_DATABASE", &database)
+            .env("RIFFDB_TEST_OWNED_READ_STUB", &stub_path)
+            .env("RIFFDB_TEST_OWNED_READ_CRASH_PHASE", phase)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("bounded private read crash child did not finish");
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            status.signal(),
+            Some(6),
+            "must stop at the actual private input boundary: {phase}"
+        );
+        owner.verify_full().unwrap();
+        for (name, checksum) in before {
+            assert_eq!(sha256_file(&owner.path.join(name)).unwrap(), checksum);
+        }
+        assert!(!root.join("configured.redb").exists());
+        let stage = redb::Database::open(&database).unwrap();
+        let read = stage.begin_read().unwrap();
+        let table = read.open_table(crate::layout::COMMITS).unwrap();
+        let key = crate::keys::encode_application_sequence_key(sequence);
+        assert_eq!(
+            table.get(key.as_slice()).unwrap().unwrap().value(),
+            stub,
+            "unfinished reads or an interrupted private write batch cannot commit hydration: {phase}"
+        );
+        assert!(
+            crate::RedbOfflineRestore::bind(&owner.path, database.parent().unwrap())
+                .restore_owned_stamp_preparation(
+                    &root.join("configured.redb"),
+                    Arc::new(AtomicBool::new(false))
+                )
+                .is_err(),
+            "partial stage cannot be accepted as an empty target or reconstructed validation authority"
+        );
+    }
+}

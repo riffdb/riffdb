@@ -17,14 +17,27 @@ pub(crate) struct CompleteRestoreHistory {
 }
 
 impl CompleteRestoreHistory {
+    #[cfg(test)]
     pub(crate) fn capture(
         read: &ReadTransaction,
         binding: &RestoreIntegrityBinding,
     ) -> Result<Option<Self>, StorageError> {
+        Self::capture_with_resolver(read, binding, None)
+    }
+
+    pub(crate) fn capture_with_resolver(
+        read: &ReadTransaction,
+        binding: &RestoreIntegrityBinding,
+        resolver: Option<&crate::history_stub::HistoryResolver>,
+    ) -> Result<Option<Self>, StorageError> {
         let generation = binding.validated_generation()?;
         // Includes the entire retained chain, source holds, registration links,
         // primary admission and cutover. Do not replace with bounded roots.
-        let Some(history) = changelog_v3_roots::validate_retained_history(read)? else {
+        let history = match resolver {
+            Some(resolver) => crate::history_stub::validate_owned_history(read, binding, resolver)?,
+            None => changelog_v3_roots::validate_retained_history(read)?,
+        };
+        let Some(history) = history else {
             return Ok(None);
         };
         generation.verify(binding)?;

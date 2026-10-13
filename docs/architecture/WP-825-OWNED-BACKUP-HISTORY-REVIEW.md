@@ -336,3 +336,50 @@ shipping or campaign qualification. No validation, workload, clock or campaign
 gate has been relaxed. Full final-source CI, scheduled population, the
 45-second campaign window, resources and both measured campaigns remain
 outstanding.
+
+## Accepted bounded private read intervals
+
+The maintainer accepted ADR-0300 and its WP-825 registration on 2026-10-13.
+The registration is a separate prerequisite commit. Its exact Decision amends
+ADR-0299's custody-check boundary only for the bounded private input protocol.
+
+Original borrowing now has a closed private read owner for at most 256 candidate
+frames and 64 MiB of reserved physical reads per interval. The reservation
+includes both extent-header slots and bounds actual file reads. Missing or
+wrong-generation candidates consume that conservative reservation. Before and
+after each interval, the original exact inventory, manifest, descriptor/name
+identity, links, lengths, write observations, cancellation and private shadow
+absence remain checked. Reads retain independent positions and all existing
+framing, checksum, generation, database, admission and semantic checks.
+
+A scoped resolver is not registered for ambient lookup. Only the actual native
+preparation or complete-validation caller installs it on its synchronous
+thread; a same-database alternate cannot rescue failed custody. Cross-thread
+use and overlapping scopes refuse. Completed history roots escape only after
+all original read intervals and native generation checks finish. Hydration
+finishes read validation before its existing private transaction writes, then
+rechecks the finished original owner and the same native preparation engine
+before commit. Unfinished drop, cancellation, observed I/O failure or changed
+source permanently invalidates that owner. No original source is resealed.
+
+The original work-bound regression fails semantically before batching; receipt
+`39040376fa6b61a58913d3990936c875c0818834e4205355796c606ddc5951ae`.
+Required-host focused checks subsequently pass without retries: the work-bound
+regression, 17 owned-source tests, native generation fences, 15 readiness tests,
+three retained-frame tests and Clippy. Actual child-process crashes during
+unfinished reads and before hydration commit leave all original artifact hashes
+unchanged, preserve the unhydrated durable row and refuse reuse of the partial
+stage. Changed-source injection immediately before commit also aborts that
+hydration batch. Receipt:
+`5f4bf75a9b37ae66a9026888e2c2a0dc7f3cda691cb96f5ef2a9460c0f4e3a41`.
+All 5,204 committed source hashes outside the 14 implementation/test drafts,
+including frozen compatibility inputs, remain unchanged on the required host.
+
+Original full publication verification, complete final source seals and
+independent transferred-target readback remain. Ordinary readers and unsupported
+complete-copy protocols retain their prior checks. No durable encoding, fixture,
+application surface or operator contract changes; the existing backup/restore
+handbook contract remains accurate. Shipping whole60 retesting, complete scoped
+acceptance, full final-source CI, scheduled population, campaign45, resources and
+both measured campaigns remain outstanding. These focused checks establish no
+performance or campaign qualification.

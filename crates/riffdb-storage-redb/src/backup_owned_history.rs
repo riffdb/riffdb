@@ -689,33 +689,32 @@ impl BorrowedHistoryMedia {
             .find(|(g, _)| crate::journal::sealed_journal_path(&self.database, *g) == path)
             .map(|(_, a)| self.backup.path.join(&a.name))
     }
-    /// A missing canonical sealed candidate is an authoritative absence in
-    /// this closed inventory. Journal readers may then try the copied active
-    /// extent, whose anchored prefix can still contain retained frames.
-    fn absent_sealed(&self, path: &Path) -> io::Result<bool> {
+    /// Pure exact-name resolution; interval custody supplies the closed
+    /// private namespace proof. Ordinary reads still check it individually.
+    fn canonical_absent_sealed(&self, path: &Path) -> Option<u64> {
         if path.parent() != self.database.parent() || self.original(path).is_some() {
-            return Ok(false);
+            return None;
         }
         let zero = crate::journal::sealed_journal_path(&self.database, 0);
-        let name = zero.file_name().ok_or_else(refused)?.as_encoded_bytes();
+        let name = zero.file_name()?.as_encoded_bytes();
         let prefix = &name[..name.len() - 20];
-        let Some(digits) = path
-            .file_name()
-            .and_then(|n| n.as_encoded_bytes().strip_prefix(prefix))
-        else {
-            return Ok(false);
-        };
+        let digits = path.file_name()?.as_encoded_bytes().strip_prefix(prefix)?;
         if digits.len() != 20 || !digits.iter().all(u8::is_ascii_digit) {
-            return Ok(false);
+            return None;
         }
         let generation = std::str::from_utf8(digits)
+            .ok()?
+            .parse::<u64>()
             .ok()
-            .and_then(|n| n.parse::<u64>().ok())
-            .filter(|n| *n > 0);
-        let Some(generation) = generation else {
-            return Ok(false);
-        };
-        if crate::journal::sealed_journal_path(&self.database, generation) != path {
+            .filter(|n| *n > 0)?;
+        (crate::journal::sealed_journal_path(&self.database, generation) == path)
+            .then_some(generation)
+    }
+
+    /// A missing canonical sealed candidate is an authoritative absence in
+    /// this closed inventory, allowing the copied active extent candidate.
+    fn absent_sealed(&self, path: &Path) -> io::Result<bool> {
+        if self.canonical_absent_sealed(path).is_none() {
             return Ok(false);
         }
         self.backup.verify_namespace().map_err(unavailable)?;
@@ -756,6 +755,11 @@ impl BorrowedHistoryMedia {
     }
 }
 impl JournalMedia for BorrowedHistoryMedia {
+    fn begin_owned_restore_reads(
+        &self,
+    ) -> io::Result<Option<Box<dyn crate::media::OwnedRestoreReads>>> {
+        read_intervals::PrivateReads::acquire(self).map(Some)
+    }
     fn open_directory(&self, path: &Path) -> io::Result<Box<dyn JournalMediaDirectory>> {
         if Some(path) != self.database.parent() {
             return Err(refused());
@@ -838,3 +842,6 @@ std::thread_local! {
 #[cfg(test)]
 #[path = "backup_owned_history_tests.rs"]
 mod tests;
+
+#[path = "backup_owned_read_intervals.rs"]
+mod read_intervals;

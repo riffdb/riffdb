@@ -593,3 +593,30 @@ fn staged_restore_native_custody_remains_exclusive_after_full_validation() {
     assert!(!scope.join("configured.redb").exists());
     stage.discard().unwrap();
 }
+
+#[test]
+fn preparation_read_generation_cannot_cross_a_write_close_or_cancellation() {
+    for mode in 0..3 {
+        let root = ScopedDirectory::new("private-preparation-read-generation");
+        let path = healthy(&root);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let owner = RestoreCustody::capture_for_preparation(&path, Arc::clone(&cancelled)).unwrap();
+        let backend = owner.lease().unwrap();
+        let proof = owner.preparation_read_generation().unwrap();
+        proof.verify_read().unwrap();
+        match mode {
+            0 => {
+                backend.write(0, &[0]).unwrap();
+                proof.verify_preparation_owner().unwrap();
+            }
+            1 => {
+                backend.close().unwrap();
+                let _replacement = owner.lease().unwrap();
+            }
+            _ => cancelled.store(true, Ordering::Release),
+        }
+        assert!(proof.verify_read().is_err());
+        cancelled.store(false, Ordering::Release);
+        assert!(owner.preparation_read_generation().is_err());
+    }
+}

@@ -19,6 +19,17 @@ use crate::error::storage_error;
 use crate::journal::{FramePlacement, JournalFrame, JournalTable};
 use crate::media::JournalMedia;
 
+#[path = "history_stub_private_reads.rs"]
+mod private_reads;
+use private_reads::{HydrationRead, private_resolver};
+pub(crate) fn validate_owned_history(
+    read: &redb::ReadTransaction,
+    binding: &crate::maintenance::RestoreIntegrityBinding,
+    resolver: &HistoryResolver,
+) -> Result<Option<riffdb_storage_api::ChangelogHistoryStateV3>, StorageError> {
+    private_reads::validate_owned_history(read, binding, resolver)
+}
+
 const STUB_MAGIC: [u8; 8] = *b"RDBHST01";
 const STUB_VERSION: u16 = 1;
 /// Exact encoded size of every stub.
@@ -248,7 +259,7 @@ struct PendingFrames {
     sweep_at: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum ExtentLocation {
     /// Extents named beside a database file.
     Database(PathBuf),
@@ -383,31 +394,43 @@ fn live_resolvers(database_id: DatabaseId) -> Result<Vec<Arc<HistoryResolver>>, 
         .collect())
 }
 
+fn read_stub_frame_from(
+    resolver: &HistoryResolver,
+    stub: &HistoryStub,
+) -> Result<JournalFrame, crate::journal::JournalIoError> {
+    match &resolver.location {
+        ExtentLocation::Database(path) => crate::journal::read_retained_frame_with_media(
+            resolver.media.as_ref(),
+            path,
+            stub.database_id,
+            stub.placement,
+            stub.generation,
+        ),
+        ExtentLocation::Backup(directory) => crate::journal::read_retained_frame_from_with_media(
+            resolver.media.as_ref(),
+            &crate::backup::extent_artifacts(directory, stub.generation),
+            stub.database_id,
+            stub.placement,
+            stub.generation,
+        ),
+    }
+}
+
 fn read_stub_frame(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
+    if let Some(resolver) = private_resolver() {
+        if resolver.database_id != stub.database_id {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return read_stub_frame_from(&resolver, stub)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData));
+    }
     let resolvers = live_resolvers(stub.database_id)?;
     if resolvers.is_empty() {
         // No open store can reach the extent this stub names.
         return Err(storage_error(StorageErrorKind::Unavailable));
     }
     for resolver in resolvers {
-        let frame = match &resolver.location {
-            ExtentLocation::Database(path) => crate::journal::read_retained_frame_with_media(
-                resolver.media.as_ref(),
-                path,
-                stub.database_id,
-                stub.placement,
-                stub.generation,
-            ),
-            ExtentLocation::Backup(directory) => {
-                crate::journal::read_retained_frame_from_with_media(
-                    resolver.media.as_ref(),
-                    &crate::backup::extent_artifacts(directory, stub.generation),
-                    stub.database_id,
-                    stub.placement,
-                    stub.generation,
-                )
-            }
-        };
+        let frame = read_stub_frame_from(&resolver, stub);
         if let Ok(frame) = frame {
             return Ok(frame);
         }
@@ -428,9 +451,11 @@ pub(crate) fn resolve_commits_value(value: &[u8]) -> Result<Cow<'_, [u8]>, Stora
         .filter(|_| stub.kind == StubKind::Segment)
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     let key = crate::keys::encode_application_sequence_key(first);
-    for resolver in live_resolvers(stub.database_id)? {
-        if let Some(value) = resolver.pending_segment(&stub.placement.frame_hash, &key) {
-            return Ok(Cow::Owned(value));
+    if private_resolver().is_none() {
+        for resolver in live_resolvers(stub.database_id)? {
+            if let Some(value) = resolver.pending_segment(&stub.placement.frame_hash, &key) {
+                return Ok(Cow::Owned(value));
+            }
         }
     }
     let frame = read_stub_frame(&stub)?;
@@ -675,16 +700,36 @@ const HYDRATION_BATCH_ROWS: usize = 256;
 /// durably; a partly hydrated database is valid, since a stub and its value
 /// are interchangeable representations (C3).
 pub(crate) fn hydrate_history_stubs(database: &redb::Database) -> Result<(), StorageError> {
-    hydrate_stubs(database, false)
+    hydrate_stubs(database, false, None)
 }
 
 pub(crate) fn hydrate_surviving_command_stubs(
     database: &redb::Database,
 ) -> Result<(), StorageError> {
-    hydrate_stubs(database, true)
+    hydrate_stubs(database, true, None)
 }
 
-fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), StorageError> {
+pub(crate) fn hydrate_surviving_command_stubs_owned(
+    database: &redb::Database,
+    resolver: &HistoryResolver,
+    custody: &crate::maintenance::RestoreCustody,
+) -> Result<(), StorageError> {
+    use redb::ReadableDatabase as _;
+    let read = database
+        .begin_read()
+        .map_err(crate::error::transaction_error)?;
+    if crate::store::read_identity_from_read_transaction(&read)? != resolver.database_id {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    drop(read);
+    hydrate_stubs(database, true, Some(HydrationRead::new(resolver, custody)))
+}
+
+fn hydrate_stubs(
+    database: &redb::Database,
+    commands_only: bool,
+    owned: Option<HydrationRead<'_>>,
+) -> Result<(), StorageError> {
     use redb::ReadableDatabase as _;
 
     for (index, (definition, resolve)) in [
@@ -705,6 +750,7 @@ fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), S
         }
         let mut after: Option<Vec<u8>> = None;
         loop {
+            let mut input = owned.as_ref().map(HydrationRead::begin_batch).transpose()?;
             let mut batch = Vec::new();
             {
                 let read = database
@@ -712,7 +758,12 @@ fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), S
                     .map_err(crate::error::transaction_error)?;
                 let table = match read.open_table(definition) {
                     Ok(table) => table,
-                    Err(redb::TableError::TableDoesNotExist(_)) => break,
+                    Err(redb::TableError::TableDoesNotExist(_)) => {
+                        if let Some(input) = &mut input {
+                            input.finish_reading()?;
+                        }
+                        break;
+                    }
                     Err(error) => return Err(crate::error::table_error(error)),
                 };
                 let rows = match after.as_deref() {
@@ -734,6 +785,9 @@ fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), S
                         }
                     }
                 }
+            }
+            if let Some(input) = &mut input {
+                input.finish_reading()?;
             }
             if batch.is_empty() {
                 break;
@@ -759,6 +813,9 @@ fn hydrate_stubs(database: &redb::Database, commands_only: bool) -> Result<(), S
                         return Err(storage_error(StorageErrorKind::CorruptData));
                     }
                 }
+            }
+            if let Some(input) = &input {
+                input.verify_before_commit()?;
             }
             write.commit().map_err(crate::error::commit_error)?;
         }
@@ -793,6 +850,22 @@ pub(crate) fn verify_no_surviving_stubs(database: &redb::Database) -> Result<(),
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn private_read_probe<T>(
+    resolver: &HistoryResolver,
+    read: impl FnOnce() -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+    private_reads::private_read_probe(resolver, read)
+}
+#[cfg(test)]
+pub(crate) fn read_private_frame_probe(stub: &HistoryStub) -> Result<JournalFrame, StorageError> {
+    read_stub_frame(stub)
+}
+#[cfg(test)]
+pub(crate) fn set_hydration_commit_hook(hook: Box<dyn FnOnce()>) {
+    private_reads::set_hydration_commit_hook(hook);
 }
 
 #[cfg(test)]

@@ -85,13 +85,21 @@ impl RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let database_id = read_identity_from_read_transaction(&read)?;
+        if binding.is_some() {
+            self.shared.register_history_resolver(database_id);
+        }
         let history = match binding {
             Some(binding) => match complete {
                 Some(proof) => crate::journal::VerifiedMaterializedHistory::reuse_owned_restore(
                     read, binding, proof,
                 ),
                 None => crate::journal::VerifiedMaterializedHistory::capture_owned_restore(
-                    read, binding,
+                    read,
+                    binding,
+                    self.shared
+                        .history_resolver
+                        .get()
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
                 ),
             },
             None => crate::journal::VerifiedMaterializedHistory::capture(read),

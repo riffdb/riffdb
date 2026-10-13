@@ -3921,7 +3921,11 @@ fn read_retained_frame_from_with_admission<R>(
         return Err(JournalIoError::Corrupt);
     }
     for path in candidates {
-        let mut file = match media.open_retained_frame_read(path) {
+        let physical_bytes = placement
+            .padded_len
+            .checked_add(EXTENT_DATA_OFFSET)
+            .ok_or(JournalIoError::Corrupt)?;
+        let mut file = match media.open_owned_retained_frame_read(path, physical_bytes) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(_) => return Err(JournalIoError::Io),
@@ -4427,9 +4431,14 @@ impl VerifiedMaterializedHistory {
     pub(crate) fn capture_owned_restore(
         read: ReadTransaction,
         binding: &crate::maintenance::RestoreIntegrityBinding,
+        resolver: &crate::history_stub::HistoryResolver,
     ) -> Result<Option<Self>, JournalIoError> {
-        let Some(restore) = crate::restore_history::CompleteRestoreHistory::capture(&read, binding)
-            .map_err(|_| JournalIoError::Corrupt)?
+        let Some(restore) = crate::restore_history::CompleteRestoreHistory::capture_with_resolver(
+            &read,
+            binding,
+            Some(resolver),
+        )
+        .map_err(|_| JournalIoError::Corrupt)?
         else {
             return Ok(None);
         };
