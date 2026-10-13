@@ -825,7 +825,7 @@ struct OwnedExtentSeal {
 
 /// Unix descriptor identity and write observations; never a content proof.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct ArtifactContinuity {
+pub(crate) struct ArtifactContinuity {
     device: u64,
     inode: u64,
     length: u64,
@@ -834,7 +834,13 @@ struct ArtifactContinuity {
 }
 
 impl ArtifactContinuity {
-    fn read(file: &File) -> Result<Option<Self>, StorageError> {
+    #[cfg(test)]
+    pub(crate) fn matches_after_known_rename(self, after: Self) -> bool {
+        (self.device, self.inode, self.length, self.modified)
+            == (after.device, after.inode, after.length, after.modified)
+    }
+
+    pub(crate) fn read(file: &File) -> Result<Option<Self>, StorageError> {
         let metadata = file.metadata().map_err(io_unavailable)?;
         if !metadata.is_file() {
             return Err(corrupt());

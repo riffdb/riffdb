@@ -61,6 +61,9 @@ mod restored_readiness;
 #[cfg(test)]
 #[path = "publication_intent_store.rs"]
 mod native_publication;
+#[cfg(test)]
+#[path = "publication_recovery.rs"]
+mod native_recovery;
 
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
@@ -1360,6 +1363,18 @@ impl RedbMaintenanceStorage {
     /// Revalidates every receipt and associated exact filesystem evidence.
     pub fn reconcile(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
+        #[cfg(test)]
+        {
+            // Copy-only stage/temporary reconciliation must never touch an
+            // intent-owned transfer. Native recovery remains separately
+            // qualified until startup consumption and admission are connected.
+            let publication =
+                native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
+            if publication.current.is_some() || publication.temporary_name().is_some() {
+                self.read_complete_inventory_mode(true, false)?;
+                return Err(invariant());
+            }
+        }
         let (inventory, retire_inventory, archive_inventory, scrub_inventory, removed_temps) =
             self.read_complete_inventory(true)?;
         let incomplete_count = inventory
@@ -1705,6 +1720,23 @@ impl RedbMaintenanceStorage {
         ),
         StorageError,
     > {
+        self.read_complete_inventory_mode(remove_temps, true)
+    }
+
+    fn read_complete_inventory_mode(
+        &self,
+        remove_temps: bool,
+        cleanup: bool,
+    ) -> Result<
+        (
+            OfflineMaintenanceReceiptInventoryV1,
+            OfflineMaintenanceReceiptInventoryV2,
+            OfflineMaintenanceReceiptInventoryV3,
+            OfflineMaintenanceReceiptInventoryV4,
+            usize,
+        ),
+        StorageError,
+    > {
         #[cfg(test)]
         let publication =
             native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
@@ -1804,13 +1836,15 @@ impl RedbMaintenanceStorage {
                 temporaries.push(self.receipts_directory.join(temporary));
             }
         }
-        for path in &temporaries {
-            fs::remove_file(path).map_err(io_unavailable)?;
+        if cleanup {
+            for path in &temporaries {
+                fs::remove_file(path).map_err(io_unavailable)?;
+            }
+            if !temporaries.is_empty() {
+                self.receipts_directory_guard.sync()?;
+            }
         }
-        if !temporaries.is_empty() {
-            self.receipts_directory_guard.sync()?;
-        }
-        Ok((v1, v2, v3, v4, temporaries.len()))
+        Ok((v1, v2, v3, v4, if cleanup { temporaries.len() } else { 0 }))
     }
 
     fn receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {

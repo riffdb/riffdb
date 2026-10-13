@@ -13,6 +13,7 @@ pub(super) struct IntentInventory {
     pub(super) current: Option<PublicationIntent>,
     temporary: Option<OfflineMaintenanceOperationId>,
     current_file: Option<File>,
+    complete_temporary: Option<PublicationIntent>,
 }
 
 impl IntentInventory {
@@ -21,6 +22,7 @@ impl IntentInventory {
             current: None,
             temporary: None,
             current_file: None,
+            complete_temporary: None,
         };
         for (name, is_directory) in directory.bounded_entries(
             MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 + MAX_UNPUBLISHED_RECEIPT_TEMPS + 2,
@@ -39,21 +41,32 @@ impl IntentInventory {
                 {
                     return Err(corrupt());
                 }
-                checked_record_file(directory, &name)?;
+                let mut file = checked_record_file(directory, &name)?;
+                let bytes = read_record_bytes(&mut file)?;
+                // A torn unpublished write carries no authority. A complete
+                // checksum envelope must decode and bind as the exact next
+                // record before any temporary, including an ordinary receipt,
+                // can be removed. Unknown complete versions fail closed.
+                if bytes.len() >= 32 {
+                    let (body, checksum) = bytes.split_at(bytes.len() - 32);
+                    if sha2::Sha256::digest(body).as_slice() == checksum {
+                        let intent = PublicationIntent::decode(&bytes)?;
+                        if intent.operation_id != operation {
+                            return Err(corrupt());
+                        }
+                        inventory.complete_temporary = Some(intent);
+                    }
+                }
+                if !directory.regular_file_matches(&name, &file)? {
+                    return Err(corrupt());
+                }
             } else if let Some(operation) = text.strip_suffix(SUFFIX) {
                 let operation = parse_operation_id(operation).ok_or_else(corrupt)?;
                 if text != format!("{operation}{SUFFIX}") || inventory.current.is_some() {
                     return Err(corrupt());
                 }
                 let mut file = checked_record_file(directory, &name)?;
-                let mut bytes = Vec::new();
-                Read::by_ref(&mut file)
-                    .take((MAX_INTENT_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map_err(io_unavailable)?;
-                if bytes.len() > MAX_INTENT_BYTES {
-                    return Err(limit_exceeded());
-                }
+                let bytes = read_record_bytes(&mut file)?;
                 let intent = PublicationIntent::decode(&bytes)?;
                 if intent.operation_id != operation
                     || !directory.regular_file_matches(&name, &file)?
@@ -132,11 +145,43 @@ impl IntentInventory {
         } else if receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline {
             return Err(corrupt());
         }
-        if self.temporary.is_some() && receipt.current_phase().is_terminal() {
+        if self.temporary.is_some()
+            && (receipt.current_phase().is_terminal()
+                || self
+                    .current
+                    .as_ref()
+                    .is_some_and(|v| v.phase == PublicationPhase::StartupConsumed))
+        {
             return Err(corrupt());
+        }
+        if let Some(temporary) = &self.complete_temporary {
+            validate_receipt_binding(temporary, receipt)?;
+            match &self.current {
+                Some(prior) => {
+                    let mut next = prior.clone();
+                    next.advance(temporary.phase)?;
+                    if next != *temporary {
+                        return Err(corrupt());
+                    }
+                }
+                None if temporary.phase == PublicationPhase::Prepared => {}
+                None => return Err(corrupt()),
+            }
         }
         Ok(())
     }
+}
+
+fn read_record_bytes(file: &mut File) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::new();
+    Read::by_ref(file)
+        .take((MAX_INTENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(io_unavailable)?;
+    if bytes.len() > MAX_INTENT_BYTES {
+        return Err(limit_exceeded());
+    }
+    Ok(bytes)
 }
 
 fn checked_record_file(directory: &PinnedDirectory, name: &OsStr) -> Result<File, StorageError> {

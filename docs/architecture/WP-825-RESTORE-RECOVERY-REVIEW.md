@@ -18,12 +18,12 @@ new qualification receipts or timing lower bounds.
 
 ## Accepted decisions
 
-1. [ADR-0290](../../adr/0290-restore-content-seals-at-mutation-boundaries.md)
+1. [ADR-0290](https://github.com/riffdb/riffdb/blob/main/adr/0290-restore-content-seals-at-mutation-boundaries.md)
    replaces full hashing at unchanged private handoffs with descriptor and native
    mutation continuity checks. Full hashes remain at mutation and publication
    boundaries. Metadata is not claimed to prove byte equality, and a fresh seal
    cannot legitimize an unexpected mutation.
-2. [ADR-0291](../../adr/0291-bounded-restore-readiness-and-background-validation.md)
+2. [ADR-0291](https://github.com/riffdb/riffdb/blob/main/adr/0291-bounded-restore-readiness-and-background-validation.md)
    extends the existing ordinary dirty-startup model to ordinary self-contained
    restore. It keeps artifact hashes, nonrepairing private physical verification,
    journal/history recovery, bounded roots and fresh staged authorization before
@@ -31,7 +31,7 @@ new qualification receipts or timing lower bounds.
    existing background scrub. A successful ordinary restore consequently ceases
    to assert a complete semantic scrub before publication. Explicit offline
    scrub, archive restore, upgrades and follower paths retain their full proofs.
-3. [ADR-0292](../../adr/0292-recovery-clock-begins-at-primary-loss.md)
+3. [ADR-0292](https://github.com/riffdb/riffdb/blob/main/adr/0292-recovery-clock-begins-at-primary-loss.md)
    measures the unchanged 60-second target from loss of the primary, with a
    previously completed durable backup. Target setup, transfers, validation,
    authorization, publication and first successful write all count. The focused

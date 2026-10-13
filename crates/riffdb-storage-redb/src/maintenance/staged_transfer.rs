@@ -82,7 +82,9 @@ impl RedbSealedStagedRestore {
         // A failed/uncertain intent rename may already leave Prepared durable.
         // Preserve the stage before attempting that write, not only after it.
         self.stage_cleanup.disarm();
-        storage.write_native_publication_intent(None, &prepared)?;
+        storage
+            .write_native_publication_intent(None, &prepared)
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         self.hit(RedbMaintenanceFailpoint::BeforeTargetPublication, true)?;
         let Self {
             configured_parent_guard,
@@ -94,28 +96,40 @@ impl RedbSealedStagedRestore {
             ..
         } = self;
         let target = Arc::new(configured_parent_guard);
-        artifacts.move_to_temporaries(
-            Arc::clone(&target),
-            temporary_names.each_ref().map(|n| n.as_os_str()),
-        )?;
-        // The above completes full original-seal readback of all three files.
-        // No final target artifact has yet been published.
-        backup_directory_guard.verify()?;
-        stage_cleanup.verify()?;
-        artifacts.publish(
-            Arc::clone(&target),
-            final_names.each_ref().map(|n| n.as_os_str()),
-        )?;
-        let mut published = prepared.clone();
-        published.advance(PublicationPhase::Published)?;
-        storage.write_native_publication_intent(Some(&prepared), &published)?;
-        if let Some(controller) = &test_controller {
-            controller.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
-            controller.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
-        }
-        backup_directory_guard.verify()?;
-        stage_cleanup.verify()?;
-        target.verify()?;
+        artifacts.set_test_controller(test_controller.clone());
+        let transfer: Result<(), StorageError> = (|| {
+            artifacts.move_to_temporaries(
+                Arc::clone(&target),
+                temporary_names.each_ref().map(|n| n.as_os_str()),
+            )?;
+            // The above completes full original-seal readback of all three files.
+            // No final target artifact has yet been published.
+            backup_directory_guard.verify()?;
+            stage_cleanup.verify()?;
+            stage_cleanup.directory_guard.bounded_entries(0)?;
+            artifacts.publish(
+                Arc::clone(&target),
+                final_names.each_ref().map(|n| n.as_os_str()),
+            )?;
+            let mut published = prepared.clone();
+            published.advance(PublicationPhase::Published)?;
+            storage.write_native_publication_intent(Some(&prepared), &published)?;
+            if let Some(controller) = &test_controller {
+                controller.hit(RedbMaintenanceFailpoint::AfterTargetPublication, true)?;
+                controller.hit(RedbMaintenanceFailpoint::AfterTargetParentSync, true)?;
+            }
+            backup_directory_guard.verify()?;
+            stage_cleanup.verify()?;
+            stage_cleanup.directory_guard.bounded_entries(0)?;
+            target.verify()?;
+            for name in &temporary_names {
+                if target.regular_file_length(name)?.is_some() {
+                    return Err(corrupt());
+                }
+            }
+            Ok(())
+        })();
+        transfer.map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         // Retain the original independent outer identity FDs until publication
         // and Published durability have completed, then release every native pin.
         drop(artifact_identities);

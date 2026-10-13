@@ -189,3 +189,81 @@ fn qualified_native_transfer_publication_preserves_original_sealed_artifacts() {
             .is_file()
     );
 }
+
+#[test]
+fn native_transfer_legacy_reconciliation_refuses_before_deleting_owned_partial_transfer() {
+    let scope = crate::test_path::ScopedDirectory::new("native-transfer-reconciliation");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    let NativeTransferFixture {
+        mut storage,
+        mut sealed,
+        configured,
+        operation,
+        ..
+    } = native_transfer_fixture(&root);
+    let original = sealed.staged_database_file.clone();
+    sealed.test_controller = Some(RedbMaintenanceTestController::return_at(
+        RedbMaintenanceFailpoint::BeforeTargetPublication,
+    ));
+    assert_eq!(
+        storage
+            .publish_native_transfer_for_qualification(sealed)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    // This is the exact allowed position after the first durable transfer move.
+    let temporary = configured.parent().unwrap().join(target_temporary_name(
+        configured.file_name().unwrap(),
+        operation,
+    ));
+    fs::rename(&original, &temporary).unwrap();
+    let bytes = sha256_file(&temporary).unwrap();
+    let result = storage.reconcile();
+    assert!(
+        temporary.exists(),
+        "legacy reconciliation must preserve intent-owned partial transfer before refusing"
+    );
+    assert_eq!(sha256_file(&temporary).unwrap(), bytes);
+    assert!(
+        result.is_err(),
+        "a copy-only reconciler cannot certify a native transfer"
+    );
+}
+
+pub(in crate::maintenance) fn prepared_transfer_fixture(
+    root: &Path,
+) -> (
+    crate::RedbMaintenanceStorage,
+    PathBuf,
+    PathBuf,
+    OfflineMaintenanceOperationId,
+) {
+    let NativeTransferFixture {
+        storage,
+        mut sealed,
+        configured,
+        named,
+        operation,
+        ..
+    } = native_transfer_fixture(root);
+    sealed.test_controller = Some(RedbMaintenanceTestController::return_at(
+        RedbMaintenanceFailpoint::BeforeTargetPublication,
+    ));
+    assert_eq!(
+        storage
+            .publish_native_transfer_for_qualification(sealed)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    (storage, configured, named, operation)
+}
+
+pub(in crate::maintenance) fn arm_native_transfer_fixture(
+    fixture: &mut NativeTransferFixture,
+    controller: RedbMaintenanceTestController,
+) {
+    fixture.sealed.test_controller = Some(controller);
+}

@@ -52,6 +52,44 @@ pub enum RedbMaintenanceFailpoint {
     AfterTargetPublication,
     /// After the configured database file and parent directory are synchronized.
     AfterTargetParentSync,
+    /// After the owned rename and before directory synchronization.
+    NativeTransferPrimaryRename,
+    /// After synchronizing the source directory of the owned move.
+    NativeTransferPrimarySourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativeTransferPrimaryTargetSync,
+    /// After the owned rename and before directory synchronization.
+    NativeTransferJournalRename,
+    /// After synchronizing the source directory of the owned move.
+    NativeTransferJournalSourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativeTransferJournalTargetSync,
+    /// After the owned rename and before directory synchronization.
+    NativeTransferFormatMarkerRename,
+    /// After synchronizing the source directory of the owned move.
+    NativeTransferFormatMarkerSourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativeTransferFormatMarkerTargetSync,
+    /// After the owned rename and before directory synchronization.
+    NativePublishPrimaryRename,
+    /// After synchronizing the source directory of the owned move.
+    NativePublishPrimarySourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativePublishPrimaryTargetSync,
+    /// After the owned rename and before directory synchronization.
+    NativePublishJournalRename,
+    /// After synchronizing the source directory of the owned move.
+    NativePublishJournalSourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativePublishJournalTargetSync,
+    /// After the owned rename and before directory synchronization.
+    NativePublishFormatMarkerRename,
+    /// After synchronizing the source directory of the owned move.
+    NativePublishFormatMarkerSourceSync,
+    /// After synchronizing both directories of the owned move.
+    NativePublishFormatMarkerTargetSync,
+    /// After all three transferred artifacts pass original-seal readback.
+    NativeTransferReadback,
 }
 
 /// One redaction-safe observation from a maintenance test controller.
@@ -125,7 +163,7 @@ impl RedbMaintenanceTestController {
         }
     }
 
-    pub(super) fn hit(
+    pub(crate) fn hit(
         &self,
         failpoint: RedbMaintenanceFailpoint,
         publication_may_be_durable: bool,
@@ -146,5 +184,46 @@ impl RedbMaintenanceTestController {
             })),
             FailpointAction::AbortProcess => std::process::abort(),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn native_move_failpoints(
+    kind: crate::maintenance::ArtifactKind,
+    published: bool,
+) -> [RedbMaintenanceFailpoint; 3] {
+    use crate::maintenance::ArtifactKind;
+    use RedbMaintenanceFailpoint::*;
+    match (kind, published) {
+        (ArtifactKind::Primary, false) => [
+            NativeTransferPrimaryRename,
+            NativeTransferPrimarySourceSync,
+            NativeTransferPrimaryTargetSync,
+        ],
+        (ArtifactKind::Journal, false) => [
+            NativeTransferJournalRename,
+            NativeTransferJournalSourceSync,
+            NativeTransferJournalTargetSync,
+        ],
+        (ArtifactKind::FormatMarker, false) => [
+            NativeTransferFormatMarkerRename,
+            NativeTransferFormatMarkerSourceSync,
+            NativeTransferFormatMarkerTargetSync,
+        ],
+        (ArtifactKind::Primary, true) => [
+            NativePublishPrimaryRename,
+            NativePublishPrimarySourceSync,
+            NativePublishPrimaryTargetSync,
+        ],
+        (ArtifactKind::Journal, true) => [
+            NativePublishJournalRename,
+            NativePublishJournalSourceSync,
+            NativePublishJournalTargetSync,
+        ],
+        (ArtifactKind::FormatMarker, true) => [
+            NativePublishFormatMarkerRename,
+            NativePublishFormatMarkerSourceSync,
+            NativePublishFormatMarkerTargetSync,
+        ],
     }
 }

@@ -214,6 +214,146 @@ const CUTS: [RedbMaintenanceFailpoint; 5] = [
 ];
 
 #[test]
+fn native_publication_intent_store_refuses_sealed_conflicting_temporary_before_cleanup() {
+    let root = ScopedDirectory::new("intent-store-conflicting-temp");
+    let (storage, _, prepared) = fixture(&root.join("operation"));
+    storage
+        .write_native_publication_intent(None, &prepared)
+        .unwrap();
+    let ordinary = storage
+        .receipts_directory
+        .join(format!(".{}.receipt-v1.tmp", prepared.operation_id));
+    let temporary = storage
+        .receipts_directory
+        .join(format!(".{}{TEMP_SUFFIX}", prepared.operation_id));
+    fs::write(&ordinary, b"ordinary evidence must survive").unwrap();
+    let mut conflicting = prepared.clone();
+    conflicting.advance(PublicationPhase::Published).unwrap();
+    conflicting.artifacts[0].checksum = BackupIntegrityChecksumV1::new(vec![0x76; 32]).unwrap();
+    let bytes = conflicting.encode().unwrap();
+    fs::write(&temporary, &bytes).unwrap();
+    assert!(
+        storage.read_complete_inventory(true).is_err(),
+        "a complete conflicting intent temporary must refuse before cleanup"
+    );
+    assert_eq!(fs::read(&temporary).unwrap(), bytes);
+    assert_eq!(
+        fs::read(&ordinary).unwrap(),
+        b"ordinary evidence must survive"
+    );
+}
+
+#[test]
+fn native_publication_intent_store_refuses_unknown_or_nonmonotone_complete_temporaries() {
+    for variant in 0..4 {
+        let root = ScopedDirectory::new("intent-store-complete-temp");
+        let (storage, _, prepared) = fixture(&root.join("operation"));
+        storage
+            .write_native_publication_intent(None, &prepared)
+            .unwrap();
+        let mut candidate = prepared.clone();
+        if variant == 1 {
+            candidate.advance(PublicationPhase::Published).unwrap();
+            candidate
+                .advance(PublicationPhase::StartupConsumed)
+                .unwrap();
+        } else if variant >= 2 {
+            candidate.advance(PublicationPhase::Published).unwrap();
+        }
+        let mut bytes = candidate.encode().unwrap();
+        if variant == 2 {
+            // Frozen envelope: version follows the fixed magic. A future
+            // checksummed version must never be mistaken for a torn write.
+            let magic_length = b"RIFFDB-PUBLICATION-INTENT\0".len();
+            bytes[magic_length..magic_length + 4].copy_from_slice(&2u32.to_be_bytes());
+            let body_length = bytes.len() - 32;
+            let digest = sha2::Sha256::digest(&bytes[..body_length]);
+            bytes[body_length..].copy_from_slice(&digest);
+        } else if variant == 3 {
+            candidate.operation_id =
+                OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1234, [0x77; 10])
+                    .unwrap();
+            bytes = candidate.encode().unwrap();
+        }
+        let temporary = storage
+            .receipts_directory
+            .join(format!(".{}{TEMP_SUFFIX}", prepared.operation_id));
+        let ordinary = storage
+            .receipts_directory
+            .join(format!(".{}.receipt-v1.tmp", prepared.operation_id));
+        fs::write(&temporary, &bytes).unwrap();
+        fs::write(&ordinary, b"ordinary evidence").unwrap();
+        assert!(storage.read_complete_inventory(true).is_err());
+        assert_eq!(fs::read(&temporary).unwrap(), bytes);
+        assert_eq!(fs::read(&ordinary).unwrap(), b"ordinary evidence");
+    }
+}
+
+#[test]
+fn native_publication_intent_store_cleans_only_owned_torn_or_exact_successor_temporaries() {
+    for current in [false, true] {
+        for complete in [false, true] {
+            let root = ScopedDirectory::new("intent-store-owned-temp");
+            let (storage, _, prepared) = fixture(&root.join("operation"));
+            let mut candidate = prepared.clone();
+            if current {
+                storage
+                    .write_native_publication_intent(None, &prepared)
+                    .unwrap();
+                candidate.advance(PublicationPhase::Published).unwrap();
+            }
+            let mut bytes = candidate.encode().unwrap();
+            if !complete {
+                bytes.truncate(bytes.len() / 2);
+            }
+            let temporary = storage
+                .receipts_directory
+                .join(format!(".{}{TEMP_SUFFIX}", prepared.operation_id));
+            fs::write(&temporary, &bytes).unwrap();
+            storage.read_complete_inventory(true).unwrap();
+            assert!(!temporary.exists());
+            assert!(
+                IntentInventory::read(&storage.receipts_directory_guard)
+                    .unwrap()
+                    .current
+                    == current.then_some(prepared)
+            );
+        }
+    }
+}
+
+#[test]
+fn native_publication_intent_store_refuses_even_torn_temporaries_after_startup_consumption() {
+    let root = ScopedDirectory::new("intent-store-consumed-temp");
+    let (mut storage, mut receipt, prepared) = fixture(&root.join("operation"));
+    storage
+        .write_native_publication_intent(None, &prepared)
+        .unwrap();
+    let mut published = prepared.clone();
+    published.advance(PublicationPhase::Published).unwrap();
+    storage
+        .write_native_publication_intent(Some(&prepared), &published)
+        .unwrap();
+    receipt
+        .advance(OfflineMaintenanceReceiptTransitionV1::phase(
+            OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
+        ))
+        .unwrap();
+    storage.replace_receipt(&receipt).unwrap();
+    let mut consumed = published.clone();
+    consumed.advance(PublicationPhase::StartupConsumed).unwrap();
+    storage
+        .write_native_publication_intent(Some(&published), &consumed)
+        .unwrap();
+    let temporary = storage
+        .receipts_directory
+        .join(format!(".{}{TEMP_SUFFIX}", prepared.operation_id));
+    fs::write(&temporary, b"unexpected successor").unwrap();
+    assert!(storage.read_complete_inventory(true).is_err());
+    assert_eq!(fs::read(&temporary).unwrap(), b"unexpected successor");
+}
+
+#[test]
 fn native_publication_intent_store_process_child() {
     let Some(root) = std::env::var_os("RIFFDB_TEST_INTENT_STORE_ROOT") else {
         return;

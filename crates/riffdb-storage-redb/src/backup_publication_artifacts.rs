@@ -11,6 +11,8 @@ pub(crate) struct OwnedPublicationArtifacts {
     continuity: [Option<ArtifactContinuity>; 3],
     readback_complete: bool,
     invalid: bool,
+    test_controller: Option<crate::RedbMaintenanceTestController>,
+    publishing: bool,
     pub(crate) history: riffdb_storage_api::ChangelogHistoryStateV3,
     pub(crate) retention_watermark: u64,
     pub(crate) incarnation: u64,
@@ -61,6 +63,8 @@ impl OwnedClosedMaterialization {
             continuity: seals.continuity,
             readback_complete: false,
             invalid: false,
+            test_controller: None,
+            publishing: false,
             history: facts.0,
             retention_watermark: facts.1,
             incarnation: self.history_incarnation,
@@ -71,6 +75,19 @@ impl OwnedClosedMaterialization {
 }
 
 impl OwnedPublicationArtifacts {
+    pub(crate) fn set_test_controller(
+        &mut self,
+        controller: Option<crate::RedbMaintenanceTestController>,
+    ) {
+        self.test_controller = controller;
+    }
+
+    fn hit(&self, point: crate::RedbMaintenanceFailpoint) -> Result<(), StorageError> {
+        self.test_controller
+            .as_ref()
+            .map_or(Ok(()), |controller| controller.hit(point, true))
+    }
+
     pub(crate) fn publication_intent(
         &mut self,
         operation: riffdb_types::OfflineMaintenanceOperationId,
@@ -126,7 +143,7 @@ impl OwnedPublicationArtifacts {
         Ok(())
     }
 
-    fn verify_continuity(&mut self) -> Result<(), StorageError> {
+    pub(crate) fn verify_continuity(&mut self) -> Result<(), StorageError> {
         let result = self.check_continuity();
         if result.is_err() {
             self.invalid = true;
@@ -160,6 +177,16 @@ impl OwnedPublicationArtifacts {
     ) -> Result<(), StorageError> {
         let result = (|| {
             self.verify_continuity()?;
+            let points = crate::maintenance::native_move_failpoints(
+                crate::maintenance::ArtifactKind::ORDERED[index],
+                self.publishing,
+            );
+            let controller = self.test_controller.clone();
+            let hit = |point| {
+                controller
+                    .as_ref()
+                    .map_or(Ok(()), |controller| controller.hit(point, true))
+            };
             let artifact = &mut self.artifacts[index];
             let from_name = artifact
                 .path()
@@ -176,6 +203,7 @@ impl OwnedPublicationArtifacts {
             } else {
                 parent.rename_to(&from_name, &target, name)?;
             }
+            hit(points[0])?;
             // A completed move changes only the known directory entry. Retain
             // the creation FD and check both locations before updating the pin.
             if parent.regular_file_length(&from_name)?.is_some()
@@ -184,7 +212,9 @@ impl OwnedPublicationArtifacts {
                 return Err(corrupt());
             }
             parent.sync()?;
+            hit(points[1])?;
             target.sync()?;
+            hit(points[2])?;
             *parent = target;
             artifact.staged.path = parent.child_path(name)?;
             let after = ArtifactContinuity::read(file)?;
@@ -209,6 +239,7 @@ impl OwnedPublicationArtifacts {
         names: [&OsStr; 3],
     ) -> Result<(), StorageError> {
         self.readback_complete = false;
+        self.publishing = false;
         self.verify_continuity()?;
         for (index, name) in names.into_iter().enumerate() {
             self.move_one(index, Arc::clone(&target), name)?;
@@ -223,6 +254,7 @@ impl OwnedPublicationArtifacts {
         }
         target.sync()?;
         self.readback_complete = true;
+        self.hit(crate::RedbMaintenanceFailpoint::NativeTransferReadback)?;
         Ok(())
     }
 
@@ -235,6 +267,7 @@ impl OwnedPublicationArtifacts {
             return Err(corrupt());
         }
         // Check continuity since readback, then publish the marker last.
+        self.publishing = true;
         self.verify_continuity()?;
         for (index, name) in names.into_iter().enumerate() {
             self.move_one(index, Arc::clone(&target), name)?;

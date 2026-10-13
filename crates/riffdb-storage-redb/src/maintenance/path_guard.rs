@@ -339,6 +339,23 @@ impl PinnedDirectory {
             .map_err(io_unavailable)
     }
 
+    /// Duplicates retained capabilities without reopening an ambient path.
+    #[cfg(test)]
+    pub(crate) fn retained_clone(&self) -> Result<Self, StorageError> {
+        self.verify()?;
+        let retained = Self {
+            path: self.path.clone(),
+            canonical_path: self.canonical_path.clone(),
+            directory: self.directory.try_clone().map_err(io_unavailable)?,
+            sync_handle: self.sync_handle.try_clone().map_err(io_unavailable)?,
+            #[cfg(unix)]
+            identity: self.identity,
+        };
+        retained.verify()?;
+        self.verify()?;
+        Ok(retained)
+    }
+
     #[cfg(test)]
     pub(crate) fn child_path(&self, name: &OsStr) -> Result<PathBuf, StorageError> {
         self.verify()?;

@@ -176,3 +176,39 @@ predates the separately committed ADR-0294 path extension. An isolated checkout
 of the current branch, with exactly the qualified source bytes, passes the path
 check, package brief, acceptance dry plan, handbook source inventory and whitespace
 check. No path rule is weakened. Full acceptance and final-source CI remain open.
+
+## Interrupted transfer recovery checkpoint
+
+Qualification first reproduces two cleanup defects: a complete conflicting
+intent temporary was discarded, and copy-only reconciliation removed a primary
+left at its intent-owned target temporary. Both now refuse before cleanup. A
+third retained-owner regression proves that a duplicate or foreign stage entry
+introduced after the initial check also refuses before receipt cleanup.
+Complete temporary records must decode and bind as the exact monotone successor;
+unknown versions, changed seals, foreign operations and impossible successors
+preserve evidence. Positively owned torn writes carry no publication authority.
+
+Cold recovery takes a fresh maintenance owner and native exclusion over the
+actual primary, then verifies exactly one permitted location for each original
+artifact, the complete immutable backup and every original content seal. It
+resumes the recorded moves with original inodes and incarnation, without opening
+an engine or minting readiness. All three full readbacks precede any remaining
+final rename; the format marker remains last. Consumed records cannot resume
+publication or demand obsolete primary content seals.
+
+The required host passes 43 actual process-abort cuts: 19 move/readback boundaries
+on fresh transfer, the same 19 on cold continuation, and five Published-intent
+file-sync/rename/directory-sync boundaries on actual native artifacts. Each case
+recovers the same operation, all original inodes and seals, and incarnation 2;
+the ordinary receipt remains Offline. Another 38 returned failures prove typed
+publication uncertainty and same-operation continuation. Missing, changed,
+duplicated, linked or foreign artifacts refuse before cleanup. Six artifact,
+24 custody, ten intent-store and five codec regressions pass, together with
+all-target/all-feature storage Clippy. Independently verified receipt SHA-256:
+`831e949b8ab1507471b398cc1c73f6e9c1e7dd1f0df36b879fe81dd9bfc93bef`.
+
+Native recovery remains test-only. The ordinary copy-only reconciler is fenced
+from intent-owned transfers during qualification. Production activation still
+requires StartupConsumed before engine open, complete restarted validation,
+Succeeded cleanup before admission and their process-crash tests. No recovery
+timing gate, final-source CI or measured campaign is claimed by this checkpoint.
