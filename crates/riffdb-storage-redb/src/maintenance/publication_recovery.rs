@@ -1,5 +1,5 @@
 //! Cold ownership of the actual intent-bound artifacts, never a validation proof.
-//! Test-only until startup consumption and ordinary admission are connected.
+//! Only fresh complete startup and durable terminal cleanup permit admission.
 use super::native_publication::IntentInventory;
 use super::*;
 use crate::backup::ArtifactContinuity;

@@ -512,12 +512,14 @@ fn native_publication_startup_interrupted_dirty_generation_recovers_the_consumed
     let root = scope.join("fixture");
     fs::create_dir(&root).unwrap();
     abort_startup_child(&root, CONSUMED_CUTS.len() + 1);
-    let storage = RedbMaintenanceStorage::acquire_owner(
-        &root.join("configured.redb"),
-        &root.join("backups"),
-        None,
-    )
-    .unwrap();
+    let (storage, reconciliation) =
+        RedbMaintenanceStorage::open(root.join("configured.redb"), root.join("backups")).unwrap();
+    assert!(
+        reconciliation
+            .operations()
+            .iter()
+            .any(|e| e.native_publication_target_owned())
+    );
     let recovered = storage
         .prepare_native_publication_recovery()
         .unwrap()
@@ -693,9 +695,6 @@ fn native_publication_success_restart_cleans_intent_without_republishing_the_bac
         .receipts_directory
         .join(format!("{operation}.publication-intent-v1"));
     assert!(intent_path.exists());
-    storage
-        .complete_native_publication_cleanup(operation)
-        .unwrap();
     storage.reconcile().expect(
         "a completed consumed restore must finish intent cleanup without backup republication",
     );

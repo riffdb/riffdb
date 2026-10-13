@@ -41,7 +41,6 @@ pub(super) use promotion_receipt::{
 };
 
 // ADR-0294 codec qualification precedes activation of the transfer protocol.
-#[cfg(test)]
 #[path = "publication_intent.rs"]
 pub(super) mod publication_intent;
 

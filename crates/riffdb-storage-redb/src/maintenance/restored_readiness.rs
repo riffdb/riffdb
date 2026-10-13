@@ -5,6 +5,16 @@ use riffdb_storage_api::ChangelogPublicationPort;
 use std::sync::Arc;
 
 impl RedbMaintenanceStorage {
+    /// Finishes only matching successful restore intent cleanup before admission.
+    /// This cannot complete validation, advance a receipt or alter database files.
+    #[doc(hidden)]
+    pub fn complete_published_restore_publication_cleanup(
+        &self,
+        operation: OfflineMaintenanceOperationId,
+    ) -> Result<(), StorageError> {
+        self.complete_native_publication_cleanup(operation)
+    }
+
     /// Opens only the target of an actually published, nonterminal restore.
     /// Receipt, immutable backup, target identity and application frontier must
     /// agree before the ordinary bounded startup evidence can be consumed.
@@ -42,9 +52,7 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
-        #[cfg(test)]
         let native = self.consume_native_publication_for_startup(operation_id)?;
-        #[cfg(test)]
         // Fresh sealed publication remains nonrepairing. Previously consumed
         // targets may need ordinary engine crash recovery, but still require
         // the complete current-state walk selected below (ADR-0295).
@@ -64,12 +72,6 @@ impl RedbMaintenanceStorage {
                 publication,
             )?
         };
-        #[cfg(not(test))]
-        let store = crate::RedbStore::open_with_changelog_publication_port(
-            &self.database_file,
-            application_commit_profile,
-            publication,
-        )?;
         let read = store
             .shared
             .database
@@ -87,7 +89,6 @@ impl RedbMaintenanceStorage {
         {
             return Err(corrupt());
         }
-        #[cfg(test)]
         if let Some(native) = &native {
             let intent = native.intent();
             let history =
@@ -106,7 +107,6 @@ impl RedbMaintenanceStorage {
         }
         drop(read);
         self.verify_path_ownership()?;
-        #[cfg(test)]
         if native.is_some_and(|native| native.requires_complete_validation()) {
             return store.begin_native_published_restore_recovery(inputs);
         }

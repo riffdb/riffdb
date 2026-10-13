@@ -58,10 +58,8 @@ mod promotion_receipts;
 #[path = "restored_readiness.rs"]
 mod restored_readiness;
 // Qualify the intent owner and inventory before native transfer activation.
-#[cfg(test)]
 #[path = "publication_intent_store.rs"]
 mod native_publication;
-#[cfg(test)]
 #[path = "publication_recovery.rs"]
 mod native_recovery;
 
@@ -126,6 +124,7 @@ pub struct RedbMaintenanceOperationEvidence {
     named_backup_matches: bool,
     staged_restore_matches: bool,
     configured_target_matches: bool,
+    native_publication_target_owned: bool,
 }
 
 impl RedbMaintenanceOperationEvidence {
@@ -153,6 +152,14 @@ impl RedbMaintenanceOperationEvidence {
     #[must_use]
     pub const fn configured_target_matches(self) -> bool {
         self.configured_target_matches
+    }
+
+    /// Returns ownership of the actual native publication candidate only.
+    /// This grants no structural, catalog, startup or application-readiness proof.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn native_publication_target_owned(self) -> bool {
+        self.native_publication_target_owned
     }
 }
 
@@ -380,9 +387,14 @@ impl RedbMaintenanceStorage {
     /// successful join; this method cannot waive unresolved promotion evidence.
     pub fn reconcile_for_startup(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
-        let migration_receipts = self.validate_migration_inventory()?;
-        self.reconcile()?
-            .with_migration_receipts(migration_receipts)
+        // Validate migration evidence without releasing reservations before
+        // the whole maintenance owner (including native publication) is checked.
+        let migration_receipts = self.validate_migration_inventory_mode(false)?;
+        let reconciliation = self
+            .reconcile()?
+            .with_migration_receipts(migration_receipts)?;
+        self.release_migration_reservations(reconciliation.migration_receipts())?;
+        Ok(reconciliation)
     }
 
     fn acquire_owner(
@@ -1330,7 +1342,19 @@ impl RedbMaintenanceStorage {
         {
             return Err(invariant());
         }
-        let result = sealed.publish_to_configured_database(overwrite_policy)?;
+        let result = if receipt.source_database_id().is_none()
+            && overwrite_policy == OfflineRestoreOverwritePolicyV1::RefuseNonEmpty
+            && sealed.permits_native_transfer()?
+        {
+            if receipt.published_history_incarnation() != Some(sealed.staged_history_incarnation())
+            {
+                return Err(invariant());
+            }
+            sealed.publish_by_native_transfer(self)?
+        } else {
+            // Eligibility is decided before any durable intent or artifact move.
+            sealed.publish_to_configured_database(overwrite_policy)?
+        };
         self.verify_path_ownership()?;
         Ok(result)
     }
@@ -1363,18 +1387,7 @@ impl RedbMaintenanceStorage {
     /// Revalidates every receipt and associated exact filesystem evidence.
     pub fn reconcile(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
-        #[cfg(test)]
-        {
-            // Copy-only stage/temporary reconciliation must never touch an
-            // intent-owned transfer. Native recovery remains separately
-            // qualified until startup consumption and admission are connected.
-            let publication =
-                native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
-            if publication.current.is_some() || publication.temporary_name().is_some() {
-                self.read_complete_inventory_mode(true, false)?;
-                return Err(invariant());
-            }
-        }
+        let native_operation = self.reconcile_native_publication()?;
         let (inventory, retire_inventory, archive_inventory, scrub_inventory, removed_temps) =
             self.read_complete_inventory(true)?;
         let incomplete_count = inventory
@@ -1502,8 +1515,12 @@ impl RedbMaintenanceStorage {
 
             let stage_name = receipt.operation_id().to_string();
             let stage_exists = staged_names.contains(&stage_name);
-            let staged_artifact_checksum = if stage_exists && receipt.current_phase().is_terminal()
-            {
+            let native_publication_target_owned = native_operation == Some(receipt.operation_id());
+            let staged_artifact_checksum = if native_publication_target_owned {
+                // The original three files have moved out of the stage. Native
+                // ownership is not a copied-stage semantic validation proof.
+                None
+            } else if stage_exists && receipt.current_phase().is_terminal() {
                 remove_incomplete_stage(&self.staged_directory.join(&stage_name))?;
                 removed_terminal_stages = removed_terminal_stages
                     .checked_add(1)
@@ -1578,15 +1595,17 @@ impl RedbMaintenanceStorage {
                 OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
                     | OfflineMaintenanceReceiptPhaseV1::Validating
             );
-            let configured_target_matches = if receipt.operation_kind()
-                == OfflineMaintenanceOperationKind::RestoreBackup
+            let configured_target_matches = if native_publication_target_owned {
+                false
+            } else if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup
                 && !receipt.current_phase().is_terminal()
                 && matches!(
                     receipt.current_phase(),
                     OfflineMaintenanceReceiptPhaseV1::Offline
                         | OfflineMaintenanceReceiptPhaseV1::ArtifactPublished
                         | OfflineMaintenanceReceiptPhaseV1::Validating
-                ) {
+                )
+            {
                 let Some((manifest, _)) = named.as_ref() else {
                     return Err(corrupt());
                 };
@@ -1631,6 +1650,7 @@ impl RedbMaintenanceStorage {
                 named_backup_matches,
                 staged_restore_matches,
                 configured_target_matches,
+                native_publication_target_owned,
             });
         }
         let reconciliation = RedbMaintenanceReconciliation {
@@ -1737,7 +1757,6 @@ impl RedbMaintenanceStorage {
         ),
         StorageError,
     > {
-        #[cfg(test)]
         let publication =
             native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
         let mut receipts = Vec::new();
@@ -1754,7 +1773,6 @@ impl RedbMaintenanceStorage {
             }
             let name = entry.file_name();
             let name = name.to_str().ok_or_else(corrupt)?;
-            #[cfg(test)]
             if publication.owns_name(name) {
                 continue;
             }
@@ -1825,7 +1843,6 @@ impl RedbMaintenanceStorage {
         let v3 =
             OfflineMaintenanceReceiptInventoryV3::new(archive_receipts).map_err(value_error)?;
         let v4 = OfflineMaintenanceReceiptInventoryV4::new(scrub_receipts).map_err(value_error)?;
-        #[cfg(test)]
         {
             publication.validate(&v1, &v2, &v3, &v4)?;
             if let Some(temporary) = publication.temporary_name() {
@@ -1937,6 +1954,13 @@ impl RedbMaintenanceStorage {
     fn validate_migration_inventory(
         &self,
     ) -> Result<Vec<ContractMigrationReceiptV1>, StorageError> {
+        self.validate_migration_inventory_mode(true)
+    }
+
+    fn validate_migration_inventory_mode(
+        &self,
+        cleanup: bool,
+    ) -> Result<Vec<ContractMigrationReceiptV1>, StorageError> {
         let mut count = 0usize;
         let mut reservation_count = 0usize;
         let mut receipts = Vec::new();
@@ -1952,7 +1976,9 @@ impl RedbMaintenanceStorage {
                 {
                     return Err(corrupt());
                 }
-                remove_regular_file_if_present(&entry.path())?;
+                if !entry.file_type().map_err(io_unavailable)?.is_file() {
+                    return Err(corrupt());
+                }
                 continue;
             }
             count = count.checked_add(1).ok_or_else(limit_exceeded)?;
@@ -1983,11 +2009,6 @@ impl RedbMaintenanceStorage {
             }
             receipts.push(receipt);
         }
-        for receipt in &receipts {
-            remove_regular_file_if_present(
-                &self.contract_migration_reservation_path(receipt.operation_id())?,
-            )?;
-        }
         receipts.sort_unstable_by_key(ContractMigrationReceiptV1::operation_id);
         if receipts
             .windows(2)
@@ -2000,7 +2021,27 @@ impl RedbMaintenanceStorage {
         {
             return Err(invariant());
         }
+        if cleanup {
+            self.release_migration_reservations(&receipts)?;
+        }
         Ok(receipts)
+    }
+
+    fn release_migration_reservations(
+        &self,
+        receipts: &[ContractMigrationReceiptV1],
+    ) -> Result<(), StorageError> {
+        for receipt in receipts {
+            remove_regular_file_if_present(
+                &self
+                    .migrations_directory
+                    .join(format!(".{}.backup-reservation", receipt.operation_id())),
+            )?;
+            remove_regular_file_if_present(
+                &self.contract_migration_reservation_path(receipt.operation_id())?,
+            )?;
+        }
+        Ok(())
     }
 
     fn write_receipt(&self, receipt: &OfflineMaintenanceReceiptV1) -> Result<(), StorageError> {
@@ -2634,8 +2675,17 @@ fn checked_staged_inventory(
     receipts: &BTreeMap<String, &OfflineMaintenanceReceiptV1>,
     archive_operations: &BTreeSet<String>,
 ) -> Result<(BTreeSet<String>, usize), StorageError> {
+    checked_staged_inventory_mode(staged_directory, receipts, archive_operations, true)
+}
+
+fn checked_staged_inventory_mode(
+    staged_directory: &Path,
+    receipts: &BTreeMap<String, &OfflineMaintenanceReceiptV1>,
+    archive_operations: &BTreeSet<String>,
+    cleanup: bool,
+) -> Result<(BTreeSet<String>, usize), StorageError> {
     let mut names = BTreeSet::new();
-    let mut removed_unadmitted = 0usize;
+    let mut unadmitted = Vec::new();
     let mut seen = 0usize;
     for entry in fs::read_dir(staged_directory).map_err(io_unavailable)? {
         if seen == MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
@@ -2656,10 +2706,7 @@ fn checked_staged_inventory(
         }
         let Some(receipt) = receipts.get(&name) else {
             parse_operation_id(&name).ok_or_else(corrupt)?;
-            fs::remove_dir_all(entry.path()).map_err(io_unavailable)?;
-            removed_unadmitted = removed_unadmitted
-                .checked_add(1)
-                .ok_or_else(limit_exceeded)?;
+            unadmitted.push(entry.path());
             continue;
         };
         if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup
@@ -2668,10 +2715,15 @@ fn checked_staged_inventory(
             return Err(corrupt());
         }
     }
-    if removed_unadmitted != 0 {
-        crate::backup::sync_directory(staged_directory)?;
+    if cleanup {
+        for path in &unadmitted {
+            fs::remove_dir_all(path).map_err(io_unavailable)?;
+        }
+        if !unadmitted.is_empty() {
+            crate::backup::sync_directory(staged_directory)?;
+        }
     }
-    Ok((names, removed_unadmitted))
+    Ok((names, if cleanup { unadmitted.len() } else { 0 }))
 }
 
 fn validate_retired_directory_inventory(
@@ -3241,3 +3293,10 @@ mod tests {
         drop(inherited);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "publication_reconcile_tests.rs"]
+mod native_reconcile_tests;
+
+#[path = "publication_reconciliation.rs"]
+mod native_reconciliation;

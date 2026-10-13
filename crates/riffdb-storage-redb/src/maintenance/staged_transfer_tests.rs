@@ -98,7 +98,7 @@ pub(in crate::maintenance) fn native_transfer_fixture(scope: &Path) -> NativeTra
 }
 
 #[test]
-fn qualified_native_transfer_publication_preserves_original_sealed_artifacts() {
+fn native_empty_restore_publication_transfers_original_sealed_artifacts() {
     let scope = crate::test_path::ScopedDirectory::new("native-publication-transfer");
     let root = scope.join("fixture");
     fs::create_dir(&root).unwrap();
@@ -133,7 +133,7 @@ fn qualified_native_transfer_publication_preserves_original_sealed_artifacts() {
         .collect();
     assert!(matches!(
         storage
-            .publish_native_transfer_for_qualification(sealed)
+            .publish_sealed_restore(sealed, OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
             .unwrap(),
         OfflineRestoreResultV1::Restored { .. }
     ));
@@ -191,7 +191,7 @@ fn qualified_native_transfer_publication_preserves_original_sealed_artifacts() {
 }
 
 #[test]
-fn native_transfer_legacy_reconciliation_refuses_before_deleting_owned_partial_transfer() {
+fn native_transfer_reconciliation_resumes_owned_partial_transfer_without_copy_proof() {
     let scope = crate::test_path::ScopedDirectory::new("native-transfer-reconciliation");
     let root = scope.join("fixture");
     fs::create_dir(&root).unwrap();
@@ -220,15 +220,21 @@ fn native_transfer_legacy_reconciliation_refuses_before_deleting_owned_partial_t
     ));
     fs::rename(&original, &temporary).unwrap();
     let bytes = sha256_file(&temporary).unwrap();
-    let result = storage.reconcile();
+    let before = fs::metadata(&temporary).unwrap();
+    let result = storage.reconcile().unwrap();
+    assert!(!temporary.exists());
+    assert_eq!(sha256_file(&configured).unwrap(), bytes);
+    let after = fs::metadata(&configured).unwrap();
+    assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    let evidence = result
+        .operations()
+        .iter()
+        .find(|r| r.operation_id() == operation)
+        .unwrap();
+    assert!(evidence.native_publication_target_owned());
     assert!(
-        temporary.exists(),
-        "legacy reconciliation must preserve intent-owned partial transfer before refusing"
-    );
-    assert_eq!(sha256_file(&temporary).unwrap(), bytes);
-    assert!(
-        result.is_err(),
-        "a copy-only reconciler cannot certify a native transfer"
+        !evidence.configured_target_matches(),
+        "native ownership cannot certify copied-stage validation or readiness"
     );
 }
 

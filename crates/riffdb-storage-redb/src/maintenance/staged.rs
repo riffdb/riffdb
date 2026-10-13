@@ -1542,7 +1542,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
 #[path = "staged_transfer.rs"]
 mod native_transfer;
 #[cfg(all(test, unix))]

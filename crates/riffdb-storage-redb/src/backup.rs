@@ -834,7 +834,6 @@ pub(crate) struct ArtifactContinuity {
 }
 
 impl ArtifactContinuity {
-    #[cfg(test)]
     pub(crate) fn matches_after_known_rename(self, after: Self) -> bool {
         (self.device, self.inode, self.length, self.modified)
             == (after.device, after.inode, after.length, after.modified)
@@ -1073,7 +1072,6 @@ pub(crate) struct OwnedClosedMaterialization {
     materialization: OwnedMaterialization,
     history_incarnation: u64,
     ordinary_source: bool,
-    #[cfg(test)]
     publication_facts: Option<(riffdb_storage_api::ChangelogHistoryStateV3, u64)>,
 }
 
@@ -1224,7 +1222,6 @@ impl OwnedAuthorizationMaterialization {
             materialization,
             history_incarnation,
             ordinary_source,
-            #[cfg(test)]
             publication_facts: None,
         })
     }
@@ -1283,7 +1280,6 @@ impl OwnedStampPreparation {
             mut materialization,
             complete_history,
         } = self.owner;
-        #[cfg(test)]
         let mut publication_facts = None;
         let result = (|| {
             materialization.verify_full_seal()?;
@@ -1303,7 +1299,6 @@ impl OwnedStampPreparation {
                 Some((complete_history, binding)),
             )?;
             crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
-            #[cfg(test)]
             {
                 publication_facts = Some(publication_artifacts::capture_publication_facts(
                     &engine.database,
@@ -1329,7 +1324,6 @@ impl OwnedStampPreparation {
             materialization,
             history_incarnation: incarnation,
             ordinary_source: true,
-            #[cfg(test)]
             publication_facts,
         })
     }
@@ -1379,7 +1373,6 @@ impl OwnedClosedMaterialization {
             )?;
             if self.ordinary_source {
                 crate::startup::validate_restore_transition_roots(&database, incarnation)?;
-                #[cfg(test)]
                 {
                     self.publication_facts =
                         Some(publication_artifacts::capture_publication_facts(
@@ -7159,6 +7152,5 @@ mod tests {
 }
 
 // Qualify the closed artifact handoff before activating ADR-0294 publication.
-#[cfg(test)]
 #[path = "backup_publication_artifacts.rs"]
 pub(crate) mod publication_artifacts;

@@ -195,7 +195,6 @@ impl RedbMaintenanceTestController {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn native_move_failpoints(
     kind: crate::maintenance::ArtifactKind,
     published: bool,

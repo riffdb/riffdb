@@ -1,5 +1,5 @@
 //! The original three closed artifacts, with immutable pre-transfer seals.
-//! This module is qualified before durable publication/restart activation.
+//! Durable publication/restart retains these original seals and file identities.
 use super::*;
 use crate::maintenance::{ClosedPublicationCustody, PinnedDirectory};
 use std::sync::Arc;

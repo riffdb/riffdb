@@ -644,8 +644,6 @@ fn unavailable<T>(_: T) -> StorageError {
 pub(crate) mod tests;
 
 // The closed handoff is qualified before the durable transfer is activated.
-#[cfg(test)]
 #[path = "restore_publication_custody.rs"]
 mod publication;
-#[cfg(test)]
 pub(crate) use publication::ClosedPublicationCustody;

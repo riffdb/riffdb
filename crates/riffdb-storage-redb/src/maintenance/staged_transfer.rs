@@ -1,5 +1,5 @@
 //! Actual three-artifact publication under a durable original-seal intent.
-//! Remains test-only until complete restart and startup fencing are connected.
+//! Complete restart and startup fencing remain required before admission.
 use super::*;
 use crate::maintenance::codec::publication_intent::PublicationPhase;
 use std::sync::Arc;

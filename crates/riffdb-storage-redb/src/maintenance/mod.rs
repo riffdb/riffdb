@@ -94,11 +94,8 @@ pub fn validate_migration_receipt_fixture(
     codec::decode_migration_receipt(encoded).map(drop)
 }
 
-#[cfg(test)]
 pub(crate) use restore_custody::ClosedPublicationCustody;
 
-#[cfg(test)]
 pub(crate) use codec::publication_intent::{ArtifactKind, ArtifactSeal, PublicationIntent};
 
-#[cfg(test)]
 pub(crate) use failpoint::native_move_failpoints;

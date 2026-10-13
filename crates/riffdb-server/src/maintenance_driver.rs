@@ -875,7 +875,7 @@ pub(crate) fn run_recovery_restore(
 
     let configured_target_matches = if existing.is_some() {
         match reconcile_operation(storage, operation_id) {
-            Ok(evidence) => evidence.configured_target_matches(),
+            Ok(evidence) => published_restore_target_candidate(evidence),
             Err(fault) => {
                 return Err(MaintenanceDriverFailure::without_receipt(
                     operation_id,
@@ -1089,6 +1089,11 @@ fn run_create(
     complete_post_publication_validation(storage, lifecycle, dependencies, receipt)
 }
 
+/// Ownership only selects the actual target; fresh startup still gates success.
+fn published_restore_target_candidate(evidence: RedbMaintenanceOperationEvidence) -> bool {
+    evidence.configured_target_matches() || evidence.native_publication_target_owned()
+}
+
 fn run_restore(
     storage: &mut RedbMaintenanceStorage,
     lifecycle: &MaintenanceLifecycle,
@@ -1109,8 +1114,7 @@ fn run_restore(
     };
     match receipt.current_phase() {
         OfflineMaintenanceReceiptPhaseV1::Offline
-            if evidence
-                .is_some_and(RedbMaintenanceOperationEvidence::configured_target_matches) =>
+            if evidence.is_some_and(published_restore_target_candidate) =>
         {
             drop(credential);
             drop(prepared);
@@ -1206,7 +1210,7 @@ fn run_restore(
                 }
                 Err(error) if error.kind() == StorageErrorKind::CommitStatusUnknown => {
                     let recovered = reconcile_operation(storage, receipt.operation_id())?;
-                    if !recovered.configured_target_matches() {
+                    if !published_restore_target_candidate(recovered) {
                         return Err(DriverFault::PublicationUncertain);
                     }
                     advance_receipt(
@@ -1242,7 +1246,7 @@ fn run_restore(
         | OfflineMaintenanceReceiptPhaseV1::Succeeded => {
             drop(credential);
             drop(prepared);
-            if !evidence.is_some_and(RedbMaintenanceOperationEvidence::configured_target_matches)
+            if !evidence.is_some_and(published_restore_target_candidate)
                 || receipt.manifest_identity().is_none()
                 || receipt.staged_database_id().is_none()
             {
@@ -1383,6 +1387,11 @@ fn complete_post_publication_validation(
         }
         OfflineMaintenanceReceiptPhaseV1::Succeeded => {}
         _ => return Err(DriverFault::ReceiptIntegrity),
+    }
+    if receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup {
+        storage
+            .complete_published_restore_publication_cleanup(receipt.operation_id())
+            .map_err(DriverFault::ArtifactStorage)?;
     }
     Ok(startup)
 }

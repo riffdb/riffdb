@@ -118,7 +118,6 @@ enum EvidenceOpenPurpose {
     PublishedRestoreReadiness {
         backup_incarnation: u64,
     },
-    #[cfg(test)]
     PublishedRestoreRecovery,
     OfflineIntegrityScrub,
     /// ADR-0182 background scrub: the complete exact-end walk over a
@@ -132,11 +131,7 @@ enum EvidenceOpenPurpose {
 
 impl EvidenceOpenPurpose {
     fn is_published_restore_recovery(self) -> bool {
-        #[cfg(test)]
-        if self == Self::PublishedRestoreRecovery {
-            return true;
-        }
-        false
+        self == Self::PublishedRestoreRecovery
     }
 
     fn is_restore_readiness(self) -> bool {

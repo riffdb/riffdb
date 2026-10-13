@@ -340,7 +340,6 @@ impl PinnedDirectory {
     }
 
     /// Duplicates retained capabilities without reopening an ambient path.
-    #[cfg(test)]
     pub(crate) fn retained_clone(&self) -> Result<Self, StorageError> {
         self.verify()?;
         let retained = Self {
@@ -356,14 +355,12 @@ impl PinnedDirectory {
         Ok(retained)
     }
 
-    #[cfg(test)]
     pub(crate) fn child_path(&self, name: &OsStr) -> Result<PathBuf, StorageError> {
         self.verify()?;
         Ok(self.path.join(checked_child_name(name)?))
     }
 
     /// The transfer preflight cannot fall back after durable intent creation.
-    #[cfg(test)]
     pub(crate) fn same_filesystem(&self, other: &Self) -> Result<bool, StorageError> {
         self.verify()?;
         other.verify()?;
@@ -375,7 +372,6 @@ impl PinnedDirectory {
 
     /// Moves one direct child through two retained directory capabilities.
     /// The protocol retains original descriptors and owns seal verification.
-    #[cfg(test)]
     pub(crate) fn rename_to(
         &self,
         from: &OsStr,

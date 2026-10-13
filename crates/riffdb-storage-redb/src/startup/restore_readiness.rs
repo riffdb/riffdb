@@ -167,7 +167,6 @@ pub(crate) fn validate_private_restore_readiness_with_history(
 }
 
 impl RedbStore {
-    #[cfg(test)]
     pub(crate) fn begin_native_published_restore_recovery(
         self,
         inputs: StartupValidationInputs,
