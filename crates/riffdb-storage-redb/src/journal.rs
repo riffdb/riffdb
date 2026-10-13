@@ -3921,13 +3921,15 @@ fn read_retained_frame_from_with_admission<R>(
         return Err(JournalIoError::Corrupt);
     }
     for path in candidates {
-        let mut file = match media.open_read(path) {
+        let mut file = match media.open_retained_frame_read(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(_) => return Err(JournalIoError::Io),
         };
         let extent = read_selected_extent_header(&mut file, false)?;
         if extent.generation != generation {
+            file.finish_retained_frame_read()
+                .map_err(|_| JournalIoError::Io)?;
             continue;
         }
         // The anchor may lag a materialized frame until the extent is sealed;
@@ -3969,6 +3971,8 @@ fn read_retained_frame_from_with_admission<R>(
         if frame_hash != placement.frame_hash || frame.database_id() != database_id {
             return Err(JournalIoError::Corrupt);
         }
+        file.finish_retained_frame_read()
+            .map_err(|_| JournalIoError::Io)?;
         return Ok((frame, admitted));
     }
     Err(JournalIoError::Corrupt)

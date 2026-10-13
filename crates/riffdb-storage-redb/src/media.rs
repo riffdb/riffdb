@@ -58,6 +58,12 @@ pub trait JournalMediaFile: std::fmt::Debug + Send {
     fn write_all_at(&mut self, data: &[u8], offset: usize) -> io::Result<()>;
     /// Positional exact read; does not move the sequential cursor.
     fn read_exact_at(&mut self, out: &mut [u8], offset: usize) -> io::Result<()>;
+    /// Complete one retained-frame read before its decoded value can escape.
+    /// Ordinary media needs no extra handoff; owned immutable sources verify
+    /// their retained custody at this boundary.
+    fn finish_retained_frame_read(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     /// Flushes file data (`fdatasync`).
     fn sync_data(&mut self) -> io::Result<()>;
     /// Flushes file data and metadata (`fsync`).
@@ -83,6 +89,13 @@ pub enum MediaFile {
 }
 
 impl MediaFile {
+    pub(crate) fn finish_retained_frame_read(&mut self) -> io::Result<()> {
+        match self {
+            Self::Fs(_) => Ok(()),
+            Self::Port(file) => file.finish_retained_frame_read(),
+        }
+    }
+
     /// Truncates or extends the file to `len` bytes.
     pub fn set_len(&mut self, len: u64) -> io::Result<()> {
         match self {
@@ -175,6 +188,11 @@ pub trait JournalMedia: std::fmt::Debug + Send + Sync {
     fn metadata(&self, path: &Path) -> io::Result<MediaFileMetadata>;
     /// Opens an existing file read-only.
     fn open_read(&self, path: &Path) -> io::Result<MediaFile>;
+    /// Opens one bounded retained-frame read, finished before returning its
+    /// decoded value. Ordinary implementations keep their existing read path.
+    fn open_retained_frame_read(&self, path: &Path) -> io::Result<MediaFile> {
+        self.open_read(path)
+    }
     /// Opens an existing file read-write.
     fn open_read_write(&self, path: &Path) -> io::Result<MediaFile>;
     /// Creates a new file read-write, failing with `AlreadyExists` if present

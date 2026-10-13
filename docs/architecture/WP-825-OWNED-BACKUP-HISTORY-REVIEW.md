@@ -255,3 +255,30 @@ warnings denied. Receipt:
 An earlier run passed the 13 readiness tests but failed one test-only needless
 borrow lint; its failure remains preserved. No shipping timing or campaign
 qualification follows from these checks. Handbook: `docs/backup-restore.md`.
+
+## One retained-frame read interval
+
+A real retained-frame regression first proved repeated full custody checks for
+individual header/body syscalls, rather than one bounded decoded-frame read.
+Fail-first receipt:
+`19d293930c9aabdb180a70e5a17f31427ccb9037b33542f3b10cf4d906feb005`.
+The private immutable cursor now checks full original descriptor/path, namespace,
+link, length, write metadata, cancellation and stage-shadow custody before that
+frame and after complete framing/checksum/database validation, before returning
+its decoded value. Cancellation remains checked throughout byte reads. The
+cursor must finish the interval; unfinished/error exits invalidate its owner.
+A generation mismatch also finishes its interval before trying another source.
+Raw reads retain their individual checks. Ordinary and simulated media preserve
+their existing operations through default no-op completion; original content
+seals and full publication readback remain unchanged.
+
+Six deterministic endpoint cases refuse same-byte/restored-time writes,
+identical-content replacement, cancellation, stage shadows, hard-link aliases
+and namespace changes. A bad frame hash invalidates future use; a checked other
+extent generation does not invalidate an unchanged owner. Required-host nextest
+passes the work regression, all eight owned-history tests, all 15 readiness
+regressions and the retained-frame journal tests; Clippy passes with warnings
+denied. Receipt:
+`31f075c0106b47203bb66c2aabf6821e315daf2de36cdadae39aaf55a940a42f`.
+No public behavior, encoding, provider admission or handbook contract changes.
+A new ordinary shipping build and unchanged whole60 gate remain required.

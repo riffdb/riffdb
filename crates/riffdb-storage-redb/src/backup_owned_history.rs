@@ -195,6 +195,8 @@ impl OwnedBackupHistory {
     }
 
     fn verify_artifact(&self, index: usize) -> Result<(), StorageError> {
+        #[cfg(test)]
+        ORIGINAL_ARTIFACT_READ_CHECKS.with(|count| count.set(count.get() + 1));
         self.checked(|| {
             self.directory.verify()?;
             if directory_observation(&self.path)? != self.directory_observation {
@@ -405,11 +407,13 @@ fn unavailable(_: StorageError) -> io::Error {
 
 /// Complete artifact verification owns one read interval around the entire
 /// bounded parser, exactly as full-file hashing does. Its cursor cannot escape
-/// acquisition. Later borrowed history reads retain their individual checks.
+/// acquisition. Raw borrowed reads retain individual checks; a retained frame
+/// has one checked interval that must finish before its decoded value escapes.
 #[derive(Clone, Copy)]
 enum ReadSpan {
     CompleteArtifact,
     IndividualRead,
+    RetainedFrame,
 }
 
 struct OriginalCursor {
@@ -417,6 +421,7 @@ struct OriginalCursor {
     index: usize,
     offset: u64,
     read_span: ReadSpan,
+    finished: bool,
     stage: Option<(Arc<PinnedDirectory>, OsString)>,
 }
 impl std::fmt::Debug for OriginalCursor {
@@ -428,9 +433,20 @@ impl std::fmt::Debug for OriginalCursor {
 }
 impl OriginalCursor {
     fn check(&self) -> io::Result<()> {
-        if matches!(self.read_span, ReadSpan::CompleteArtifact) {
+        if self.finished {
+            self.owner.invalidate();
+            return Err(refused());
+        }
+        if matches!(
+            self.read_span,
+            ReadSpan::CompleteArtifact | ReadSpan::RetainedFrame
+        ) {
             return self.owner.checked(|| Ok(())).map_err(unavailable);
         }
+        self.verify_read_custody()
+    }
+
+    fn verify_read_custody(&self) -> io::Result<()> {
         self.owner
             .verify_artifact(self.index)
             .map_err(unavailable)?;
@@ -450,7 +466,30 @@ impl OriginalCursor {
         Ok(())
     }
 }
+impl Drop for OriginalCursor {
+    fn drop(&mut self) {
+        if matches!(self.read_span, ReadSpan::RetainedFrame) && !self.finished {
+            self.owner.invalidate();
+        }
+    }
+}
+
 impl JournalMediaFile for OriginalCursor {
+    fn finish_retained_frame_read(&mut self) -> io::Result<()> {
+        if !matches!(self.read_span, ReadSpan::RetainedFrame) {
+            return self.check();
+        }
+        self.check()?;
+        #[cfg(test)]
+        RETAINED_FRAME_FINISH_HOOK.with(|hook| {
+            if let Some(action) = hook.borrow_mut().take() {
+                action();
+            }
+        });
+        self.verify_read_custody()?;
+        self.finished = true;
+        Ok(())
+    }
     fn len(&mut self) -> io::Result<u64> {
         self.check()?;
         Ok(self.owner.artifacts[self.index].continuity.length)
@@ -551,6 +590,19 @@ impl JournalMedia for OriginalMedia {
             index,
             offset: 0,
             read_span: ReadSpan::CompleteArtifact,
+            finished: false,
+            stage: None,
+        })))
+    }
+    fn open_retained_frame_read(&self, path: &Path) -> io::Result<MediaFile> {
+        let index = self.index(path)?;
+        self.0.verify_artifact(index).map_err(unavailable)?;
+        Ok(MediaFile::Port(Box::new(OriginalCursor {
+            owner: Arc::clone(&self.0),
+            index,
+            offset: 0,
+            read_span: ReadSpan::RetainedFrame,
+            finished: false,
             stage: None,
         })))
     }
@@ -600,6 +652,33 @@ impl BorrowedHistoryMedia {
             backup,
             database,
             stage,
+        }
+    }
+    fn open_source_read(&self, path: &Path, read_span: ReadSpan) -> io::Result<MediaFile> {
+        if self.absent_sealed(path)? {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        match self.original(path) {
+            Some(p) => {
+                let index = OriginalMedia(Arc::clone(&self.backup)).index(&p)?;
+                let cursor = OriginalCursor {
+                    owner: Arc::clone(&self.backup),
+                    index,
+                    offset: 0,
+                    read_span,
+                    finished: false,
+                    stage: Some((
+                        Arc::clone(&self.stage),
+                        path.file_name().ok_or_else(refused)?.to_os_string(),
+                    )),
+                };
+                cursor.verify_read_custody()?;
+                Ok(MediaFile::Port(Box::new(cursor)))
+            }
+            None => {
+                self.private(path)?;
+                RealJournalMedia.open_read(path)
+            }
         }
     }
     fn original(&self, path: &Path) -> Option<PathBuf> {
@@ -711,30 +790,10 @@ impl JournalMedia for BorrowedHistoryMedia {
         }
     }
     fn open_read(&self, path: &Path) -> io::Result<MediaFile> {
-        if self.absent_sealed(path)? {
-            return Err(io::ErrorKind::NotFound.into());
-        }
-        match self.original(path) {
-            Some(p) => {
-                let index = OriginalMedia(Arc::clone(&self.backup)).index(&p)?;
-                let cursor = OriginalCursor {
-                    owner: Arc::clone(&self.backup),
-                    index,
-                    offset: 0,
-                    read_span: ReadSpan::IndividualRead,
-                    stage: Some((
-                        Arc::clone(&self.stage),
-                        path.file_name().ok_or_else(refused)?.to_os_string(),
-                    )),
-                };
-                cursor.check()?;
-                Ok(MediaFile::Port(Box::new(cursor)))
-            }
-            None => {
-                self.private(path)?;
-                RealJournalMedia.open_read(path)
-            }
-        }
+        self.open_source_read(path, ReadSpan::IndividualRead)
+    }
+    fn open_retained_frame_read(&self, path: &Path) -> io::Result<MediaFile> {
+        self.open_source_read(path, ReadSpan::RetainedFrame)
     }
     fn open_read_write(&self, path: &Path) -> io::Result<MediaFile> {
         self.private(path)?;
@@ -771,7 +830,9 @@ impl JournalMedia for BorrowedHistoryMedia {
 type ArtifactReadHook = Box<dyn FnOnce()>;
 #[cfg(test)]
 std::thread_local! {
+    static ORIGINAL_ARTIFACT_READ_CHECKS: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
     static OWNED_BACKUP_INVENTORY_PASSES: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
+    static RETAINED_FRAME_FINISH_HOOK: std::cell::RefCell<Option<ArtifactReadHook>> = const {std::cell::RefCell::new(None)};
     static COMPLETE_ARTIFACT_READ_HOOK: std::cell::RefCell<Option<ArtifactReadHook>> = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
