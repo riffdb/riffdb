@@ -218,3 +218,40 @@ tests and Clippy with warnings denied pass on the required host. Receipt:
 `5e120f05389c64c209e1478c293f110a160582262c8b0d74c9fe7e6a1d316d44`.
 This is a focused implementation check, with shipping timing still unqualified.
 The handbook's public behavior is unchanged.
+
+## Shipping failure and supported capacity conversion
+
+Shipping revision `666ddde2` still exceeded the unchanged whole60 gate after
+closed namespace reuse. Backup creation took 18.24 seconds before loss;
+recovery admission took 12.82 seconds after loss. Restore had not succeeded
+within the original deadline. Original backup bytes and all shipping sources
+were independently rechecked. Failed receipt:
+`580c175f1413a5f31c1b7a9418e738a4315e41b39e5d479a9a6b8e58aac10a1d`.
+
+A temporary populated native unit probe revealed an additional compatibility
+case: test builds configure 40-MiB extents while the shipping fixture uses
+320 MiB. Capacity-changing recovery needs another private sealed source;
+that cannot be admitted into an already closed borrowed inventory. The probe's
+readiness refusal is therefore not a shipping-capacity timing result.
+The small native capacity regression first proved incorrect borrowing:
+`f6ef7891e801669ba0e884d2313e8ba36c0c1eb6a0ab3f5788eb419717926236`.
+
+Supported capacity changes now select complete copying and complete history
+hydration. After hydration has removed every source reference, the unpublished
+journal is renewed at the configured capacity through its retained descriptor.
+The existing paced physical zero-fill and file synchronization remain; this
+avoids normal operational recovery replacing the journal inode behind restore
+custody. The original backup is never changed. Required physical, complete
+history, authorization and final publication checks still follow. Ordinary
+operational capacity conversion retains its atomic replacement protocol.
+
+An injected process abort after synchronized private conversion writes proves
+that the partial stage cannot be accepted as empty or publish a primary. The
+original backup remains valid, and a fresh private retry passes readiness.
+On merged main `0779d0b0`, nextest passes the capacity regression, process-crash
+regression and all 15 restore-readiness tests without retry; Clippy passes with
+warnings denied. Receipt:
+`67d5da091d7cd83cb18b98535ffa19bb63e3c75ae2b254c5cd9249438b23af6b`.
+An earlier run passed the 13 readiness tests but failed one test-only needless
+borrow lint; its failure remains preserved. No shipping timing or campaign
+qualification follows from these checks. Handbook: `docs/backup-restore.md`.

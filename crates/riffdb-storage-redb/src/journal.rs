@@ -5430,6 +5430,105 @@ pub(crate) fn renew_extent_above_with_media(
     )
 }
 
+/// Only after complete private history hydration has removed every reference
+/// to these frames. The unpublished stage keeps its original journal inode;
+/// a failed conversion cannot become a validated or published artifact.
+pub(crate) fn renew_hydrated_restore_extent_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+    floor: u64,
+) -> Result<(), JournalIoError> {
+    if extent_uses_configured_capacity_with_media(media, path)? {
+        return renew_extent_above_with_media(media, path, floor);
+    }
+    let (_, tail, state) = scan_extent_with_media(media, path, None, |_, _| Ok(()))?;
+    if tail.transition_count != 0 || tail.incomplete_tail {
+        return Err(JournalIoError::Corrupt);
+    }
+    let mut successor = state.header.successor(state.header.logical.clone())?;
+    successor.generation = successor
+        .generation
+        .max(floor.checked_add(1).ok_or(JournalIoError::Corrupt)?);
+    successor.data_bytes = EXTENT_DATA_BYTES;
+    let mut file = media
+        .open_read_write(path)
+        .map_err(|_| JournalIoError::Io)?;
+    let selected = read_selected_extent_header(&mut file, true)?;
+    if selected.encode() != state.header.encode() {
+        return Err(JournalIoError::Corrupt);
+    }
+    let length = extent_file_bytes(EXTENT_DATA_BYTES);
+    file.set_len(u64::try_from(length).map_err(|_| JournalIoError::Corrupt)?)
+        .map_err(|e| classify_extent_creation_error(&e))?;
+    let zeroes = [0; 64 * 1024];
+    let mut position = EXTENT_DATA_OFFSET;
+    let mut unsynced = 0;
+    while position < length {
+        let count = zeroes.len().min(length - position);
+        file.write_all_at(&zeroes[..count], position)
+            .map_err(|e| classify_extent_creation_error(&e))?;
+        position += count;
+        unsynced += count;
+        if unsynced >= EXTENT_ZERO_FILL_SYNC_BYTES {
+            file.sync_data()
+                .map_err(|e| classify_extent_creation_error(&e))?;
+            #[cfg(test)]
+            if std::env::var_os("RIFFDB_TEST_PRIVATE_CAPACITY_ABORT").is_some() {
+                std::process::abort();
+            }
+            unsynced = 0;
+        }
+    }
+    file.write_all_at(
+        &successor.encode(),
+        usize::from(successor.slot) * EXTENT_HEADER_SLOT_BYTES,
+    )
+    .and_then(|()| file.sync_all())
+    .map_err(|e| classify_extent_creation_error(&e))?;
+    let checked = read_selected_extent_header(&mut file, true)?;
+    if checked.encode() != successor.encode() {
+        return Err(JournalIoError::Corrupt);
+    }
+    sync_parent_with_media(media, path)
+}
+
+/// Eligibility only: private deferred-history preparation must not require a
+/// capacity rotation that creates a new sealed source. Complete copying and
+/// hydration remain available for other supported capacities.
+pub(crate) fn extent_uses_configured_capacity_with_media(
+    media: &dyn JournalMedia,
+    path: &Path,
+) -> Result<bool, JournalIoError> {
+    let mut file = match media.open_read(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(JournalIoError::Io),
+    };
+    let mut magic = [0; 8];
+    file.read_exact_at(&mut magic, 0)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    if magic != EXTENT_MAGIC {
+        return Ok(false);
+    }
+    Ok(read_selected_extent_header(&mut file, false)?.data_bytes == EXTENT_DATA_BYTES)
+}
+
+#[cfg(test)]
+pub(crate) fn prepare_foreign_capacity_restore_fixture(
+    database: &Path,
+    database_id: DatabaseId,
+) -> Result<(), JournalIoError> {
+    let active = journal_path(database);
+    let sealing = sealing_journal_path(database);
+    RealJournalMedia
+        .rename(&active, &sealing)
+        .map_err(|_| JournalIoError::Io)?;
+    recreate_missing_active_with_media(&RealJournalMedia, database)?;
+    seal_extent_with_media(&RealJournalMedia, database, database_id)?;
+    normalize_extent_capacity_to(&RealJournalMedia, &active, PRODUCTION_EXTENT_DATA_BYTES)?;
+    Ok(())
+}
+
 /// The generation of the extent at `path`, if one exists; a legacy journal
 /// file counts as generation zero.
 pub(crate) fn extent_generation_with_media(

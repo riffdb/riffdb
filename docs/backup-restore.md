@@ -207,6 +207,9 @@ original backup's verified read-only sealed-extent descriptors. The backup's
 complete manifest and artifact inventory remain pinned and checked; each read
 has an independent position and refuses changed identities, writes or links.
 The primary, active journal and marker are still copied and synchronized.
+Backups requiring an active-extent capacity conversion use complete copying
+and history hydration before validation. An interrupted private conversion
+cannot make the replacement ready or publish it; the original backup is unchanged.
 Complete retained-history validation and the receipt-authorized RestoreAnchor
 must remove every surviving source reference before temporary readers release.
 Original backup files remain unchanged, and publication contains exactly the

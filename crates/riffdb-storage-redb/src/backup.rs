@@ -2375,7 +2375,13 @@ impl RedbOfflineRestore {
             }
         );
         #[cfg(unix)]
-        let mut backup_history = if receipt_stamp && manifest_journal_checksum(&manifest)?.is_some()
+        let mut backup_history = if receipt_stamp
+            && manifest_journal_checksum(&manifest)?.is_some()
+            && crate::journal::extent_uses_configured_capacity_with_media(
+                &crate::media::RealJournalMedia,
+                &self.backup_directory.join(JOURNAL_ARTIFACT_FILE_NAME),
+            )
+            .map_err(backup_journal_error)?
         {
             let cancellation = match &layout {
                 RestoredHistoryLayout::SelfContained {
@@ -2506,6 +2512,11 @@ impl RedbOfflineRestore {
 
         let defer_history = receipt_stamp
             && cfg!(unix)
+            && crate::journal::extent_uses_configured_capacity_with_media(
+                &crate::media::RealJournalMedia,
+                staged_journal.path(),
+            )
+            .map_err(backup_journal_error)?
             && crate::startup::private_restore_image_supports_bounded_readiness(&staged_lock)?;
         #[cfg(unix)]
         if !defer_history {
@@ -2833,7 +2844,7 @@ fn hydrate_staged_history_on_database(
     crate::history_stub::hydrate_history_stubs(database)?;
     crate::backup::remove_sealed_extents_beside(&database_file)?;
     let floor = crate::backup::highest_extent_generation_beside(configured_database_file)?;
-    crate::journal::renew_extent_above_with_media(
+    crate::journal::renew_hydrated_restore_extent_with_media(
         &crate::media::RealJournalMedia,
         &crate::journal::journal_path(&database_file),
         floor,

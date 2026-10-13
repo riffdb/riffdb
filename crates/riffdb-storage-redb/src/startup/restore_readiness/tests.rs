@@ -657,3 +657,120 @@ fn restore_readiness_receipt_stamp_refuses_deferred_history_for_missing_locator_
         assert!(!root.join("control-configured.redb").exists());
     }
 }
+
+#[cfg(unix)]
+fn foreign_capacity_backup_fixture() -> (crate::test_path::ScopedDirectory, PathBuf) {
+    let (root, backup, _) = fixture(false);
+    let (manifest, _) = crate::backup::validate_immutable_backup(&backup).unwrap();
+    std::fs::copy(
+        backup.join(crate::backup::JOURNAL_ARTIFACT_FILE_NAME),
+        crate::journal::journal_path(&root.join("source.redb")),
+    )
+    .unwrap();
+    crate::journal::prepare_foreign_capacity_restore_fixture(
+        &root.join("source.redb"),
+        manifest.database_id(),
+    )
+    .unwrap();
+    let source_backup = root.join("foreign-capacity-backup");
+    let build =
+        riffdb_storage_api::BackupBuildMetadataV1::new("0.1.0", "abc", "rustc", 1, vec![]).unwrap();
+    crate::RedbOfflineBackup::bind(root.join("source.redb"), &source_backup)
+        .create_offline_backup(&build)
+        .unwrap();
+    (root, source_backup)
+}
+
+#[cfg(unix)]
+#[test]
+fn other_supported_extent_capacity_uses_complete_copy_and_hydration() {
+    let (root, source_backup) = foreign_capacity_backup_fixture();
+    let original = crate::backup::validate_immutable_backup(&source_backup).unwrap();
+    let stage = root.join("foreign-capacity-stage");
+    let (_, owned) = crate::RedbOfflineRestore::bind(&source_backup, &stage)
+        .restore_owned_stamp_preparation(
+            &root.join("configured.redb"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+    assert!(
+        owned.borrowed_extent_media_for_test().is_err(),
+        "a capacity rotation cannot acquire closed borrowed history authority"
+    );
+    let (authorization, evidence) = owned.validate_readiness(inputs()).unwrap();
+    drop(evidence);
+    drop(authorization);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&source_backup).unwrap(),
+        original
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn private_capacity_conversion_process_child() {
+    let Some(backup) = std::env::var_os("RIFFDB_TEST_PRIVATE_CAPACITY_BACKUP") else {
+        return;
+    };
+    let stage = PathBuf::from(std::env::var_os("RIFFDB_TEST_PRIVATE_CAPACITY_STAGE").unwrap());
+    let configured = stage.parent().unwrap().join("configured.redb");
+    let _ = crate::RedbOfflineRestore::bind(PathBuf::from(backup), &stage)
+        .restore_owned_stamp_preparation(&configured, Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    panic!("private conversion crash boundary was not reached");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_private_capacity_conversion_preserves_backup_and_refuses_partial_stage() {
+    use std::os::unix::process::ExitStatusExt;
+    let (root, backup) = foreign_capacity_backup_fixture();
+    let original = crate::backup::validate_immutable_backup(&backup).unwrap();
+    let stage = root.join("interrupted-private-capacity");
+    let configured = root.join("configured.redb");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "startup::restore_readiness::tests::private_capacity_conversion_process_child",
+            "--nocapture",
+        ])
+        .env("RIFFDB_TEST_PRIVATE_CAPACITY_BACKUP", &backup)
+        .env("RIFFDB_TEST_PRIVATE_CAPACITY_STAGE", &stage)
+        .env("RIFFDB_TEST_PRIVATE_CAPACITY_ABORT", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.signal(),
+        Some(6),
+        "the child must stop at the conversion's synchronized write boundary"
+    );
+    assert!(
+        !configured.exists(),
+        "an interrupted private conversion cannot publish a primary"
+    );
+    assert!(stage.is_dir());
+    assert!(
+        crate::RedbOfflineRestore::bind(&backup, &stage)
+            .restore_owned_stamp_preparation(&configured, Arc::new(AtomicBool::new(false)))
+            .is_err(),
+        "an interrupted stage cannot be accepted as an empty restore target"
+    );
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+    let fresh = root.join("fresh-private-capacity");
+    let (_, owned) = crate::RedbOfflineRestore::bind(&backup, &fresh)
+        .restore_owned_stamp_preparation(&configured, Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    let (authorization, evidence) = owned.validate_readiness(inputs()).unwrap();
+    drop(evidence);
+    drop(authorization);
+    assert_eq!(
+        crate::backup::validate_immutable_backup(&backup).unwrap(),
+        original
+    );
+}
