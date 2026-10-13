@@ -130,3 +130,40 @@ all durable encodings, fixtures, public application interfaces and resource
 ceilings. Hazards and follow-ups include full CI, shipping timing, optional
 fresh owner transfer and campaign-clock integration. Handbook page updated:
 `docs/backup-restore.md`. WP-825 remains open without a closure claim.
+
+## First shipping retest and targeted correction
+
+The first ADR-0298 shipping build is committed source `dda0d5c7`. All four
+ordinary release binaries and all 5,200 tracked source files were independently
+verified. The unchanged saved primary-loss gate failed: backup creation took
+17.62 seconds before loss, recovery admission took 10.54 seconds after loss,
+and the restore had not succeeded within the one 60-second deadline. There was
+no post-backup acknowledgement gap. This remains a failed attempt; the earlier
+58.07-second result cannot qualify the new source. Failed shipping receipt:
+`ab097f9d44bcea49da272ba8404559db6cf60db2968d0c900e694dd9f23b6d74`.
+
+A separate CPU diagnostic also exhausted its unchanged public polling bound
+before completion. Its recorded samples show substantial filesystem metadata
+and canonical-path work from checks around individual parser reads. It grants
+no timing result. Failed diagnostic receipt:
+`3b66ae9e0c1f57a46d95e53da9a5250106794c793ed1baa513bb8cbb74328070`.
+Recorded-sample report receipt:
+`77d112a46d298b3627ea04164bdd8c95e987d0336a5a058925ed7740c685519e`.
+
+The targeted correction treats initial full-artifact parsing as one complete
+read interval, with exact descriptor, inventory and write-metadata checks
+before and after that parser, as for complete artifact hashing. Positional
+cursors remain private to acquisition, check cancellation throughout, and never
+escape into history resolution. Later borrowed history reads retain their
+individual continuity checks. Deterministic endpoint tests inject same-length
+writes with restored bytes and modification time, identical-content replacement,
+and cancellation after a valid footer has been parsed. All must refuse before
+an owned image can be returned. No hash, frame, footer or generation check is
+removed. This correction and its shipping timing remain under qualification.
+
+The targeted correction's required-host checks pass: two endpoint/complete-
+artifact proofs, all 12 individual-read readiness regressions, the cold original-
+seal regression and Clippy with warnings denied. Receipt:
+`29f60caa637b1f637aa2f81ce31a6798da9945fd1ef70f8a2e4da43e9351b79d`.
+The next step is a new ordinary shipping build and the same failed whole60 gate;
+no broader CI or campaign qualification is inferred from these checks.

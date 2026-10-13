@@ -125,6 +125,7 @@ impl OwnedBackupHistory {
         owner.verify_full()?;
         // Frame/footer parsing uses the same closed, positional descriptors.
         let media = OriginalMedia(Arc::clone(&owner));
+        owner.verify_artifact(1)?;
         let (header, tail) = crate::journal::scan_journal_with_media(
             &media,
             &path.join(JOURNAL_ARTIFACT_FILE_NAME),
@@ -133,6 +134,7 @@ impl OwnedBackupHistory {
         )
         .map_err(backup_journal_error)?
         .ok_or_else(corrupt)?;
+        owner.verify_artifact(1)?;
         if header.checkpoint_sequence() != manifest.last_commit_sequence()
             || tail.last_sequence != manifest.last_commit_sequence()
             || tail.incomplete_tail
@@ -149,14 +151,22 @@ impl OwnedBackupHistory {
         .read_exact(&mut bytes)
         .map_err(io_unavailable)?;
         validate_manifest_format_marker_bytes(&bytes, manifest)?;
-        for artifact in &owner.artifacts {
+        for (index, artifact) in owner.artifacts.iter().enumerate() {
             if let Some(generation) = artifact.generation {
+                owner.verify_artifact(index)?;
                 let footer = crate::journal::read_sealed_extent_with_media(
                     &media,
                     &path.join(&artifact.name),
                     manifest.database_id(),
                 )
                 .map_err(backup_journal_error)?;
+                #[cfg(test)]
+                COMPLETE_ARTIFACT_READ_HOOK.with(|hook| {
+                    if let Some(action) = hook.borrow_mut().take() {
+                        action();
+                    }
+                });
+                owner.verify_artifact(index)?;
                 if footer.generation != generation {
                     owner.invalidate();
                     return Err(corrupt());
@@ -367,10 +377,20 @@ fn unavailable(_: StorageError) -> io::Error {
     refused()
 }
 
+/// Complete artifact verification owns one read interval around the entire
+/// bounded parser, exactly as full-file hashing does. Its cursor cannot escape
+/// acquisition. Later borrowed history reads retain their individual checks.
+#[derive(Clone, Copy)]
+enum ReadSpan {
+    CompleteArtifact,
+    IndividualRead,
+}
+
 struct OriginalCursor {
     owner: Arc<OwnedBackupHistory>,
     index: usize,
     offset: u64,
+    read_span: ReadSpan,
     stage: Option<(Arc<PinnedDirectory>, OsString)>,
 }
 impl std::fmt::Debug for OriginalCursor {
@@ -382,6 +402,9 @@ impl std::fmt::Debug for OriginalCursor {
 }
 impl OriginalCursor {
     fn check(&self) -> io::Result<()> {
+        if matches!(self.read_span, ReadSpan::CompleteArtifact) {
+            return self.owner.checked(|| Ok(())).map_err(unavailable);
+        }
         self.owner
             .verify_artifact(self.index)
             .map_err(unavailable)?;
@@ -501,6 +524,7 @@ impl JournalMedia for OriginalMedia {
             owner: Arc::clone(&self.0),
             index,
             offset: 0,
+            read_span: ReadSpan::CompleteArtifact,
             stage: None,
         })))
     }
@@ -614,6 +638,7 @@ impl JournalMedia for BorrowedHistoryMedia {
                     owner: Arc::clone(&self.backup),
                     index,
                     offset: 0,
+                    read_span: ReadSpan::IndividualRead,
                     stage: Some((
                         Arc::clone(&self.stage),
                         path.file_name().ok_or_else(refused)?.to_os_string(),
@@ -658,3 +683,13 @@ impl JournalMedia for BorrowedHistoryMedia {
         RealJournalMedia.sync_parent_all(path)
     }
 }
+
+#[cfg(test)]
+type ArtifactReadHook = Box<dyn FnOnce()>;
+#[cfg(test)]
+std::thread_local! {
+    static COMPLETE_ARTIFACT_READ_HOOK: std::cell::RefCell<Option<ArtifactReadHook>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+#[path = "backup_owned_history_tests.rs"]
+mod tests;
