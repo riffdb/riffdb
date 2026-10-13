@@ -11,13 +11,30 @@ pub(crate) struct OwnedPublicationArtifacts {
     continuity: [Option<ArtifactContinuity>; 3],
     readback_complete: bool,
     invalid: bool,
+    pub(crate) history: riffdb_storage_api::ChangelogHistoryStateV3,
+    pub(crate) retention_watermark: u64,
+    pub(crate) incarnation: u64,
 }
 
 impl OwnedClosedMaterialization {
+    pub(crate) fn permits_publication_transfer(&self) -> Result<bool, StorageError> {
+        self.verify()?;
+        Ok(self.ordinary_source
+            && self.publication_facts.is_some()
+            && self.materialization.database.is_none()
+            && self.materialization.deferred_extents.is_none()
+            && self
+                .materialization
+                .validated_seal
+                .as_ref()
+                .is_some_and(|seal| seal.sealed.is_empty()))
+    }
+
     pub(crate) fn into_publication_artifacts(
         self,
     ) -> Result<OwnedPublicationArtifacts, StorageError> {
         self.materialization.verify_full_seal()?;
+        let facts = self.publication_facts.ok_or_else(corrupt)?;
         let owner = self.materialization;
         if !self.ordinary_source
             || owner.database.is_some()
@@ -44,6 +61,9 @@ impl OwnedClosedMaterialization {
             continuity: seals.continuity,
             readback_complete: false,
             invalid: false,
+            history: facts.0,
+            retention_watermark: facts.1,
+            incarnation: self.history_incarnation,
         };
         publication.verify_continuity()?;
         Ok(publication)
@@ -51,6 +71,38 @@ impl OwnedClosedMaterialization {
 }
 
 impl OwnedPublicationArtifacts {
+    pub(crate) fn publication_intent(
+        &mut self,
+        operation: riffdb_types::OfflineMaintenanceOperationId,
+        manifest: OfflineBackupManifestIdentityV1,
+    ) -> Result<crate::maintenance::PublicationIntent, StorageError> {
+        use crate::maintenance::{ArtifactKind, ArtifactSeal, PublicationIntent};
+        self.verify_continuity()?;
+        let seal = |index: usize, kind| -> Result<ArtifactSeal, StorageError> {
+            Ok(ArtifactSeal {
+                kind,
+                length: self.artifacts[index]
+                    .private_file()?
+                    .metadata()
+                    .map_err(io_unavailable)?
+                    .len(),
+                checksum: self.checksums[index].clone(),
+            })
+        };
+        PublicationIntent::prepared(
+            operation,
+            manifest,
+            self.incarnation,
+            self.history,
+            self.retention_watermark,
+            [
+                seal(0, ArtifactKind::Primary)?,
+                seal(1, ArtifactKind::Journal)?,
+                seal(2, ArtifactKind::FormatMarker)?,
+            ],
+        )
+    }
+
     fn check_continuity(&self) -> Result<(), StorageError> {
         if self.invalid {
             return Err(corrupt());
@@ -195,3 +247,25 @@ impl OwnedPublicationArtifacts {
 #[cfg(all(test, unix))]
 #[path = "backup_publication_artifacts_tests.rs"]
 mod tests;
+
+pub(super) fn capture_publication_facts(
+    database: &Database,
+    manifest: &OfflineBackupManifestV1,
+    incarnation: u64,
+) -> Result<(riffdb_storage_api::ChangelogHistoryStateV3, u64), StorageError> {
+    let read = database.begin_read().map_err(transaction_error)?;
+    let history = crate::changelog_v3_roots::read_checkpoint_roots(&read)?.ok_or_else(corrupt)?;
+    let watermark =
+        crate::retention::load_watermark(&read)?.map_or(0, |value| value.watermark_sequence());
+    if history.lineage().database_id() != manifest.database_id()
+        || history.lineage().history_incarnation() != incarnation
+        || history.tail().frontier().application() != manifest.last_commit_sequence()
+        || watermark
+            > manifest
+                .last_commit_sequence()
+                .map_or(0, |value| value.get())
+    {
+        return Err(corrupt());
+    }
+    Ok((history, watermark))
+}

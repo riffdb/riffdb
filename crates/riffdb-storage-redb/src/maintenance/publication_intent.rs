@@ -5,25 +5,25 @@ use riffdb_storage_api::ChangelogHistoryStateV3;
 
 const MAGIC: &[u8] = b"RIFFDB-PUBLICATION-INTENT\0";
 const VERSION: u32 = 1;
-const MAX_INTENT_BYTES: usize = 4096;
+pub(crate) const MAX_INTENT_BYTES: usize = 4096;
 const MAX_HISTORY_BYTES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PublicationPhase {
+pub(crate) enum PublicationPhase {
     Prepared,
     Published,
     StartupConsumed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ArtifactKind {
+pub(crate) enum ArtifactKind {
     Primary,
     Journal,
     FormatMarker,
 }
 
 impl ArtifactKind {
-    const ORDERED: [Self; 3] = [Self::Primary, Self::Journal, Self::FormatMarker];
+    pub(crate) const ORDERED: [Self; 3] = [Self::Primary, Self::Journal, Self::FormatMarker];
     const fn tag(self) -> u8 {
         match self {
             Self::Primary => 1,
@@ -34,25 +34,25 @@ impl ArtifactKind {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-struct ArtifactSeal {
-    kind: ArtifactKind,
-    length: u64,
-    checksum: BackupIntegrityChecksumV1,
+pub(crate) struct ArtifactSeal {
+    pub(crate) kind: ArtifactKind,
+    pub(crate) length: u64,
+    pub(crate) checksum: BackupIntegrityChecksumV1,
 }
 
 #[derive(Clone, Eq, PartialEq)]
-struct PublicationIntent {
-    operation_id: OfflineMaintenanceOperationId,
-    manifest: OfflineBackupManifestIdentityV1,
-    incarnation: u64,
-    history: ChangelogHistoryStateV3,
-    retention_watermark: u64,
-    artifacts: [ArtifactSeal; 3],
-    phase: PublicationPhase,
+pub(crate) struct PublicationIntent {
+    pub(crate) operation_id: OfflineMaintenanceOperationId,
+    pub(crate) manifest: OfflineBackupManifestIdentityV1,
+    pub(crate) incarnation: u64,
+    pub(crate) history: ChangelogHistoryStateV3,
+    pub(crate) retention_watermark: u64,
+    pub(crate) artifacts: [ArtifactSeal; 3],
+    pub(crate) phase: PublicationPhase,
 }
 
 impl PublicationIntent {
-    fn prepared(
+    pub(crate) fn prepared(
         operation_id: OfflineMaintenanceOperationId,
         manifest: OfflineBackupManifestIdentityV1,
         incarnation: u64,
@@ -73,7 +73,7 @@ impl PublicationIntent {
         Ok(intent)
     }
 
-    fn validate(&self) -> Result<(), StorageError> {
+    pub(crate) fn validate(&self) -> Result<(), StorageError> {
         if self.incarnation == 0
             || self.manifest.manifest_checksum().as_bytes().len() != SHA256_BYTES
             || self.history.lineage().database_id() != self.manifest.database_id()
@@ -99,7 +99,7 @@ impl PublicationIntent {
         Ok(())
     }
 
-    fn advance(&mut self, next: PublicationPhase) -> Result<(), StorageError> {
+    pub(crate) fn advance(&mut self, next: PublicationPhase) -> Result<(), StorageError> {
         self.validate()?;
         if !matches!(
             (self.phase, next),
@@ -115,7 +115,7 @@ impl PublicationIntent {
         Ok(())
     }
 
-    fn encode(&self) -> Result<Vec<u8>, StorageError> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, StorageError> {
         self.validate()?;
         let mut output = Encoder::new_with_limit(MAX_INTENT_BYTES - SHA256_BYTES);
         output.bytes(MAGIC)?;
@@ -158,7 +158,7 @@ impl PublicationIntent {
         Ok(bytes)
     }
 
-    fn decode(encoded: &[u8]) -> Result<Self, StorageError> {
+    pub(crate) fn decode(encoded: &[u8]) -> Result<Self, StorageError> {
         if encoded.len() > MAX_INTENT_BYTES {
             return Err(limit_exceeded());
         }

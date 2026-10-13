@@ -133,3 +133,46 @@ startup consumption and success cleanup are connected. They do not enable
 production transfer or prove end-to-end crash recovery. The native publication
 regression, saved populated 60-second gate, actual scheduled fault windows,
 final-source CI and both campaigns remain outstanding. WP-825 stays open.
+
+## Durable intent and actual transfer checkpoint
+
+Six intent-store tests pass on the required host, including 15 actual child
+process aborts at file-sync, rename and parent-sync boundaries across all three
+states. Replacement requires the same receipt, original operation and seals;
+unknown or conflicting inventories refuse before ordinary temporary cleanup.
+A retained original record descriptor and its exact prior bytes are checked
+before replacement. The initial record uses atomic non-overwriting rename.
+These synthetic intent-store cases certify record durability and binding only.
+
+A separate real native restore test passes through fresh authorization evidence
+release, its actual Offline receipt, the chosen incarnation stamp, observed
+close, durable Prepared intent, three original-file transfers, full readback,
+marker-last publication and durable Published intent. Every original inode and
+byte seal is preserved; the immutable backup is unchanged. Publication facts
+come from bounded root/retention reads on the same stamped engine before its
+observed close. No extra history walk or reopened engine constructs those facts.
+
+The combined checkpoint passes one actual native transfer test, six artifact
+checks, 24 custody tests, six intent-store tests including the 15 abort cuts,
+five codec tests and all-target/all-feature storage Clippy. Independently
+verified receipt SHA-256:
+`7956c41efc9b5364cf5661e1284f9055d62e0ed09075a2563491a26577acb29b`.
+
+The complete mechanism is still test-only and uses a private qualification
+entry point. The ordinary shipping restore API retains copying. Restart from
+partial transfers, StartupConsumed before engine open, complete dirty recovery,
+Succeeded cleanup before admission, and their full native process-crash coverage
+remain required before activation. This checkpoint proves neither application
+readiness nor a recovery timing gate, rehearsal or final-source CI.
+
+Follow-up qualification strengthens the real transfer test to decode the durable
+Published record and compare every seal and length with the original artifacts.
+It also proves the ordinary receipt remains Offline; an intent cannot certify
+readiness. All 219 maintenance unit regressions and all 35 owned materialization
+compatibility checks pass, with storage Clippy unchanged.
+
+The diagnostic checkout's path check initially refuses because its Git history
+predates the separately committed ADR-0294 path extension. An isolated checkout
+of the current branch, with exactly the qualified source bytes, passes the path
+check, package brief, acceptance dry plan, handbook source inventory and whitespace
+check. No path rule is weakened. Full acceptance and final-source CI remain open.

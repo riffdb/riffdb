@@ -57,6 +57,10 @@ pub(crate) use promotion_reconciliation::PromotionValidationBinding;
 mod promotion_receipts;
 #[path = "restored_readiness.rs"]
 mod restored_readiness;
+// Qualify the intent owner and inventory before native transfer activation.
+#[cfg(test)]
+#[path = "publication_intent_store.rs"]
+mod native_publication;
 
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
@@ -1328,6 +1332,31 @@ impl RedbMaintenanceStorage {
         Ok(result)
     }
 
+    // Qualification-only entry until restart/startup/success transitions pass.
+    #[cfg(test)]
+    pub(in crate::maintenance) fn publish_native_transfer_for_qualification(
+        &self,
+        sealed: RedbSealedStagedRestore,
+    ) -> Result<OfflineRestoreResultV1, StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = read_receipt_file(&self.receipt_path(sealed.operation_id()))?;
+        if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup
+            || receipt.source_database_id().is_some()
+            || receipt.backup_name() != sealed.backup_name()
+            || receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline
+            || receipt.staged_database_id() != Some(sealed.manifest_identity().database_id())
+            || receipt.manifest_identity() != Some(sealed.manifest_identity())
+            || receipt.published_history_incarnation() != Some(sealed.staged_history_incarnation())
+            || sealed.configured_database_file() != self.database_file
+            || !sealed.permits_native_transfer()?
+        {
+            return Err(invariant());
+        }
+        let result = sealed.publish_by_native_transfer(self)?;
+        self.verify_path_ownership()?;
+        Ok(result)
+    }
+
     /// Revalidates every receipt and associated exact filesystem evidence.
     pub fn reconcile(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
@@ -1676,6 +1705,9 @@ impl RedbMaintenanceStorage {
         ),
         StorageError,
     > {
+        #[cfg(test)]
+        let publication =
+            native_publication::IntentInventory::read(&self.receipts_directory_guard)?;
         let mut receipts = Vec::new();
         let mut retire_receipts = Vec::new();
         let mut archive_receipts = Vec::new();
@@ -1690,6 +1722,10 @@ impl RedbMaintenanceStorage {
             }
             let name = entry.file_name();
             let name = name.to_str().ok_or_else(corrupt)?;
+            #[cfg(test)]
+            if publication.owns_name(name) {
+                continue;
+            }
             let temporary_operation = name.strip_prefix('.').and_then(|value| {
                 value
                     .strip_suffix(RECEIPT_TEMP_SUFFIX)
@@ -1757,6 +1793,17 @@ impl RedbMaintenanceStorage {
         let v3 =
             OfflineMaintenanceReceiptInventoryV3::new(archive_receipts).map_err(value_error)?;
         let v4 = OfflineMaintenanceReceiptInventoryV4::new(scrub_receipts).map_err(value_error)?;
+        #[cfg(test)]
+        {
+            publication.validate(&v1, &v2, &v3, &v4)?;
+            if let Some(temporary) = publication.temporary_name() {
+                if !remove_temps {
+                    return Err(corrupt());
+                }
+                // Only a fully bound admitted inventory may release this temp.
+                temporaries.push(self.receipts_directory.join(temporary));
+            }
+        }
         for path in &temporaries {
             fs::remove_file(path).map_err(io_unavailable)?;
         }

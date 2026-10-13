@@ -94,9 +94,13 @@ fn publication_artifact_handoff_preserves_original_descriptors_seals_and_native_
         let m = fs::metadata(path).unwrap();
         (m.dev(), m.ino(), m.len())
     });
+    let expected_facts = closed.publication_facts.unwrap();
     let frozen = closed.checksums().unwrap();
     let before = validate_immutable_backup(&backup).unwrap();
     let mut owner = closed.into_publication_artifacts().unwrap();
+    assert_eq!(owner.history, expected_facts.0);
+    assert_eq!(owner.retention_watermark, expected_facts.1);
+    assert_eq!(owner.incarnation, 2);
     let target = target(&root);
     owner
         .move_to_temporaries(Arc::clone(&target), names(TEMP))

@@ -1067,6 +1067,8 @@ pub(crate) struct OwnedClosedMaterialization {
     materialization: OwnedMaterialization,
     history_incarnation: u64,
     ordinary_source: bool,
+    #[cfg(test)]
+    publication_facts: Option<(riffdb_storage_api::ChangelogHistoryStateV3, u64)>,
 }
 
 impl OwnedValidatedMaterialization {
@@ -1216,6 +1218,8 @@ impl OwnedAuthorizationMaterialization {
             materialization,
             history_incarnation,
             ordinary_source,
+            #[cfg(test)]
+            publication_facts: None,
         })
     }
 }
@@ -1273,6 +1277,8 @@ impl OwnedStampPreparation {
             mut materialization,
             complete_history,
         } = self.owner;
+        #[cfg(test)]
+        let mut publication_facts = None;
         let result = (|| {
             materialization.verify_full_seal()?;
             let old = materialization
@@ -1291,6 +1297,14 @@ impl OwnedStampPreparation {
                 Some((complete_history, binding)),
             )?;
             crate::startup::validate_restore_transition_roots(&engine.database, incarnation)?;
+            #[cfg(test)]
+            {
+                publication_facts = Some(publication_artifacts::capture_publication_facts(
+                    &engine.database,
+                    &materialization.manifest,
+                    incarnation,
+                )?);
+            }
             if materialization.deferred_extents.is_some() {
                 crate::history_stub::verify_no_surviving_stubs(&engine.database)?;
             }
@@ -1309,6 +1323,8 @@ impl OwnedStampPreparation {
             materialization,
             history_incarnation: incarnation,
             ordinary_source: true,
+            #[cfg(test)]
+            publication_facts,
         })
     }
 }
@@ -1357,6 +1373,15 @@ impl OwnedClosedMaterialization {
             )?;
             if self.ordinary_source {
                 crate::startup::validate_restore_transition_roots(&database, incarnation)?;
+                #[cfg(test)]
+                {
+                    self.publication_facts =
+                        Some(publication_artifacts::capture_publication_facts(
+                            &database,
+                            &self.materialization.manifest,
+                            incarnation,
+                        )?);
+                }
             }
             drop(database);
             self.materialization.custody.freeze_prepared_artifact()?;

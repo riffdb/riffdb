@@ -96,3 +96,6 @@ pub fn validate_migration_receipt_fixture(
 
 #[cfg(test)]
 pub(crate) use restore_custody::ClosedPublicationCustody;
+
+#[cfg(test)]
+pub(crate) use codec::publication_intent::{ArtifactKind, ArtifactSeal, PublicationIntent};
