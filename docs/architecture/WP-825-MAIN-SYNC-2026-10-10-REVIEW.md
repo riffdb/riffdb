@@ -43,3 +43,10 @@ only on C3D. The concurrent cache test, unchanged byte/refusal and service-link
 regressions, all four append-worker tests, formatting and storage Clippy pass.
 Combined-source full CI and fresh ordinary preparation remain
 required. Earlier failures remain failures.
+
+
+Identifier reconciliation on 2026-10-13: the historical follower record called
+ADR-0286 below is now ADR-0296; the unaccepted handoff proposal called ADR-0287
+is now ADR-0297. Live links use the current paths. Historical review and acceptance
+text retains its original identifiers; the maintainer approved these identifier
+and reference updates without changing any accepted Decision section.

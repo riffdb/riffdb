@@ -320,8 +320,8 @@ record with no front matter.
 | [0283](0283-validation-walks-decode-each-command-segment-once.md) | Validation Walks Decode Each Command Segment Once | Accepted | guarantee |
 | [0284](0284-bounded-native-outbox-claim-groups.md) | Bounded Native Outbox Claim Groups | Accepted | guarantee |
 | [0285](0285-lifecycle-offered-load-arrives-spread-across-each-second.md) | Lifecycle Offered Load Arrives Spread Across Each Second | Accepted | surface |
-| [0286](0286-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
-| [0287](0287-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
+| [0286](0286-validation-walks-validate-each-contract-bundle-once.md) | Validation Walks Validate Each Contract Bundle Once | Accepted | guarantee |
+| [0287](0287-validation-walks-read-command-history-in-one-pass.md) | Validation Walks Read Command History In One Pass | Accepted | guarantee |
 | [0288](0288-bounded-native-bootstrap-source-custody-validation.md) | Bounded Native Bootstrap Source Custody Validation | Accepted | guarantee |
 | [0289](0289-owned-private-restore-validation-custody.md) | Owned Private Restore Validation Custody | Accepted | guarantee |
 | [0290](0290-restore-content-seals-at-mutation-boundaries.md) | Restore Content Seals At Mutation Boundaries | Accepted | guarantee |
@@ -330,6 +330,8 @@ record with no front matter.
 | [0293](0293-native-restore-uses-one-validated-preparation-owner.md) | Native Restore Uses One Validated Preparation Owner | Accepted | guarantee |
 | [0294](0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md) | Native Restore Transfers One Sealed Artifact Set Into Publication | Accepted | guarantee |
 | [0295](0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md) | Consumed Native Restore Uses Ordinary Engine Crash Recovery | Accepted | guarantee |
+| [0296](0296-bounded-native-follower-acknowledgement-validation.md) | Bounded Native Follower Acknowledgement Validation | Accepted | guarantee |
+| [0297](0297-finite-direct-mutation-checkpoint-handoff.md) | Finite Direct Mutation Checkpoint Handoff | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

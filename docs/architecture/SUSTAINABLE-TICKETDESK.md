@@ -3722,9 +3722,9 @@ final combined-source full CI and complete measured rehearsal remain required.
 The maintainer's local main `8c1b6678f` is integrated at `96db3a219` before
 further qualification. Main's accepted ADR-0282 and ADR-0283 keep their identities.
 Historical references in this page use the identifiers current at the time:
-the branch's unaccepted finite-handoff proposal is now ADR-0287, and its accepted
+the branch's unaccepted finite-handoff proposal is now ADR-0297, and its accepted
 follower acknowledgement decision is proposed for identifier-only reconciliation
-to ADR-0286. See the [review note](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
+to ADR-0296. See the [review note](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
 At that reconciliation, both proposals were unimplemented. The finite-handoff
 proposal remains unaccepted; the private-restore decision has since been
 accepted as ADR-0289 and implemented, as described below.

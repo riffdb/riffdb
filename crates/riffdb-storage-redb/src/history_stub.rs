@@ -457,6 +457,10 @@ thread_local! {
     /// how often a walk decodes the same segment.
     pub(crate) static SEGMENT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(crate) static RECEIPT_SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Row-validating segment decodes ([`decode_retained_segment`]) on this
+    /// thread.
+    pub(crate) static RETAINED_SEGMENT_DECODES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Decodes a COMMITS row's segment, resolving a stub first. A stub that cannot
@@ -482,6 +486,8 @@ pub(crate) fn decode_retained_segment(
     riffdb_storage_api::EncodedPageItem<riffdb_storage_api::StoredCommandSegmentV1>,
     riffdb_storage_api::DurableCodecError,
 > {
+    #[cfg(test)]
+    RETAINED_SEGMENT_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
     let resolved = resolve_commits_value(value).map_err(|_| codec_corrupt())?;
     crate::command_prefix::decode_segment(&resolved)
 }

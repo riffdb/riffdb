@@ -322,7 +322,7 @@ fn shared_outbox_event_lookup_preserves_legacy_segment_and_checkpoint_domains() 
 }
 
 #[test]
-fn page_catalog_reuse_keeps_every_command_plan_validation_and_evicts_exact_bindings() {
+fn walk_catalog_reuse_keeps_every_command_plan_validation_and_evicts_exact_bindings() {
     let source = include_str!("../../../examples/ticketdesk/lifecycle/riffdb/contract.riff");
     let first =
         ValidatedContractBundle::from_compiler_bundle(compile_contract_source(source).unwrap())
@@ -380,43 +380,47 @@ fn page_catalog_reuse_keeps_every_command_plan_validation_and_evicts_exact_bindi
     }
     write.commit().unwrap();
     let pin = store.shared.database.begin_read().unwrap();
-    let mut cache = crate::command_prefix::CatalogImageCache::default();
+    let memo = crate::command_prefix::BundleMemo::default();
+    let validations = || crate::command_prefix::BUNDLE_VALIDATIONS.with(std::cell::Cell::get);
+    let before = validations();
     let first_command = command(plan(&first, false));
     for _ in 0..64 {
-        crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut cache)
+        crate::command_prefix::validate_catalog_images(&pin, [&first_command], Some(&memo))
             .unwrap();
     }
     assert_eq!(
-        cache.loads(),
+        validations() - before,
         1,
-        "one direct bundle decode serves all physical groups on the same structural page"
+        "one exact stored bundle validation serves a complete walk"
     );
     let invalid = command(plan(&first, true));
-    assert!(crate::command_prefix::validate_catalog_images(&pin, [&invalid]).is_err());
+    assert!(crate::command_prefix::validate_catalog_images(&pin, [&invalid], None).is_err());
+    let before_invalid_memo = validations();
     assert!(
-        crate::command_prefix::validate_catalog_images_cached(&pin, [&invalid], &mut cache)
-            .is_err(),
-        "a cached schema must never cache success for a different command plan"
+        crate::command_prefix::validate_catalog_images(&pin, [&invalid], Some(&memo)).is_err(),
+        "a remembered schema must never remember success for a different command plan"
     );
-    assert_eq!(cache.loads(), 1);
+    assert_eq!(validations(), before_invalid_memo);
     let second_command = command(plan(&second, false));
-    crate::command_prefix::validate_catalog_images_cached(&pin, [&second_command], &mut cache)
-        .unwrap();
+    crate::command_prefix::validate_catalog_images(&pin, [&second_command], Some(&memo)).unwrap();
     assert_eq!(
-        cache.loads(),
-        2,
+        validations() - before_invalid_memo,
+        1,
         "a changed version/hash requires full schema validation"
     );
-    crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut cache)
-        .unwrap();
-    assert_eq!(cache.loads(), 3, "the cache retains only one direct bundle");
-    let mut next_page = crate::command_prefix::CatalogImageCache::default();
-    crate::command_prefix::validate_catalog_images_cached(&pin, [&first_command], &mut next_page)
+    crate::command_prefix::validate_catalog_images(&pin, [&first_command], Some(&memo)).unwrap();
+    assert_eq!(
+        validations() - before_invalid_memo,
+        2,
+        "the memo retains only one exact stored bundle"
+    );
+    let next_walk = crate::command_prefix::BundleMemo::default();
+    crate::command_prefix::validate_catalog_images(&pin, [&first_command], Some(&next_walk))
         .unwrap();
     assert_eq!(
-        next_page.loads(),
-        1,
-        "even the same pin starts each new page with no retained schema"
+        validations() - before_invalid_memo,
+        3,
+        "an independent walk begins without a remembered schema"
     );
 }
 

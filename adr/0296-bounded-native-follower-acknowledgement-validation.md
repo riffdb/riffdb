@@ -3,7 +3,10 @@
 # This identifier-only reconciliation preserves the exact accepted decision
 # and original acceptance references; identifier reconciliation approved
 # by the maintainer in session, 2026-10-10.
-adr: "0286"
+# Local main now owns ADR-0286. This identifier-only move to ADR-0296
+# preserves the original acceptance and exact Decision; identifier reconciliation
+# approved by the maintainer in session, 2026-10-13: "Approve the identifier-only reconciliation".
+adr: "0296"
 title: Bounded Native Follower Acknowledgement Validation
 status: accepted
 tier: guarantee
@@ -22,7 +25,7 @@ review_triggers:
   - Registration, retirement, bootstrap attachment, promotion, startup, ordering, durability, public protocols or existing workload bounds change.
   - Validation runs as a full-history walk while holding the writer, or proof storage exceeds the existing bounded owner capacity.
 ---
-# ADR-0286: Bounded Native Follower Acknowledgement Validation
+# ADR-0296: Bounded Native Follower Acknowledgement Validation
 
 ## Context
 

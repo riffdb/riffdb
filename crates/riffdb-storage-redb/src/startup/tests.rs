@@ -3734,7 +3734,7 @@ fn collect_historical_plan_sequence(
     let store = RedbStore::open(path).expect("open");
     let transaction = store.shared.database.begin_read().expect("read");
     let validation = inputs_at(70);
-    let mut plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
+    let mut plan = build_historical_evidence_plan(&transaction, &validation, None).expect("plan");
     let tables = HistoricalMaterializationTables::open(&transaction).expect("tables");
     let mut sequence = Vec::new();
     while let Some(PendingHistoricalEvidence {
@@ -4131,7 +4131,7 @@ fn historical_plan_retained_shape(entity_rows: u64) -> (usize, usize) {
     }
     write.commit().expect("commit plan-shape fixture");
     let transaction = store.shared.database.begin_read().expect("read plan shape");
-    let plan = build_historical_evidence_plan(&transaction, &inputs_at(70)).expect("plan");
+    let plan = build_historical_evidence_plan(&transaction, &inputs_at(70), None).expect("plan");
     (plan.persisted_groups.len(), plan.retained_bytes)
 }
 
@@ -6179,3 +6179,281 @@ fn segment_reuse_follows_the_row_bytes_and_never_remembers_a_refusal() {
 
 #[path = "../startup_terminal_decode_tests.rs"]
 mod terminal_decode;
+// req: REC-007
+/// ADR-0286: the commit phase validates a stored contract bundle once for the
+/// rows that share it. A record with any other identity or bytes is validated
+/// from itself, and a refused record is refused again on every lookup and never
+/// replaces the remembered bundle.
+#[test]
+fn bundle_reuse_follows_the_stored_record_and_never_remembers_a_refusal() {
+    let validations = || crate::command_prefix::BUNDLE_VALIDATIONS.with(std::cell::Cell::get);
+    let stored = validated_migration_bundle()
+        .to_stored()
+        .expect("stored migration bundle");
+    let memo = crate::command_prefix::BundleMemo::default();
+    let before = validations();
+    for _ in 0..16 {
+        let bundle = memo.validate(&stored).expect("remembered validation");
+        assert_eq!(bundle.lineage(), stored.lineage());
+        assert_eq!(bundle.contract_version(), stored.contract_version());
+        assert_eq!(bundle.bundle_hash(), stored.bundle_hash());
+    }
+    assert_eq!(validations() - before, 1, "sixteen rows, one validation");
+
+    // Same identity, different canonical bytes: refused, on every lookup.
+    let mut bytes = stored.canonical_bytes().to_vec();
+    let last = bytes.last_mut().expect("non-empty bundle");
+    *last ^= 0x01;
+    let tampered = StoredContractBundleV1::new(
+        stored.lineage().clone(),
+        stored.contract_version(),
+        stored.bundle_hash(),
+        bytes,
+    )
+    .expect("tampered record");
+    // Same bytes, another identity: refused as an identity conflict.
+    let relabeled = StoredContractBundleV1::new(
+        stored.lineage().clone(),
+        ContractVersion::new(stored.contract_version().get() + 1).expect("version"),
+        stored.bundle_hash(),
+        stored.canonical_bytes().to_vec(),
+    )
+    .expect("relabeled record");
+    for refused in [&tampered, &relabeled] {
+        for _ in 0..3 {
+            let error = memo.validate(refused).expect_err("refused record");
+            assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+            assert!(ValidatedContractBundle::from_stored(refused).is_err());
+        }
+    }
+    assert_eq!(
+        validations() - before,
+        7,
+        "each refused lookup validated its own record"
+    );
+
+    // The intact record is still served from the memo: no refusal replaced it.
+    memo.validate(&stored)
+        .expect("intact record after refusals");
+    assert_eq!(validations() - before, 7);
+}
+
+// req: REC-007
+/// ADR-0286: the commit phase and the walk's command history decode a shared
+/// `COMMITS` row once, return the same commands as separate decodes, and never
+/// remember a refused row.
+#[test]
+fn commit_phase_and_command_history_decode_a_shared_segment_once() {
+    let (_path, ports, commands) = install_one_segment("retained-segment-memo", 16);
+    let read = ports.shared.database.begin_read().expect("begin read");
+    let commits = read.open_table(COMMITS).expect("commits");
+    let events = read.open_table(EVENTS).expect("events");
+    let row = commits
+        .get(keys::encode_application_sequence_key(CommitSequence::first()).as_slice())
+        .expect("read row")
+        .expect("segment row")
+        .value()
+        .to_vec();
+    let decodes = || crate::history_stub::RETAINED_SEGMENT_DECODES.with(std::cell::Cell::get);
+    let walk = |shared: bool| {
+        let history =
+            command_history::CommandHistory::build(&read, 0, usize::MAX).expect("history");
+        let segments = if shared {
+            history.retained_segments()
+        } else {
+            None
+        };
+        let before = decodes();
+        let records = crate::command_authority::commits_in_physical_row_checked(
+            &row,
+            &events,
+            CommitSequence::first(),
+            segments,
+            |_| Ok(()),
+        )
+        .expect("commit phase");
+        let resolved = records
+            .iter()
+            .map(|record| {
+                let loaded = history
+                    .command(&read, record.value().commit_sequence())
+                    .expect("history lookup")
+                    .expect("command");
+                assert!(loaded.embedded);
+                assert!(loaded.capsule.commit() == record.value());
+                loaded.capsule
+            })
+            .collect::<Vec<_>>();
+        (decodes() - before, resolved)
+    };
+    let (shared_decodes, shared) = walk(true);
+    let (separate_decodes, separate) = walk(false);
+    assert_eq!(shared.len(), commands.len());
+    assert!(
+        shared
+            .iter()
+            .zip(&separate)
+            .zip(&commands)
+            .all(|((shared, separate), command)| **shared == **separate
+                && **shared == *command.base())
+    );
+    assert_eq!(
+        shared_decodes, 1,
+        "one decode for both sides of the commit phase"
+    );
+    assert_eq!(
+        separate_decodes, 2,
+        "the commit phase and the history each decode"
+    );
+
+    // A refused row is decoded and refused again on every lookup and does not
+    // replace the remembered segment.
+    let memo = crate::command_authority::RetainedSegmentMemo::default();
+    memo.decode(&row).expect("intact row");
+    let before = decodes();
+    for _ in 0..3 {
+        assert!(memo.decode(b"corrupt segment").is_err());
+    }
+    assert_eq!(decodes() - before, 3);
+    memo.decode(&row).expect("intact row after refusals");
+    assert_eq!(
+        decodes() - before,
+        3,
+        "the intact segment is still remembered"
+    );
+}
+
+/// Installs consecutive segments of `count` fixture commands starting at each
+/// `first` sequence.
+fn install_segments(
+    label: &str,
+    segments: &[(u64, u64)],
+) -> (
+    crate::derived::TestDatabasePath,
+    crate::store::RedbOperationalPorts,
+) {
+    use crate::derived::follower_indexes::{capsule, segment};
+    let (path, ports) = crate::derived::operational(label);
+    let write = ports.shared.database.begin_write().expect("begin write");
+    {
+        let mut commits = write.open_table(COMMITS).expect("commits");
+        let mut prior = None;
+        for &(first, count) in segments {
+            let commands = (first..first + count)
+                .map(|sequence| capsule(CommitSequence::new(sequence).expect("sequence")))
+                .collect::<Vec<_>>();
+            let (decoded, encoded) = segment(commands, prior);
+            prior = Some(decoded.segment_digest());
+            commits
+                .insert(
+                    keys::encode_application_sequence_key(
+                        CommitSequence::new(first).expect("first sequence"),
+                    )
+                    .as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("install segment");
+        }
+    }
+    write.commit().expect("commit segments");
+    (path, ports)
+}
+
+fn historical_plan_entries(plan: &HistoricalEvidencePlan) -> String {
+    format!(
+        "{:?} {:?} {}",
+        plan.prefix_entries, plan.suffix_entries, plan.retained_bytes
+    )
+}
+
+// req: REC-007
+/// ADR-0287: one `COMMITS` pass serves the command history, the entity chains
+/// and the historical plan's commit plans, decoding each row once, and every
+/// result equals its own separate pass, with and without a checkpoint floor
+/// and with a malformed row present.
+#[test]
+fn single_commit_pass_matches_the_separate_passes_and_decodes_each_row_once() {
+    let decodes = || crate::history_stub::RETAINED_SEGMENT_DECODES.with(std::cell::Cell::get);
+    for malformed in [false, true] {
+        let (_path, ports) = install_segments(
+            if malformed {
+                "single-commit-pass-malformed"
+            } else {
+                "single-commit-pass"
+            },
+            &[(1, 4), (5, 4), (9, 4)],
+        );
+        if malformed {
+            let write = ports.shared.database.begin_write().expect("begin write");
+            write
+                .open_table(COMMITS)
+                .expect("commits")
+                .insert(
+                    keys::encode_application_sequence_key(CommitSequence::new(13).unwrap())
+                        .as_slice(),
+                    b"corrupt segment".as_slice(),
+                )
+                .expect("malformed row");
+            write.commit().expect("commit malformed row");
+        }
+        let read = ports.shared.database.begin_read().expect("begin read");
+        for floor in [0_u64, 4] {
+            let seed = || {
+                (floor > 0)
+                    .then(std::collections::BTreeMap::new)
+                    .map(|heads| (floor, heads))
+            };
+
+            let before = decodes();
+            let history = command_history::CommandHistory::build(
+                &read,
+                floor,
+                MAX_STARTUP_EVIDENCE_INDEX_BYTES,
+            )
+            .expect("separate history");
+            let chains = build_entity_chains(&read, 3, seed()).expect("separate chains");
+            let separate_plan =
+                build_historical_evidence_plan(&read, &inputs(), None).expect("separate plan");
+            let separate = decodes() - before;
+
+            let before = decodes();
+            let (fused_history, fused_chains, fused_plans) =
+                single_commit_pass(&read, floor, Some((3, seed())), true).expect("single pass");
+            let fused = decodes() - before;
+
+            assert_eq!(fused_history.rows_decoded(), history.rows_decoded());
+            assert_eq!(fused_history.audit_entries(), history.audit_entries());
+            assert_eq!(fused_history.retained_bytes(), history.retained_bytes());
+            assert_eq!(
+                fused_chains.expect("chains requested").expect("chains"),
+                chains
+            );
+            let fused_plans = fused_plans.expect("plans within the ceiling");
+            assert!(fused_plans.error.is_none());
+            assert!(
+                !fused_plans.plans.is_empty(),
+                "the fixture commands carry plans"
+            );
+            assert!(
+                history.audit_entries() > 0,
+                "the fixture commands carry audits"
+            );
+            let fused_plan = build_historical_evidence_plan(&read, &inputs(), Some(fused_plans))
+                .expect("plan from the single pass");
+            assert_eq!(
+                historical_plan_entries(&fused_plan),
+                historical_plan_entries(&separate_plan)
+            );
+            if malformed {
+                // A refused row is decoded again by every consumer.
+                assert!(fused < separate, "{fused} vs {separate}");
+            } else {
+                // Three segment rows: once each in the single pass; the
+                // separate history and chains decode the suffix, the plan all.
+                let suffix = if floor == 0 { 3 } else { 2 };
+                assert_eq!(fused, 3, "floor {floor}");
+                assert_eq!(separate, 2 * suffix + 3, "floor {floor}");
+            }
+        }
+    }
+}

@@ -71,3 +71,10 @@ verified files are included here; active restore references follow ADR-0289.
 Merged-source probe and lifecycle checks remain required before this merge is
 qualified. Neither these checks nor the earlier scoped native acceptance qualify
 the still-unfinished complete private restore factory or any actual campaign.
+
+
+Identifier reconciliation on 2026-10-13: the historical follower record called
+ADR-0286 below is now ADR-0296; the unaccepted handoff proposal called ADR-0287
+is now ADR-0297. Live links use the current paths. Historical review and acceptance
+text retains its original identifiers; the maintainer approved these identifier
+and reference updates without changing any accepted Decision section.

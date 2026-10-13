@@ -275,3 +275,34 @@ pass. Verified receipt SHA-256:
 Freshly published targets and private preparation still use nonrepairing opens.
 Neither the diagnostic nor this cleanup checkpoint qualifies a timing gate,
 final-source CI, rehearsal or production activation.
+
+
+## Local main integration on 2026-10-13
+
+Local main includes completed WP-833 and WP-834 beyond the remote-tracking branch.
+Its validation walk remembers one successfully validated exact stored bundle and
+one successfully decoded exact retained segment; its command history, entity
+chains and historical commit plans share one ordered pass. The merge keeps those
+implementations and their semantic/refusal tests. WP-825's redundant per-page
+catalog cache is replaced by the accepted walk memo; its invalid-command,
+changed-bundle and eviction assertions remain. The terminal single-decode census,
+restore ownership, full consumed recovery and admission fences remain intact.
+
+Main owns ADR-0286 and ADR-0287. The accepted follower record moves to
+[ADR-0296](../../adr/0296-bounded-native-follower-acknowledgement-validation.md);
+its Decision section is byte-for-byte unchanged and its original acceptance is
+preserved. [ADR-0288](../../adr/0288-bounded-native-bootstrap-source-custody-validation.md)
+updates only that dependency/context identifier; its Decision is also unchanged.
+WP-825's references and allowed paths follow the moves. The unaccepted direct
+mutation handoff proposal moves to ADR-0297 and remains unimplemented. Main's
+accepted validation decisions and completed packages retain their own identifiers.
+
+The maintainer approved these accepted-record identifier/reference edits in
+session on 2026-10-13: "Approve the identifier-only reconciliation". The original
+follower acceptance remains unchanged. Required-host qualification passes main's
+three validation-reuse tests, WP-825's invalid-schema and terminal decode checks,
+public native transfer, complete dirty recovery and automatic success cleanup,
+the all-target server build check and storage Clippy. Verified receipt SHA-256:
+`497f4e3e05cfc6a23afcc029fa83a0a4b5940ce059107ba9c68bfd010197cb59`.
+Final-source CI and timed restore qualification remain open. No ordering, durability, authorization,
+format, workload, resource ceiling or timing gate changes are proposed.

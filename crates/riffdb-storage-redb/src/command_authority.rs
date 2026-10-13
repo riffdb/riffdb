@@ -50,22 +50,23 @@ pub(crate) fn commits_in_physical_row<E>(
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    commits_in_physical_row_checked(encoded, events, physical_sequence, |_| Ok(()))
+    commits_in_physical_row_checked(encoded, events, physical_sequence, None, |_| Ok(()))
 }
 
-/// Startup supplies catalog validation while the decoded command slice is live.
+/// Startup supplies catalog validation while the decoded command slice is live,
+/// and the walk's segment memo when it has one (ADR-0286).
 pub(crate) fn commits_in_physical_row_checked<E>(
     encoded: &[u8],
     events: &E,
     physical_sequence: CommitSequence,
+    segments: Option<&RetainedSegmentMemo>,
     check: impl FnOnce(&[StoredCommandCapsuleV2]) -> Result<(), StorageError>,
 ) -> Result<Vec<EncodedPageItem<StoredCommitRecordV1>>, StorageError>
 where
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::history_stub::decode_retained_segment(encoded) {
+    match decode_retained_segment(encoded, segments) {
         Ok(segment) => {
-            let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical_sequence {
                 return Err(corrupt());
             }
@@ -342,6 +343,56 @@ impl SegmentMemo {
     #[cfg(test)]
     pub(crate) fn decodes(&self) -> usize {
         self.decodes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The last command segment decoded by
+/// [`crate::history_stub::decode_retained_segment`], remembered by the exact
+/// `COMMITS` row bytes it was decoded from (ADR-0286).
+///
+/// It is [`SegmentMemo`] for the row-validating decoder the commit phase and
+/// the walk's command history share: the commit phase decodes a row, and the
+/// command history then resolves the same row's commands. Only a successful
+/// decode is remembered and a remembered segment is never served for different
+/// bytes, so every member and refusal is the one a decode without it yields.
+#[derive(Default)]
+pub(crate) struct RetainedSegmentMemo {
+    last: std::cell::RefCell<Option<RememberedSegment>>,
+}
+
+impl RetainedSegmentMemo {
+    /// The segment in `row`, decoded by
+    /// [`crate::history_stub::decode_retained_segment`] unless it was the
+    /// last one decoded.
+    pub(crate) fn decode(
+        &self,
+        row: &[u8],
+    ) -> Result<std::sync::Arc<StoredCommandSegmentV1>, riffdb_storage_api::DurableCodecError> {
+        if let Some((bytes, segment)) = self.last.borrow().as_ref()
+            && **bytes == *row
+        {
+            return Ok(std::sync::Arc::clone(segment));
+        }
+        let segment = std::sync::Arc::new(
+            crate::history_stub::decode_retained_segment(row)?
+                .into_parts()
+                .0,
+        );
+        *self.last.borrow_mut() = Some((row.into(), std::sync::Arc::clone(&segment)));
+        Ok(segment)
+    }
+}
+
+/// Decodes `row` with [`crate::history_stub::decode_retained_segment`],
+/// through `segments` when given.
+pub(crate) fn decode_retained_segment(
+    row: &[u8],
+    segments: Option<&RetainedSegmentMemo>,
+) -> Result<std::sync::Arc<StoredCommandSegmentV1>, riffdb_storage_api::DurableCodecError> {
+    match segments {
+        Some(segments) => segments.decode(row),
+        None => crate::history_stub::decode_retained_segment(row)
+            .map(|segment| std::sync::Arc::new(segment.into_parts().0)),
     }
 }
 

@@ -23,7 +23,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{AdministrationSequence, CommitSequence};
 
-use crate::command_authority::{CommandAuthorityMember, command_member_at};
+use crate::command_authority::{CommandAuthorityMember, RetainedSegmentMemo, command_member_at};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::keys;
 use crate::layout::{COMMITS, EVENTS};
@@ -50,6 +50,12 @@ pub(super) trait CommandLookup {
         transaction: &ReadTransaction,
         sequence: CommitSequence,
     ) -> Result<Option<LoadedCommand>, StorageError>;
+
+    /// The walk's memo of the last segment decoded from a `COMMITS` row, when
+    /// this lookup resolves rows the commit phase also decodes (ADR-0286).
+    fn retained_segments(&self) -> Option<&RetainedSegmentMemo> {
+        None
+    }
 }
 
 /// The derived command-audit members the administration continuity proof
@@ -79,6 +85,9 @@ pub(super) struct CommandHistory {
     floor: u64,
     audits: Vec<CompactAudit>,
     recent: RefCell<VecDeque<(CommitSequence, LoadedCommand)>>,
+    /// The last segment decoded by an on-demand lookup or by the commit
+    /// phase, shared so a row both resolve is decoded once.
+    segments: RetainedSegmentMemo,
     rows_decoded: u64,
     retained_bytes: usize,
 }
@@ -90,6 +99,7 @@ impl CommandHistory {
             floor: 0,
             audits: Vec::new(),
             recent: RefCell::new(VecDeque::new()),
+            segments: RetainedSegmentMemo::default(),
             rows_decoded: 0,
             retained_bytes: 0,
         }
@@ -106,71 +116,18 @@ impl CommandHistory {
     ) -> Result<Self, StorageError> {
         let commits = transaction.open_table(COMMITS).map_err(table_error)?;
         let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let rows = if floor == 0 {
-            commits.iter().map_err(precommit_storage_error)?
-        } else {
-            let floor_key = keys::encode_application_sequence_key(
-                CommitSequence::new(floor).ok_or_else(invariant)?,
-            );
-            commits
-                .range::<&[u8]>((Excluded(floor_key.as_slice()), Unbounded))
-                .map_err(precommit_storage_error)?
+        let mut builder = CommandHistoryBuilder::new(floor, ceiling)?;
+        let rows = match builder.lower_bound() {
+            None => commits.iter().map_err(precommit_storage_error)?,
+            Some(floor_key) => commits
+                .range::<&[u8]>((Excluded(floor_key), Unbounded))
+                .map_err(precommit_storage_error)?,
         };
-        let entry_bytes = std::mem::size_of::<CompactAudit>();
-        let mut audits = Vec::new();
-        let mut rows_decoded = 0_u64;
-        let mut last_claimed: Option<CommitSequence> = None;
         for entry in rows {
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            rows_decoded = rows_decoded.saturating_add(1);
-            let physical =
-                keys::decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-            // The physical commit phase owns malformed-row reporting; an
-            // undecodable row contributes no derived members here.
-            let Some((commands, _)) = decode_row(&commits, &events, physical, value.value())?
-            else {
-                continue;
-            };
-            for command in commands {
-                let sequence = command.commit_sequence();
-                if last_claimed.is_some_and(|last| sequence <= last) {
-                    return Err(corrupt());
-                }
-                last_claimed = Some(sequence);
-                for (member, record) in [
-                    (StoredCommandAuditMemberV1::Started, command.started_audit()),
-                    (
-                        StoredCommandAuditMemberV1::Terminal,
-                        command.terminal_audit(),
-                    ),
-                ] {
-                    audits.push(CompactAudit {
-                        administration: record.administration_sequence(),
-                        commit: sequence,
-                        member,
-                    });
-                    if audits.len().saturating_mul(entry_bytes) > ceiling {
-                        return Err(storage_error(StorageErrorKind::LimitExceeded));
-                    }
-                }
-            }
+            builder.row(&commits, &events, key.value(), value.value(), None)?;
         }
-        audits.sort_by_key(|audit| audit.administration);
-        if audits
-            .windows(2)
-            .any(|pair| pair[0].administration == pair[1].administration)
-        {
-            return Err(corrupt());
-        }
-        audits.shrink_to_fit();
-        let retained_bytes = audits.len().saturating_mul(entry_bytes);
-        Ok(Self {
-            floor,
-            audits,
-            recent: RefCell::new(VecDeque::new()),
-            rows_decoded,
-            retained_bytes,
-        })
+        builder.finish()
     }
 
     pub(super) const fn rows_decoded(&self) -> u64 {
@@ -224,6 +181,112 @@ impl CommandHistory {
     }
 }
 
+/// [`CommandHistory::build`] one `COMMITS` row at a time, so a pass that also
+/// serves other consumers can decode each row once (ADR-0287).
+pub(super) struct CommandHistoryBuilder {
+    floor: u64,
+    floor_key: Option<[u8; 8]>,
+    ceiling: usize,
+    audits: Vec<CompactAudit>,
+    rows_decoded: u64,
+    last_claimed: Option<CommitSequence>,
+}
+
+impl CommandHistoryBuilder {
+    pub(super) fn new(floor: u64, ceiling: usize) -> Result<Self, StorageError> {
+        let floor_key = if floor == 0 {
+            None
+        } else {
+            Some(keys::encode_application_sequence_key(
+                CommitSequence::new(floor).ok_or_else(invariant)?,
+            ))
+        };
+        Ok(Self {
+            floor,
+            floor_key,
+            ceiling,
+            audits: Vec::new(),
+            rows_decoded: 0,
+            last_claimed: None,
+        })
+    }
+
+    /// The exclusive lower `COMMITS` key the history starts after, if any.
+    pub(super) fn lower_bound(&self) -> Option<&[u8]> {
+        self.floor_key.as_ref().map(<[u8; 8]>::as_slice)
+    }
+
+    /// Indexes one `COMMITS` row above the floor, decoding its segment
+    /// through `segments` when given.
+    pub(super) fn row<C, E>(
+        &mut self,
+        commits: &C,
+        events: &E,
+        key: &[u8],
+        value: &[u8],
+        segments: Option<&RetainedSegmentMemo>,
+    ) -> Result<(), StorageError>
+    where
+        C: ReadableTable<&'static [u8], &'static [u8]>,
+        E: ReadableTable<&'static [u8], &'static [u8]>,
+    {
+        let entry_bytes = std::mem::size_of::<CompactAudit>();
+        self.rows_decoded = self.rows_decoded.saturating_add(1);
+        let physical = keys::decode_application_sequence_key(key).map_err(|_| corrupt())?;
+        // The physical commit phase owns malformed-row reporting; an
+        // undecodable row contributes no derived members here.
+        let Some((commands, _)) = decode_row(commits, events, physical, value, segments)? else {
+            return Ok(());
+        };
+        for command in commands {
+            let sequence = command.commit_sequence();
+            if self.last_claimed.is_some_and(|last| sequence <= last) {
+                return Err(corrupt());
+            }
+            self.last_claimed = Some(sequence);
+            for (member, record) in [
+                (StoredCommandAuditMemberV1::Started, command.started_audit()),
+                (
+                    StoredCommandAuditMemberV1::Terminal,
+                    command.terminal_audit(),
+                ),
+            ] {
+                self.audits.push(CompactAudit {
+                    administration: record.administration_sequence(),
+                    commit: sequence,
+                    member,
+                });
+                if self.audits.len().saturating_mul(entry_bytes) > self.ceiling {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Result<CommandHistory, StorageError> {
+        let entry_bytes = std::mem::size_of::<CompactAudit>();
+        let mut audits = self.audits;
+        audits.sort_by_key(|audit| audit.administration);
+        if audits
+            .windows(2)
+            .any(|pair| pair[0].administration == pair[1].administration)
+        {
+            return Err(corrupt());
+        }
+        audits.shrink_to_fit();
+        let retained_bytes = audits.len().saturating_mul(entry_bytes);
+        Ok(CommandHistory {
+            floor: self.floor,
+            audits,
+            recent: RefCell::new(VecDeque::new()),
+            segments: RetainedSegmentMemo::default(),
+            rows_decoded: self.rows_decoded,
+            retained_bytes,
+        })
+    }
+}
+
 impl CommandLookup for CommandHistory {
     fn command(
         &self,
@@ -257,7 +320,13 @@ impl CommandLookup for CommandHistory {
         if physical.get() <= self.floor {
             return Ok(None);
         }
-        let Some((commands, embedded)) = decode_row(&commits, &events, physical, value.value())?
+        let Some((commands, embedded)) = decode_row(
+            &commits,
+            &events,
+            physical,
+            value.value(),
+            Some(&self.segments),
+        )?
         else {
             return Ok(None);
         };
@@ -278,6 +347,10 @@ impl CommandLookup for CommandHistory {
             recent.push_back((commit, loaded));
         }
         Ok(found)
+    }
+
+    fn retained_segments(&self) -> Option<&RetainedSegmentMemo> {
+        Some(&self.segments)
     }
 }
 
@@ -337,14 +410,14 @@ fn decode_row<C, E>(
     events: &E,
     physical: CommitSequence,
     row: &[u8],
+    segments: Option<&RetainedSegmentMemo>,
 ) -> Result<Option<(Vec<StoredCommandCapsuleV1>, bool)>, StorageError>
 where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
-    match crate::history_stub::decode_retained_segment(row) {
+    match crate::command_authority::decode_retained_segment(row, segments) {
         Ok(segment) => {
-            let segment = segment.into_parts().0;
             if segment.first_commit_sequence() != physical {
                 return Err(corrupt());
             }

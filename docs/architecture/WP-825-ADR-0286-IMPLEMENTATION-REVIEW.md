@@ -1,6 +1,6 @@
 # WP-825: bounded follower acknowledgement validation review
 
-ADR-0286's exact text was accepted as ADR-0280 by the maintainer in session on
+ADR-0296's exact text was accepted as ADR-0280 by the maintainer in session on
 2026-10-07. The maintainer approved its identifier and reference updates on
 2026-10-09 when integrating main's separate extent-pacing ADR-0280.
 Acceptance is recorded separately from implementation; WP-825's approved

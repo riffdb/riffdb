@@ -6,10 +6,10 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 source scripts/tool-versions
-# Ordinary tests use RAM-backed scratch when available (scripts/test-scratch-env).
-while IFS= read -r assignment; do
-    export "$assignment"
-done < <(./scripts/test-scratch-env)
+# `cargo test` here keeps test scratch on disk: one multi-threaded test process
+# on tmpfs turns rare maintenance-test lock collisions into routine failures.
+# `cargo nextest` (one process per test) uses RAM scratch; see
+# scripts/test-scratch-env.
 
 require_tool_version() {
     local label="$1"

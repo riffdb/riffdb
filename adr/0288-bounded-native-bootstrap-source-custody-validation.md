@@ -1,4 +1,6 @@
 ---
+# Dependency/context identifier ADR-0286 to ADR-0296 approved in session, 2026-10-13.
+# The original acceptance and exact Decision section are unchanged.
 adr: "0288"
 title: Bounded Native Bootstrap Source Custody Validation
 status: accepted
@@ -6,8 +8,8 @@ tier: guarantee
 date: 2026-10-07
 accepted: '2026-10-07'
 acceptance: 'maintainer, in session, 2026-10-07: Accepted, in response to the exact-text acceptance and WP-825 scope request for ADR-0281; maintainer, in session, 2026-10-09: Approve the identifier-only reconciliation, in response to the ADR-0281 to ADR-0284 metadata and reference reconciliation request; maintainer, in session, 2026-10-11: I accept, in response to the ADR-0284 to ADR-0288 identifier-only reconciliation and package-path review request'
-requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279, ADR-0286]
-amends: [ADR-0268, ADR-0286]
+requires: [ADR-0240, ADR-0248, ADR-0268, ADR-0271, ADR-0279, ADR-0296]
+amends: [ADR-0268, ADR-0296]
 supersedes: []
 requirements: [REP-003, REP-006, REC-001, END-008, LOG-001]
 packages: [WP-825]
@@ -41,7 +43,7 @@ Main later assigned ADR-0284 to bounded native outbox claim groups. This
 identifier-only reconciliation moves the bootstrap record to ADR-0288 and
 preserves its accepted Decision section byte for byte.
 
-After ADR-0286's acknowledgement and shutdown repairs, the unchanged required-host
+After ADR-0296's acknowledgement and shutdown repairs, the unchanged required-host
 replication suite passes 25 cases and fails initial bootstrap held attachment at
 its original 60-second deadline. A separate diagnostic build on the 8-vCPU,
 32-GiB Linux SSD host preserves the same workload and deadlines. Bootstrap source
@@ -55,7 +57,7 @@ work, not its exclusive responsibility for the timeout or release throughput.
 
 Every manifest/page custody check calls the complete retained-history validator.
 An exact held artifact still requires fresh source authority before releasing
-bytes; retaining old authorization is unsafe. ADR-0286 explicitly excludes
+bytes; retaining old authorization is unsafe. ADR-0296 explicitly excludes
 bootstrap validation. Replacing repeated source walks with a complete continuing
 proof therefore needs exact human acceptance. Receiver construction, startup,
 projection rebuild and publication validators remain outside this proposal.

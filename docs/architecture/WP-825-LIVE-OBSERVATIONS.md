@@ -1979,7 +1979,7 @@ or a smaller workload. ADR-0283 was accepted exactly in session on 2026-10-07 fo
 extension. Its acceptance and commit-layer scope are recorded separately
 before native implementation. Development validation is in progress; no
 final-source runtime qualification is established. The
-[follower acknowledgement review](WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)
+[follower acknowledgement review](WP-825-ADR-0296-IMPLEMENTATION-REVIEW.md)
 records the concrete boundary and remaining proofs. Other earlier intermittent
 failures remain unexplained. WP-825 stays open; the 24-hour run is unstarted.
 
@@ -3818,7 +3818,7 @@ improvement and benchmark scrub completion handling. The integration retains
 both shared-evidence and segment-reuse tests. The WP-825 workload and fault
 clocks are unchanged. Historical ADR-0282/0283 references above name their
 identities at the time; the branch proposals and follower record are being
-reconciled as ADR-0287 and ADR-0286, respectively. See the
+reconciled as ADR-0297 and ADR-0296, respectively. See the
 [identifier review](WP-825-MAIN-SYNC-2026-10-10-REVIEW.md).
 
 Package: WP-825. Tier: guarantee. Behavior: bounded physical append-worker
@@ -3898,7 +3898,7 @@ The branch now integrates this reviewed main fix without changing request limits
 discovery pages, authorization, retries or campaign gates.
 
 The two governance paths from the previously approved identifier reconciliation
-are registered in a separate scope predecessor. ADR-0287 remains proposed and
+are registered in a separate scope predecessor. ADR-0297 remains proposed and
 unimplemented. No accepted Decision text changes. Fresh combined-source checks,
 ordinary preparation, whole public recovery within 60 seconds and the measured
 eight-hour rehearsal remain required. The earlier native startup refusal remains

@@ -28629,7 +28629,7 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-004, REC-005, REC-006, REC-007, REC-008, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0286, ADR-0288, ADR-0289, ADR-0284, ADR-0285, ADR-0290, ADR-0291, ADR-0292, ADR-0293, ADR-0294, ADR-0295]
+  required_adrs: [ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0296, ADR-0288, ADR-0289, ADR-0284, ADR-0285, ADR-0290, ADR-0291, ADR-0292, ADR-0293, ADR-0294, ADR-0295]
   # Exact ADR-0290, ADR-0291 and ADR-0292 accepted in session, 2026-10-12.
   # Exact ADR-0293 accepted in session, 2026-10-12; one native restore preparation owner.
   # Maintainer approved necessary native fixes in session, 2026-10-04.
@@ -28652,10 +28652,11 @@ work_packages:
   # Restore custody accepted as ADR-0285, 2026-10-11; identifier-only move to ADR-0289 approved the same day.
   # Standing necessary-native-fix approval covers the receipt-cursor architecture guard consequence.
   # Record the two governance paths from the approved identifier-only reconciliation.
-  # ADR-0287 remains an unaccepted, unimplemented proposal; this grants no implementation authority.
+  # ADR-0297 remains an unaccepted, unimplemented proposal; this grants no implementation authority.
   # Exact ADR-0294 accepted in session, 2026-10-12; sealed publication ownership transfer.
   # ADR-0295 exact text accepted in session, 2026-10-13; register its governance path.
-  allowed_paths: [adr/0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md, adr/0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md, adr/0289-owned-private-restore-validation-custody.md, adr/0285-owned-private-restore-validation-custody.md, adr/0287-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0286-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
+  # Local main owns ADR-0286/0287; follower moves to 0296, unaccepted handoff to 0297.
+  allowed_paths: [adr/0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md, adr/0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md, adr/0289-owned-private-restore-validation-custody.md, adr/0285-owned-private-restore-validation-custody.md, adr/0297-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0296-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
   - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
@@ -29807,3 +29808,132 @@ work_packages:
     follow_ups:
     - Journal outbox transitions with commands (ADR-0284 option 3) to remove the per-write suffix drain and Immediate commit.
     - A committed command-epoch gate-wait census with holder attribution, which needs its own record.
+- id: WP-833
+  name: Validation walks validate each contract bundle once
+  tier: guarantee
+  depends_on: [WP-831]
+  objective: Implement ADR-0286. The complete structural walk reuses the last
+    validated contract bundle for rows whose stored bundle record is equal, and
+    its command history shares the commit phase's decode of a byte-equal
+    COMMITS row, so a segment's bundle and row are each processed once.
+  requirements: [REC-007]
+  required_adrs: [ADR-0286, ADR-0283, ADR-0182, ADR-0203]
+  allowed_paths: [work_packages.yaml, adr/0286-validation-walks-validate-each-contract-bundle-once.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/command_authority.rs,
+    crates/riffdb-storage-redb/src/command_prefix.rs, crates/riffdb-storage-redb/src/command_prefix/catalog.rs,
+    crates/riffdb-storage-redb/src/history_stub.rs, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/startup/command_history.rs, crates/riffdb-storage-redb/src/startup/tests.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs, docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - The one-bundle memo keyed by the exact stored bundle record, held by the walk session and the sampled checkpoint pass
+  - The row-validating segment memo shared by the commit phase and the walk's command history
+  - Fail-before tests holding one validation per bundle and one decode per row, with identical members and refusals
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-833
+  - ./scripts/ci-all
+  exit_gate: A walk validates a shared bundle once and decodes a commit-phase
+    row once, every reported finding and refusal is unchanged, and every
+    ADR-0182, ADR-0203 and ADR-0283 scrub proof passes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration or opt-out is added.
+    scale: One remembered bundle and one remembered segment per walk.
+  human_review_triggers:
+  - A remembered bundle is served for a stored record with different identity or bytes.
+  - A remembered segment is served for different row bytes, or either memo remembers a refusal.
+  closure:
+    status: complete
+    completed_at: '2026-10-12'
+    requirements_satisfied: [REC-007]
+    evidence: Fail-before tests (sixteen lookups of one stored bundle validate
+      it once; refused records are refused on every lookup and never replace
+      the remembered bundle; a commit-phase row decoded once with the memo and
+      twice without, with identical commands), the updated storage
+      architecture scan, package acceptance, and the ci-all battery. The
+      workspace nextest run passed 6,580 of 6,581 tests. The one timeout,
+      every_online_retention_crash_window_recovers_to_a_valid_watermark, is
+      CPU bound, times out on main with scratch on disk too, and passes in
+      158 s without the 120 s limit. Alternating write-only runs on the second
+      development machine measured the post-start scrub at 8.1 s median on the
+      base and 5.8 s with the change.
+    decision: Retain the one-bundle memo keyed by the exact stored bundle
+      record and the shared row-validating segment memo. No durable byte,
+      encoding, ordering, atomicity, acknowledgement, health state or public
+      interface change.
+    decisions_taken:
+    - The bundle memo lives in the walk session and the sampled checkpoint pass; the segment memo lives in the walk's command history, which the commit phase reaches through the CommandLookup trait.
+    - The command history's own full-history build pass does not use the memo, since nothing reads its rows again.
+    known_limitations: In ci-all, cargo test failed two riffdb-server
+      continuous_receiver tests once under concurrent load (storage
+      Unavailable). They passed in three full runs of the server library
+      suite and under nextest. cargo test stops at the first failing binary,
+      so the workspace was rerun under nextest. ci-all steps that need the
+      TypeScript toolchain, check-generated and check-adr-obligations
+      (ADR-0275 to ADR-0277) fail the same way on main on the development
+      workstation.
+    follow_ups:
+    - The entity-chain and historical passes still decode each segment once each (ADR-0286 Options considered 4).
+    - The second SHA-256 over each resolved frame and the encode-then-decode of each rebuilt receipt remain (ADR-0283 Consequences).
+- id: WP-834
+  name: Validation walks read command history in one pass
+  tier: guarantee
+  depends_on: [WP-833]
+  objective: Implement ADR-0287. The complete structural walk builds its
+    command history, entity chains and the historical plan's COMMITS plan
+    references in one forward pass, decoding each row once, and holds the
+    chains and plans, with their refusals, for the points their own passes ran.
+  requirements: [REC-007]
+  required_adrs: [ADR-0287, ADR-0286, ADR-0283, ADR-0182, ADR-0203]
+  allowed_paths: [work_packages.yaml, adr/0287-validation-walks-read-command-history-in-one-pass.md,
+    adr/README.md, adr/RESERVED.yaml, crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/startup/command_history.rs, crates/riffdb-storage-redb/src/startup/tests.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs, docs/performance/**, docs/SUMMARY.md]
+  deliverables:
+  - The single COMMITS pass serving the command history, the entity chains and the historical commit plans
+  - Row builders for the command history and the entity chains that keep each pass's per-row behavior
+  - Fail-before tests holding equal results and one decode per row, with and without a checkpoint and a malformed row
+  - A performance note with the scrub measurement
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-834
+  - ./scripts/ci-all
+  exit_gate: A complete walk reads COMMITS twice, its history, chains and
+    historical plan equal the separate passes', and every ADR-0182, ADR-0203,
+    ADR-0283 and ADR-0286 proof passes.
+  standing_design_tests:
+    interface_safety: No public interface, configuration or opt-out is added.
+    scale: Retained state stays under the evidence-index ceiling and the entity-chain capacity.
+  human_review_triggers:
+  - A consumer of the single pass sees different rows, order or decoder than its own pass.
+  - A held refusal surfaces at a different point or with a different error.
+  closure:
+    status: complete
+    completed_at: '2026-10-13'
+    requirements_satisfied: [REC-007]
+    evidence: Fail-before test single_commit_pass_matches_the_separate_passes_and_decodes_each_row_once
+      (equal history, entity chains and historical plan with and without a
+      checkpoint floor and a malformed row; an intact segment row decoded once
+      instead of up to three times), updated storage architecture scans,
+      package acceptance, the ci-all battery, and a workspace nextest run
+      passing 6,579 of 6,580 tests; the one timeout,
+      every_online_retention_crash_window_recovers_to_a_valid_watermark, is CPU
+      bound, times out on main too and passes in 158 s without the limit.
+      Alternating write-only runs on the second development machine measured
+      the post-start scrub at a 6.6 s median on the base and 3.9 s with the
+      change.
+    decision: Retain the single COMMITS pass for the command history, entity
+      chains and historical commit plans, with held refusals surfaced where
+      their own passes ran. No durable byte, encoding, ordering, atomicity,
+      acknowledgement, health state or public interface change.
+    decisions_taken:
+    - The history and entity chains became row builders; their single-pass wrappers keep the original row ranges, decoders and error order.
+    - Held commit plans are discarded when the walk's snapshot is reopened or when they would exceed the evidence-index ceiling; the historical plan then reads COMMITS itself.
+    known_limitations: In ci-all, cargo test failed
+      equal_key_commands_commit_once_and_replay_exactly once under workspace
+      load (an admission-clock call count); it passed six of six reruns and
+      this package does not touch riffdb-commit. cargo test stops at the first
+      failing binary, so the workspace was rerun under nextest. ci-all steps
+      that need the TypeScript toolchain, check-generated and
+      check-adr-obligations (ADR-0275 to ADR-0277) fail the same way on main
+      on the development workstation.
+    follow_ups:
+    - The commit phase still decodes each segment itself (ADR-0287 Options considered 2).
+    - The second SHA-256 over each resolved frame and receipts encoded only to be decoded remain (ADR-0283 Consequences).

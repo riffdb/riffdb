@@ -886,11 +886,14 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
     // command on demand; the decoded whole history is never retained.
     let history = production_source(crate_root().join("src/startup/command_history.rs"));
     // ADR-0263 Amendment 3: a history stub is resolved first; the resolved
-    // segment is still decoded by the exact embedded-authority decoder.
-    assert!(history.contains("crate::history_stub::decode_retained_segment"));
+    // segment is still decoded by the exact embedded-authority decoder, through
+    // the walk's byte-keyed segment memo (ADR-0286).
+    assert!(history.contains("crate::command_authority::decode_retained_segment(row, segments)"));
+    let authority = production_source(crate_root().join("src/command_authority.rs"));
+    assert!(authority.contains("crate::history_stub::decode_retained_segment(row)"));
     let stubs = production_source(crate_root().join("src/history_stub.rs"));
     assert!(stubs.contains("crate::command_prefix::decode_segment(&resolved)"));
-    assert!(history.contains("if last_claimed.is_some_and(|last| sequence <= last)"));
+    assert!(history.contains("if self.last_claimed.is_some_and(|last| sequence <= last)"));
     assert!(history.contains("return Err(corrupt())"));
     assert!(history.contains("const RECENT_COMMANDS: usize"));
     let retained = history
@@ -911,8 +914,24 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
         .split_once("\n    fn ensure_publication_audit_cache(")
         .expect("command cache end")
         .0;
-    assert!(cache.contains("command_history::CommandHistory::build("));
-    assert!(cache.contains("MAX_STARTUP_EVIDENCE_INDEX_BYTES"));
+    // ADR-0287: the history is built by the single COMMITS pass that also
+    // serves the entity chains and the historical plan's commit plans.
+    assert!(cache.contains("self.build_command_history_with_companions(floor)"));
+    let single = startup
+        .split_once("fn single_commit_pass(")
+        .expect("single commit pass")
+        .1
+        .split_once(
+            "
+}
+",
+        )
+        .expect("single commit pass end")
+        .0;
+    assert!(single.contains("command_history::CommandHistory::build("));
+    assert!(single.contains(
+        "command_history::CommandHistoryBuilder::new(floor, MAX_STARTUP_EVIDENCE_INDEX_BYTES)"
+    ));
 
     let commit = startup
         .split_once("fn inspect_commit_row(")
@@ -1914,14 +1933,20 @@ fn validated_prefix_entity_heads_are_anchored_at_s_and_advanced_through_the_suff
 
     let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
     let chains = startup
-        .split_once("fnbuild_entity_chains(")
+        .split_once("structEntityChainBuilder{")
         .expect("entity chain builder")
         .1
         .split_once("fnapply_entity_transitions_to_startup_chains(")
         .expect("entity chain builder end")
         .0;
     assert!(chains.contains("transition_heads.insert(target,head)"));
-    assert!(chains.contains("Excluded(lower.as_slice())"));
+    assert!(chains.contains("Excluded(lower)"));
+    // ADR-0287: the single COMMITS pass feeds the chains only rows after S.
+    let single = startup
+        .split_once("fnsingle_commit_pass(")
+        .expect("single commit pass")
+        .1;
+    assert!(single.contains("builder.lower_bound().is_none_or(|lower|key>lower)"));
 }
 
 #[test]

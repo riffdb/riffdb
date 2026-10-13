@@ -308,3 +308,10 @@ process-level pass on the initial candidate. Final-document metadata, unchanged
 shipping preparation, populated recovery and final-source full CI remain open.
 Freeze the source and shipping binaries before measured qualification; no
 24-hour readiness, merged package or completed rehearsal is claimed.
+
+
+Identifier reconciliation on 2026-10-13: the historical follower record called
+ADR-0286 below is now ADR-0296; the unaccepted handoff proposal called ADR-0287
+is now ADR-0297. Live links use the current paths. Historical review and acceptance
+text retains its original identifiers; the maintainer approved these identifier
+and reference updates without changing any accepted Decision section.

@@ -1,5 +1,5 @@
 ---
-adr: "0287"
+adr: "0297"
 title: Finite Direct Mutation Checkpoint Handoff
 status: proposed
 tier: guarantee
@@ -12,15 +12,15 @@ supersedes: []
 requirements: [REC-001, END-007, END-008, STO-031]
 packages: [WP-825]
 obligations:
-  - id: OBL-0287-1
+  - id: OBL-0297-1
     package: WP-825
     proof: direct_mutation_handoff_cannot_chase_successive_checkpoint_tails
     says: Later acknowledged journal growth cannot repeatedly overtake a direct mutation after its finite handoff reservation.
-  - id: OBL-0287-2
+  - id: OBL-0297-2
     package: WP-825
     proof: direct_mutation_handoff_preserves_reads_and_initial_checkpoint_writer_progress
     says: Reads continue during the handoff and ordinary audited writes still progress while the earlier checkpoint is paused before reservation.
-  - id: OBL-0287-3
+  - id: OBL-0297-3
     package: WP-825
     proof: direct_mutation_handoff_cancellation_failure_and_crash_preserve_authority
     says: Cancellation and failure release nondurable admission, while process crashes retain every acknowledged command and exact consumer and outbox state.
@@ -29,7 +29,7 @@ review_triggers:
   - Source reclamation receives writer priority, initiates this handoff or weakens its pacing and admission bounds.
   - A durable format, public interface, dependency, workload, deadline or qualification threshold changes.
 ---
-# ADR-0287: Finite Direct Mutation Checkpoint Handoff
+# ADR-0297: Finite Direct Mutation Checkpoint Handoff
 
 ## Context
 
