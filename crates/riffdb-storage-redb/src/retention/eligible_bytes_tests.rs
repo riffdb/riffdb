@@ -31,13 +31,11 @@ fn logical_bytes_count_actual_replaced_inline_locators_without_retired_keys_or_m
     )
     .unwrap();
     let write = ports.shared.database.begin_write().unwrap();
-    for table in [JournalTable::Idempotency] {
-        write
-            .open_table(crate::journal::byte_table_definition(table).unwrap())
-            .unwrap()
-            .insert(key.as_slice(), locator.as_bytes())
-            .unwrap();
-    }
+    write
+        .open_table(crate::layout::IDEMPOTENCY)
+        .unwrap()
+        .insert(key.as_slice(), locator.as_bytes())
+        .unwrap();
     write.commit().unwrap();
     let read = ports.begin_composite_read().unwrap();
     let mut views = CountingViews::new(&read);
@@ -50,12 +48,13 @@ fn logical_bytes_count_actual_replaced_inline_locators_without_retired_keys_or_m
         }
     );
     let after = ports.begin_composite_read().unwrap();
-    for table in [JournalTable::Idempotency] {
-        assert_eq!(
-            after.read_value(table, &key).unwrap().unwrap(),
-            locator.as_bytes()
-        );
-    }
+    assert_eq!(
+        after
+            .read_value(JournalTable::Idempotency, &key)
+            .unwrap()
+            .unwrap(),
+        locator.as_bytes()
+    );
 }
 
 #[test]
