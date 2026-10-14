@@ -26603,6 +26603,25 @@ work_packages:
     scale: Not applicable. It changes how a statistic is reported and gated, and adds no
       runtime behaviour.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [PERF-018]
+    evidence: docs/performance/benchmark-integrity.md
+    decision: ADR-0249 is accepted (9d1bc473c) and implemented in the benchmark integrity
+      protocol (docs/performance/benchmark-integrity.md). Every campaign that publishes
+      p50 and p95 publishes p99 alongside them as mandatory disclosure; a published tail
+      regression must name its mechanism while an unexplained tail movement blocks at any
+      size; and the five-generation (and six-generation) run-to-run spread of p99 on
+      identical code is banked on the 8 vCPU, AMD EPYC 7B12 bench host (1.0909 max/min and
+      1.0454 central-three spread on 9ee66abf1; 1.2381 max/min and 1.0909 central-three
+      spread on 3b851020a, roughly 2.5x the corresponding p50 spread).
+    decisions_taken:
+    - Record p99 as mandatory mechanism-attributed disclosure rather than an unstated
+      pass/fail gate, while blocking unexplained tail movements at any magnitude.
+    - Bank the five-generation and six-generation identical-code p99 spreads in
+      docs/performance/benchmark-integrity.md so any future numeric p99 threshold is
+      derived from observed host variance rather than assumed by analogy to p95.
 - id: WP-798
   name: Hardware CRC-32C and the sub-variance wins register
   tier: surface
