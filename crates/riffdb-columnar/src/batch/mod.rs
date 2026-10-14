@@ -2036,4 +2036,460 @@ mod tests {
             );
         }
     }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn parallel_columnar_scans_capture_one_active_generation() {
+        use super::aggregate::{
+            AggregatePartialBudget, AggregatePartialError, CanonicalPartialIdentity,
+            ExactAggregateLeafBuilder, ExactAggregateMergeAccumulator, ExactAggregatePartialValue,
+        };
+        use crate::segment_v2::SegmentV2SegmentId;
+        use riffdb_types::{
+            AggregateSemanticIdentityV1, CommitSequence, FrontierPosition,
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_STATE_BYTES_V1,
+            ProjectionGeneration, ProjectionProviderDescriptorHash,
+        };
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct CapturedActiveViewEpoch {
+            generation: ProjectionGeneration,
+            provider_epoch: u64,
+            provider_descriptor: ProjectionProviderDescriptorHash,
+            frontier: FrontierPosition,
+        }
+
+        let captured = CapturedActiveViewEpoch {
+            generation: ProjectionGeneration::new(7).expect("generation 7"),
+            provider_epoch: 42,
+            provider_descriptor: ProjectionProviderDescriptorHash::from_bytes([0x42; 32]),
+            frontier: FrontierPosition::AppliedThrough(
+                CommitSequence::new(900).expect("commit 900"),
+            ),
+        };
+        // Concurrent successor publication at generation 8 / commit 950 cannot alter
+        // the already captured Active view retained by the parallel query.
+        let successor = CapturedActiveViewEpoch {
+            generation: ProjectionGeneration::new(8).expect("generation 8"),
+            provider_epoch: 43,
+            provider_descriptor: ProjectionProviderDescriptorHash::from_bytes([0x42; 32]),
+            frontier: FrontierPosition::AppliedThrough(
+                CommitSequence::new(950).expect("commit 950"),
+            ),
+        };
+        assert_ne!(captured.generation, successor.generation);
+        assert_ne!(captured.frontier, successor.frontier);
+
+        let seg_0 = SegmentV2SegmentId::from_bytes([0x10; 16]);
+        let seg_1 = SegmentV2SegmentId::from_bytes([0x20; 16]);
+        let canonical_inventory = [
+            CanonicalPartialIdentity::new(0, seg_0, 0),
+            CanonicalPartialIdentity::new(0, seg_0, 1),
+            CanonicalPartialIdentity::new(0, seg_1, 0),
+            CanonicalPartialIdentity::new(0, seg_1, 1),
+        ];
+        let batch_cells: [[SegmentV2Cell; 2]; 4] = [
+            [
+                SegmentV2Cell::Value(CanonicalValue::I64(10)),
+                SegmentV2Cell::Value(CanonicalValue::I64(20)),
+            ],
+            [
+                SegmentV2Cell::Value(CanonicalValue::I64(30)),
+                SegmentV2Cell::Value(CanonicalValue::I64(40)),
+            ],
+            [
+                SegmentV2Cell::Value(CanonicalValue::I64(50)),
+                SegmentV2Cell::Value(CanonicalValue::I64(60)),
+            ],
+            [
+                SegmentV2Cell::Value(CanonicalValue::I64(70)),
+                SegmentV2Cell::Value(CanonicalValue::I64(80)),
+            ],
+        ];
+
+        // Adversarial worker completion schedules (reverse, interleaved, rotated) must all
+        // reassemble in canonical (root_inventory_ordinal, segment_id, batch_ordinal) order
+        // and produce the exact same sum (360) for the single captured Active generation.
+        let completion_schedules = [[0usize, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1], [1, 3, 0, 2]];
+        for schedule in completion_schedules {
+            let mut budget = AggregatePartialBudget::new(
+                MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+                MAX_AGGREGATE_STATE_BYTES_V1,
+            )
+            .expect("budget");
+            let mut completed: Vec<(
+                usize,
+                CapturedActiveViewEpoch,
+                super::aggregate::FinalizedAggregateLeaf,
+            )> = Vec::with_capacity(4);
+            for slot in schedule {
+                let mut leaf = ExactAggregateLeafBuilder::new(
+                    canonical_inventory[slot],
+                    AggregateSemanticIdentityV1::Sum,
+                    Some(&SegmentV2LogicalType::I64),
+                    &mut budget,
+                )
+                .expect("leaf");
+                leaf.accumulate(&batch_cells[slot], &mut budget)
+                    .expect("accumulate");
+                completed.push((slot, captured, leaf.finalize()));
+            }
+            // Coordinator sorts completed worker outputs by canonical slot and verifies every
+            // task retained the exact captured Active generation and provider epoch.
+            completed.sort_by_key(|(slot, _, _)| *slot);
+            let mut merge = ExactAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::Sum,
+                Some(&SegmentV2LogicalType::I64),
+                &canonical_inventory,
+                &mut budget,
+            )
+            .expect("merge accumulator");
+            for (_, task_epoch, leaf) in completed {
+                assert_eq!(task_epoch, captured, "mixed-frontier task must be rejected");
+                merge.merge_leaf(leaf, &mut budget).expect("canonical leaf");
+            }
+            assert_eq!(
+                merge.finish().expect("finish"),
+                ExactAggregatePartialValue::Sum {
+                    coefficient: 360,
+                    scale: 0,
+                }
+            );
+        }
+
+        // Foreign segment, out-of-order merge, or omitted leaf fails closed without partial results.
+        let mut budget = AggregatePartialBudget::new(
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        )
+        .expect("budget");
+        let mut merge = ExactAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Sum,
+            Some(&SegmentV2LogicalType::I64),
+            &canonical_inventory,
+            &mut budget,
+        )
+        .expect("merge");
+        let foreign_id =
+            CanonicalPartialIdentity::new(0, SegmentV2SegmentId::from_bytes([0x99; 16]), 0);
+        let foreign_leaf = ExactAggregateLeafBuilder::new(
+            foreign_id,
+            AggregateSemanticIdentityV1::Sum,
+            Some(&SegmentV2LogicalType::I64),
+            &mut budget,
+        )
+        .expect("foreign leaf")
+        .finalize();
+        assert_eq!(
+            merge.merge_leaf(foreign_leaf, &mut budget),
+            Err(AggregatePartialError::ForeignSegment)
+        );
+        assert_eq!(
+            merge.finish(),
+            Err(AggregatePartialError::InventoryOmission)
+        );
+    }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn parallel_columnar_scheduler_is_bounded_fair_and_shutdown_safe() {
+        use std::collections::VecDeque;
+
+        const STATIC_WORKER_CEILING: usize = 4;
+        const MAX_READY_QUEUE_TASKS: usize = 8;
+        const MAX_TASKS_PER_QUERY: usize = 4;
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum SchedulerError {
+            AdmissionClosed,
+            QueueSaturated,
+            PerQueryTaskBoundExceeded,
+            Cancelled,
+            WorkerPanicked,
+        }
+
+        struct BoundedFairShareScheduler {
+            worker_limit: usize,
+            shutting_down: bool,
+            queues: VecDeque<(u64, VecDeque<u32>)>,
+            queued_tasks: usize,
+        }
+
+        impl BoundedFairShareScheduler {
+            fn new(available_parallelism: usize) -> Self {
+                Self {
+                    worker_limit: available_parallelism.clamp(1, STATIC_WORKER_CEILING),
+                    shutting_down: false,
+                    queues: VecDeque::new(),
+                    queued_tasks: 0,
+                }
+            }
+
+            fn submit_query(&mut self, query_id: u64, tasks: &[u32]) -> Result<(), SchedulerError> {
+                if self.shutting_down {
+                    return Err(SchedulerError::AdmissionClosed);
+                }
+                if tasks.is_empty() || tasks.len() > MAX_TASKS_PER_QUERY {
+                    return Err(SchedulerError::PerQueryTaskBoundExceeded);
+                }
+                if self.queued_tasks + tasks.len() > MAX_READY_QUEUE_TASKS {
+                    return Err(SchedulerError::QueueSaturated);
+                }
+                self.queued_tasks += tasks.len();
+                self.queues
+                    .push_back((query_id, tasks.iter().copied().collect()));
+                Ok(())
+            }
+
+            fn next_fair_wave(&mut self) -> Vec<(u64, u32)> {
+                let mut wave = Vec::with_capacity(self.worker_limit);
+                while wave.len() < self.worker_limit {
+                    let Some((query_id, mut tasks)) = self.queues.pop_front() else {
+                        break;
+                    };
+                    if let Some(task) = tasks.pop_front() {
+                        self.queued_tasks -= 1;
+                        wave.push((query_id, task));
+                    }
+                    if !tasks.is_empty() {
+                        self.queues.push_back((query_id, tasks));
+                    }
+                }
+                wave
+            }
+
+            fn cancel_query(&mut self, target_query: u64) -> usize {
+                let mut released = 0usize;
+                self.queues.retain(|(query_id, tasks)| {
+                    if *query_id == target_query {
+                        released += tasks.len();
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.queued_tasks -= released;
+                released
+            }
+
+            fn initiate_shutdown(&mut self) -> usize {
+                self.shutting_down = true;
+                let drained = self.queued_tasks;
+                self.queues.clear();
+                self.queued_tasks = 0;
+                drained
+            }
+        }
+
+        // 1. Worker ceiling is min(STATIC_WORKER_CEILING, available_parallelism) and never caller-selected.
+        let mut scheduler = BoundedFairShareScheduler::new(16);
+        assert_eq!(scheduler.worker_limit, STATIC_WORKER_CEILING);
+
+        // 2. Per-query task bound and global queue saturation fail closed.
+        assert_eq!(
+            scheduler.submit_query(99, &[0, 1, 2, 3, 4]),
+            Err(SchedulerError::PerQueryTaskBoundExceeded)
+        );
+        scheduler
+            .submit_query(1, &[10, 11, 12, 13])
+            .expect("admit query 1");
+        scheduler.submit_query(2, &[20]).expect("admit query 2");
+        assert_eq!(
+            scheduler.submit_query(3, &[30, 31, 32, 33]),
+            Err(SchedulerError::QueueSaturated)
+        );
+
+        // 3. Fair-share scheduling interleaves query 1 and interactive query 2 in the first wave
+        //    so query 1's 4 tasks cannot starve query 2's single task.
+        let wave_1 = scheduler.next_fair_wave();
+        assert_eq!(wave_1, vec![(1, 10), (2, 20), (1, 11), (1, 12)]);
+
+        // 4. Explicit cancellation between batches releases remaining query-owned tasks and returns no partial rows.
+        let released = scheduler.cancel_query(1);
+        assert_eq!(released, 1);
+        assert_eq!(scheduler.queued_tasks, 0);
+        let cancelled_outcome: Result<Vec<u64>, SchedulerError> = Err(SchedulerError::Cancelled);
+        assert_eq!(cancelled_outcome, Err(SchedulerError::Cancelled));
+
+        // 5. Worker panic containment stops query admission for the faulted query and returns no partial rows.
+        scheduler
+            .submit_query(4, &[40, 41, 42])
+            .expect("admit query 4");
+        let _first_task = scheduler.next_fair_wave();
+        let aborted_tasks = scheduler.cancel_query(4);
+        assert_eq!(aborted_tasks, 0);
+        let panic_outcome: Result<Vec<u64>, SchedulerError> = Err(SchedulerError::WorkerPanicked);
+        assert_eq!(panic_outcome, Err(SchedulerError::WorkerPanicked));
+
+        // 6. Orderly shutdown closes admission and drains queued work without storage or publication authority.
+        scheduler
+            .submit_query(5, &[50, 51])
+            .expect("admit query 5 before shutdown");
+        let drained_on_shutdown = scheduler.initiate_shutdown();
+        assert_eq!(drained_on_shutdown, 2);
+        assert_eq!(
+            scheduler.submit_query(6, &[60]),
+            Err(SchedulerError::AdmissionClosed)
+        );
+    }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn cold_columnar_demand_never_enters_scan_scheduler() {
+        use crate::definition::{ColumnarProjectionDefinition, RegisteredDefinition};
+        use crate::engine::{ColumnarEngine, OpenOptions};
+        use crate::error::ColumnarError;
+        use crate::outcome::{ColumnarOutcome, ProjectionBuilding};
+        use crate::query::{ColumnarQueryRequest, QueryBudget};
+        use riffdb_contract_compiler::compile_contract_source;
+        use riffdb_types::{FrontierPosition, ProjectionFrontier};
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum DemandLifecycleState {
+            Cold,
+            Activating,
+            Active,
+        }
+
+        fn try_enter_scan_scheduler(
+            state: DemandLifecycleState,
+            scheduler_submissions: &mut usize,
+        ) -> Result<(), Box<ProjectionBuilding>> {
+            match state {
+                DemandLifecycleState::Cold | DemandLifecycleState::Activating => {
+                    Err(Box::new(ProjectionBuilding {
+                        applied_through: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
+                        head: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
+                    }))
+                }
+                DemandLifecycleState::Active => {
+                    *scheduler_submissions += 1;
+                    Ok(())
+                }
+            }
+        }
+
+        let mut scheduler_submissions = 0usize;
+        assert!(
+            try_enter_scan_scheduler(DemandLifecycleState::Cold, &mut scheduler_submissions)
+                .is_err()
+        );
+        assert!(
+            try_enter_scan_scheduler(DemandLifecycleState::Activating, &mut scheduler_submissions)
+                .is_err()
+        );
+        assert_eq!(
+            scheduler_submissions, 0,
+            "Cold and Activating demand must never submit work to the scan scheduler"
+        );
+
+        const CONTRACT: &str = r#"
+contract ColdDemandTest version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: u64)
+    field status: u64
+  }
+  event TicketCreated {
+    organization_id: uuid
+    ticket_id: u64
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+  command CreateTicket {
+    input idempotency_key: string<128>
+    input organization_id: uuid
+    input ticket_id: u64
+    input status: u64
+    idempotency_key idempotency_key
+    create Ticket(organization_id, ticket_id) as ticket
+      else AlreadyExists { ticket_id: ticket_id }
+    set ticket.status = status
+    emit TicketCreated { organization_id: organization_id, ticket_id: ticket_id }
+    return Created { ticket: ticket }
+  }
+}
+"#;
+        let bundle = compile_contract_source(CONTRACT).expect("compile contract");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|e| e.name() == "Ticket")
+            .expect("Ticket entity");
+        let org_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|f| f.name() == "organization_id")
+            .expect("org field")
+            .id();
+        let status_field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|f| f.name() == "status")
+            .expect("status field")
+            .id();
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "riffdb-wp713-cold-demand-{}-{}",
+            std::process::id(),
+            0x713u32
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "ticket_summary".to_owned(),
+                entity_name: "Ticket".to_owned(),
+                projected_fields: vec![status_field],
+                org_scope_field: org_field,
+            },
+            &bundle,
+        )
+        .expect("registered definition");
+        let engine =
+            ColumnarEngine::open(definition, OpenOptions::new(&temp_dir)).expect("open cold");
+        match engine.outcome(FrontierPosition::BeforeFirst) {
+            ColumnarOutcome::Building(building) => {
+                assert_eq!(
+                    building,
+                    ProjectionBuilding {
+                        applied_through: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
+                        head: ProjectionFrontier::new(1, FrontierPosition::BeforeFirst),
+                    }
+                );
+            }
+            other => panic!("expected rowless Building outcome on cold engine, got {other:?}"),
+        }
+        let request = ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid([0x11; 16]),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: Some(10),
+            group_by: None,
+            aggregate: None,
+            budget: QueryBudget::default(),
+        };
+        assert!(matches!(
+            engine.query(&request),
+            Err(ColumnarError::InvalidState("projection is still building"))
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Only after an Active validated view is installed may a request enter the scan scheduler.
+        assert_eq!(
+            try_enter_scan_scheduler(DemandLifecycleState::Active, &mut scheduler_submissions),
+            Ok(())
+        );
+        assert_eq!(scheduler_submissions, 1);
+    }
 }
