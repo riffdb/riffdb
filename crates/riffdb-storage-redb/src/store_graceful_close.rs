@@ -111,7 +111,14 @@ impl SharedRedb {
                 self.retire_current_read_root();
             }
         }
-        drop(self.journal_runtime()?);
+        let closed_runtime = {
+            let mut runtime = self.journal_runtime_for_graceful_close()?;
+            runtime.take()
+        };
+        // No suffix remains after the barrier. Release the lane outside its
+        // mutex; a failed close leaves any later writer to initialize normally
+        // and request its own spare, rather than reusing a close-only runtime.
+        drop(closed_runtime);
         // Retirement of an installed extent runs off the writer's path; the
         // clean boundary waits for it and admits no scratch name.
         self.join_journal_sealer();
@@ -304,3 +311,7 @@ fn read_administration_tail_from_write(
         (None, None) => Ok(None),
     }
 }
+
+#[cfg(test)]
+#[path = "store_graceful_close_tests.rs"]
+mod tests;

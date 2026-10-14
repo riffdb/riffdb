@@ -9697,3 +9697,6 @@ mod tests;
 pub(crate) use tests::open_validated_follower_fixture;
 #[cfg(test)]
 pub(crate) use tests::{open_validated_source_fixture, validate_source_store_fixture};
+
+#[cfg(test)]
+pub(crate) use tests::open_cleanly as open_cleanly_for_test;

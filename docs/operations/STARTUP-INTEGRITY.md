@@ -255,6 +255,10 @@ an absent checkpoint remains absent, and stale or ineligible bytes remain
 unchanged. Those states do not prevent a clean close because the lifecycle
 certificate is independent evidence.
 
+Shutdown finishes journal sealing already in progress and validates the empty
+active journal, but does not preallocate a new spare extent for future writes.
+Unused journal scratch is removed before the clean lifecycle record is written.
+
 RiffDB then rereads the bounded lifecycle roots and writes the clean lifecycle
 record with immediate durability as the final database mutation. Failure before
 that commit leaves DIRTY; commit uncertainty is resolved on reopen as either the

@@ -5170,7 +5170,7 @@ fn drain_historical(session: &mut RedbStructuralEvidenceSession) -> RedbHistoric
 }
 
 /// Completes one clean open and returns the activated ports.
-fn open_cleanly(store: RedbStore) -> crate::RedbOperationalPorts {
+pub(crate) fn open_cleanly(store: RedbStore) -> crate::RedbOperationalPorts {
     let mut session = store
         .begin_structural_evidence(inputs())
         .expect("begin structural evidence");

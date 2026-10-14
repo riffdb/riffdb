@@ -3,9 +3,29 @@
 
 use super::*;
 
+enum JournalRuntimePurpose {
+    Writer,
+    GracefulClose,
+}
+
 impl SharedRedb {
     pub(super) fn journal_runtime(
         &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<JournalRuntime>>, StorageError> {
+        self.initialize_journal_runtime(JournalRuntimePurpose::Writer)
+    }
+
+    /// Closing still needs the exact active extent, but no capacity for future
+    /// writes. Existing sealing jobs are joined by the ordinary close barrier.
+    pub(super) fn journal_runtime_for_graceful_close(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<JournalRuntime>>, StorageError> {
+        self.initialize_journal_runtime(JournalRuntimePurpose::GracefulClose)
+    }
+
+    fn initialize_journal_runtime(
+        &self,
+        purpose: JournalRuntimePurpose,
     ) -> Result<std::sync::MutexGuard<'_, Option<JournalRuntime>>, StorageError> {
         let mut runtime = self
             .journal_runtime
@@ -152,29 +172,31 @@ impl SharedRedb {
                     )
                 }
             };
-            // Refresh an existing spare's generation now; a missing one (the
-            // last install consumed it) is zero-filled off the writer's path.
-            let spare_path = crate::journal::spare_journal_path(&self.path);
-            let spare_guard = self
-                .journal_spare
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            if self
-                .journal_media
-                .try_exists(&spare_path)
-                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-            {
-                crate::journal::reset_journal_after_with_media(
-                    self.journal_media.as_ref(),
-                    &spare_path,
-                    &spare_header,
-                    &path,
-                )
-                .map_err(journal_io_error)?;
-                drop(spare_guard);
-            } else {
-                drop(spare_guard);
-                self.ensure_journal_spare(spare_header)?;
+            if matches!(purpose, JournalRuntimePurpose::Writer) {
+                // Refresh an existing spare's generation now; a missing one (the
+                // last install consumed it) is zero-filled off the writer's path.
+                let spare_path = crate::journal::spare_journal_path(&self.path);
+                let spare_guard = self
+                    .journal_spare
+                    .lock()
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                if self
+                    .journal_media
+                    .try_exists(&spare_path)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+                {
+                    crate::journal::reset_journal_after_with_media(
+                        self.journal_media.as_ref(),
+                        &spare_path,
+                        &spare_header,
+                        &path,
+                    )
+                    .map_err(journal_io_error)?;
+                    drop(spare_guard);
+                } else {
+                    drop(spare_guard);
+                    self.ensure_journal_spare(spare_header)?;
+                }
             }
             *runtime = Some(JournalRuntime {
                 changelog_history,

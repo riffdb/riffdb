@@ -84,3 +84,34 @@ review test also passes twelve identical complete reports for all three affected
 coordinates and all three terminal witnesses.
 This changes no shipping behavior, persistent encoding, public interface or
 rehearsal gate. WP-825 registers these narrow test paths in a preceding commit.
+
+
+A fresh ordinary release build after the next main refresh produces different
+server, CLI and load-worker bytes, so its prior restore result is not reused.
+The original populated restore test reconciles at 46.710 seconds and correctly
+fails the unchanged 45-second pre-release gate. The old primary's graceful-close
+barrier takes 4.198 seconds instead of 1.109 seconds; native restore after
+admission is slightly faster, at 34.692 seconds instead of 35.126 seconds.
+The failed attempt and its media remain retained.
+
+A native regression confirms that graceful close creates a spare extent and
+immediately deletes it, even when no future write is possible. Normal production
+spares have 320-MiB capacity and retain ADR-0280's 2-MiB sync bound. Close must
+still establish and verify its valid empty active extent, complete existing
+sealing jobs and perform the final Immediate CLEAN transaction under ADR-0157
+and ADR-0188. Its private initialization path does not request new writer scratch.
+The empty runtime is released outside its mutex so an interrupted close cannot
+leave a later writer reusing initialization that omitted its spare. Ordinary
+writer initialization, existing sealing work, chunk and final syncs, publication
+order, durable bytes, frontiers and validation remain unchanged. The maintainer's
+standing authorization covers this necessary native fix; no guarantee, clock,
+fault placement or fixture is weakened.
+
+The regression inspects actual media creation, the active journal header, both
+authoritative frontiers and the CLEAN lifecycle. Separate guards require normal
+writer spare preparation and preservation of that behavior after a refused close.
+The original native graceful-close crash and refusal tests, bounded-zero-fill
+tests and complete seeded corpus remain required, followed by the closest saved
+45/60-second restore test on the new ordinary binaries before full CI. The
+[Startup Integrity handbook](../operations/STARTUP-INTEGRITY.md) records the
+shutdown behavior. No long-run qualification follows from this component repair.
