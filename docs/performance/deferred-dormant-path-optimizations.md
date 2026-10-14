@@ -67,16 +67,32 @@ have compounded that rather than helped.
   already pins at one build per query. Caching across queries by provider
   epoch remains open and is the only live part of this finding.
 
-### Projection index providers — O(N^2) construction
+### Projection index providers — O(N^2) construction (repaired)
 
-- `crates/riffdb-projection/src/long_pattern.rs:138` clones the entire row map
-  and calls `rebuild(...)` over all rows on **every single insert**, and `:148`
-  does the same on every remove. Building N rows is therefore O(N^2). This is
-  the clearest of the findings and was verified directly in the source.
-- `crates/riffdb-projection/src/exact_predicate.rs:534` clones every retained
-  row into a fresh `BTreeMap` per mutation batch. Batched rather than
-  per-insert, so less severe than the above, but the same shape.
-- `crates/riffdb-projection/src/exact_text.rs` carries the equivalent rebuild.
+- `crates/riffdb-projection/src/long_pattern.rs:138` cloned the entire row map
+  and called `rebuild(...)` over all rows on **every single insert**, and `:148`
+  did the same on every remove. **Repaired**: incremental postings maintenance
+  (`incremental_maintenance_equals_a_full_rebuild_over_the_same_rows`).
+- `crates/riffdb-projection/src/exact_predicate.rs` cloned every retained
+  row into a fresh `BTreeMap` and rebuilt every order and sparse field index per
+  mutation batch. **Repaired**: `ExactPredicatePartitionIndexV4` and
+  `ExactPredicatePartitionIndexV5` now apply row mutations in-place against the
+  order and sparse field indices with zero-allocation checkpoint size checks and
+  atomic rollback on bound failure
+  (`incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows`).
+- `crates/riffdb-projection/src/exact_text.rs` cloned the partition index,
+  re-sorted touched postings from scratch across every entry, and serialized the
+  full checkpoint on every epoch. **Repaired**: `ExactTextPartitionIndexV1`,
+  `ExactTextPartitionIndexV2`, and `ExactTextPartitionIndexV3` maintain
+  `ascending` and `descending` postings incrementally in sorted order without
+  cloning the partition or encoding the full checkpoint on each epoch
+  (`filtered_text_incremental_replacement_removal_and_nulls_match_full_rebuild`,
+  `randomized_incremental_writes_match_independent_truth_table`).
+- `crates/riffdb-projection/src/tokenized_text.rs` cloned the document map,
+  rebuilt postings from scratch, and encoded the full checkpoint on every epoch.
+  **Repaired**: `TokenizedTextPartitionIndexV1` updates postings in-place and
+  validates checkpoint bounds without allocation
+  (`incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows`).
 
 ### Row-policy evidence — per-row index scan
 

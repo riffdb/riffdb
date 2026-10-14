@@ -1055,3 +1055,55 @@ fn nullable_v5_state_transitions_are_atomic_and_survive_compaction() {
         "derived compaction cannot alter nullable order identity or bytes"
     );
 }
+
+#[test]
+fn incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows() {
+    let v4_program = program();
+    let mut v4 = ExactPredicatePartitionIndexV4::rebuild(
+        binding(&v4_program, 1),
+        v4_program.clone(),
+        vec![
+            row(2, "beta@example.test".to_owned(), 1, 20),
+            row(4, "delta@example.test".to_owned(), 0, 40),
+        ],
+    )
+    .expect("initial v4");
+    v4.apply(
+        sequence(2),
+        &[
+            ExactPredicateIndexMutationV1::Upsert(row(1, "alpha@example.test".to_owned(), 0, 10)),
+            ExactPredicateIndexMutationV1::Upsert(row(2, "beta2@example.test".to_owned(), 2, 25)),
+            ExactPredicateIndexMutationV1::Delete(key(4)),
+            ExactPredicateIndexMutationV1::Upsert(row(3, "gamma@example.test".to_owned(), 1, 30)),
+            ExactPredicateIndexMutationV1::Delete(key(99)),
+        ],
+    )
+    .expect("v4 epoch 2");
+    v4.apply(
+        sequence(3),
+        &[
+            ExactPredicateIndexMutationV1::Delete(key(1)),
+            ExactPredicateIndexMutationV1::Upsert(row(5, "epsilon@example.test".to_owned(), 0, 50)),
+            ExactPredicateIndexMutationV1::Upsert(row(4, "delta2@example.test".to_owned(), 2, 45)),
+        ],
+    )
+    .expect("v4 epoch 3");
+    let v4_rebuilt = ExactPredicatePartitionIndexV4::rebuild(
+        binding(&v4_program, 3),
+        v4_program,
+        vec![
+            row(2, "beta2@example.test".to_owned(), 2, 25),
+            row(3, "gamma@example.test".to_owned(), 1, 30),
+            row(4, "delta2@example.test".to_owned(), 2, 45),
+            row(5, "epsilon@example.test".to_owned(), 0, 50),
+        ],
+    )
+    .expect("rebuilt v4");
+    assert_eq!(v4, v4_rebuilt);
+    assert_eq!(
+        v4.to_checkpoint_bytes().expect("v4 checkpoint"),
+        v4_rebuilt
+            .to_checkpoint_bytes()
+            .expect("v4 rebuilt checkpoint")
+    );
+}

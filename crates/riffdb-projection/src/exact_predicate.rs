@@ -1,7 +1,7 @@
 //! Indexed exact-predicate and independent-order provider state (ADR-0134).
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU16;
@@ -16,7 +16,7 @@ use riffdb_query_ir::{
 use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CommitSequence, EntityKey, FieldId, HashDomain,
     PartitionKeyHash, ProjectionGeneration, ProjectionProviderDescriptorHash, QueryPlanHash,
-    decode_canonical_value, encode_canonical_value, hash,
+    canonical_record_encoded_len, decode_canonical_value, encode_canonical_record, hash,
 };
 
 /// Additive provider-state format; V1 through V3 remain independently readable.
@@ -328,21 +328,123 @@ impl SparseFieldIndexV1 {
                     return Err(ExactPredicateProviderErrorV1::TypeMismatch);
                 }
                 self.present.push(position);
-                self.values.entry(value.clone()).or_default().push(position);
+                if let Some(positions) = self.values.get_mut(value) {
+                    positions.push(position);
+                } else {
+                    self.values.insert(value.clone(), vec![position]);
+                }
                 if let ExactScalarV1::String(value) = value {
                     let bytes = value.as_bytes();
-                    self.text.entry(bytes.to_vec()).or_default().push(position);
+                    if let Some(positions) = self.text.get_mut(bytes) {
+                        positions.push(position);
+                    } else {
+                        self.text.insert(bytes.to_vec(), vec![position]);
+                    }
                     let mut reversed = bytes.to_vec();
                     reversed.reverse();
-                    self.reversed_text
-                        .entry(reversed)
-                        .or_default()
-                        .push(position);
+                    if let Some(positions) = self.reversed_text.get_mut(reversed.as_slice()) {
+                        positions.push(position);
+                    } else {
+                        self.reversed_text.insert(reversed, vec![position]);
+                    }
                     for start in 0..bytes.len() {
-                        self.suffixes
-                            .entry(bytes[start..].to_vec())
-                            .or_default()
-                            .push(position);
+                        let suffix = &bytes[start..];
+                        if let Some(positions) = self.suffixes.get_mut(suffix) {
+                            positions.push(position);
+                        } else {
+                            self.suffixes.insert(suffix.to_vec(), vec![position]);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_and_shift_down(&mut self, position: usize, cell: &ExactReferenceCellV1) {
+        match cell {
+            ExactReferenceCellV1::Missing => remove_sorted_pos(&mut self.missing, position),
+            ExactReferenceCellV1::Null => remove_sorted_pos(&mut self.null, position),
+            ExactReferenceCellV1::Value(value) => {
+                remove_sorted_pos(&mut self.present, position);
+                remove_map_scalar_pos(&mut self.values, value, position);
+                if let ExactScalarV1::String(value) = value {
+                    let bytes = value.as_bytes();
+                    remove_map_bytes_pos(&mut self.text, bytes, position);
+                    let mut reversed = bytes.to_vec();
+                    reversed.reverse();
+                    remove_map_bytes_pos(&mut self.reversed_text, &reversed, position);
+                    for start in 0..bytes.len() {
+                        remove_map_bytes_pos(&mut self.suffixes, &bytes[start..], position);
+                    }
+                }
+            }
+        }
+        shift_down_positions(&mut self.missing, position);
+        shift_down_positions(&mut self.null, position);
+        shift_down_positions(&mut self.present, position);
+        for positions in self.values.values_mut() {
+            shift_down_positions(positions, position);
+        }
+        for map in [&mut self.text, &mut self.reversed_text, &mut self.suffixes] {
+            for positions in map.values_mut() {
+                shift_down_positions(positions, position);
+            }
+        }
+    }
+
+    fn shift_up_and_insert(
+        &mut self,
+        position: usize,
+        cell: &ExactReferenceCellV1,
+    ) -> Result<(), ExactPredicateProviderErrorV1> {
+        if let ExactReferenceCellV1::Value(value) = cell
+            && value.profile() != self.profile
+        {
+            return Err(ExactPredicateProviderErrorV1::TypeMismatch);
+        }
+        shift_up_positions(&mut self.missing, position);
+        shift_up_positions(&mut self.null, position);
+        shift_up_positions(&mut self.present, position);
+        for positions in self.values.values_mut() {
+            shift_up_positions(positions, position);
+        }
+        for map in [&mut self.text, &mut self.reversed_text, &mut self.suffixes] {
+            for positions in map.values_mut() {
+                shift_up_positions(positions, position);
+            }
+        }
+        match cell {
+            ExactReferenceCellV1::Missing => insert_sorted_pos(&mut self.missing, position),
+            ExactReferenceCellV1::Null => insert_sorted_pos(&mut self.null, position),
+            ExactReferenceCellV1::Value(value) => {
+                insert_sorted_pos(&mut self.present, position);
+                if let Some(positions) = self.values.get_mut(value) {
+                    insert_sorted_pos(positions, position);
+                } else {
+                    self.values.insert(value.clone(), vec![position]);
+                }
+                if let ExactScalarV1::String(value) = value {
+                    let bytes = value.as_bytes();
+                    if let Some(positions) = self.text.get_mut(bytes) {
+                        insert_sorted_pos(positions, position);
+                    } else {
+                        self.text.insert(bytes.to_vec(), vec![position]);
+                    }
+                    let mut reversed = bytes.to_vec();
+                    reversed.reverse();
+                    if let Some(positions) = self.reversed_text.get_mut(reversed.as_slice()) {
+                        insert_sorted_pos(positions, position);
+                    } else {
+                        self.reversed_text.insert(reversed, vec![position]);
+                    }
+                    for start in 0..bytes.len() {
+                        let suffix = &bytes[start..];
+                        if let Some(positions) = self.suffixes.get_mut(suffix) {
+                            insert_sorted_pos(positions, position);
+                        } else {
+                            self.suffixes.insert(suffix.to_vec(), vec![position]);
+                        }
                     }
                 }
             }
@@ -479,12 +581,14 @@ impl ExactPredicatePartitionIndexV4 {
             return Err(ExactPredicateProviderErrorV1::BindingMismatch);
         }
         let mut rows = rows;
-        rows.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
-        if rows
-            .windows(2)
-            .any(|pair| pair[0].key.as_bytes() == pair[1].key.as_bytes())
-        {
-            return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+        if !rows.is_sorted_by(|left, right| left.key.as_bytes() < right.key.as_bytes()) {
+            rows.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
+            if rows
+                .windows(2)
+                .any(|pair| pair[0].key.as_bytes() == pair[1].key.as_bytes())
+            {
+                return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+            }
         }
         let profiles = referenced_profiles(&program)?;
         for row in &rows {
@@ -537,32 +641,30 @@ impl ExactPredicatePartitionIndexV4 {
         epoch: CommitSequence,
         mutations: &[ExactPredicateIndexMutationV1],
     ) -> Result<(), ExactPredicateProviderErrorV1> {
-        let mut seen = BTreeSet::new();
-        let mut rows = self
-            .rows
-            .iter()
-            .cloned()
-            .map(|row| (row.key.as_bytes().to_vec(), row))
-            .collect::<BTreeMap<_, _>>();
-        for mutation in mutations {
-            if !seen.insert(mutation.key().as_bytes().to_vec()) {
-                return Err(ExactPredicateProviderErrorV1::DuplicateRow);
-            }
-            match mutation {
-                ExactPredicateIndexMutationV1::Upsert(row) => {
-                    rows.insert(row.key.as_bytes().to_vec(), row.clone());
+        let next_binding = self.binding.advanced(epoch)?;
+        let profiles = referenced_profiles(&self.program)?;
+        let max_candidates = usize::try_from(self.program.provider_requirement().max_candidates())
+            .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?;
+        let orders_prog = self.program.orders();
+        apply_mutations_incremental(
+            &mut self.rows,
+            &mut self.orders,
+            mutations,
+            &profiles,
+            max_candidates,
+            self.program.canonical_bytes(),
+            self.program
+                .provider_requirement()
+                .max_state_bytes_per_row(),
+            |row| {
+                for order in orders_prog {
+                    validate_order_row(row, order)?;
                 }
-                ExactPredicateIndexMutationV1::Delete(key) => {
-                    rows.remove(key.as_bytes());
-                }
-            }
-        }
-        let next = Self::rebuild(
-            self.binding.advanced(epoch)?,
-            self.program.clone(),
-            rows.into_values().collect(),
+                Ok(())
+            },
+            |order_idx, left, right| compare_rows(left, right, &orders_prog[order_idx]),
         )?;
-        *self = next;
+        self.binding = next_binding;
         Ok(())
     }
 
@@ -651,29 +753,7 @@ impl ExactPredicatePartitionIndexV4 {
                 .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
                 .to_be_bytes(),
         );
-        for row in &self.rows {
-            write_bytes(&mut bytes, row.key.as_bytes())?;
-            bytes.extend_from_slice(
-                &u16::try_from(row.fields.len())
-                    .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
-                    .to_be_bytes(),
-            );
-            for (field, cell) in &row.fields {
-                bytes.extend_from_slice(&field.to_be_bytes());
-                match cell {
-                    ExactReferenceCellV1::Missing => bytes.push(0),
-                    ExactReferenceCellV1::Null => bytes.push(1),
-                    ExactReferenceCellV1::Value(value) => {
-                        bytes.push(2);
-                        write_bytes(&mut bytes, &encode_scalar(value)?)?;
-                    }
-                }
-            }
-            let output =
-                encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
-                    .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
-            write_bytes(&mut bytes, &output)?;
-        }
+        encode_rows(&mut bytes, &self.rows)?;
         if bytes.len().saturating_add(CHECKSUM_BYTES) > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 {
             return Err(ExactPredicateProviderErrorV1::BoundExceeded);
         }
@@ -732,33 +812,7 @@ impl ExactPredicatePartitionIndexV4 {
         {
             return Err(ExactPredicateProviderErrorV1::BoundExceeded);
         }
-        let mut rows = Vec::with_capacity(count);
-        for _ in 0..count {
-            let key = EntityKey::from_bytes(reader.bytes()?.to_vec())
-                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
-            let field_count = usize::from(reader.u16()?);
-            let mut fields = BTreeMap::new();
-            for _ in 0..field_count {
-                let field =
-                    FieldId::new(reader.u32()?).ok_or(ExactPredicateProviderErrorV1::Integrity)?;
-                let cell = match reader.u8()? {
-                    0 => ExactReferenceCellV1::Missing,
-                    1 => ExactReferenceCellV1::Null,
-                    2 => ExactReferenceCellV1::Value(decode_scalar(reader.bytes()?)?),
-                    _ => return Err(ExactPredicateProviderErrorV1::Integrity),
-                };
-                if fields.insert(field, cell).is_some() {
-                    return Err(ExactPredicateProviderErrorV1::Integrity);
-                }
-            }
-            let riffdb_types::CanonicalValue::Record(output) =
-                decode_canonical_value(reader.bytes()?)
-                    .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?
-            else {
-                return Err(ExactPredicateProviderErrorV1::Integrity);
-            };
-            rows.push(ExactPredicateProviderRowV1::new(key, fields, output));
-        }
+        let rows = decode_rows(&mut reader, count)?;
         reader.finish()?;
         let recovered = Self::rebuild(binding, program, rows)?;
         if recovered.to_checkpoint_bytes()? != bytes {
@@ -794,48 +848,14 @@ impl ExactPredicatePartitionIndexV4 {
     }
 
     fn validate_state_bound(&self) -> Result<(), ExactPredicateProviderErrorV1> {
-        let mut bytes = self.program.canonical_bytes().len() as u64;
-        for row in &self.rows {
-            bytes = bytes
-                .checked_add(row.key.as_bytes().len() as u64)
-                .and_then(|value| value.checked_add((row.fields.len() as u64).saturating_mul(5)))
-                .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-            for cell in row.fields.values() {
-                if let ExactReferenceCellV1::Value(value) = cell {
-                    bytes = bytes
-                        .checked_add(estimated_scalar_bytes(value))
-                        .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-                }
-            }
-            let output =
-                encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
-                    .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
-            bytes = bytes
-                .checked_add(output.len() as u64)
-                .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-        }
-        for order in &self.orders {
-            bytes = bytes
-                .checked_add((order.rows.len() as u64).saturating_mul(8))
-                .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-            for index in order.fields.values() {
-                bytes = bytes
-                    .checked_add(index.estimated_bytes()?)
-                    .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-            }
-        }
-        let per_row = u64::from(
+        validate_state_bound(
+            self.program.canonical_bytes(),
             self.program
                 .provider_requirement()
                 .max_state_bytes_per_row(),
-        );
-        let allowed = per_row
-            .checked_mul(self.rows.len().max(1) as u64)
-            .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
-        if bytes > allowed {
-            return Err(ExactPredicateProviderErrorV1::StateAmplification);
-        }
-        Ok(())
+            &self.rows,
+            &self.orders,
+        )
     }
 }
 
@@ -863,12 +883,14 @@ impl ExactPredicatePartitionIndexV5 {
             return Err(ExactPredicateProviderErrorV1::BindingMismatch);
         }
         let mut rows = rows;
-        rows.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
-        if rows
-            .windows(2)
-            .any(|pair| pair[0].key.as_bytes() == pair[1].key.as_bytes())
-        {
-            return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+        if !rows.is_sorted_by(|left, right| left.key.as_bytes() < right.key.as_bytes()) {
+            rows.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
+            if rows
+                .windows(2)
+                .any(|pair| pair[0].key.as_bytes() == pair[1].key.as_bytes())
+            {
+                return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+            }
         }
         let profiles = referenced_profiles_v2(&program)?;
         for row in &rows {
@@ -923,32 +945,32 @@ impl ExactPredicatePartitionIndexV5 {
         epoch: CommitSequence,
         mutations: &[ExactPredicateIndexMutationV1],
     ) -> Result<(), ExactPredicateProviderErrorV1> {
-        let mut seen = BTreeSet::new();
-        let mut rows = self
-            .rows
-            .iter()
-            .cloned()
-            .map(|row| (row.key.as_bytes().to_vec(), row))
-            .collect::<BTreeMap<_, _>>();
-        for mutation in mutations {
-            if !seen.insert(mutation.key().as_bytes().to_vec()) {
-                return Err(ExactPredicateProviderErrorV1::DuplicateRow);
-            }
-            match mutation {
-                ExactPredicateIndexMutationV1::Upsert(row) => {
-                    rows.insert(row.key.as_bytes().to_vec(), row.clone());
+        let next_binding = self.binding.advanced(epoch)?;
+        let profiles = referenced_profiles_v2(&self.program)?;
+        let max_candidates = usize::try_from(self.program.provider_requirement().max_candidates())
+            .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?;
+        let orders_prog = self.program.orders();
+        apply_mutations_incremental(
+            &mut self.rows,
+            &mut self.orders,
+            mutations,
+            &profiles,
+            max_candidates,
+            self.program.canonical_bytes(),
+            self.program
+                .provider_requirement()
+                .max_state_bytes_per_row(),
+            |row| {
+                for order in orders_prog {
+                    validate_nullable_order_row(row, order)?;
                 }
-                ExactPredicateIndexMutationV1::Delete(key) => {
-                    rows.remove(key.as_bytes());
-                }
-            }
-        }
-        let next = Self::rebuild(
-            self.binding.advanced(epoch)?,
-            self.program.clone(),
-            rows.into_values().collect(),
+                Ok(())
+            },
+            |order_idx, left, right| {
+                compare_nullable_provider_rows(left, right, &orders_prog[order_idx])
+            },
         )?;
-        *self = next;
+        self.binding = next_binding;
         Ok(())
     }
 
@@ -1601,6 +1623,202 @@ fn compare_nullable_provider_rows(
     left.key.as_bytes().cmp(right.key.as_bytes())
 }
 
+fn remove_sorted_pos(positions: &mut Vec<usize>, position: usize) {
+    if let Ok(idx) = positions.binary_search(&position) {
+        positions.remove(idx);
+    }
+}
+
+fn insert_sorted_pos(positions: &mut Vec<usize>, position: usize) {
+    let idx = positions.partition_point(|&p| p < position);
+    positions.insert(idx, position);
+}
+
+fn shift_down_positions(positions: &mut [usize], removed: usize) {
+    if positions.last().is_some_and(|&last| last > removed) {
+        let start = positions.partition_point(|&p| p <= removed);
+        for p in &mut positions[start..] {
+            *p -= 1;
+        }
+    }
+}
+
+fn shift_up_positions(positions: &mut [usize], inserted: usize) {
+    if positions.last().is_some_and(|&last| last >= inserted) {
+        let start = positions.partition_point(|&p| p < inserted);
+        for p in &mut positions[start..] {
+            *p += 1;
+        }
+    }
+}
+
+fn remove_map_scalar_pos(
+    map: &mut BTreeMap<ExactScalarV1, Vec<usize>>,
+    key: &ExactScalarV1,
+    position: usize,
+) {
+    let empty = if let Some(positions) = map.get_mut(key) {
+        remove_sorted_pos(positions, position);
+        positions.is_empty()
+    } else {
+        false
+    };
+    if empty {
+        map.remove(key);
+    }
+}
+
+fn remove_map_bytes_pos(map: &mut BTreeMap<Vec<u8>, Vec<usize>>, key: &[u8], position: usize) {
+    let empty = if let Some(positions) = map.get_mut(key) {
+        remove_sorted_pos(positions, position);
+        positions.is_empty()
+    } else {
+        false
+    };
+    if empty {
+        map.remove(key);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_mutations_incremental(
+    rows: &mut Vec<ExactPredicateProviderRowV1>,
+    orders: &mut [ExactOrderIndexV1],
+    mutations: &[ExactPredicateIndexMutationV1],
+    profiles: &BTreeMap<FieldId, ExactComparisonProfileV1>,
+    max_candidates: usize,
+    program_bytes: &[u8],
+    max_state_bytes_per_row: u32,
+    validate_row: impl Fn(&ExactPredicateProviderRowV1) -> Result<(), ExactPredicateProviderErrorV1>,
+    compare: impl Fn(usize, &ExactPredicateProviderRowV1, &ExactPredicateProviderRowV1) -> Ordering,
+) -> Result<(), ExactPredicateProviderErrorV1> {
+    let mut sorted_mutations: Vec<&ExactPredicateIndexMutationV1> = mutations.iter().collect();
+    sorted_mutations
+        .sort_unstable_by(|left, right| left.key().as_bytes().cmp(right.key().as_bytes()));
+    if sorted_mutations
+        .windows(2)
+        .any(|pair| pair[0].key().as_bytes() == pair[1].key().as_bytes())
+    {
+        return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+    }
+    let mut next_count = rows.len();
+    for mutation in &sorted_mutations {
+        let exists = rows
+            .binary_search_by(|existing| existing.key.as_bytes().cmp(mutation.key().as_bytes()))
+            .is_ok();
+        match mutation {
+            ExactPredicateIndexMutationV1::Upsert(row) => {
+                if !exists {
+                    next_count = next_count.saturating_add(1);
+                }
+                if row.fields.len() > profiles.len()
+                    || row.fields.keys().any(|field| !profiles.contains_key(field))
+                {
+                    return Err(ExactPredicateProviderErrorV1::Integrity);
+                }
+                validate_row(row)?;
+                for (field, profile) in profiles {
+                    if let Some(ExactReferenceCellV1::Value(value)) = row.fields.get(field)
+                        && value.profile() != *profile
+                    {
+                        return Err(ExactPredicateProviderErrorV1::TypeMismatch);
+                    }
+                }
+                canonical_record_encoded_len(&row.output)
+                    .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+            }
+            ExactPredicateIndexMutationV1::Delete(_) => {
+                if exists {
+                    next_count = next_count.saturating_sub(1);
+                }
+            }
+        }
+    }
+    if next_count > max_candidates {
+        return Err(ExactPredicateProviderErrorV1::BindingMismatch);
+    }
+
+    let mut rollback: Vec<(EntityKey, Option<ExactPredicateProviderRowV1>)> =
+        Vec::with_capacity(sorted_mutations.len());
+    for mutation in sorted_mutations {
+        let key = mutation.key().clone();
+        let prev = apply_single_row_mutation(rows, orders, mutation, &compare)?;
+        rollback.push((key, prev));
+    }
+
+    if let Err(err) = validate_state_bound(program_bytes, max_state_bytes_per_row, rows, orders) {
+        for (key, prev) in rollback.into_iter().rev() {
+            let undo = match prev {
+                Some(row) => ExactPredicateIndexMutationV1::Upsert(row),
+                None => ExactPredicateIndexMutationV1::Delete(key),
+            };
+            let _ = apply_single_row_mutation(rows, orders, &undo, &compare);
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn apply_single_row_mutation(
+    rows: &mut Vec<ExactPredicateProviderRowV1>,
+    orders: &mut [ExactOrderIndexV1],
+    mutation: &ExactPredicateIndexMutationV1,
+    compare: &impl Fn(usize, &ExactPredicateProviderRowV1, &ExactPredicateProviderRowV1) -> Ordering,
+) -> Result<Option<ExactPredicateProviderRowV1>, ExactPredicateProviderErrorV1> {
+    let search =
+        rows.binary_search_by(|existing| existing.key.as_bytes().cmp(mutation.key().as_bytes()));
+    let previous = if let Ok(row_idx) = search {
+        for (order_idx, order) in orders.iter_mut().enumerate() {
+            let order_pos = order
+                .rows
+                .binary_search_by(|&r| compare(order_idx, &rows[r], &rows[row_idx]))
+                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+            order.rows.remove(order_pos);
+            for r in &mut order.rows {
+                if *r > row_idx {
+                    *r -= 1;
+                }
+            }
+            for (field, field_index) in &mut order.fields {
+                let cell = rows[row_idx]
+                    .fields
+                    .get(field)
+                    .unwrap_or(&ExactReferenceCellV1::Missing);
+                field_index.remove_and_shift_down(order_pos, cell);
+            }
+        }
+        Some(rows.remove(row_idx))
+    } else {
+        None
+    };
+
+    if let ExactPredicateIndexMutationV1::Upsert(new_row) = mutation {
+        let insert_idx = match search {
+            Ok(idx) | Err(idx) => idx,
+        };
+        rows.insert(insert_idx, new_row.clone());
+        for (order_idx, order) in orders.iter_mut().enumerate() {
+            for r in &mut order.rows {
+                if *r >= insert_idx {
+                    *r += 1;
+                }
+            }
+            let order_pos = order.rows.partition_point(|&r| {
+                compare(order_idx, &rows[r], &rows[insert_idx]) == Ordering::Less
+            });
+            order.rows.insert(order_pos, insert_idx);
+            for (field, field_index) in &mut order.fields {
+                let cell = rows[insert_idx]
+                    .fields
+                    .get(field)
+                    .unwrap_or(&ExactReferenceCellV1::Missing);
+                field_index.shift_up_and_insert(order_pos, cell)?;
+            }
+        }
+    }
+    Ok(previous)
+}
+
 fn encode_rows(
     bytes: &mut Vec<u8>,
     rows: &[ExactPredicateProviderRowV1],
@@ -1623,9 +1841,8 @@ fn encode_rows(
                 }
             }
         }
-        let output =
-            encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
-                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        let output = encode_canonical_record(&row.output)
+            .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
         write_bytes(bytes, &output)?;
     }
     Ok(())
@@ -1683,11 +1900,10 @@ fn validate_state_bound(
                     .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
             }
         }
-        let output =
-            encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
-                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        let output_len = canonical_record_encoded_len(&row.output)
+            .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
         bytes = bytes
-            .checked_add(output.len() as u64)
+            .checked_add(output_len as u64)
             .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
     }
     for order in orders {
