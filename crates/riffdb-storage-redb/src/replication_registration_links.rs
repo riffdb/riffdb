@@ -235,7 +235,9 @@ pub(crate) fn validate_point_with_admission(
     let receipt = receipts
         .receipt(point.sequence(), budget)?
         .ok_or_else(corrupt)?;
-    if Point::from_receipt(&receipt).map_err(|_| corrupt())? != point {
+    let summary = crate::changelog_v3::ValidatedReceiptSummaryV3::from_receipt(&receipt)
+        .map_err(|_| corrupt())?;
+    if summary.point() != point {
         return Err(corrupt());
     }
     Ok(())

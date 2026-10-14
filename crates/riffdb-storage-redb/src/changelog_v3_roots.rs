@@ -209,19 +209,19 @@ pub(crate) fn validate_retained_rows(
     let mut first = true;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let receipt = crate::history_stub::decode_history_value(value.value())?;
-        if key.value() != receipt.binding().sequence.get().to_be_bytes()
-            || receipt.binding().sequence > history.tail().sequence()
+        let summary = crate::history_stub::resolve_history_summary(value.value())?;
+        if key.value() != summary.binding().sequence.get().to_be_bytes()
+            || summary.binding().sequence > history.tail().sequence()
         {
             return Err(corrupt());
         }
         if first {
-            covered
-                .validate_terminal_receipt(&receipt)
+            summary
+                .validate_terminal_receipt(covered)
                 .map_err(|_| corrupt())?;
             first = false;
         } else {
-            covered = covered.advance(&receipt).map_err(|_| corrupt())?;
+            covered = summary.advance_history(covered).map_err(|_| corrupt())?;
         }
     }
     if first || covered != history {
@@ -239,8 +239,8 @@ pub(crate) fn validate_source_holds(
     receipts: &impl crate::source_validation_read::ReceiptRead,
 ) -> Result<(), StorageError> {
     use riffdb_storage_api::{
-        ChangelogHistoryPointV3, FollowerRegistrationPhaseV1 as Phase,
-        MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldStateV1 as State,
+        FollowerRegistrationPhaseV1 as Phase, MAX_REPLICATION_SOURCE_HOLDS_V1,
+        ReplicationSourceHoldStateV1 as State,
     };
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
     if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
@@ -288,7 +288,9 @@ pub(crate) fn validate_source_holds(
         let receipt = receipts
             .receipt(hold.fence().sequence(), None)?
             .ok_or_else(corrupt)?;
-        if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())? != hold.fence() {
+        let summary = crate::changelog_v3::ValidatedReceiptSummaryV3::from_receipt(&receipt)
+            .map_err(|_| corrupt())?;
+        if summary.point() != hold.fence() {
             return Err(corrupt());
         }
     }
@@ -500,15 +502,15 @@ fn validate_roots(
     if let Some(budget) = budget {
         let candidate =
             crate::history_stub::provider_receipt_from_value_v1(receipt.value(), budget)?;
-        history
-            .validate_terminal_receipt(&candidate.receipt)
+        crate::changelog_v3::ValidatedReceiptSummaryV3::from_receipt(&candidate.receipt)
+            .and_then(|summary| summary.validate_terminal_receipt(history))
             .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
         return Ok(Some(history));
     }
-    history
-        .validate_terminal_canonical_v1(&crate::history_stub::resolve_history_value(
-            receipt.value(),
-        )?)
+    // The decoder checks its frame-adjusted hard bound before hashing/copying.
+    let summary = crate::history_stub::resolve_history_summary(receipt.value())?;
+    summary
+        .validate_terminal_receipt(history)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     Ok(Some(history))
 }

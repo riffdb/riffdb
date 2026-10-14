@@ -130,7 +130,7 @@ impl JournalRuntime {
             covered_frontier: covered,
             prior_history_hash: history.tail().history_hash(),
         };
-        let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+        let summary = crate::changelog_v3::summary_from_validated_mutations_for_catalog(
             binding,
             source,
             mutations,
@@ -142,7 +142,7 @@ impl JournalRuntime {
         // remain in the existing bounded retained mutation source, not a copy.
         Ok(Some((
             binding,
-            history.advance(&receipt).map_err(value_error)?,
+            summary.advance_history(history).map_err(value_error)?,
         )))
     }
 }

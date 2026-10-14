@@ -93,7 +93,49 @@ pub(crate) fn validate_write_receipt(
     history: ChangelogHistoryStateV3,
     receipt: &riffdb_storage_api::AuthoritativeTransactionV3,
 ) -> Result<(), StorageError> {
-    use riffdb_storage_api::{AuthoritativeNamespaceV1 as N, ChangelogAttributionV3 as A};
+    use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
+    validate_write_receipt_fields(
+        meta,
+        history,
+        receipt.binding(),
+        receipt.attribution(),
+        receipt.mutations().is_empty(),
+        receipt.mutations().iter().all(|mutation| {
+            matches!(
+                mutation.namespace(),
+                N::Audit
+                    | N::AuditByRequest
+                    | N::AuditByRequestLocators
+                    | N::NextAdministrationSequence
+            )
+        }),
+    )
+}
+
+pub(crate) fn validate_write_receipt_summary(
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    history: ChangelogHistoryStateV3,
+    summary: &crate::changelog_v3::ValidatedReceiptSummaryV3,
+) -> Result<(), StorageError> {
+    validate_write_receipt_fields(
+        meta,
+        history,
+        summary.binding(),
+        summary.attribution(),
+        summary.is_empty(),
+        summary.all_audit_fenced_namespaces(),
+    )
+}
+
+fn validate_write_receipt_fields(
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    history: ChangelogHistoryStateV3,
+    binding: riffdb_storage_api::AuthoritativeTransactionBindingV3,
+    attribution: riffdb_storage_api::ChangelogAttributionV3,
+    is_empty: bool,
+    all_audit_fenced_namespaces: bool,
+) -> Result<(), StorageError> {
+    use riffdb_storage_api::ChangelogAttributionV3 as A;
     if history.lineage().catalog_digest() != AuthoritativeStateCatalogV2.digest() {
         return Ok(());
     }
@@ -104,26 +146,16 @@ pub(crate) fn validate_write_receipt(
     let Some(fence) = admission.fence() else {
         return Ok(());
     };
-    let allowed = match receipt.attribution() {
+    let allowed = match attribution {
         A::JournaledServiceAudit | A::DirectApplicationOrServiceAuditGroup => {
-            receipt.mutations().iter().all(|mutation| {
-                matches!(
-                    mutation.namespace(),
-                    N::Audit
-                        | N::AuditByRequest
-                        | N::AuditByRequestLocators
-                        | N::NextAdministrationSequence
-                )
-            })
+            all_audit_fenced_namespaces
         }
-        A::CleanClose | A::DirtyActivation | A::ReplicationSourceHold => {
-            receipt.mutations().is_empty()
-        }
+        A::CleanClose | A::DirtyActivation | A::ReplicationSourceHold => is_empty,
         _ => false,
     };
     if !allowed
-        || receipt.binding().predecessor_frontier.application() != fence.final_application_head()
-        || receipt.binding().covered_frontier.application() != fence.final_application_head()
+        || binding.predecessor_frontier.application() != fence.final_application_head()
+        || binding.covered_frontier.application() != fence.final_application_head()
     {
         return Err(storage_error(StorageErrorKind::Unavailable));
     }

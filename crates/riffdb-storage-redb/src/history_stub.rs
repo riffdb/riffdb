@@ -567,6 +567,55 @@ fn resolve_receipt_stub(
     .map_err(|_| storage_error(StorageErrorKind::CorruptData))
 }
 
+pub(crate) fn resolve_history_summary(
+    value: &[u8],
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
+    resolve_history_summary_with_map(value, |_| storage_error(StorageErrorKind::CorruptData))
+}
+
+pub(crate) fn resolve_history_summary_for_journal(
+    value: &[u8],
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
+    resolve_history_summary_with_map(value, crate::changelog_v3_write::value_error)
+}
+
+fn resolve_history_summary_with_map(
+    value: &[u8],
+    map_raw_error: fn(riffdb_storage_api::ChangelogV3Error) -> StorageError,
+) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
+    let Some(stub) = HistoryStub::decode(value)? else {
+        let receipt =
+            riffdb_storage_api::AuthoritativeTransactionV3::decode(value).map_err(map_raw_error)?;
+        return crate::changelog_v3::ValidatedReceiptSummaryV3::from_decoded_receipt_and_bytes(
+            &receipt, value,
+        )
+        .map_err(map_raw_error);
+    };
+    if stub.kind != StubKind::Receipt {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let frame = read_stub_frame(&stub)?;
+    let recorded = frame
+        .changelog()
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    crate::changelog_v3::summary_from_journal_for_catalog(
+        &frame,
+        recorded.binding(&frame),
+        recorded.catalog_digest(),
+    )
+    .map_err(|_| storage_error(StorageErrorKind::CorruptData))
+}
+
+pub(crate) fn resolve_history_receipt_for_journal(
+    value: &[u8],
+) -> Result<riffdb_storage_api::AuthoritativeTransactionV3, StorageError> {
+    match HistoryStub::decode(value)? {
+        Some(stub) => resolve_receipt_stub(&stub),
+        None => riffdb_storage_api::AuthoritativeTransactionV3::decode(value)
+            .map_err(crate::changelog_v3_write::value_error),
+    }
+}
+
 pub(crate) struct ProviderReceiptCandidate {
     pub(crate) receipt: riffdb_storage_api::AuthoritativeTransactionV3,
     pub(crate) work: riffdb_types::exact_provider_budget_v1::Reservation,

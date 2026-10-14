@@ -118,26 +118,37 @@ impl SharedRedb {
                         ChangelogAttributionV3::RetentionPrune
                     }
                 };
-                let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
-                    // The same binding was proven before admission to the lane.
-                    binding,
-                    source,
-                    &frame.mutations,
-                    history.lineage().catalog_digest(),
-                )
-                .map_err(value_error)?;
                 if frame.changelog_binding != Some(binding) {
                     return Err(storage_error(StorageErrorKind::CorruptData));
                 }
                 if let Some(proof) = source_proof {
                     crate::changelog_source_reclamation_journal::verify(&transaction, proof)?;
-                    // Submission already invalidated the old source epoch. This
-                    // independently checked materialization installs the same
-                    // acknowledged cut, not another source publication.
+                    // Submission invalidated the old epoch. Materialization installs
+                    // this same acknowledged cut, not another source publication.
                 }
                 let advance = if frame.encoded.records_changelog() {
-                    PreparedHistoryAdvance::prepare_stub_chained(&transaction, history, &receipt)?
+                    let summary =
+                        crate::changelog_v3::summary_from_validated_mutations_for_catalog(
+                            binding,
+                            source,
+                            &frame.mutations,
+                            history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
+                    PreparedHistoryAdvance::prepare_chained_summary(
+                        &transaction,
+                        history,
+                        &summary,
+                    )?
                 } else {
+                    let receipt =
+                        crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+                            binding,
+                            source,
+                            &frame.mutations,
+                            history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
                     PreparedHistoryAdvance::prepare_chained(&transaction, history, &receipt)?
                 };
                 if source_proof.is_some() {
