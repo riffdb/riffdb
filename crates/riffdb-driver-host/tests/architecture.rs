@@ -2,6 +2,7 @@
 
 use std::fs;
 
+// req: DRV-004
 #[test]
 fn host_has_no_direct_kernel_or_grpc_protocol_dependency() {
     let manifest = fs::read_to_string(format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR")))
@@ -18,6 +19,7 @@ fn host_has_no_direct_kernel_or_grpc_protocol_dependency() {
     }
 }
 
+// req: DRV-004
 #[test]
 fn local_request_inventory_stays_closed() {
     let source = fs::read_to_string(format!("{}/src/protocol.rs", env!("CARGO_MANIFEST_DIR")))

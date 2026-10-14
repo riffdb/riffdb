@@ -57,7 +57,10 @@ safe-application PostgreSQL at each client point:
 
 Unary matrix: `release/evidence/wp-674/baseline-v1.json` holds the frozen
 low-water p50 and p95 per scenario and profile; `check-wp674-unary-baseline`
-is the verifier. The freeze's activation arithmetic (ADR-0183 section 4)
+is the verifier. As recorded in `docs/performance/wp-726-unary-transport-floor.md`,
+the ADR-0142 absolute service levels (`3/6 ms`, `6/12 ms`, `10/15 ms`) are outer
+admission floors while this frozen low-water bank (`<= 1.10x`) is the operative
+unary non-regression gate. The freeze's activation arithmetic (ADR-0183 section 4)
 compares a WP-763 candidate against these values: c32 throughput at least
 0.90x, c32 p95 at most 1.25x, write-only p95 within five percent of this bank,
 and no unary p50 or p95 above 1.10x its low-water value.

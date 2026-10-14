@@ -341,8 +341,12 @@ def run_self_test() -> None:
     assert len(bounded_detail["exited"]) == MAX_REPORTED_PROCESSES
     assert bounded_detail["exited_omitted"] == 40 - MAX_REPORTED_PROCESSES
     assert len(bounded_detail["exited"][0]["comm"]) == 64
-    from wp674_host_policy import validate_process_identity_evidence
+    from wp674_host_policy import (
+        every_measurement_profile_reports_hardware_sha2_acceleration,
+        validate_process_identity_evidence,
+    )
 
+    every_measurement_profile_reports_hardware_sha2_acceleration()
     for before, after in ((exited, {}), (unavailable_before, unavailable_after), (crowded, {})):
         validate_process_identity_evidence(interval_identity_evidence(before, after), interval_churn(before, after))
     for bad_detail in (
@@ -357,6 +361,7 @@ def run_self_test() -> None:
             pass
         else:
             raise AssertionError("malformed identity evidence was accepted")
+
 
 
 def ancestors(pid: int) -> set[int]:
@@ -640,11 +645,19 @@ def main() -> int:
     parser.add_argument("--cpu-percent", type=float, default=5.0)
     parser.add_argument("--io-bytes-per-sec", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--baseline-report", type=Path)
+    parser.add_argument("--measurement-profile", type=str)
     args = parser.parse_args()
     if args.self_test:
         run_self_test()
         print("app-baseline-host-validity-v2: self-test passed")
         return 0
+    if args.measurement_profile is not None:
+        from wp674_host_policy import validate_measurement_profile_hardware_baseline
+
+        validate_measurement_profile_hardware_baseline(
+            args.measurement_profile,
+            Path("/proc/cpuinfo").read_text(encoding="utf-8"),
+        )
     if not 50 <= args.interval_ms <= 10_000:
         parser.error("--interval-ms must be between 50 and 10000")
     if not 0.1 <= args.cpu_percent <= 1000.0:
