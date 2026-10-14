@@ -35,13 +35,15 @@ effect is **measured in aggregate** with the others rather than claimed alone.
 | `exact_text` (V1/V2/V3) incremental sorted postings & zero-alloc checkpoint bound check | O(N^2 log N) → O(N log N); 250/500/1000 single-row epochs 24,185/109,086/510,569 ms → 392.3/1,093.6/3,772.8 ms (61.7x/99.8x/135.3x) on the second development machine (8 vCPU, AMD EPYC 7B12) | dormant unless projection declares exact-text index | `filtered_text_incremental_replacement_removal_and_nulls_match_full_rebuild`, `randomized_incremental_writes_match_independent_truth_table` |
 | `exact_predicate` (V4/V5) incremental order & sparse field maintenance | O(N^2) → O(N); 250/500/1000 single-row epochs 159.8/663.2/3,087.6 ms → 6.15/32.41/131.06 ms (26.0x/20.5x/23.6x) on the second development machine (8 vCPU, AMD EPYC 7B12) | dormant unless projection declares exact-predicate index | `incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows` |
 | `tokenized_text` incremental postings & zero-alloc checkpoint bound check | O(N^2) → O(N); 250/500/1000 single-row epochs 148.3/555.9/2,558.7 ms → 4.58/15.94/71.23 ms (32.4x/34.9x/35.9x) on the second development machine (8 vCPU, AMD EPYC 7B12) | dormant unless contract declares `text_index` | `incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows` |
+| `TokenizedTextPartitionIndexV1::total_field_length` maintained incrementally | O(D) per-query scan over all documents → O(log F) `field_totals` lookup | dormant unless contract declares `text_index` | `total_field_length_tracks_upserts_updates_deletes_compaction_and_checkpoints` |
+| Row-policy relationship lookup memoization within one pinned read snapshot | O(rows × lookups) index range scans → O(distinct lookups) within `StorageQueryView`, `RedbQueryView`, `authorize_candidates`, `authorize_event_candidates`, and `authorize_provider_projected_candidates_admitted_v1` (20 rows sharing 2 relationships: 20 → 2 range scans) | dormant unless contract declares a row policy | `projected_candidate_admission_deduplicates_identical_relationship_lookups` |
 
 ## Deferred, not yet taken
 
 | candidate | why deferred |
 |---|---|
 | `chunks_exact_to_as_chunks` (72 sites, Rust 1.98 lint) | Deferred by ADR-0241 so the toolchain bump measured a compiler change alone. Unblocked now; unmeasured. |
-| Remaining dormant-path repairs (per-query `CorpusStatistics`, materialize-before-offset, per-row policy scans) | Recorded in `deferred-dormant-path-optimizations.md`; all on paths no contract declares today. |
+| Cross-query `CorpusStatistics` caching by provider epoch | Recorded in `deferred-dormant-path-optimizations.md`; requires trait-level epoch caching across queries on a path no contract declares today. |
 
 ## When to measure the batch
 

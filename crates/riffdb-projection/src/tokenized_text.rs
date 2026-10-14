@@ -218,6 +218,7 @@ pub struct TokenizedTextPartitionIndexV1 {
     frontier: Option<CommitSequence>,
     documents: BTreeMap<EntityKeyHash, DocumentV1>,
     postings: PostingMapV1,
+    field_totals: BTreeMap<FieldId, u64>,
 }
 
 impl TokenizedTextPartitionIndexV1 {
@@ -235,6 +236,7 @@ impl TokenizedTextPartitionIndexV1 {
             frontier: None,
             documents: BTreeMap::new(),
             postings: BTreeMap::new(),
+            field_totals: BTreeMap::new(),
         }
     }
 
@@ -304,19 +306,25 @@ impl TokenizedTextPartitionIndexV1 {
             let old_doc = self.documents.remove(&hash);
             if let Some(ref doc) = old_doc {
                 remove_document_from_postings(&mut self.postings, hash, doc);
+                remove_document_from_field_totals(&mut self.field_totals, doc);
             }
             if let Some(doc) = next_doc {
-                if let Err(err) = add_document_to_postings(&mut self.postings, hash, &doc) {
+                if let Err(err) = add_document_to_postings(&mut self.postings, hash, &doc)
+                    .and_then(|()| add_document_to_field_totals(&mut self.field_totals, &doc))
+                {
                     if let Some(prev) = old_doc {
                         let _ = add_document_to_postings(&mut self.postings, hash, &prev);
+                        let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                         self.documents.insert(hash, prev);
                     }
                     for (prev_hash, prev_doc) in rollback.into_iter().rev() {
                         if let Some(current) = self.documents.remove(&prev_hash) {
                             remove_document_from_postings(&mut self.postings, prev_hash, &current);
+                            remove_document_from_field_totals(&mut self.field_totals, &current);
                         }
                         if let Some(prev) = prev_doc {
                             let _ = add_document_to_postings(&mut self.postings, prev_hash, &prev);
+                            let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                             self.documents.insert(prev_hash, prev);
                         }
                     }
@@ -335,9 +343,11 @@ impl TokenizedTextPartitionIndexV1 {
             for (prev_hash, prev_doc) in rollback.into_iter().rev() {
                 if let Some(current) = self.documents.remove(&prev_hash) {
                     remove_document_from_postings(&mut self.postings, prev_hash, &current);
+                    remove_document_from_field_totals(&mut self.field_totals, &current);
                 }
                 if let Some(prev) = prev_doc {
                     let _ = add_document_to_postings(&mut self.postings, prev_hash, &prev);
+                    let _ = add_document_to_field_totals(&mut self.field_totals, &prev);
                     self.documents.insert(prev_hash, prev);
                 }
             }
@@ -368,6 +378,7 @@ impl TokenizedTextPartitionIndexV1 {
     /// Rebuilds only derived posting order without changing identity or frontier.
     pub fn compact(&mut self) -> Result<(), TokenizedTextErrorV1> {
         self.postings = build_postings(&self.documents)?;
+        self.field_totals = build_field_totals(&self.documents)?;
         Ok(())
     }
 
@@ -424,13 +435,7 @@ impl TokenizedTextPartitionIndexV1 {
     /// Complete token count for one field over this policy-aligned snapshot.
     #[doc(hidden)]
     pub fn total_field_length(&self, field: FieldId) -> Result<u64, TokenizedTextErrorV1> {
-        self.documents.values().try_fold(0_u64, |total, document| {
-            total
-                .checked_add(u64::from(
-                    document.fields.get(&field).map_or(0, |value| value.length),
-                ))
-                .ok_or(TokenizedTextErrorV1::DocumentLimit)
-        })
+        Ok(self.field_totals.get(&field).copied().unwrap_or(0))
     }
 
     /// Canonical row key and already policy-shaped output.
@@ -621,6 +626,7 @@ impl TokenizedTextPartitionIndexV1 {
         if postings != encoded_postings {
             return Err(TokenizedTextErrorV1::InvalidCheckpoint);
         }
+        let field_totals = build_field_totals(&documents)?;
         Ok(Self {
             config,
             partition,
@@ -628,6 +634,7 @@ impl TokenizedTextPartitionIndexV1 {
             frontier: Some(frontier),
             documents,
             postings,
+            field_totals,
         })
     }
     fn validate_checkpoint_bounds(&self) -> Result<(), TokenizedTextErrorV1> {
@@ -721,6 +728,52 @@ fn build_postings(
         add_document_to_postings(&mut postings, *row, document)?;
     }
     Ok(postings)
+}
+
+fn build_field_totals(
+    documents: &BTreeMap<EntityKeyHash, DocumentV1>,
+) -> Result<BTreeMap<FieldId, u64>, TokenizedTextErrorV1> {
+    let mut totals = BTreeMap::new();
+    for document in documents.values() {
+        add_document_to_field_totals(&mut totals, document)?;
+    }
+    Ok(totals)
+}
+
+fn add_document_to_field_totals(
+    totals: &mut BTreeMap<FieldId, u64>,
+    document: &DocumentV1,
+) -> Result<(), TokenizedTextErrorV1> {
+    for (field, analyzed) in &document.fields {
+        if analyzed.length == 0 {
+            continue;
+        }
+        let next = totals
+            .get(field)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(u64::from(analyzed.length))
+            .ok_or(TokenizedTextErrorV1::DocumentLimit)?;
+        totals.insert(*field, next);
+    }
+    Ok(())
+}
+
+fn remove_document_from_field_totals(totals: &mut BTreeMap<FieldId, u64>, document: &DocumentV1) {
+    for (field, analyzed) in &document.fields {
+        if analyzed.length == 0 {
+            continue;
+        }
+        let remove_entry = if let Some(total) = totals.get_mut(field) {
+            *total = total.saturating_sub(u64::from(analyzed.length));
+            *total == 0
+        } else {
+            false
+        };
+        if remove_entry {
+            totals.remove(field);
+        }
+    }
 }
 
 fn add_document_to_postings(
@@ -985,7 +1038,7 @@ impl Error for TokenizedTextErrorV1 {}
 
 // Exhaustive non-durable ownership inventories for retained provider data.
 riffdb_types::inspect_owned_capacity_struct_v1!(TokenizedTextPartitionIndexV1 {
-    owned: [config, documents, postings],
+    owned: [config, documents, postings, field_totals],
     inline: [partition, generation, frontier]
 });
 
@@ -1031,5 +1084,95 @@ mod physical_capacity_tests {
         );
         assert_eq!(posting.positions(), &[0]);
         assert_eq!(posting.frequency(), 1);
+    }
+
+    // req: OQ-023
+    #[test]
+    fn total_field_length_tracks_upserts_updates_deletes_compaction_and_checkpoints() {
+        use riffdb_types::{EntityKeyBuilder, EntityTypeId};
+
+        let f1 = FieldId::new(1).unwrap();
+        let f2 = FieldId::new(2).unwrap();
+        let undeclared = FieldId::new(9).unwrap();
+        let config = TokenizedTextConfigV1::new(
+            [7; 32],
+            TextAnalyzerV1::StandardV1,
+            vec![
+                TokenizedTextFieldV1::new(f1, 2).unwrap(),
+                TokenizedTextFieldV1::new(f2, 1).unwrap(),
+            ],
+        )
+        .unwrap();
+        let mut index = TokenizedTextPartitionIndexV1::new(
+            config,
+            PartitionKeyHash::from_bytes([1; 32]),
+            ProjectionGeneration::new(1).unwrap(),
+        );
+        let key = |id: u64| {
+            let mut builder = EntityKeyBuilder::new(EntityTypeId::first());
+            builder.push_u64(id).unwrap();
+            builder.finish().unwrap()
+        };
+        let empty_out = || CanonicalRecord::new(Vec::new()).unwrap();
+
+        assert_eq!(index.total_field_length(f1), Ok(0));
+        assert_eq!(index.total_field_length(f2), Ok(0));
+        assert_eq!(index.total_field_length(undeclared), Ok(0));
+
+        // Epoch 1: insert two documents
+        index
+            .apply(
+                CommitSequence::new(1).unwrap(),
+                &[
+                    TokenizedTextMutationV1::upsert(
+                        key(1),
+                        vec![
+                            (f1, "alpha beta gamma".to_owned()),
+                            (f2, "one two".to_owned()),
+                        ],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                    TokenizedTextMutationV1::upsert(
+                        key(2),
+                        vec![(f1, "delta".to_owned()), (f2, "three four five".to_owned())],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(index.total_field_length(f1), Ok(4));
+        assert_eq!(index.total_field_length(f2), Ok(5));
+
+        // Epoch 2: update key(1) with a shorter f1 and empty f2, and delete key(2)
+        index
+            .apply(
+                CommitSequence::new(2).unwrap(),
+                &[
+                    TokenizedTextMutationV1::upsert(
+                        key(1),
+                        vec![(f1, "alpha".to_owned()), (f2, String::new())],
+                        empty_out(),
+                    )
+                    .unwrap(),
+                    TokenizedTextMutationV1::delete(key(2)),
+                ],
+            )
+            .unwrap();
+        assert_eq!(index.total_field_length(f1), Ok(1));
+        assert_eq!(index.total_field_length(f2), Ok(0));
+
+        // Checkpoint round-trip preserves exact field totals
+        let checkpoint = index.to_checkpoint_bytes().unwrap();
+        let restored =
+            TokenizedTextPartitionIndexV1::from_checkpoint_bytes(checkpoint.as_slice()).unwrap();
+        assert_eq!(restored.total_field_length(f1), Ok(1));
+        assert_eq!(restored.total_field_length(f2), Ok(0));
+
+        // Compaction preserves exact field totals
+        index.compact().unwrap();
+        assert_eq!(index.total_field_length(f1), Ok(1));
+        assert_eq!(index.total_field_length(f2), Ok(0));
     }
 }

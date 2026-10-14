@@ -407,16 +407,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             profile.authority_tail_commands = authority_profile.logical_commands;
         }
         // Entities / index / epoch tables open on first touch only.
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, profile);
         let drive_started = diagnostics.then(Instant::now);
         let result = execute_page_in_snapshot(program, parameters, prior, &mut view);
         if let Some(mut profile) = view.profile.take() {
@@ -449,16 +440,13 @@ impl QueryExecutionPort for RedbOperationalPorts {
         requests
             .iter()
             .map(|request| {
-                let mut view = RedbQueryView {
-                    transaction: &transaction,
-                    entities_touched: false,
-                    indexes_touched: false,
-                    epochs_touched: false,
+                let mut view = RedbQueryView::new(
+                    &transaction,
                     head,
-                    program: request.program(),
-                    parameters: request.parameters(),
-                    profile: None,
-                };
+                    request.program(),
+                    request.parameters(),
+                    None,
+                );
                 execute_in_snapshot(request.program(), request.parameters(), &mut view)
             })
             .collect()
@@ -481,16 +469,13 @@ impl QueryExecutionPort for RedbOperationalPorts {
         requests
             .iter()
             .map(|request| {
-                let mut view = RedbQueryView {
-                    transaction: &transaction,
-                    entities_touched: false,
-                    indexes_touched: false,
-                    epochs_touched: false,
+                let mut view = RedbQueryView::new(
+                    &transaction,
                     head,
-                    program: request.program(),
-                    parameters: request.parameters(),
-                    profile: None,
-                };
+                    request.program(),
+                    request.parameters(),
+                    None,
+                );
                 execute_policy_page_in_snapshot(
                     request.program(),
                     request.parameters(),
@@ -516,6 +501,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .map_err(map_storage_query_error)?;
         note_query_table_open(QueryTableKind::Entities);
         let mut indexes_opened = false;
+        let mut relationship_cache = BTreeMap::new();
         let mut observations = Vec::with_capacity(candidates.len());
         for key in candidates {
             let target = EntityTarget::new(entity, key.clone())
@@ -542,8 +528,14 @@ impl QueryExecutionPort for RedbOperationalPorts {
                 indexes_opened = true;
             }
             let evidence = lookups
-                .iter()
-                .map(|lookup| authoritative_indexed_relationship_exists(&transaction, lookup))
+                .into_iter()
+                .map(|lookup| {
+                    cached_authoritative_indexed_relationship_exists(
+                        &transaction,
+                        &mut relationship_cache,
+                        lookup,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(map_storage_query_error)?;
             observations.push(ProjectedPolicyCandidateObservationV1::current(
@@ -656,6 +648,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
         });
         let admission = match policy {
             Some(policy) => {
+                let mut relationship_cache = BTreeMap::new();
                 let mut observations = Vec::with_capacity(candidates.len());
                 for candidate in &candidates {
                     let key = candidate.entity_key();
@@ -680,9 +673,13 @@ impl QueryExecutionPort for RedbOperationalPorts {
                         .relationship_lookups(target.entity(), record.fields())
                         .map_err(|_| QueryExecutionError::BackendIntegrity)?;
                     let evidence = lookups
-                        .iter()
+                        .into_iter()
                         .map(|lookup| {
-                            authoritative_indexed_relationship_exists(&transaction, lookup)
+                            cached_authoritative_indexed_relationship_exists(
+                                &transaction,
+                                &mut relationship_cache,
+                                lookup,
+                            )
                         })
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(map_storage_query_error)?;
@@ -742,16 +739,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, None);
         riffdb_query_executor::execute_operational_page_in_snapshot(
             program, aggregates, parameters, prior, &mut view,
         )
@@ -772,16 +760,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, None);
         execute_policy_page_in_snapshot(program, parameters, prior, &mut view, policy)
     }
 
@@ -801,16 +780,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, None);
         execute_policy_operational_page_in_snapshot(
             program, aggregates, parameters, prior, &mut view, policy,
         )
@@ -833,16 +803,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, None);
         execute_provider_page_in_snapshot(
             program,
             parameters,
@@ -872,16 +833,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head,
-            program,
-            parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, head, program, parameters, None);
         execute_policy_provider_page_in_snapshot(
             program,
             parameters,
@@ -917,6 +869,32 @@ const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+struct RelationshipLookupCacheKey(AuthorizedIndexedRelationshipLookupV1);
+
+impl Ord for RelationshipLookupCacheKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            self.0.target_entity(),
+            self.0.index_id(),
+            self.0.partition(),
+            self.0.index_prefix(),
+        )
+            .cmp(&(
+                other.0.target_entity(),
+                other.0.index_id(),
+                other.0.partition(),
+                other.0.index_prefix(),
+            ))
+    }
+}
+
+impl PartialOrd for RelationshipLookupCacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 struct RedbQueryView<'a> {
     transaction: &'a RedbReadAccess,
     entities_touched: bool,
@@ -926,9 +904,29 @@ struct RedbQueryView<'a> {
     program: &'a QueryAccessProgramV1,
     parameters: &'a QueryParameters,
     profile: Option<QueryExecuteProfile>,
+    relationship_cache: BTreeMap<RelationshipLookupCacheKey, bool>,
 }
 
-impl RedbQueryView<'_> {
+impl<'a> RedbQueryView<'a> {
+    fn new(
+        transaction: &'a RedbReadAccess,
+        head: u64,
+        program: &'a QueryAccessProgramV1,
+        parameters: &'a QueryParameters,
+        profile: Option<QueryExecuteProfile>,
+    ) -> Self {
+        Self {
+            transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+            profile,
+            relationship_cache: BTreeMap::new(),
+        }
+    }
     fn touch_entities(&mut self) {
         if !self.entities_touched {
             note_query_table_open(QueryTableKind::Entities);
@@ -1679,8 +1677,15 @@ impl RedbQueryView<'_> {
             .relationship_lookups(entity, row)
             .map_err(|_| invariant())?;
         let mut evidence = Vec::with_capacity(lookups.len());
-        for lookup in &lookups {
-            evidence.push(self.indexed_relationship_exists(lookup)?);
+        for lookup in lookups {
+            let cache_key = RelationshipLookupCacheKey(lookup);
+            if let Some(exists) = self.relationship_cache.get(&cache_key) {
+                evidence.push(*exists);
+                continue;
+            }
+            let exists = self.indexed_relationship_exists(&cache_key.0)?;
+            self.relationship_cache.insert(cache_key, exists);
+            evidence.push(exists);
         }
         Ok(policy.allows(entity, row, &evidence))
     }
@@ -1739,6 +1744,20 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     upper[position] = upper[position].saturating_add(1);
     upper.truncate(position + 1);
     Some(upper)
+}
+
+fn cached_authoritative_indexed_relationship_exists(
+    transaction: &RedbReadAccess,
+    cache: &mut BTreeMap<RelationshipLookupCacheKey, bool>,
+    lookup: AuthorizedIndexedRelationshipLookupV1,
+) -> Result<bool, StorageError> {
+    let key = RelationshipLookupCacheKey(lookup);
+    if let Some(exists) = cache.get(&key) {
+        return Ok(*exists);
+    }
+    let exists = authoritative_indexed_relationship_exists(transaction, &key.0)?;
+    cache.insert(key, exists);
+    Ok(exists)
 }
 
 fn authoritative_indexed_relationship_exists(
@@ -3487,16 +3506,7 @@ query list_members_exact(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let transaction = ports.begin_composite_read().expect("read snapshot");
-        let mut view = RedbQueryView {
-            transaction: &transaction,
-            entities_touched: false,
-            indexes_touched: false,
-            epochs_touched: false,
-            head: 0,
-            program: &program,
-            parameters: &parameters,
-            profile: None,
-        };
+        let mut view = RedbQueryView::new(&transaction, 0, &program, &parameters, None);
         let observed = view
             .dependent_point_batch(step, &[predicates(2), predicates(1), predicates(3)], None)
             .expect("batch");

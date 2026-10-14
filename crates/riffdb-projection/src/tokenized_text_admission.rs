@@ -103,6 +103,7 @@ fn recovery_maximum(bytes: &[u8]) -> Result<u64, OwnedCapacityInspectionErrorV1>
             mul(size_of::<super::TokenizedTextFieldV1>(), fields)?,
             align_of::<super::TokenizedTextFieldV1>(),
         )?;
+        inspection.prospective_btree::<FieldId, u64>(fields)?;
         let documents = count(&mut reader)?;
         if documents > super::MAX_TOKENIZED_DOCUMENTS_V1 {
             return Err(OwnedCapacityInspectionErrorV1);
@@ -229,6 +230,7 @@ fn rebuild_maximum(
     let report = OwnedCapacityInspectionV1::inspect_with(|inspection| {
         inspection.visit(config)?;
         inspection.visit(config)?;
+        inspection.prospective_btree::<FieldId, u64>(config.fields.len())?;
         inspection.prospective_btree::<EntityKeyHash, DocumentV1>(documents.len())?;
         inspection.prospective_btree::<EntityKeyHash, ()>(documents.len())?;
         let mut encoded = add(128, mul(8, config.fields.len())?)?;
