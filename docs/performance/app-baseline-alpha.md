@@ -8,9 +8,13 @@ application surface, then separately tests sustained demand and recovery.
 For future measurements, follow the
 [hardware SHA-2 and host-selection guidance](benchmark-host-selection.md).
 ADR-0245 retires N1 from testing and the release profile set; references to it in
-existing profile evidence describe historical qualification. WP-797 owns host
-validation and the replacement required to retain two release profiles. Writer
-attribution must account for the
+existing profile evidence describe historical qualification. WP-797 admits the
+two accelerated cloud profiles (**C3D**, `8 vCPU, AMD EPYC 9B14`, and **E2**,
+`8 vCPU, AMD EPYC 7B12`, alongside the `32 vCPU, AMD Ryzen 9 7950X` workstation)
+and enforces host `/proc/cpuinfo` capability verification (`SHA-2`, `AES`,
+`carry-less multiply`, and `SSE4.2`) via
+`every_measurement_profile_reports_hardware_sha2_acceleration` in
+`scripts/app-baseline-host-validity`. Writer attribution must account for the
 [known wall-time undercount](wp749-writer-census-defects.md).
 
 ## Canonical commands

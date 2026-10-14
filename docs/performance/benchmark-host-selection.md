@@ -2,10 +2,14 @@
 
 Accepted ADR-0245 defines the measurement and deployment hardware baseline:
 **SHA-2, AES, carry-less multiply and SSE4.2 acceleration**, verified on the host.
-N1 is retired from testing and the release profile set; its existing measurements
-remain historical evidence. WP-797 owns profile validation and N1's replacement.
-Release qualification still requires two profiles. Using C3D for a diagnostic
-does not itself admit it as a release profile.
+N1 (`8 vCPU, Intel Xeon 2.30 GHz`, `sha_ni: false`) is retired from testing and the
+release profile set; its existing measurements remain historical evidence. Under
+WP-797, the two admitted cloud measurement profiles are **C3D** (`8 vCPU, AMD EPYC 9B14`)
+and **E2** (`8 vCPU, AMD EPYC 7B12`), alongside the **workstation** profile
+(`32 vCPU, AMD Ryzen 9 7950X`); `every_measurement_profile_reports_hardware_sha2_acceleration`
+in `scripts/wp674_host_policy.py` and `scripts/app-baseline-host-validity`
+verifies `sha2`, `aes`, `pclmul`, and `sse4_2` directly from `/proc/cpuinfo`
+rather than assuming capabilities from an instance name, and rejects retired `n1`.
 
 ADR-0245 explicitly separates this baseline from runtime startup requirements.
 The current daemon does not refuse startup solely because hardware SHA-2 is

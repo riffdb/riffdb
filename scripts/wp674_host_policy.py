@@ -20,9 +20,14 @@ MAX_HOST_RECEIPT_BYTES = 32 * 1024 * 1024
 MAX_STEAL_PERCENT = 1.0
 PROFILE_HARDWARE_RULES = {
     "workstation": {"logical_cpus": 32, "cpu_contains": "AMD Ryzen 9 7950X"},
+    "c3d": {"logical_cpus": 8, "cpu_contains": "AMD EPYC 9B14"},
     "n1": {"logical_cpus": 8, "cpu_contains": "Intel"},
     "e2": {"logical_cpus": 8, "cpu_contains": "AMD EPYC 7B12"},
 }
+ADMITTED_MEASUREMENT_PROFILES = ("workstation", "c3d", "e2")
+ADMITTED_CLOUD_RELEASE_PROFILES = ("c3d", "e2")
+RETIRED_MEASUREMENT_PROFILES = ("n1",)
+REQUIRED_HARDWARE_ACCELERATORS = ("sha2", "aes", "pclmul", "sse4_2")
 SCENARIO_ORDER = (
     "point_get_ticket",
     "point_get_user",
@@ -756,3 +761,110 @@ def whole_cell_accounting(
         "steal_percent": round(steal_percent, 6),
         "maximum_steal_percent": MAX_STEAL_PERCENT,
     }
+
+
+def parse_cpu_accelerators(cpuinfo_text: str) -> dict[str, bool]:
+    """Parse ADR-0245 hardware capabilities from /proc/cpuinfo flags/Features lines."""
+    if not isinstance(cpuinfo_text, str) or not cpuinfo_text.strip():
+        raise ValueError("CPU capability inventory is absent")
+    token_sets: list[set[str]] = []
+    for raw_line in cpuinfo_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("flags") or line.startswith("Features"):
+            _, separator, rest = line.partition(":")
+            if separator:
+                tokens = {token.strip().lower() for token in rest.split() if token.strip()}
+                if tokens:
+                    token_sets.append(tokens)
+    if not token_sets:
+        raise ValueError("CPU capability flags line is absent from /proc/cpuinfo")
+    common = set.intersection(*token_sets)
+    return {
+        "sha2": ("sha_ni" in common) or ("sha2" in common),
+        "aes": "aes" in common,
+        "pclmul": ("pclmulqdq" in common) or ("pmull" in common),
+        "sse4_2": ("sse4_2" in common) or ("crc32" in common),
+    }
+
+
+def validate_measurement_profile_hardware_baseline(
+    profile: str,
+    cpuinfo_text: str,
+) -> dict[str, bool]:
+    """Verify ADR-0245 profile admission and host-reported hardware acceleration."""
+    if profile in RETIRED_MEASUREMENT_PROFILES:
+        raise ValueError(
+            f"measurement profile {profile!r} is retired by ADR-0245 and cannot be admitted"
+        )
+    if profile not in ADMITTED_MEASUREMENT_PROFILES:
+        raise ValueError(f"unknown measurement profile {profile!r}")
+    rules = PROFILE_HARDWARE_RULES[profile]
+    model_lines = [
+        line.split(":", 1)[1].strip()
+        for line in cpuinfo_text.splitlines()
+        if line.strip().startswith("model name") and ":" in line
+    ]
+    if not model_lines or any(rules["cpu_contains"] not in model for model in model_lines):
+        raise ValueError(
+            f"host CPU model does not match admitted profile {profile!r} ({rules['cpu_contains']})"
+        )
+    accelerators = parse_cpu_accelerators(cpuinfo_text)
+    missing = [name for name in REQUIRED_HARDWARE_ACCELERATORS if not accelerators.get(name, False)]
+    if missing:
+        raise ValueError(
+            f"measurement profile {profile!r} lacks required ADR-0245 hardware acceleration: {', '.join(missing)}"
+        )
+    return accelerators
+
+
+# req: PERF-018
+def every_measurement_profile_reports_hardware_sha2_acceleration() -> None:
+    assert ADMITTED_CLOUD_RELEASE_PROFILES == ("c3d", "e2")
+    assert ADMITTED_MEASUREMENT_PROFILES == ("workstation", "c3d", "e2")
+    assert RETIRED_MEASUREMENT_PROFILES == ("n1",)
+    fixtures = {
+        "workstation": (
+            "processor\t: 0\n"
+            "model name\t: AMD Ryzen 9 7950X 16-Core Processor\n"
+            "flags\t\t: fpu sse2 ssse3 sse4_1 sse4_2 aes pclmulqdq sha_ni avx2\n"
+        ),
+        "c3d": (
+            "processor\t: 0\n"
+            "model name\t: AMD EPYC 9B14\n"
+            "flags\t\t: fpu sse2 ssse3 sse4_1 sse4_2 aes pclmulqdq sha_ni avx2\n"
+        ),
+        "e2": (
+            "processor\t: 0\n"
+            "model name\t: AMD EPYC 7B12\n"
+            "flags\t\t: fpu sse2 ssse3 sse4_1 sse4_2 aes pclmulqdq sha_ni avx2\n"
+        ),
+    }
+    for profile in ADMITTED_MEASUREMENT_PROFILES:
+        caps = validate_measurement_profile_hardware_baseline(profile, fixtures[profile])
+        assert all(caps[k] is True for k in REQUIRED_HARDWARE_ACCELERATORS)
+
+    arm_caps = parse_cpu_accelerators("Features\t: fp asimd aes pmull sha1 sha2 crc32\n")
+    assert all(arm_caps[k] is True for k in REQUIRED_HARDWARE_ACCELERATORS)
+
+    # Retired N1 must be rejected even if caller supplies accelerated flags.
+    for n1_cpuinfo in (
+        "model name\t: Intel(R) Xeon(R) CPU @ 2.30GHz\nflags\t\t: sse4_2 aes pclmulqdq\n",
+        "model name\t: Intel(R) Xeon(R) CPU @ 2.30GHz\nflags\t\t: sse4_2 aes pclmulqdq sha_ni\n",
+    ):
+        try:
+            validate_measurement_profile_hardware_baseline("n1", n1_cpuinfo)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("retired N1 profile was admitted")
+
+    # An admitted profile name whose host /proc/cpuinfo lacks any ADR-0245 accelerator must fail.
+    for missing_flag in ("sha_ni", "aes", "pclmulqdq", "sse4_2"):
+        degraded = fixtures["c3d"].replace(f" {missing_flag}", "")
+        try:
+            validate_measurement_profile_hardware_baseline("c3d", degraded)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"profile missing {missing_flag} was admitted from its name")
+

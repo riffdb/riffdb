@@ -26743,6 +26743,24 @@ work_packages:
     scale: Not applicable to storage. It narrows the hardware the project measures on to
       the hardware its users run.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: "2026-10-14"
+    requirements_satisfied: [PERF-018]
+    evidence: scripts/wp674_host_policy.py (every_measurement_profile_reports_hardware_sha2_acceleration), scripts/app-baseline-host-validity, docs/performance/benchmark-host-selection.md, docs/performance/wp-800-vector-write-attribution.md
+    decision: Retired N1 (8 vCPU, Intel Xeon 2.30 GHz, sha_ni=false) from active
+      testing and the release profile set while retaining historical N1 receipts as
+      immutable historical evidence; established C3D (8 vCPU, AMD EPYC 9B14) and E2
+      (8 vCPU, AMD EPYC 7B12) as the two accelerated cloud measurement profiles
+      (alongside the 32 vCPU AMD Ryzen 9 7950X workstation); and enforced host-read
+      /proc/cpuinfo verification of SHA-2 (sha_ni/sha2), AES (aes), carry-less
+      multiply (pclmulqdq/pmull), and SSE4.2/CRC-32C (sse4_2/crc32) in
+      scripts/wp674_host_policy.py and scripts/app-baseline-host-validity
+      (proven by every_measurement_profile_reports_hardware_sha2_acceleration).
+    decisions_taken:
+    - Enforce ADR-0245 host capability verification (sha2, aes, pclmul, sse4_2)
+      and retired-N1 rejection in scripts/wp674_host_policy.py and
+      scripts/app-baseline-host-validity (--measurement-profile and --self-test).
 - id: WP-794
   name: Public repository disclosure guards
   tier: guarantee
