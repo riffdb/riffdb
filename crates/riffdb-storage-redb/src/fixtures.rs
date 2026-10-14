@@ -772,3 +772,21 @@ pub fn unseal_journal_extent_fixture(
     target.push(format!(".riffjournal.{name}"));
     std::fs::rename(&sealed, target).map_err(|_| storage_error(StorageErrorKind::Unavailable))
 }
+
+/// Writes a verified offline backup fixture for a closed predecessor database
+/// carrying `marker` (`None` for pre-manifest writer 0, `Some` for an explicit
+/// predecessor marker).
+#[doc(hidden)]
+pub fn create_compatible_backup_fixture(
+    source_database: &Path,
+    backup_directory: &Path,
+    build: &riffdb_storage_api::BackupBuildMetadataV1,
+    marker: Option<riffdb_storage_api::DurableFormatMarker>,
+) -> Result<riffdb_storage_api::OfflineBackupManifestV1, StorageError> {
+    crate::backup::create_compatible_backup_fixture(
+        source_database,
+        backup_directory,
+        build,
+        marker,
+    )
+}
