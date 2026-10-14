@@ -1101,7 +1101,36 @@ fn damaged_sealed_extent_child() {
                     .map_err(|error| error.kind()),
                 Err(StorageErrorKind::CorruptData)
             );
-            assert_history_readers(&ports, 3);
+            // ADR-0244 requires a complete proven derived locator index.
+            // Corrupt retained history prevents that proof even for another
+            // command. Direct healthy sequence reads still resolve exactly;
+            // locator-dependent reads must refuse rather than report absence.
+            let healthy = command_fixture_at(3);
+            assert_committed(&ports, 3);
+            for event in healthy.records.events() {
+                assert_eq!(
+                    ports.read_durable_event(event.event_id()).unwrap(),
+                    Some(event.clone())
+                );
+            }
+            assert_eq!(
+                ports
+                    .read_provenance(healthy.records.provenance().provenance_id())
+                    .map_err(|error| error.kind()),
+                Err(StorageErrorKind::CorruptData)
+            );
+            assert_eq!(
+                ports
+                    .read_stored_outcome(healthy.pending.identity())
+                    .map_err(|error| error.kind()),
+                Err(StorageErrorKind::CorruptData)
+            );
+            assert_eq!(
+                ports
+                    .lookup_admission(healthy.candidates.clone())
+                    .map_err(|error| error.kind()),
+                Err(StorageErrorKind::CorruptData)
+            );
         }
     }
 }
