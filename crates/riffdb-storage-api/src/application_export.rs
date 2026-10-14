@@ -66,16 +66,39 @@ pub struct ApplicationExportSourcePageV1 {
     continuation: Option<Box<[u8]>>,
     exact_end: bool,
     encoded_bytes: usize,
+    inspected_work: usize,
 }
 
 impl ApplicationExportSourcePageV1 {
-    /// Checks class homogeneity and exact row/byte/continuation bounds.
+    /// Checks class homogeneity and exact row/byte/continuation bounds for a
+    /// source whose inspected work is exactly its returned records.
     pub fn new(
         class: ApplicationExportClassV1,
         records: Vec<ApplicationExportSourceRecordV1>,
         continuation: Option<Box<[u8]>>,
         exact_end: bool,
         encoded_bytes: usize,
+    ) -> Result<Self, StorageValueError> {
+        let inspected_work = records.len();
+        Self::new_with_inspected_work(
+            class,
+            records,
+            continuation,
+            exact_end,
+            encoded_bytes,
+            inspected_work,
+        )
+    }
+
+    /// Checks page bounds while retaining exact source work independently of
+    /// records that survive duplicate suppression or policy filtering.
+    pub fn new_with_inspected_work(
+        class: ApplicationExportClassV1,
+        records: Vec<ApplicationExportSourceRecordV1>,
+        continuation: Option<Box<[u8]>>,
+        exact_end: bool,
+        encoded_bytes: usize,
+        inspected_work: usize,
     ) -> Result<Self, StorageValueError> {
         if records.len() > crate::MAX_SCAN_PAGE_ENTRIES
             || encoded_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES
@@ -87,6 +110,8 @@ impl ApplicationExportSourcePageV1 {
         }
         if records.iter().any(|record| record.class() != class)
             || exact_end == continuation.is_some()
+            || (!exact_end && inspected_work == 0)
+            || inspected_work < records.len()
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -96,6 +121,7 @@ impl ApplicationExportSourcePageV1 {
             continuation,
             exact_end,
             encoded_bytes,
+            inspected_work,
         })
     }
 
@@ -127,6 +153,16 @@ impl ApplicationExportSourcePageV1 {
     #[must_use]
     pub const fn encoded_bytes(&self) -> usize {
         self.encoded_bytes
+    }
+
+    /// Exact closed-algorithm work inspected while producing this page.
+    ///
+    /// The service charges this value even when policy or duplicate handling
+    /// emits no record. It is private source progress, never a caller-selected
+    /// budget or public cursor field.
+    #[must_use]
+    pub const fn inspected_work(&self) -> usize {
+        self.inspected_work
     }
 }
 
@@ -283,6 +319,39 @@ pub trait ApplicationExportOperationRepository {
 mod tests {
     use super::*;
     use riffdb_types::ContractLineage;
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_sparse_evidence_pages_charge_bounded_progress() {
+        let continuation = Some(vec![1_u8].into_boxed_slice());
+        assert!(
+            ApplicationExportSourcePageV1::new_with_inspected_work(
+                ApplicationExportClassV1::Event,
+                Vec::new(),
+                continuation.clone(),
+                false,
+                0,
+                0,
+            )
+            .is_err(),
+            "a nonterminal empty evidence page cannot make uncharged progress"
+        );
+        let page = ApplicationExportSourcePageV1::new_with_inspected_work(
+            ApplicationExportClassV1::Event,
+            Vec::new(),
+            continuation,
+            false,
+            0,
+            1,
+        )
+        .expect("positive inspected work makes sparse progress explicit");
+        assert_eq!(page.inspected_work(), 1);
+        assert_eq!(MAX_APPLICATION_EXPORT_CONTINUATION_BYTES, 4 * 1024);
+        assert_eq!(MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES, 4 * 1024 * 1024);
+        assert_eq!(crate::MAX_SCAN_PAGE_ENTRIES, 500);
+        assert_eq!(crate::MAX_STAGED_COMMANDS, 256);
+        assert_eq!(crate::MAX_EVENT_INTENTS, 4_096);
+    }
 
     #[test]
     fn opaque_checkpoint_is_bounded_and_redacted() {

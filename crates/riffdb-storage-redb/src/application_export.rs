@@ -29,14 +29,138 @@ use crate::hooks::RedbTestOperation;
 use crate::journal::JournalTable;
 use crate::keys::{
     decode_audit_key, decode_entity_key, decode_event_key, decode_index_entry_key,
-    decode_provenance_key, encode_active_query_module_key, encode_contract_bundle_key,
-    encode_entity_key,
+    decode_provenance_key, encode_active_query_module_key, encode_application_sequence_key,
+    encode_contract_bundle_key, encode_entity_key, encode_provenance_key,
 };
 use crate::layout::{
     APPLICATION_EXPORT_OPERATIONS, CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, CONTRACT_BUNDLES,
     META_DATABASE_ID, META_HISTORY_INCARNATION, QUERY_MODULE_ACTIVE, REACTIVE_MODULES,
 };
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
+
+const EXPORT_CONTINUATION_MAGIC: &[u8; 4] = b"RDX1";
+const EXPORT_CONTINUATION_FIXED_BYTES: usize = 14;
+const CONTINUATION_PHASE_TABLE: u8 = 1;
+const CONTINUATION_PHASE_COMMAND_EVENTS: u8 = 2;
+const CONTINUATION_PHASE_LEGACY_PROVENANCE: u8 = 3;
+const CONTINUATION_PHASE_COMMAND_PROVENANCE: u8 = 4;
+
+#[derive(Clone, Eq, PartialEq)]
+struct ExportSourceContinuationV1 {
+    phase: u8,
+    key: Vec<u8>,
+    command_ordinal: u16,
+    member_ordinal: u32,
+}
+
+impl ExportSourceContinuationV1 {
+    fn table(key: Vec<u8>) -> Self {
+        Self {
+            phase: CONTINUATION_PHASE_TABLE,
+            key,
+            command_ordinal: 0,
+            member_ordinal: 0,
+        }
+    }
+
+    fn command(
+        class: ApplicationExportClassV1,
+        key: Vec<u8>,
+        command_ordinal: usize,
+        member_ordinal: usize,
+    ) -> Result<Self, StorageError> {
+        let phase = match class {
+            ApplicationExportClassV1::Event => CONTINUATION_PHASE_COMMAND_EVENTS,
+            ApplicationExportClassV1::Provenance => CONTINUATION_PHASE_COMMAND_PROVENANCE,
+            ApplicationExportClassV1::Entity | ApplicationExportClassV1::PublicAudit => {
+                return Err(corrupt());
+            }
+        };
+        Ok(Self {
+            phase,
+            key,
+            command_ordinal: u16::try_from(command_ordinal).map_err(|_| corrupt())?,
+            member_ordinal: u32::try_from(member_ordinal).map_err(|_| corrupt())?,
+        })
+    }
+
+    fn legacy_provenance(key: Vec<u8>) -> Self {
+        Self {
+            phase: CONTINUATION_PHASE_LEGACY_PROVENANCE,
+            key,
+            command_ordinal: 0,
+            member_ordinal: 0,
+        }
+    }
+
+    fn encode(&self, class: ApplicationExportClassV1) -> Result<Box<[u8]>, StorageError> {
+        let key_len = u16::try_from(self.key.len()).map_err(|_| corrupt())?;
+        let total = EXPORT_CONTINUATION_FIXED_BYTES
+            .checked_add(self.key.len())
+            .ok_or_else(corrupt)?;
+        if self.key.is_empty() || total > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES {
+            return Err(corrupt());
+        }
+        let mut encoded = Vec::with_capacity(total);
+        encoded.extend_from_slice(EXPORT_CONTINUATION_MAGIC);
+        encoded.push(class.tag());
+        encoded.push(self.phase);
+        encoded.extend_from_slice(&key_len.to_be_bytes());
+        encoded.extend_from_slice(&self.key);
+        encoded.extend_from_slice(&self.command_ordinal.to_be_bytes());
+        encoded.extend_from_slice(&self.member_ordinal.to_be_bytes());
+        Ok(encoded.into_boxed_slice())
+    }
+
+    fn decode(class: ApplicationExportClassV1, encoded: &[u8]) -> Result<Self, StorageError> {
+        if encoded.len() < EXPORT_CONTINUATION_FIXED_BYTES
+            || encoded.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+            || &encoded[..4] != EXPORT_CONTINUATION_MAGIC
+            || encoded[4] != class.tag()
+        {
+            return Err(corrupt());
+        }
+        let phase = encoded[5];
+        let key_len = usize::from(u16::from_be_bytes([encoded[6], encoded[7]]));
+        let expected = EXPORT_CONTINUATION_FIXED_BYTES
+            .checked_add(key_len)
+            .ok_or_else(corrupt)?;
+        if key_len == 0 || encoded.len() != expected {
+            return Err(corrupt());
+        }
+        let command_start = 8 + key_len;
+        let command_ordinal =
+            u16::from_be_bytes([encoded[command_start], encoded[command_start + 1]]);
+        let member_start = command_start + 2;
+        let member_ordinal = u32::from_be_bytes([
+            encoded[member_start],
+            encoded[member_start + 1],
+            encoded[member_start + 2],
+            encoded[member_start + 3],
+        ]);
+        let valid_phase = match class {
+            ApplicationExportClassV1::Entity | ApplicationExportClassV1::PublicAudit => {
+                phase == CONTINUATION_PHASE_TABLE && command_ordinal == 0 && member_ordinal == 0
+            }
+            ApplicationExportClassV1::Event => phase == CONTINUATION_PHASE_COMMAND_EVENTS,
+            ApplicationExportClassV1::Provenance => {
+                (phase == CONTINUATION_PHASE_LEGACY_PROVENANCE
+                    && command_ordinal == 0
+                    && member_ordinal == 0)
+                    || phase == CONTINUATION_PHASE_COMMAND_PROVENANCE
+            }
+        };
+        if !valid_phase {
+            return Err(corrupt());
+        }
+        Ok(Self {
+            phase,
+            key: encoded[8..command_start].to_vec(),
+            command_ordinal,
+            member_ordinal,
+        })
+    }
+}
 
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
@@ -128,15 +252,587 @@ impl RedbApplicationExportSnapshot {
             .access
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        read_source_page_range_at(
-            &access,
+        let requested = usize::from(limit.get());
+        let inspected = requested
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let table = match class {
+            ApplicationExportClassV1::Entity => JournalTable::Entities,
+            ApplicationExportClassV1::Event => JournalTable::Events,
+            ApplicationExportClassV1::Provenance => JournalTable::Provenance,
+            ApplicationExportClassV1::PublicAudit => JournalTable::Audit,
+        };
+        let rows = access.read_range_to(table, &start, end_exclusive, inspected)?;
+        let mut records = Vec::with_capacity(requested.min(rows.len()));
+        let mut encoded_bytes = 0usize;
+        let mut continuation = None;
+        let mut stopped_early = false;
+        for (key, encoded) in rows.iter().take(requested) {
+            let next_bytes = encoded_bytes
+                .checked_add(encoded.len())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
+                stopped_early = true;
+                break;
+            }
+            records.push(self.decode_source_record(&access, class, key, encoded)?);
+            encoded_bytes = next_bytes;
+            continuation = Some(ExportSourceContinuationV1::table(key.to_vec()).encode(class)?);
+        }
+        let exact_end = !stopped_early && rows.len() <= records.len();
+        if exact_end {
+            continuation = None;
+        } else if continuation.is_none() {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        ApplicationExportSourcePageV1::new_with_inspected_work(
             class,
-            start,
-            end_exclusive,
-            limit,
-            |key, encoded| self.decode_source_record(&access, class, key, encoded),
+            records,
+            continuation,
+            exact_end,
+            encoded_bytes,
+            rows.len(),
+        )
+        .map_err(|error| match error {
+            riffdb_storage_api::StorageValueError::LimitExceeded => {
+                storage_error(StorageErrorKind::LimitExceeded)
+            }
+            _ => storage_error(StorageErrorKind::InvariantViolation),
+        })
+    }
+
+    fn read_command_event_page(
+        &self,
+        continuation: Option<ExportSourceContinuationV1>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let requested = usize::from(limit.get());
+        let start = continuation
+            .as_ref()
+            .map_or_else(Vec::new, |cursor| cursor.key.clone());
+        let access = self
+            .access
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let rows = access.read_range_to(JournalTable::Commits, &start, None, 1)?;
+        let Some((physical_key, encoded)) = rows.first() else {
+            return if continuation.is_none() && self.binding.application_frontier().is_none() {
+                source_page(
+                    ApplicationExportClassV1::Event,
+                    Vec::new(),
+                    None,
+                    true,
+                    0,
+                    0,
+                )
+            } else {
+                Err(corrupt())
+            };
+        };
+        if continuation
+            .as_ref()
+            .is_some_and(|cursor| cursor.key.as_slice() != physical_key.as_ref())
+        {
+            return Err(corrupt());
+        }
+        let physical_sequence =
+            crate::keys::decode_application_sequence_key(physical_key).map_err(|_| corrupt())?;
+        if continuation.is_none() && physical_sequence != riffdb_types::CommitSequence::first() {
+            return Err(corrupt());
+        }
+        let members = crate::command_authority::application_export_evidence_in_physical_row_access(
+            &access,
+            encoded,
+            physical_sequence,
+        )?;
+        let mut command_ordinal = continuation
+            .as_ref()
+            .map_or(0, |cursor| usize::from(cursor.command_ordinal));
+        let mut event_ordinal = continuation.as_ref().map_or(0, |cursor| {
+            usize::try_from(cursor.member_ordinal).unwrap_or(usize::MAX)
+        });
+        if command_ordinal >= members.len() {
+            return Err(corrupt());
+        }
+        let mut records = Vec::with_capacity(requested);
+        let mut encoded_bytes = 0usize;
+        let mut inspected_work = 1usize; // physical command row
+        while command_ordinal < members.len() {
+            let member = &members[command_ordinal];
+            if member.commit().plan().contract_lineage() != &self.lineage {
+                return Err(corrupt());
+            }
+            let events = member.commit().events();
+            if event_ordinal > events.len() || (event_ordinal == events.len() && !events.is_empty())
+            {
+                return Err(corrupt());
+            }
+            inspected_work = inspected_work
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            while event_ordinal < events.len() {
+                if records.len() == requested {
+                    let cursor = ExportSourceContinuationV1::command(
+                        ApplicationExportClassV1::Event,
+                        physical_key.to_vec(),
+                        command_ordinal,
+                        event_ordinal,
+                    )?
+                    .encode(ApplicationExportClassV1::Event)?;
+                    return source_page(
+                        ApplicationExportClassV1::Event,
+                        records,
+                        Some(cursor),
+                        false,
+                        encoded_bytes,
+                        inspected_work,
+                    );
+                }
+                let event = &events[event_ordinal];
+                let expected_ordinal = u32::try_from(event_ordinal).map_err(|_| corrupt())?;
+                if event.event_id().commit_sequence() != member.commit().commit_sequence()
+                    || event.event_id().event_ordinal() != expected_ordinal
+                    || event
+                        .policy_anchor()
+                        .is_some_and(|anchor| anchor.contract().lineage() != &self.lineage)
+                {
+                    return Err(corrupt());
+                }
+                let (event, charge) = application_export_event(event)?;
+                inspected_work = inspected_work
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                let next_bytes = encoded_bytes
+                    .checked_add(charge)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
+                    if records.is_empty() {
+                        return Err(storage_error(StorageErrorKind::LimitExceeded));
+                    }
+                    let cursor = ExportSourceContinuationV1::command(
+                        ApplicationExportClassV1::Event,
+                        physical_key.to_vec(),
+                        command_ordinal,
+                        event_ordinal,
+                    )?
+                    .encode(ApplicationExportClassV1::Event)?;
+                    return source_page(
+                        ApplicationExportClassV1::Event,
+                        records,
+                        Some(cursor),
+                        false,
+                        encoded_bytes,
+                        inspected_work,
+                    );
+                }
+                records.push(ApplicationExportSourceRecordV1::Event(Box::new(event)));
+                encoded_bytes = next_bytes;
+                event_ordinal += 1;
+            }
+            command_ordinal += 1;
+            event_ordinal = 0;
+        }
+        let last = members
+            .last()
+            .ok_or_else(corrupt)?
+            .commit()
+            .commit_sequence();
+        self.finish_command_page(
+            ApplicationExportClassV1::Event,
+            last,
+            records,
+            encoded_bytes,
+            inspected_work,
         )
     }
+
+    fn finish_command_page(
+        &self,
+        class: ApplicationExportClassV1,
+        last: riffdb_types::CommitSequence,
+        records: Vec<ApplicationExportSourceRecordV1>,
+        encoded_bytes: usize,
+        inspected_work: usize,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let frontier = self.binding.application_frontier().ok_or_else(corrupt)?;
+        if last > frontier {
+            return Err(corrupt());
+        }
+        if last == frontier {
+            return source_page(class, records, None, true, encoded_bytes, inspected_work);
+        }
+        let next = last.checked_next().ok_or_else(corrupt)?;
+        let cursor = ExportSourceContinuationV1::command(
+            class,
+            encode_application_sequence_key(next).to_vec(),
+            0,
+            0,
+        )?
+        .encode(class)?;
+        source_page(
+            class,
+            records,
+            Some(cursor),
+            false,
+            encoded_bytes,
+            inspected_work,
+        )
+    }
+
+    fn read_provenance_page(
+        &self,
+        continuation: Option<ExportSourceContinuationV1>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let requested = usize::from(limit.get());
+        let access = self
+            .access
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut records = Vec::with_capacity(requested);
+        let mut encoded_bytes = 0usize;
+        let mut inspected_work = 0usize;
+        let mut command_cursor = None;
+        if continuation
+            .as_ref()
+            .is_none_or(|cursor| cursor.phase == CONTINUATION_PHASE_LEGACY_PROVENANCE)
+        {
+            let mut after_key = continuation.as_ref().map(|cursor| cursor.key.clone());
+            for _ in 0..riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES {
+                let mut start = after_key.clone().unwrap_or_default();
+                if after_key.is_some() {
+                    start.push(0);
+                }
+                let rows = access.read_range_to(JournalTable::Provenance, &start, None, 1)?;
+                let Some((key, encoded)) = rows.first() else {
+                    command_cursor = None;
+                    break;
+                };
+                inspected_work = inspected_work
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                let physical = decode_provenance_key(key).map_err(|_| corrupt())?;
+                match riffdb_storage_api::decode_provenance_record_v1(encoded) {
+                    Ok(record) => {
+                        let record = record.into_parts().0;
+                        if record.provenance_id() != physical
+                            || record.identity().contract_lineage() != &self.lineage
+                        {
+                            return Err(corrupt());
+                        }
+                        let charge = riffdb_storage_api::encode_provenance_record_v1(&record)
+                            .map_err(codec_error)?
+                            .encoded_content_charge();
+                        let next_bytes = encoded_bytes
+                            .checked_add(charge.get())
+                            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                        if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
+                            if records.is_empty() {
+                                return Err(storage_error(StorageErrorKind::LimitExceeded));
+                            }
+                            let cursor = ExportSourceContinuationV1::legacy_provenance(
+                                after_key.ok_or_else(corrupt)?,
+                            )
+                            .encode(ApplicationExportClassV1::Provenance)?;
+                            return source_page(
+                                ApplicationExportClassV1::Provenance,
+                                records,
+                                Some(cursor),
+                                false,
+                                encoded_bytes,
+                                inspected_work,
+                            );
+                        }
+                        records.push(ApplicationExportSourceRecordV1::Provenance(Box::new(
+                            record,
+                        )));
+                        encoded_bytes = next_bytes;
+                    }
+                    Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                        let locator = riffdb_storage_api::decode_command_locator_v1(encoded)
+                            .map_err(codec_error)?
+                            .into_parts()
+                            .0;
+                        let command = crate::command_authority::command_member_at_access(
+                            &access,
+                            locator.commit_sequence(),
+                        )?
+                        .ok_or_else(corrupt)?;
+                        if command.base().provenance().provenance_id() != physical {
+                            return Err(corrupt());
+                        }
+                    }
+                    Err(error) => return Err(codec_error(error)),
+                }
+                after_key = Some(key.to_vec());
+                if records.len() == requested {
+                    let cursor = ExportSourceContinuationV1::legacy_provenance(
+                        after_key.ok_or_else(corrupt)?,
+                    )
+                    .encode(ApplicationExportClassV1::Provenance)?;
+                    return source_page(
+                        ApplicationExportClassV1::Provenance,
+                        records,
+                        Some(cursor),
+                        false,
+                        encoded_bytes,
+                        inspected_work,
+                    );
+                }
+            }
+            if command_cursor.is_none()
+                && inspected_work == riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES
+            {
+                let cursor =
+                    ExportSourceContinuationV1::legacy_provenance(after_key.ok_or_else(corrupt)?)
+                        .encode(ApplicationExportClassV1::Provenance)?;
+                return source_page(
+                    ApplicationExportClassV1::Provenance,
+                    records,
+                    Some(cursor),
+                    false,
+                    encoded_bytes,
+                    inspected_work,
+                );
+            }
+        } else {
+            command_cursor = continuation;
+        }
+        self.read_command_provenance_page(
+            &access,
+            command_cursor,
+            requested,
+            records,
+            encoded_bytes,
+            inspected_work,
+        )
+    }
+
+    fn read_command_provenance_page(
+        &self,
+        access: &RedbReadAccess,
+        continuation: Option<ExportSourceContinuationV1>,
+        requested: usize,
+        mut records: Vec<ApplicationExportSourceRecordV1>,
+        mut encoded_bytes: usize,
+        mut inspected_work: usize,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let start = continuation
+            .as_ref()
+            .map_or_else(Vec::new, |cursor| cursor.key.clone());
+        let rows = access.read_range_to(JournalTable::Commits, &start, None, 1)?;
+        let Some((physical_key, encoded)) = rows.first() else {
+            return if continuation.is_none() && self.binding.application_frontier().is_none() {
+                source_page(
+                    ApplicationExportClassV1::Provenance,
+                    records,
+                    None,
+                    true,
+                    encoded_bytes,
+                    inspected_work,
+                )
+            } else {
+                Err(corrupt())
+            };
+        };
+        if continuation
+            .as_ref()
+            .is_some_and(|cursor| cursor.key.as_slice() != physical_key.as_ref())
+        {
+            return Err(corrupt());
+        }
+        let physical_sequence =
+            crate::keys::decode_application_sequence_key(physical_key).map_err(|_| corrupt())?;
+        if continuation.is_none() && physical_sequence != riffdb_types::CommitSequence::first() {
+            return Err(corrupt());
+        }
+        let members = crate::command_authority::application_export_evidence_in_physical_row_access(
+            access,
+            encoded,
+            physical_sequence,
+        )?;
+        inspected_work = inspected_work
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let mut command_ordinal = continuation
+            .as_ref()
+            .map_or(0, |cursor| usize::from(cursor.command_ordinal));
+        if continuation
+            .as_ref()
+            .is_some_and(|cursor| cursor.member_ordinal != 0)
+            || command_ordinal >= members.len()
+        {
+            return Err(corrupt());
+        }
+        while command_ordinal < members.len() {
+            if records.len() == requested {
+                let cursor = ExportSourceContinuationV1::command(
+                    ApplicationExportClassV1::Provenance,
+                    physical_key.to_vec(),
+                    command_ordinal,
+                    0,
+                )?
+                .encode(ApplicationExportClassV1::Provenance)?;
+                return source_page(
+                    ApplicationExportClassV1::Provenance,
+                    records,
+                    Some(cursor),
+                    false,
+                    encoded_bytes,
+                    inspected_work,
+                );
+            }
+            let member = &members[command_ordinal];
+            if member.commit().plan().contract_lineage() != &self.lineage {
+                return Err(corrupt());
+            }
+            inspected_work = inspected_work
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if let Some(provenance) = member.provenance() {
+                if provenance.identity().contract_lineage() != &self.lineage
+                    || provenance.commit_sequence() != member.commit().commit_sequence()
+                {
+                    return Err(corrupt());
+                }
+                let (duplicate, probes) = self.command_provenance_duplicate(access, provenance)?;
+                inspected_work = inspected_work
+                    .checked_add(probes)
+                    .and_then(|work| work.checked_add(1))
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                if !duplicate {
+                    let charge = riffdb_storage_api::encode_provenance_record_v1(provenance)
+                        .map_err(codec_error)?
+                        .encoded_content_charge();
+                    let next_bytes = encoded_bytes
+                        .checked_add(charge.get())
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                    if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
+                        if records.is_empty() {
+                            return Err(storage_error(StorageErrorKind::LimitExceeded));
+                        }
+                        let cursor = ExportSourceContinuationV1::command(
+                            ApplicationExportClassV1::Provenance,
+                            physical_key.to_vec(),
+                            command_ordinal,
+                            0,
+                        )?
+                        .encode(ApplicationExportClassV1::Provenance)?;
+                        return source_page(
+                            ApplicationExportClassV1::Provenance,
+                            records,
+                            Some(cursor),
+                            false,
+                            encoded_bytes,
+                            inspected_work,
+                        );
+                    }
+                    records.push(ApplicationExportSourceRecordV1::Provenance(Box::new(
+                        provenance.clone(),
+                    )));
+                    encoded_bytes = next_bytes;
+                }
+            }
+            command_ordinal += 1;
+        }
+        let last = members
+            .last()
+            .ok_or_else(corrupt)?
+            .commit()
+            .commit_sequence();
+        self.finish_command_page(
+            ApplicationExportClassV1::Provenance,
+            last,
+            records,
+            encoded_bytes,
+            inspected_work,
+        )
+    }
+
+    fn command_provenance_duplicate(
+        &self,
+        access: &RedbReadAccess,
+        provenance: &riffdb_storage_api::StoredProvenanceRecordV1,
+    ) -> Result<(bool, usize), StorageError> {
+        let key = encode_provenance_key(provenance.provenance_id());
+        let mut duplicate = false;
+        let probes = 1usize;
+        if let Some(encoded) = access.read_value(JournalTable::Provenance, &key)? {
+            match riffdb_storage_api::decode_provenance_record_v1(&encoded) {
+                Ok(record) => {
+                    let record = record.into_parts().0;
+                    if record.provenance_id() != provenance.provenance_id()
+                        || record.identity().contract_lineage() != &self.lineage
+                        || &record != provenance
+                    {
+                        return Err(corrupt());
+                    }
+                    duplicate = true;
+                }
+                Err(error) if error.kind() == DurableCodecErrorKind::UnexpectedRecordType => {
+                    let locator = riffdb_storage_api::decode_command_locator_v1(&encoded)
+                        .map_err(codec_error)?
+                        .into_parts()
+                        .0;
+                    if locator.commit_sequence() != provenance.commit_sequence() {
+                        return Err(corrupt());
+                    }
+                }
+                Err(error) => return Err(codec_error(error)),
+            }
+        }
+        Ok((duplicate, probes))
+    }
+}
+
+fn application_export_event(
+    event: &riffdb_storage_api::StoredDurableEventV1,
+) -> Result<(ApplicationExportEventRecordV1, usize), StorageError> {
+    if let Some(anchor) = event.policy_anchor() {
+        let event = riffdb_storage_api::StoredDurableEventV2::new(
+            event.event_id(),
+            event.event_type_id(),
+            event.payload().clone(),
+            event.event_hash(),
+            anchor.clone(),
+        )
+        .map_err(|_| corrupt())?;
+        let charge = riffdb_storage_api::encode_durable_event_v2(&event)
+            .map_err(codec_error)?
+            .encoded_content_charge()
+            .get();
+        Ok((ApplicationExportEventRecordV1::V2(event), charge))
+    } else {
+        let charge = riffdb_storage_api::encode_durable_event_v1(event)
+            .map_err(codec_error)?
+            .encoded_content_charge()
+            .get();
+        Ok((ApplicationExportEventRecordV1::V1(event.clone()), charge))
+    }
+}
+
+fn source_page(
+    class: ApplicationExportClassV1,
+    records: Vec<ApplicationExportSourceRecordV1>,
+    continuation: Option<Box<[u8]>>,
+    exact_end: bool,
+    encoded_bytes: usize,
+    inspected_work: usize,
+) -> Result<ApplicationExportSourcePageV1, StorageError> {
+    ApplicationExportSourcePageV1::new_with_inspected_work(
+        class,
+        records,
+        continuation,
+        exact_end,
+        encoded_bytes,
+        inspected_work,
+    )
+    .map_err(|error| match error {
+        riffdb_storage_api::StorageValueError::LimitExceeded => {
+            storage_error(StorageErrorKind::LimitExceeded)
+        }
+        _ => storage_error(StorageErrorKind::InvariantViolation),
+    })
 }
 
 fn decode_entity_source_record(
@@ -248,16 +944,22 @@ impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
         after: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError> {
-        if after.is_some_and(|value| {
-            value.is_empty() || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
-        }) {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        let continuation = after
+            .map(|encoded| ExportSourceContinuationV1::decode(class, encoded))
+            .transpose()?;
+        match class {
+            ApplicationExportClassV1::Event => self.read_command_event_page(continuation, limit),
+            ApplicationExportClassV1::Provenance => self.read_provenance_page(continuation, limit),
+            ApplicationExportClassV1::Entity | ApplicationExportClassV1::PublicAudit => {
+                let mut start = continuation
+                    .as_ref()
+                    .map_or_else(Vec::new, |cursor| cursor.key.clone());
+                if continuation.is_some() {
+                    start.push(0);
+                }
+                self.read_source_page_range(class, start, None, limit)
+            }
         }
-        let mut start = after.map_or_else(Vec::new, ToOwned::to_owned);
-        if after.is_some() {
-            start.push(0);
-        }
-        self.read_source_page_range(class, start, None, limit)
     }
 
     fn read_application_export_entity_page(
@@ -562,16 +1264,30 @@ mod tests {
     use std::path::PathBuf;
 
     use riffdb_storage_api::{
-        ApplicationExportOperationRepository, ApplicationExportOperationWriteResultV1,
-        ApplicationExportSnapshotPort, AuditPrincipalV1, CatalogActivationIntentV1,
+        ApplicationExportEventRecordV1, ApplicationExportOperationRepository,
+        ApplicationExportOperationWriteResultV1, ApplicationExportSnapshotPort,
+        ApplicationExportSourceRecordV1, AuditPrincipalV1, CatalogActivationIntentV1,
         CatalogActivationResult, CatalogAdministrationRepository, DatabaseInitializationPort,
-        StoredApplicationExportOperationV1, StoredContractBundleV1,
+        DeclaredOutcome, DurabilityMode, ExecutablePlanRef, IdempotencyIdentity,
+        IdempotencyKeyDigest, StorageErrorKind, StorageScanLimit, StoredAdmittedProvenanceClaimsV1,
+        StoredApplicationExportOperationV1, StoredCommandCapsuleV1, StoredCommandCapsuleV2,
+        StoredCommitRecordV1, StoredContractBundleV1, StoredDurableEventV1, StoredOutcomeV1,
+        StoredProvenanceRecordV1, StoredReadDependenciesV1, StoredServiceAuditRecordV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, ApplicationExportClassV1, ApplicationExportOperationId, CapabilityId,
-        ContractBundleHash, ContractLineage, ContractVersion, DatabaseId, RequestId, Timestamp,
+        ActorId, ActorKind, AdministrationSequence, AdmittedActorContext, AggregateTypeId,
+        ApplicationExportClassV1, ApplicationExportOperationId, CanonicalInputHash,
+        CanonicalRecord, CapabilityId, CommandId, CommitSequence, ContractBundleHash,
+        ContractLineage, ContractVersion, DatabaseId, DigestKeyId, Environment, EventId,
+        EventTypeId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId,
+        RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
+        ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp,
+        hash_partition_key,
     };
 
+    use super::ExportSourceContinuationV1;
+    use crate::journal::JournalTable;
+    use crate::keys::{encode_application_sequence_key, encode_provenance_key};
     use crate::store::{RedbDormantPorts, RedbStore};
 
     struct TestPath(
@@ -800,6 +1516,244 @@ mod tests {
         assert!(tail.exact_end());
     }
 
+    fn provenance_id(seed: u8) -> ProvenanceId {
+        ProvenanceId::from_bytes(uuid(seed)).expect("provenance")
+    }
+
+    fn command_capsule(
+        database_id: DatabaseId,
+        lineage: &ContractLineage,
+        sequence: CommitSequence,
+        provenance_id: ProvenanceId,
+        seed: u8,
+        event_count: u32,
+    ) -> StoredCommandCapsuleV2 {
+        let request = request_id(seed);
+        let plan = ExecutablePlanRef::new(
+            lineage.clone(),
+            ContractVersion::new(1).expect("contract version"),
+            ContractBundleHash::from_bytes([5; 32]),
+            CommandId::first(),
+            PlanHash::from_bytes([0x20_u8.wrapping_add(seed); 32]),
+        );
+        let actor = AdmittedActorContext::new(
+            ActorId::new("export-principal").expect("principal"),
+            ActorKind::Human,
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
+            None,
+        );
+        let identity = IdempotencyIdentity::new(
+            database_id,
+            Environment::new("test").expect("environment"),
+            actor.tenant_scope().clone(),
+            actor.principal_id().clone(),
+            lineage.clone(),
+            CommandId::first(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(u32::from(seed).max(1)).expect("digest key"),
+                [seed; 32],
+            ),
+        );
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_str("export").expect("partition component");
+        let partition = partition.finish().expect("partition");
+        let partition_hash = hash_partition_key(partition.as_bytes());
+        let logical_time = LogicalTime::new(Timestamp::new(i64::from(seed), 0).expect("time"));
+        let input_hash = CanonicalInputHash::from_bytes([0x40_u8.wrapping_add(seed); 32]);
+        let events = (0..event_count)
+            .map(|ordinal| {
+                let payload = CanonicalRecord::new(Vec::new()).expect("payload");
+                let event_id = EventId::new(sequence, ordinal);
+                let event_hash = riffdb_storage_api::derive_event_hash_v1(
+                    event_id,
+                    EventTypeId::first(),
+                    &payload,
+                )
+                .expect("event hash");
+                StoredDurableEventV1::new(event_id, EventTypeId::first(), payload, event_hash)
+                    .expect("event")
+            })
+            .collect::<Vec<_>>();
+        let event_ids = events
+            .iter()
+            .map(StoredDurableEventV1::event_id)
+            .collect::<Vec<_>>();
+        let declared = DeclaredOutcome::new(
+            OutcomeId::first(),
+            CanonicalRecord::new(Vec::new()).expect("outcome payload"),
+        )
+        .expect("declared outcome");
+        let claims = StoredAdmittedProvenanceClaimsV1::default();
+        let outcome = StoredOutcomeV1::new(
+            identity.clone(),
+            sequence,
+            request,
+            plan.clone(),
+            input_hash,
+            actor.clone(),
+            logical_time,
+            partition.clone(),
+            partition_hash,
+            Vec::new(),
+            declared.clone(),
+            claims.clone(),
+            provenance_id,
+            DurabilityMode::Memory,
+        )
+        .expect("stored outcome");
+        let provenance = StoredProvenanceRecordV1::new(
+            provenance_id,
+            sequence,
+            identity,
+            request,
+            plan.clone(),
+            input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            declared.outcome_id(),
+            Vec::new(),
+            event_ids.clone(),
+            claims,
+        )
+        .expect("provenance");
+        let commit = StoredCommitRecordV1::new(
+            sequence,
+            request,
+            plan,
+            input_hash,
+            outcome.actor().clone(),
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            StoredReadDependenciesV1::new(Vec::new()).expect("dependencies"),
+            Vec::new(),
+            events.clone(),
+            declared,
+            provenance_id,
+            event_ids,
+            DurabilityMode::Memory,
+        )
+        .expect("commit");
+        let principal = AuditPrincipalV1::new(
+            outcome.actor().principal_id().clone(),
+            ActorKind::Human,
+            capability_id(seed),
+            NonZeroU64::MIN,
+        );
+        let started_sequence =
+            AdministrationSequence::new(u64::from(seed) * 2 - 1).expect("started sequence");
+        let started = StoredServiceAuditRecordV1::from_stored_parts(
+            started_sequence,
+            request,
+            Timestamp::new(i64::from(seed), 0).expect("time"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Started,
+            Some(principal.clone()),
+            ServiceIngressKindV1::InProcessTestComparison,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("started audit");
+        let terminal = StoredServiceAuditRecordV1::from_stored_parts(
+            started_sequence.checked_next().expect("terminal sequence"),
+            request,
+            Timestamp::new(i64::from(seed), 0).expect("time"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Succeeded,
+            Some(principal),
+            ServiceIngressKindV1::InProcessTestComparison,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::Command {
+                commit_sequence: sequence,
+                provenance_id,
+            },
+        )
+        .expect("terminal audit");
+        let base = StoredCommandCapsuleV1::new(outcome, provenance, commit, started, terminal)
+            .expect("capsule");
+        StoredCommandCapsuleV2::new(base, events, Vec::new()).expect("current capsule")
+    }
+
+    fn install_capsules(
+        ports: &crate::store::RedbOperationalPorts,
+        database_id: DatabaseId,
+        capsules: Vec<StoredCommandCapsuleV2>,
+    ) {
+        let first = capsules.first().expect("capsules").commit_sequence();
+        let manifest =
+            crate::application::build_command_segment_manifest(&capsules, first).expect("manifest");
+        let segment = riffdb_storage_api::StoredCommandSegmentV1::new(
+            database_id,
+            riffdb_storage_api::HISTORY_INCARNATION_INITIAL,
+            None,
+            capsules.clone(),
+            manifest,
+            riffdb_storage_api::CommandSegmentDigestV1::from_bytes([0; 32]),
+        )
+        .expect("segment");
+        let (_, encoded) = riffdb_storage_api::seal_and_encode_command_segment_v1(segment)
+            .expect("encoded segment");
+        let access = ports.begin_write().expect("write");
+        access
+            .put_command_value(
+                JournalTable::Commits,
+                encode_application_sequence_key(first).to_vec(),
+                encoded.into_bytes(),
+            )
+            .expect("command row");
+        let next = riffdb_storage_api::ApplicationSequenceAllocator::Next(
+            capsules
+                .last()
+                .expect("capsules")
+                .commit_sequence()
+                .checked_next()
+                .expect("next allocator"),
+        );
+        access
+            .put_command_value(
+                JournalTable::Meta,
+                crate::layout::META_APPLICATION_SEQUENCE.as_bytes().to_vec(),
+                riffdb_storage_api::encode_application_sequence_allocator_v1(next)
+                    .expect("encoded allocator")
+                    .into_bytes(),
+            )
+            .expect("application allocator");
+        access.commit().expect("commit evidence");
+    }
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_sparse_evidence_pages_charge_bounded_progress() {
+        let maximum_key = vec![
+            0x61;
+            riffdb_storage_api::MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+                - super::EXPORT_CONTINUATION_FIXED_BYTES
+        ];
+        let encoded = ExportSourceContinuationV1::table(maximum_key)
+            .encode(ApplicationExportClassV1::Entity)
+            .expect("maximum continuation");
+        assert_eq!(
+            encoded.len(),
+            riffdb_storage_api::MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+        );
+        let mut noncanonical = encoded.to_vec();
+        noncanonical.push(0);
+        assert!(
+            ExportSourceContinuationV1::decode(ApplicationExportClassV1::Entity, &noncanonical,)
+                .is_err()
+        );
+        assert_eq!(
+            crate::command_authority::MAX_APPLICATION_EXPORT_COMMAND_AUTHORITY_BYTES,
+            16 * 1024 * 1024
+        );
+        assert_eq!(riffdb_storage_api::MAX_STAGED_COMMANDS, 256);
+        assert_eq!(riffdb_storage_api::MAX_EVENT_INTENTS, 4_096);
+    }
+
     // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn operation_compare_and_swap_is_durable_ordered_and_retry_safe() {
@@ -942,5 +1896,258 @@ mod tests {
             .expect("audit page");
         assert!(audit.exact_end());
         assert_eq!(audit.records().len(), 1);
+    }
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_reads_segment_owned_events_and_provenance_from_one_snapshot() {
+        let path = TestPath::new();
+        let database_id = DatabaseId::from_bytes(uuid(1)).expect("database");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store.initialize_database(database_id).expect("initialize");
+        let dormant = RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate ports");
+        let bundle = activate_bundle(&mut ports, 1, 5);
+        let first = command_capsule(
+            database_id,
+            bundle.lineage(),
+            CommitSequence::first(),
+            provenance_id(31),
+            11,
+            2,
+        );
+        let second_sequence = CommitSequence::new(2).expect("second sequence");
+        let second = command_capsule(
+            database_id,
+            bundle.lineage(),
+            second_sequence,
+            provenance_id(32),
+            12,
+            1,
+        );
+        install_capsules(&ports, database_id, vec![first.clone(), second.clone()]);
+
+        let physical = ports.begin_composite_read().expect("captured read");
+        assert!(
+            physical
+                .read_range_to(JournalTable::Events, &[], None, 1)
+                .expect("event table")
+                .is_empty()
+        );
+        assert!(
+            physical
+                .read_range_to(JournalTable::Provenance, &[], None, 1)
+                .expect("provenance table")
+                .is_empty()
+        );
+        drop(physical);
+
+        let snapshot = ports
+            .capture_application_export_snapshot(bundle.lineage())
+            .expect("snapshot");
+        let one = StorageScanLimit::new(1).expect("one");
+        let expected_events = [
+            first.events()[0].event_id(),
+            first.events()[1].event_id(),
+            second.events()[0].event_id(),
+        ];
+        let mut continuation = None;
+        let mut observed_events = Vec::new();
+        for page_index in 0..expected_events.len() {
+            let page = snapshot
+                .read_application_export_source_page(
+                    ApplicationExportClassV1::Event,
+                    continuation.as_deref(),
+                    one,
+                )
+                .expect("event page");
+            assert_eq!(page.exact_end(), page_index + 1 == expected_events.len());
+            assert!(page.inspected_work() >= 3);
+            observed_events.push(match &page.records()[0] {
+                ApplicationExportSourceRecordV1::Event(event) => match event.as_ref() {
+                    ApplicationExportEventRecordV1::V1(event) => event.event_id(),
+                    ApplicationExportEventRecordV1::V2(_) => {
+                        panic!("unanchored segment event changed revision")
+                    }
+                },
+                _ => panic!("wrong export class"),
+            });
+            continuation = page.continuation().map(<[u8]>::to_vec);
+        }
+        assert_eq!(observed_events, expected_events);
+        assert!(continuation.is_none());
+
+        let impossible_event_cursor = ExportSourceContinuationV1::command(
+            ApplicationExportClassV1::Event,
+            encode_application_sequence_key(CommitSequence::first()).to_vec(),
+            0,
+            first.events().len(),
+        )
+        .expect("shape cursor")
+        .encode(ApplicationExportClassV1::Event)
+        .expect("encode cursor");
+        let error = match snapshot.read_application_export_source_page(
+            ApplicationExportClassV1::Event,
+            Some(&impossible_event_cursor),
+            one,
+        ) {
+            Ok(_) => panic!("noncanonical end-of-command ordinal must refuse"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+
+        let provenance_page_one = snapshot
+            .read_application_export_source_page(ApplicationExportClassV1::Provenance, None, one)
+            .expect("first provenance page");
+        assert!(!provenance_page_one.exact_end());
+        let provenance_page_two = snapshot
+            .read_application_export_source_page(
+                ApplicationExportClassV1::Provenance,
+                provenance_page_one.continuation(),
+                one,
+            )
+            .expect("second provenance page");
+        assert!(provenance_page_two.exact_end());
+        let observed = [provenance_page_one, provenance_page_two]
+            .into_iter()
+            .map(|page| match &page.records()[0] {
+                ApplicationExportSourceRecordV1::Provenance(record) => record.provenance_id(),
+                _ => panic!("wrong export class"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observed, [provenance_id(31), provenance_id(32)]);
+
+        let third = command_capsule(
+            database_id,
+            bundle.lineage(),
+            CommitSequence::new(3).expect("third sequence"),
+            provenance_id(33),
+            13,
+            1,
+        );
+        install_capsules(&ports, database_id, vec![third]);
+        let old_snapshot = snapshot
+            .read_application_export_source_page(
+                ApplicationExportClassV1::Event,
+                None,
+                StorageScanLimit::new(10).expect("limit"),
+            )
+            .expect("old snapshot remains readable");
+        assert_eq!(old_snapshot.records().len(), 3);
+        assert!(old_snapshot.exact_end());
+    }
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_canonically_deduplicates_mixed_legacy_and_segment_evidence() {
+        let path = TestPath::new();
+        let database_id = DatabaseId::from_bytes(uuid(2)).expect("database");
+        let mut store = RedbStore::open(&path.0).expect("open");
+        store.initialize_database(database_id).expect("initialize");
+        let dormant = RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate ports");
+        let bundle = activate_bundle(&mut ports, 1, 5);
+        let provenance_id = provenance_id(41);
+        let capsule = command_capsule(
+            database_id,
+            bundle.lineage(),
+            CommitSequence::first(),
+            provenance_id,
+            21,
+            1,
+        );
+        install_capsules(&ports, database_id, vec![capsule.clone()]);
+        let exact_legacy = capsule.base().provenance().clone();
+        let access = ports.begin_write().expect("legacy write");
+        access
+            .put_command_value(
+                JournalTable::Provenance,
+                encode_provenance_key(provenance_id).to_vec(),
+                riffdb_storage_api::encode_provenance_record_v1(&exact_legacy)
+                    .expect("legacy provenance")
+                    .into_bytes(),
+            )
+            .expect("legacy row");
+        access.commit().expect("commit legacy row");
+        let snapshot = ports
+            .capture_application_export_snapshot(bundle.lineage())
+            .expect("snapshot");
+        let page = snapshot
+            .read_application_export_source_page(
+                ApplicationExportClassV1::Provenance,
+                None,
+                StorageScanLimit::new(10).expect("limit"),
+            )
+            .expect("mixed provenance page");
+        assert!(page.exact_end());
+        assert_eq!(page.records().len(), 1, "exact duplicate emitted twice");
+        assert!(page.inspected_work() > page.records().len());
+        match &page.records()[0] {
+            ApplicationExportSourceRecordV1::Provenance(record) => {
+                assert_eq!(record.as_ref(), &exact_legacy);
+            }
+            _ => panic!("wrong export class"),
+        }
+
+        let unequal = command_capsule(
+            database_id,
+            bundle.lineage(),
+            CommitSequence::new(2).expect("second sequence"),
+            provenance_id,
+            22,
+            1,
+        );
+        let access = ports.begin_write().expect("mismatch write");
+        access
+            .put_command_value(
+                JournalTable::Provenance,
+                encode_provenance_key(provenance_id).to_vec(),
+                riffdb_storage_api::encode_provenance_record_v1(unequal.base().provenance())
+                    .expect("unequal provenance")
+                    .into_bytes(),
+            )
+            .expect("replace legacy row");
+        access.commit().expect("commit mismatch");
+        let corrupt_snapshot = ports
+            .capture_application_export_snapshot(bundle.lineage())
+            .expect("corrupt snapshot capture remains structural");
+        let error = match corrupt_snapshot.read_application_export_source_page(
+            ApplicationExportClassV1::Provenance,
+            None,
+            StorageScanLimit::new(10).expect("limit"),
+        ) {
+            Ok(_) => panic!("unequal duplicate must refuse the complete page"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+
+        let event_cursor = ExportSourceContinuationV1::command(
+            ApplicationExportClassV1::Event,
+            encode_application_sequence_key(CommitSequence::first()).to_vec(),
+            0,
+            0,
+        )
+        .expect("event cursor")
+        .encode(ApplicationExportClassV1::Event)
+        .expect("encode cursor");
+        let error = match corrupt_snapshot.read_application_export_source_page(
+            ApplicationExportClassV1::Provenance,
+            Some(&event_cursor),
+            StorageScanLimit::new(1).expect("limit"),
+        ) {
+            Ok(_) => panic!("cross-class cursor must refuse"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
     }
 }

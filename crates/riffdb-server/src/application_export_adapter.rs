@@ -577,9 +577,9 @@ fn release_page(
     let mut lines = Vec::with_capacity(usize::from(target_rows));
     let mut continuation = state.continuation.clone();
     let mut class_complete = false;
-    let mut source_rows = 0usize;
+    let mut inspected_work = 0usize;
     while lines.len() < usize::from(target_rows)
-        && source_rows < MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE
+        && inspected_work < MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE
         && !class_complete
     {
         let remaining = usize::from(target_rows) - lines.len();
@@ -603,9 +603,16 @@ fn release_page(
                 .read_application_export_source_page(class, continuation.as_deref(), limit)
                 .map_err(map_mutation_storage)?
         };
-        source_rows = source_rows
-            .checked_add(source.records().len())
-            .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)?;
+        let next_work =
+            charge_application_export_source_work(inspected_work, source.inspected_work())?;
+        if !source.exact_end()
+            && source
+                .continuation()
+                .is_none_or(|next| continuation.as_deref() == Some(next))
+        {
+            return Err(ApplicationExportMutationPortErrorV1::Integrity);
+        }
+        inspected_work = next_work;
         for record in source.records() {
             if record_visible(record, row_policy.as_ref(), snapshot.as_ref())? {
                 if !record_workflow_quiescence(record, &mut state.workflow_quiescence)? {
@@ -778,6 +785,16 @@ fn release_page(
             Err(ApplicationExportMutationPortErrorV1::OutcomeUnknown)
         }
     }
+}
+
+fn charge_application_export_source_work(
+    current: usize,
+    source: usize,
+) -> Result<usize, ApplicationExportMutationPortErrorV1> {
+    current
+        .checked_add(source)
+        .filter(|work| *work <= MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE)
+        .ok_or(ApplicationExportMutationPortErrorV1::LimitExceeded)
 }
 
 fn observe(
@@ -2262,6 +2279,25 @@ fn map_observation_storage(error: StorageError) -> ApplicationExportObservationP
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_sparse_evidence_pages_charge_bounded_progress() {
+        assert_eq!(MAX_EXPORT_LINES_PER_STORAGE_CHUNK, 64);
+        assert_eq!(MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE, 100_000);
+        assert_eq!(
+            charge_application_export_source_work(99_999, 1),
+            Ok(MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE)
+        );
+        assert_eq!(
+            charge_application_export_source_work(MAX_POLICY_SOURCE_ROWS_PER_PUBLIC_PAGE, 1),
+            Err(ApplicationExportMutationPortErrorV1::LimitExceeded)
+        );
+        assert_eq!(
+            charge_application_export_source_work(usize::MAX, 1),
+            Err(ApplicationExportMutationPortErrorV1::LimitExceeded)
+        );
+    }
 
     pub(super) fn state() -> ExportState {
         let operation_id =

@@ -15,6 +15,9 @@ use crate::journal::JournalTable;
 use crate::keys::{decode_application_sequence_key, encode_application_sequence_key};
 use crate::store::RedbReadAccess;
 
+/// Maximum physical command-authority bytes inspected by one export source call.
+pub(crate) const MAX_APPLICATION_EXPORT_COMMAND_AUTHORITY_BYTES: usize = 16 * 1024 * 1024;
+
 /// One proven command member reconstructed from its authoritative physical row.
 pub(crate) enum CommandAuthorityMember {
     CapsuleV1(StoredCommandCapsuleV1),
@@ -35,6 +38,139 @@ impl CommandAuthorityMember {
             Self::CapsuleV2(value) => value.base().clone(),
         }
     }
+}
+
+/// One fully validated logical command view used by snapshot-bound export.
+///
+/// Historical commit-only rows own events but not provenance. Capsules and
+/// segments own both classes directly.
+pub(crate) enum ApplicationExportCommandEvidenceV1 {
+    Command(Box<CommandAuthorityMember>),
+    HistoricalCommit(Box<StoredCommitRecordV1>),
+}
+
+impl ApplicationExportCommandEvidenceV1 {
+    pub(crate) const fn commit(&self) -> &StoredCommitRecordV1 {
+        match self {
+            Self::Command(command) => command.base().commit(),
+            Self::HistoricalCommit(commit) => commit,
+        }
+    }
+
+    pub(crate) fn provenance(&self) -> Option<&riffdb_storage_api::StoredProvenanceRecordV1> {
+        match self {
+            Self::Command(command) => Some(command.base().provenance()),
+            Self::HistoricalCommit(_) => None,
+        }
+    }
+}
+
+/// Expands one captured physical command row into complete logical evidence.
+///
+/// The caller reads exactly one physical row per source call. This boundary
+/// validates its byte ceiling, physical first sequence, and contiguous logical
+/// members before any event or provenance can be exported.
+pub(crate) fn application_export_evidence_in_physical_row_access(
+    access: &RedbReadAccess,
+    encoded: &[u8],
+    physical_sequence: CommitSequence,
+) -> Result<Vec<ApplicationExportCommandEvidenceV1>, StorageError> {
+    if encoded.len() > MAX_APPLICATION_EXPORT_COMMAND_AUTHORITY_BYTES {
+        return Err(StorageError::new(StorageErrorKind::LimitExceeded, None));
+    }
+    let database = access
+        .read_value(
+            JournalTable::Meta,
+            crate::layout::META_DATABASE_ID.as_bytes(),
+        )?
+        .ok_or_else(corrupt)
+        .and_then(|encoded| {
+            crate::codec::decode_database_identity_v1(&encoded).map(|value| *value.value())
+        })?;
+    let evidence = match riffdb_storage_api::decode_command_segment_v1(encoded) {
+        Ok(segment) => {
+            let segment = segment.into_parts().0;
+            let history = access
+                .read_value(
+                    JournalTable::Meta,
+                    crate::layout::META_HISTORY_INCARNATION.as_bytes(),
+                )?
+                .ok_or_else(corrupt)
+                .and_then(|encoded| {
+                    crate::codec::decode_history_incarnation_v1(&encoded)
+                        .map(|value| *value.value())
+                })?;
+            if segment.first_commit_sequence() != physical_sequence
+                || segment.database_id() != database
+                || segment.history_incarnation() != history
+            {
+                return Err(corrupt());
+            }
+            segment
+                .commands()
+                .iter()
+                .cloned()
+                .map(CommandAuthorityMember::CapsuleV2)
+                .map(Box::new)
+                .map(ApplicationExportCommandEvidenceV1::Command)
+                .collect::<Vec<_>>()
+        }
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+        {
+            match riffdb_storage_api::decode_command_capsule_v2(encoded) {
+                Ok(capsule) => vec![ApplicationExportCommandEvidenceV1::Command(Box::new(
+                    CommandAuthorityMember::CapsuleV2(capsule.into_parts().0),
+                ))],
+                Err(error)
+                    if error.kind()
+                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                {
+                    let events = access
+                        .open_table(crate::layout::EVENTS)
+                        .map_err(crate::error::table_error)?;
+                    match decode_command_capsule_with_event_table(encoded, &events) {
+                        Ok(capsule) => vec![ApplicationExportCommandEvidenceV1::Command(Box::new(
+                            CommandAuthorityMember::CapsuleV1(capsule.into_parts().0),
+                        ))],
+                        Err(capsule_error) => {
+                            match decode_commit_with_event_table(encoded, &events) {
+                                Ok(commit) => {
+                                    vec![ApplicationExportCommandEvidenceV1::HistoricalCommit(
+                                        Box::new(commit.into_parts().0),
+                                    )]
+                                }
+                                Err(_) => return Err(capsule_error),
+                            }
+                        }
+                    }
+                }
+                Err(error) => return Err(crate::error::codec_error(error)),
+            }
+        }
+        Err(error) => return Err(crate::error::codec_error(error)),
+    };
+    if evidence.is_empty() || evidence.len() > riffdb_storage_api::MAX_STAGED_COMMANDS {
+        return Err(corrupt());
+    }
+    for (ordinal, member) in evidence.iter().enumerate() {
+        let ordinal = u64::try_from(ordinal).map_err(|_| corrupt())?;
+        let expected = physical_sequence
+            .get()
+            .checked_add(ordinal)
+            .and_then(CommitSequence::new)
+            .ok_or_else(corrupt)?;
+        if member.commit().commit_sequence() != expected {
+            return Err(corrupt());
+        }
+        if member
+            .provenance()
+            .is_some_and(|provenance| provenance.identity().database_id() != database)
+        {
+            return Err(corrupt());
+        }
+    }
+    Ok(evidence)
 }
 
 /// Expands one physical authority row into its contiguous logical commit views.
@@ -729,4 +865,20 @@ fn segment_member(
 
 const fn corrupt() -> StorageError {
     StorageError::new(StorageErrorKind::CorruptData, None)
+}
+
+#[cfg(test)]
+mod application_export_bounds_tests {
+    use super::MAX_APPLICATION_EXPORT_COMMAND_AUTHORITY_BYTES;
+
+    // req: AFC-006, EXP-002, EXP-003, EXP-004, EXP-007, EXP-010
+    #[test]
+    fn application_export_sparse_evidence_pages_charge_bounded_progress() {
+        assert_eq!(
+            MAX_APPLICATION_EXPORT_COMMAND_AUTHORITY_BYTES,
+            16 * 1024 * 1024
+        );
+        assert_eq!(riffdb_storage_api::MAX_STAGED_COMMANDS, 256);
+        assert_eq!(riffdb_storage_api::MAX_EVENT_INTENTS, 4_096);
+    }
 }
