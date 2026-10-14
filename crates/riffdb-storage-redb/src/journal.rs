@@ -166,7 +166,13 @@ static COMMAND_FLUSH_COMMANDS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_BYTES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_MAX_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_IO_MICROS: AtomicU64 = AtomicU64::new(0);
+pub(crate) const COMMANDS_PER_DURABLE_FLUSH_BUCKETS: usize = 10;
+
 static COMMAND_FLUSH_MAX_IO_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMANDS_PER_DURABLE_FLUSH: [AtomicU64; COMMANDS_PER_DURABLE_FLUSH_BUCKETS] =
+    [const { AtomicU64::new(0) }; COMMANDS_PER_DURABLE_FLUSH_BUCKETS];
+static EPOCH_QUEUE_DRAINED_SEALS: AtomicU64 = AtomicU64::new(0);
+static EPOCH_CEILING_SEALS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_QUEUE_OBSERVATIONS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_QUEUE_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_QUEUE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
@@ -176,6 +182,46 @@ static COMMAND_WRITE_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_WRITE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SYNC_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SYNC_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) const fn commands_per_durable_flush_bucket(commands: usize) -> usize {
+    match commands {
+        0 | 1 => 0,
+        2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        9..=16 => 4,
+        17..=32 => 5,
+        33..=64 => 6,
+        65..=128 => 7,
+        129..=256 => 8,
+        _ => 9,
+    }
+}
+
+pub(crate) fn record_commands_per_durable_flush(commands: usize) {
+    if commands == 0 {
+        return;
+    }
+    let bucket = commands_per_durable_flush_bucket(commands);
+    saturating_atomic_add(&COMMANDS_PER_DURABLE_FLUSH[bucket], 1);
+}
+
+pub(crate) fn record_epoch_seal_reason(reached_ceiling: bool) {
+    if reached_ceiling {
+        saturating_atomic_add(&EPOCH_CEILING_SEALS, 1);
+    } else {
+        saturating_atomic_add(&EPOCH_QUEUE_DRAINED_SEALS, 1);
+    }
+}
+
+pub(crate) fn command_durable_flush_group_census()
+-> ([u64; COMMANDS_PER_DURABLE_FLUSH_BUCKETS], u64, u64) {
+    (
+        std::array::from_fn(|index| COMMANDS_PER_DURABLE_FLUSH[index].load(Ordering::Relaxed)),
+        EPOCH_QUEUE_DRAINED_SEALS.load(Ordering::Relaxed),
+        EPOCH_CEILING_SEALS.load(Ordering::Relaxed),
+    )
+}
 
 fn saturating_atomic_add(target: &AtomicU64, value: usize) {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
@@ -265,6 +311,7 @@ fn record_command_flush_census(
     saturating_atomic_add(&COMMAND_FLUSH_FRAMES, frames);
     saturating_atomic_add(&COMMAND_FLUSH_COMMANDS, commands);
     saturating_atomic_add(&COMMAND_FLUSH_BYTES, bytes);
+    record_commands_per_durable_flush(commands);
     let frames = u64::try_from(frames).unwrap_or(u64::MAX);
     let _ =
         COMMAND_FLUSH_MAX_FRAMES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

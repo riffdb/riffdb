@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+# req: PERF-022
+"""Verify ADR-0183 section 4 durable-group activation gates across N1 and E2."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+SCHEMA = "riffdb.wp-763-durable-group-activation/v1"
+REQUIRED_PROFILES = ("n1", "e2")
+MIN_C32_THROUGHPUT_RATIO = 0.90
+MAX_C32_P95_RATIO = 1.25
+MAX_WRITE_ONLY_P95_RATIO = 1.05
+MAX_UNARY_LATENCY_RATIO = 1.10
+MAX_INPUT_BYTES = 4 * 1024 * 1024
+
+
+def load_bounded_json(path: Path) -> dict[str, Any]:
+    raw = path.read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError(f"{path}: input exceeds {MAX_INPUT_BYTES} bytes")
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    return data
+
+
+def evaluate_candidate(
+    bank: dict[str, Any],
+    candidate: dict[str, Any],
+) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    profile_verdicts: dict[str, Any] = {}
+
+    bank_profiles = bank.get("profiles")
+    cand_profiles = candidate.get("profiles")
+    if not isinstance(bank_profiles, dict) or not isinstance(cand_profiles, dict):
+        return False, ["missing-profiles"], {}
+
+    for profile in REQUIRED_PROFILES:
+        b_prof = bank_profiles.get(profile)
+        c_prof = cand_profiles.get(profile)
+        if not isinstance(b_prof, dict) or not isinstance(c_prof, dict):
+            reasons.append(f"missing-{profile.upper()}")
+            continue
+
+        b_c32_tps = float(b_prof["c32_ops_per_sec"])
+        c_c32_tps = float(c_prof["c32_ops_per_sec"])
+        b_c32_p95 = float(b_prof["c32_p95_ns"])
+        c_c32_p95 = float(c_prof["c32_p95_ns"])
+        b_wo_p95 = float(b_prof["write_only_p95_ns"])
+        c_wo_p95 = float(c_prof["write_only_p95_ns"])
+
+        tps_ratio = c_c32_tps / b_c32_tps
+        c32_p95_ratio = c_c32_p95 / b_c32_p95
+        wo_p95_ratio = c_wo_p95 / b_wo_p95
+
+        unary_regressions: list[str] = []
+        b_unary = b_prof.get("unary_ns", {})
+        c_unary = c_prof.get("unary_ns", {})
+        if not isinstance(b_unary, dict) or not isinstance(c_unary, dict) or not b_unary:
+            reasons.append("unary-regression")
+        else:
+            for scenario, b_metrics in sorted(b_unary.items()):
+                c_metrics = c_unary.get(scenario)
+                if not isinstance(c_metrics, dict):
+                    unary_regressions.append(f"{scenario}:missing")
+                    continue
+                for quantile in ("p50_ns", "p95_ns"):
+                    b_val = float(b_metrics[quantile])
+                    c_val = float(c_metrics[quantile])
+                    if c_val / b_val > MAX_UNARY_LATENCY_RATIO:
+                        unary_regressions.append(f"{scenario}:{quantile}")
+
+        if unary_regressions and "unary-regression" not in reasons:
+            reasons.append("unary-regression")
+        if wo_p95_ratio > MAX_WRITE_ONLY_P95_RATIO and "write-only-regression" not in reasons:
+            reasons.append("write-only-regression")
+        if tps_ratio < MIN_C32_THROUGHPUT_RATIO or c32_p95_ratio > MAX_C32_P95_RATIO:
+            reasons.append(f"miss-{profile.upper()}")
+
+        profile_verdicts[profile] = {
+            "c32_throughput_ratio": round(tps_ratio, 6),
+            "c32_p95_ratio": round(c32_p95_ratio, 6),
+            "write_only_p95_ratio": round(wo_p95_ratio, 6),
+            "unary_regressions": unary_regressions,
+        }
+
+    passed = len(reasons) == 0
+    return passed, reasons, {
+        "schema": SCHEMA,
+        "activated": passed,
+        "reasons": reasons,
+        "profiles": profile_verdicts,
+    }
+
+
+def synthetic_bank() -> dict[str, Any]:
+    unary = {
+        "point_get_ticket": {"p50_ns": 500_000.0, "p95_ns": 900_000.0},
+        "create_comment": {"p50_ns": 2_000_000.0, "p95_ns": 3_500_000.0},
+    }
+    return {
+        "profiles": {
+            "n1": {
+                "c32_ops_per_sec": 3403.5,
+                "c32_p95_ns": 16_337_505.0,
+                "write_only_p95_ns": 3_348_360.0,
+                "unary_ns": copy.deepcopy(unary),
+            },
+            "e2": {
+                "c32_ops_per_sec": 3180.0,
+                "c32_p95_ns": 17_310_234.0,
+                "write_only_p95_ns": 3_569_225.0,
+                "unary_ns": copy.deepcopy(unary),
+            },
+        }
+    }
+
+
+def synthetic_passing_candidate(bank: dict[str, Any]) -> dict[str, Any]:
+    cand = copy.deepcopy(bank)
+    cand["profiles"]["n1"]["c32_ops_per_sec"] = 3403.5 * 0.92
+    cand["profiles"]["n1"]["c32_p95_ns"] = 16_337_505.0 * 1.18
+    cand["profiles"]["n1"]["write_only_p95_ns"] = 3_348_360.0 * 1.02
+    cand["profiles"]["e2"]["c32_ops_per_sec"] = 3180.0 * 0.91
+    cand["profiles"]["e2"]["c32_p95_ns"] = 17_310_234.0 * 1.20
+    cand["profiles"]["e2"]["write_only_p95_ns"] = 3_569_225.0 * 1.01
+    return cand
+
+
+def run_self_test() -> int:
+    bank = synthetic_bank()
+
+    # 1. pass-both
+    pass_both = synthetic_passing_candidate(bank)
+    ok, reasons, receipt = evaluate_candidate(bank, pass_both)
+    if not ok or reasons or not receipt["activated"]:
+        raise AssertionError(f"pass-both failed: {reasons}")
+
+    # 2. miss-N1
+    miss_n1 = synthetic_passing_candidate(bank)
+    miss_n1["profiles"]["n1"]["c32_ops_per_sec"] = 3403.5 * 0.705
+    miss_n1["profiles"]["n1"]["c32_p95_ns"] = 16_337_505.0 * 2.069
+    ok, reasons, _ = evaluate_candidate(bank, miss_n1)
+    if ok or reasons != ["miss-N1"]:
+        raise AssertionError(f"miss-N1 expected ['miss-N1'], got ok={ok} reasons={reasons}")
+
+    # 3. miss-E2
+    miss_e2 = synthetic_passing_candidate(bank)
+    miss_e2["profiles"]["e2"]["c32_ops_per_sec"] = 3180.0 * 0.687
+    miss_e2["profiles"]["e2"]["c32_p95_ns"] = 17_310_234.0 * 1.871
+    ok, reasons, _ = evaluate_candidate(bank, miss_e2)
+    if ok or reasons != ["miss-E2"]:
+        raise AssertionError(f"miss-E2 expected ['miss-E2'], got ok={ok} reasons={reasons}")
+
+    # 4. unary-regression
+    unary_reg = synthetic_passing_candidate(bank)
+    unary_reg["profiles"]["n1"]["unary_ns"]["point_get_ticket"]["p95_ns"] = 900_000.0 * 1.15
+    ok, reasons, _ = evaluate_candidate(bank, unary_reg)
+    if ok or "unary-regression" not in reasons:
+        raise AssertionError(
+            f"unary-regression expected 'unary-regression', got ok={ok} reasons={reasons}"
+        )
+
+    # 5. write-only-regression
+    wo_reg = synthetic_passing_candidate(bank)
+    wo_reg["profiles"]["e2"]["write_only_p95_ns"] = 3_569_225.0 * 1.08
+    ok, reasons, _ = evaluate_candidate(bank, wo_reg)
+    if ok or "write-only-regression" not in reasons:
+        raise AssertionError(
+            f"write-only-regression expected 'write-only-regression', got ok={ok} reasons={reasons}"
+        )
+
+    print(
+        "check-durable-group-activation: self-test ok "
+        "(pass-both, miss-N1, miss-E2, unary-regression, write-only-regression)"
+    )
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run synthetic pass-both, miss-N1, miss-E2, unary-regression, and write-only-regression tests.",
+    )
+    parser.add_argument("--bank", type=Path, help="Path to baseline bank JSON.")
+    parser.add_argument("--candidate", type=Path, help="Path to candidate measurement JSON.")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
+
+    if args.bank is None or args.candidate is None:
+        parser.error("either --self-test or both --bank and --candidate are required")
+
+    bank = load_bounded_json(args.bank)
+    candidate = load_bounded_json(args.candidate)
+    passed, _reasons, receipt = evaluate_candidate(bank, candidate)
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

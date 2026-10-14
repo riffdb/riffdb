@@ -724,6 +724,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
+        crate::journal::record_commands_per_durable_flush(committed.outcomes().len());
         Ok(committed)
     }
 
@@ -766,6 +767,7 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
         self.core
             .access
             .commit_for_with_delta(RedbTestOperation::CommandBatch, delta)?;
+        crate::journal::record_commands_per_durable_flush(audited.batch().outcomes().len());
         Ok(audited)
     }
 

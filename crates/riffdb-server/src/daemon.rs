@@ -642,6 +642,10 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
         "{}",
         crate::shutdown_census::format_source_reclamation_line()
     );
+    eprintln!(
+        "{}",
+        crate::shutdown_census::format_durable_flush_group_line()
+    );
     result
 }
 
@@ -3613,6 +3617,10 @@ async fn supervise_ready_process(
         eprintln!(
             "{}",
             crate::shutdown_census::format_source_reclamation_line()
+        );
+        eprintln!(
+            "{}",
+            crate::shutdown_census::format_durable_flush_group_line()
         );
         crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);

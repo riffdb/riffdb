@@ -242,6 +242,7 @@ pub struct CommandExecutionPreparation {
     audited_lifecycle: Option<AuditedCommandLifecycle>,
     post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
     causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
+    queued_byte_units_override: Option<u32>,
 }
 
 pub(crate) struct AuditedCommandLifecycle {
@@ -377,6 +378,7 @@ impl CommandExecutionPreparation {
             audited_lifecycle: None,
             post_evaluation_authorizer: None,
             causation: None,
+            queued_byte_units_override: None,
         })
     }
 
@@ -447,6 +449,7 @@ impl CommandExecutionPreparation {
             audited_lifecycle: None,
             post_evaluation_authorizer: None,
             causation: None,
+            queued_byte_units_override: None,
         })
     }
 
@@ -511,6 +514,9 @@ impl CommandExecutionPreparation {
     }
 
     pub(crate) fn queued_byte_units(&self) -> u32 {
+        if let Some(units) = self.queued_byte_units_override {
+            return units;
+        }
         queued_preparation_units(&self.normalized_input)
     }
 
@@ -554,6 +560,14 @@ pub(crate) struct CommandExecutionPreparationParts {
     pub(crate) audited_lifecycle: Option<AuditedCommandLifecycle>,
     pub(crate) post_evaluation_authorizer: Option<Box<dyn PostEvaluationCommandAuthorizer>>,
     pub(crate) causation: Option<riffdb_storage_api::StoredCommandCausationV1>,
+}
+
+#[cfg(test)]
+impl CommandExecutionPreparation {
+    pub(crate) fn with_queued_byte_units_for_test(mut self, units: u32) -> Self {
+        self.queued_byte_units_override = Some(units);
+        self
+    }
 }
 
 #[cfg(test)]

@@ -2904,6 +2904,17 @@ struct CommandCoordinatorActor {
     post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
 }
 
+fn command_message_byte_charge(message: &CoordinatorMessage) -> usize {
+    match message {
+        CoordinatorMessage::Command { preparation, .. } => {
+            usize::try_from(preparation.queued_byte_units())
+                .unwrap_or(usize::MAX)
+                .saturating_mul(QUEUED_COMMAND_BYTE_UNIT)
+        }
+        _ => 0,
+    }
+}
+
 fn command_prefix_can_grow(pending: &VecDeque<CoordinatorMessage>) -> bool {
     if !matches!(
         pending.front().map(command_grouping_class),
@@ -2912,11 +2923,16 @@ fn command_prefix_can_grow(pending: &VecDeque<CoordinatorMessage>) -> bool {
         return false;
     }
     let mut selected = 0_usize;
+    let mut selected_bytes = 0_usize;
     for message in pending {
         match command_grouping_class(message) {
             CommandGroupingClass::Command => {
                 selected += 1;
-                if selected >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                selected_bytes =
+                    selected_bytes.saturating_add(command_message_byte_charge(message));
+                if selected >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+                    || selected_bytes >= riffdb_storage_api::MAX_STAGED_WRITE_BYTES
+                {
                     return false;
                 }
             }
@@ -3010,14 +3026,15 @@ impl CommandCoordinatorActor {
         let mut formation_anchor = self.monotonic_clock.now();
         let mut formation_deadline = None;
         let mut completion_edge_coalescing = false;
+        let mut idle_arrival = false;
         loop {
             if !writer_busy {
                 // Formation edge: drain ready channel messages into pending while
                 // under admission capacity, then honor the oldest command's real
-                // 200-microsecond deadline with a timer-free bounded poll. Intake
-                // while the writer is busy normally consumes that deadline before
-                // the prior commit completes; only a genuinely fresh formation
-                // waits here.
+                // 200-microsecond deadline with a timer-free bounded poll when a
+                // multi-command group is forming. An idle singleton (`pending.len()
+                // == 1` after draining the ready prefix) seals immediately with
+                // zero group-formation wait (ADR-0183 Decision 3).
                 //
                 // Accepted backlog under a *blocked* writer is 2C+1: pending ≤ C
                 // is enforced by the busy-path select arm (`pending.len() <
@@ -3048,11 +3065,15 @@ impl CommandCoordinatorActor {
                 // arrival after an idle park (not only on writer feedback).
                 if pending_was_empty && !pending.is_empty() {
                     formation_anchor = self.monotonic_clock.now();
-                    formation_deadline = Some(
+                    idle_arrival = true;
+                }
+                if idle_arrival {
+                    idle_arrival = false;
+                    formation_deadline = (pending.len() > 1).then(|| {
                         formation_anchor
                             .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
-                            .unwrap_or(formation_anchor),
-                    );
+                            .unwrap_or(formation_anchor)
+                    });
                 }
                 if !shutting_down && let Some(deadline) = formation_deadline {
                     if completion_edge_coalescing {
@@ -3222,11 +3243,8 @@ impl CommandCoordinatorActor {
                     Some(message) => {
                         formation_anchor = self.monotonic_clock.now();
                         completion_edge_coalescing = false;
-                        formation_deadline = Some(
-                            formation_anchor
-                                .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
-                                .unwrap_or(formation_anchor),
-                        );
+                        formation_deadline = None;
+                        idle_arrival = true;
                         pending.push_back(message);
                     }
                     None => shutting_down = true,
@@ -4329,12 +4347,18 @@ fn form_next_unit(
     match head_class {
         CommandGroupingClass::Command => {
             let mut group = Vec::new();
+            let mut group_bytes = 0_usize;
             let mut deferred_obs = VecDeque::new();
             let mut reason = CommitGroupDispatchReason::QueueDrained;
             while let Some(class) = pending.front().map(command_grouping_class) {
                 match class {
                     CommandGroupingClass::Command => {
-                        if group.len() >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+                        let next_bytes = pending.front().map_or(0, command_message_byte_charge);
+                        if group.len() >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+                            || (!group.is_empty()
+                                && group_bytes.saturating_add(next_bytes)
+                                    > riffdb_storage_api::MAX_STAGED_WRITE_BYTES)
+                        {
                             reason = CommitGroupDispatchReason::Full;
                             break;
                         }
@@ -4349,6 +4373,7 @@ fn form_next_unit(
                         else {
                             unreachable!("command class must be Command");
                         };
+                        group_bytes = group_bytes.saturating_add(next_bytes);
                         group.push((*preparation, command_id, ingress, enqueued_at, completion));
                     }
                     CommandGroupingClass::DeferrableObservation => {

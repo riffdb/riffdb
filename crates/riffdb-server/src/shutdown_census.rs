@@ -179,6 +179,26 @@ pub(crate) fn format_source_admission_census(values: [u64; 8]) -> String {
     line
 }
 
+/// Fixed-cardinality commands-per-durable-flush histogram and epoch-seal reason
+/// counters (ADR-0183 Decision 3). Distinguishes an unbatched flush path from a
+/// saturated writer without exposing application identities or payloads.
+pub(crate) fn format_durable_flush_group_line() -> String {
+    let (buckets, queue_drained_seals, ceiling_seals) =
+        riffdb_storage_redb::writer_durable_flush_group_census_v1();
+    format_durable_flush_group_census(buckets, queue_drained_seals, ceiling_seals)
+}
+
+pub(crate) fn format_durable_flush_group_census(
+    buckets: [u64; riffdb_storage_redb::COMMANDS_PER_DURABLE_FLUSH_BUCKETS_V1],
+    epoch_queue_drained_seals: u64,
+    epoch_ceiling_seals: u64,
+) -> String {
+    let encoded_buckets = buckets.map(|value| value.to_string()).join(",");
+    format!(
+        "riffdb-durable-flush-group-v1\tcommands_per_durable_flush={encoded_buckets}\tepoch_queue_drained_seals={epoch_queue_drained_seals}\tepoch_ceiling_seals={epoch_ceiling_seals}"
+    )
+}
+
 /// Last exact native floor plan, with the attempt on which it was measured.
 /// An unavailable or stale observation never stands for an unprotected floor.
 pub(crate) fn format_source_reclamation_sample(
@@ -524,5 +544,33 @@ mod tests {
         assert!(line.contains("\tonline_retention_phases_us=0,0,0,0,0,0,0,0"));
         assert!(line.contains("\tonline_retention_holds=0,0,0,0"));
         assert!(line.contains("\tonline_retention_sequences="));
+    }
+
+    // req: PERF-022
+    #[test]
+    fn shutdown_evidence_reports_commands_per_durable_flush() {
+        let live_line = super::format_durable_flush_group_line();
+        assert!(live_line.starts_with("riffdb-durable-flush-group-v1\t"));
+        assert!(live_line.contains("\tcommands_per_durable_flush="));
+        assert!(live_line.contains("\tepoch_queue_drained_seals="));
+        assert!(live_line.contains("\tepoch_ceiling_seals="));
+
+        let line = super::format_durable_flush_group_census([11, 7, 5, 3, 2, 1, 0, 0, 4, 0], 29, 4);
+        let fields: Vec<_> = line.split('\t').collect();
+        assert_eq!(fields[0], "riffdb-durable-flush-group-v1");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[1], "commands_per_durable_flush=11,7,5,3,2,1,0,0,4,0");
+        assert_eq!(fields[2], "epoch_queue_drained_seals=29");
+        assert_eq!(fields[3], "epoch_ceiling_seals=4");
+
+        let saturated = super::format_durable_flush_group_census(
+            [u64::MAX; riffdb_storage_redb::COMMANDS_PER_DURABLE_FLUSH_BUCKETS_V1],
+            u64::MAX,
+            u64::MAX,
+        );
+        assert!(
+            saturated.len() <= 384,
+            "ten bucket counters and two seal counters have a fixed maximum size"
+        );
     }
 }

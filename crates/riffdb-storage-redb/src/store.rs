@@ -6516,6 +6516,7 @@ fn checked_epoch_totals(
         || next_semantic > riffdb_storage_api::MAX_STAGED_WRITE_BYTES
         || next_reserved > riffdb_storage_api::MAX_STAGED_WRITE_BYTES
     {
+        crate::journal::record_epoch_seal_reason(true);
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }
     Ok((next_count, next_semantic, next_reserved))
@@ -6910,6 +6911,12 @@ impl RedbDurabilityEpoch {
         // first would let a later service-audit frame enter the publication
         // queue ahead of this already-submitted command frame.
         let pipeline_drain_required = self.shared.async_checkpoint_installation_pending()?;
+        let reached_ceiling = self.command_count
+            >= riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS
+            || self.semantic_bytes >= riffdb_storage_api::MAX_STAGED_WRITE_BYTES
+            || self.reserved_encoded_bytes >= riffdb_storage_api::MAX_STAGED_WRITE_BYTES
+            || encoded_bytes >= riffdb_storage_api::MAX_STAGED_WRITE_BYTES;
+        crate::journal::record_epoch_seal_reason(reached_ceiling);
         self.completed = true;
         drop(self.lease.take());
         #[cfg(feature = "test-fixtures")]
