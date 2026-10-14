@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# req: NET-010, NET-012, APE-002
+"""Reviewed harness for WP-783 / ADR-0202 published Helm two-version upgrade evidence."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import pathlib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CHECKER = ROOT / "scripts" / "check-published-helm-upgrade-evidence"
+
+
+def run_self_test() -> int:
+    # 1. Missing required exact-ID provider arguments must fail closed.
+    proc = subprocess.run(
+        [sys.executable, str( pathlib.Path(__file__).resolve() )],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 0:
+        print("run-published-helm-upgrade-evidence: expected missing-arg invocation to fail", file=sys.stderr)
+        return 1
+
+    # 2. Delegate to the strict evidence validator self-test.
+    checker_proc = subprocess.run(
+        [sys.executable, str(CHECKER), "--self-test"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if checker_proc.returncode != 0:
+        sys.stderr.write(checker_proc.stderr)
+        return checker_proc.returncode
+
+    print("run-published-helm-upgrade-evidence: self-test passed")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true", help="Run harness and validator self-tests")
+    parser.add_argument("--repository-id", type=int, help="Exact GitHub repository numeric ID")
+    parser.add_argument("--source-release-id", type=int, help="Exact source release numeric ID")
+    parser.add_argument("--source-asset-id", type=int, help="Exact source chart asset numeric ID")
+    parser.add_argument("--target-release-id", type=int, help="Exact target release numeric ID")
+    parser.add_argument("--target-asset-id", type=int, help="Exact target chart asset numeric ID")
+    parser.add_argument("--external-run-id", type=str, help="External workflow run numeric ID")
+    parser.add_argument(
+        "--receipt",
+        type=pathlib.Path,
+        default=ROOT / "release" / "evidence" / "wp-783" / "published-helm-upgrade-v1.json",
+        help="Path to published-helm-upgrade-v1.json",
+    )
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
+
+    required = [
+        args.repository_id,
+        args.source_release_id,
+        args.source_asset_id,
+        args.target_release_id,
+        args.target_asset_id,
+        args.external_run_id,
+    ]
+    if any(val is None for val in required):
+        print(
+            "run-published-helm-upgrade-evidence: exact repository/release/asset/external-run IDs are required; "
+            "local or draft charts cannot satisfy WP-783",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.source_release_id == args.target_release_id or args.source_asset_id == args.target_asset_id:
+        print(
+            "run-published-helm-upgrade-evidence: source and target release/asset IDs must be distinct",
+            file=sys.stderr,
+        )
+        return 1
+
+    return subprocess.call([sys.executable, str(CHECKER), "--receipt", str(args.receipt)])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

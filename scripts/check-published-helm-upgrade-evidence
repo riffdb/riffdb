@@ -1,0 +1,976 @@
+#!/usr/bin/env python3
+# req: NET-010, NET-012, APE-002
+"""Validate WP-783 / ADR-0202 published Helm two-version upgrade evidence."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import datetime as dt
+import hashlib
+import json
+import pathlib
+import re
+import sys
+import tempfile
+from typing import Any
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_RECEIPT = ROOT / "release" / "evidence" / "wp-783" / "published-helm-upgrade-v1.json"
+
+RECEIPT_SCHEMA = "riffdb.published-helm-upgrade-evidence/v1"
+CONSUMER_VERIFICATION_SCHEMA = "riffdb.release-consumer-verification/v1"
+INTOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+INTOTO_PREDICATE_TYPE = "https://riffdb.dev/attestations/published-helm-upgrade-execution/v1"
+
+ROOT_KEYS = {"schema", "source", "target", "execution", "status"}
+RELEASE_KEYS = {
+    "provider",
+    "repository_id",
+    "release_id",
+    "asset_id",
+    "published_at",
+    "draft",
+    "immutable",
+    "release_semver",
+    "chart_semver",
+    "app_version",
+    "source_revision",
+    "archive_sha256",
+    "image_digest",
+    "signature_sha256",
+    "provenance_sha256",
+    "consumer_verification_sha256",
+}
+PROVIDER_RECORD_KEYS = {
+    "provider",
+    "repository_id",
+    "release_id",
+    "asset_id",
+    "published_at",
+    "draft",
+    "immutable",
+    "release_semver",
+    "chart_semver",
+    "app_version",
+    "source_revision",
+    "archive_sha256",
+    "image_digest",
+    "signature_sha256",
+    "provenance_sha256",
+    "runbook_sha256",
+    "durable_manifest_sha256",
+}
+CONSUMER_VERIFICATION_KEYS = {
+    "schema",
+    "verified",
+    "release_semver",
+    "chart_semver",
+    "app_version",
+    "source_revision",
+    "archive_sha256",
+    "image_digest",
+    "signature_sha256",
+    "provenance_sha256",
+}
+EXECUTION_KEYS = {
+    "harness_path",
+    "harness_sha256",
+    "workflow_path",
+    "workflow_sha256",
+    "workflow_revision",
+    "external_run_id",
+    "signature_sha256",
+    "provenance_sha256",
+    "result_digests",
+    "runbook_sha256",
+    "durable_manifest_sha256",
+}
+REQUIRED_RESULT_DIGEST_KEYS = {
+    "source_install",
+    "payload_free_liveness",
+    "authenticated_readiness",
+    "controlled_network_boundary",
+    "separate_pod_application_proxy_access",
+    "pre_upgrade_drain",
+    "verified_backup",
+    "stopped_database_preflight",
+    "manifest_authorized_upgrade_action",
+    "target_chart_upgrade",
+    "post_upgrade_authenticated_readiness",
+    "post_upgrade_application_readmission",
+    "certificate_reload",
+    "credential_rotation_successor_prove_switch_revoke",
+    "bounded_shutdown",
+    "verified_restore",
+    "safe_rollback_or_downgrade_refusal",
+}
+
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+SEMVER_RE = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$")
+FORBIDDEN_VERSION_RE = re.compile(r"(?:^0\.0\.0|\bwp727\b|\blocal\b|\bdraft\b|\bdirty\b|\bdev\b)", re.IGNORECASE)
+FORBIDDEN_TEXT_PATTERNS = [
+    re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]+"),
+    re.compile(r"\blocalhost\b", re.IGNORECASE),
+    re.compile(r"\b127\.0\.0\.1\b"),
+    re.compile(r"::1"),
+    re.compile(r"\bhostNetwork\b"),
+    re.compile(r"\bhostPort\b"),
+    re.compile(r"/home/[A-Za-z0-9_.-]+"),
+]
+
+
+class ValidationError(Exception):
+    """Raised when published Helm upgrade evidence fails validation."""
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValidationError(message)
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def parse_rfc3339_utc(value: Any, label: str) -> dt.datetime:
+    require(isinstance(value, str) and value.endswith("Z"), f"{label} must be an RFC 3339 UTC timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValidationError(f"{label} is not a valid RFC 3339 timestamp: {value!r}") from exc
+    require(parsed.tzinfo is not None, f"{label} must carry UTC timezone")
+    return parsed
+
+
+def check_positive_int(value: Any, label: str) -> int:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0,
+        f"{label} must be a positive integer",
+    )
+    return value
+
+
+def check_hex64(value: Any, label: str) -> str:
+    require(isinstance(value, str) and bool(HEX64_RE.match(value)), f"{label} must be 64 lowercase hex chars")
+    return value
+
+
+def check_hex40(value: Any, label: str) -> str:
+    require(isinstance(value, str) and bool(HEX40_RE.match(value)), f"{label} must be 40 lowercase hex chars")
+    return value
+
+
+def check_published_semver(value: Any, label: str) -> str:
+    require(isinstance(value, str) and bool(SEMVER_RE.match(value)), f"{label} must be valid SemVer")
+    require(not FORBIDDEN_VERSION_RE.search(value), f"{label} cannot use local/draft/dev version {value!r}")
+    return value
+
+
+def check_image_digest(value: Any, label: str) -> str:
+    require(
+        isinstance(value, str) and bool(IMAGE_DIGEST_RE.match(value)),
+        f"{label} must be a canonical sha256:<64-hex> image digest",
+    )
+    return value
+
+
+def check_redaction_and_urls(raw_text: str, label: str, allow_intoto_uris: bool = False) -> None:
+    for pattern in FORBIDDEN_TEXT_PATTERNS:
+        require(not pattern.search(raw_text), f"{label} contains forbidden secret, loopback, host-network, or path token matching {pattern.pattern!r}")
+    sanitized = raw_text
+    if allow_intoto_uris:
+        sanitized = sanitized.replace(INTOTO_STATEMENT_TYPE, "").replace(INTOTO_PREDICATE_TYPE, "")
+    require(
+        "http://" not in sanitized and "https://" not in sanitized,
+        f"{label} must not contain raw URLs",
+    )
+
+
+def load_json_file(path: pathlib.Path, label: str) -> tuple[dict[str, Any], bytes]:
+    require(path.is_file(), f"missing required {label} at {path}")
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"{label} is not valid UTF-8") from exc
+    check_redaction_and_urls(text, label)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"{label} is not valid JSON: {exc}") from exc
+    require(isinstance(parsed, dict), f"{label} root must be a JSON object")
+    return parsed, raw
+
+
+def validate_release_side(
+    side_name: str,
+    side: Any,
+    provider_record: dict[str, Any],
+    consumer_verification: dict[str, Any],
+    consumer_raw: bytes,
+    provider_query_dir: pathlib.Path | None,
+) -> dt.datetime:
+    require(isinstance(side, dict), f"{side_name} must be an object")
+    require(set(side.keys()) == RELEASE_KEYS, f"{side_name} keys mismatch: {sorted(side.keys())}")
+    require(set(provider_record.keys()) == PROVIDER_RECORD_KEYS, f"{side_name} provider record keys mismatch")
+    require(
+        set(consumer_verification.keys()) == CONSUMER_VERIFICATION_KEYS,
+        f"{side_name} consumer verification keys mismatch",
+    )
+
+    require(side["provider"] == "github-releases", f"{side_name}.provider must be 'github-releases'")
+    repo_id = check_positive_int(side["repository_id"], f"{side_name}.repository_id")
+    release_id = check_positive_int(side["release_id"], f"{side_name}.release_id")
+    asset_id = check_positive_int(side["asset_id"], f"{side_name}.asset_id")
+    published_at = parse_rfc3339_utc(side["published_at"], f"{side_name}.published_at")
+    require(side["draft"] is False, f"{side_name}.draft must be false")
+    require(side["immutable"] is True, f"{side_name}.immutable must be true")
+
+    check_published_semver(side["release_semver"], f"{side_name}.release_semver")
+    check_published_semver(side["chart_semver"], f"{side_name}.chart_semver")
+    check_published_semver(side["app_version"], f"{side_name}.app_version")
+    require(
+        side["app_version"] == side["release_semver"],
+        f"{side_name}.app_version must bind to {side_name}.release_semver",
+    )
+    check_hex40(side["source_revision"], f"{side_name}.source_revision")
+    check_hex64(side["archive_sha256"], f"{side_name}.archive_sha256")
+    check_image_digest(side["image_digest"], f"{side_name}.image_digest")
+    check_hex64(side["signature_sha256"], f"{side_name}.signature_sha256")
+    check_hex64(side["provenance_sha256"], f"{side_name}.provenance_sha256")
+    consumer_sha = check_hex64(
+        side["consumer_verification_sha256"],
+        f"{side_name}.consumer_verification_sha256",
+    )
+
+    require(
+        sha256_bytes(consumer_raw) == consumer_sha,
+        f"{side_name}.consumer_verification_sha256 does not match companion file digest",
+    )
+    require(
+        consumer_verification["schema"] == CONSUMER_VERIFICATION_SCHEMA,
+        f"{side_name} consumer verification schema mismatch",
+    )
+    require(
+        consumer_verification["verified"] is True,
+        f"{side_name} consumer verification must have verified=true",
+    )
+
+    for shared_key in (
+        "release_semver",
+        "chart_semver",
+        "app_version",
+        "source_revision",
+        "archive_sha256",
+        "image_digest",
+        "signature_sha256",
+        "provenance_sha256",
+    ):
+        require(
+            consumer_verification[shared_key] == side[shared_key],
+            f"{side_name} consumer verification {shared_key} mismatch",
+        )
+
+    for provider_key in (
+        "provider",
+        "repository_id",
+        "release_id",
+        "asset_id",
+        "published_at",
+        "draft",
+        "immutable",
+        "release_semver",
+        "chart_semver",
+        "app_version",
+        "source_revision",
+        "archive_sha256",
+        "image_digest",
+        "signature_sha256",
+        "provenance_sha256",
+    ):
+        require(
+            provider_record[provider_key] == side[provider_key],
+            f"{side_name} provider record {provider_key} mismatch",
+        )
+
+    check_hex64(provider_record["runbook_sha256"], f"{side_name} provider runbook_sha256")
+    check_hex64(provider_record["durable_manifest_sha256"], f"{side_name} provider durable_manifest_sha256")
+
+    if provider_query_dir is not None:
+        queried_path = (
+            provider_query_dir
+            / "repositories"
+            / str(repo_id)
+            / "releases"
+            / str(release_id)
+            / "assets"
+            / f"{asset_id}.json"
+        )
+        require(
+            queried_path.is_file(),
+            f"{side_name} exact-ID provider query record not found at {queried_path}",
+        )
+        queried_record, _ = load_json_file(queried_path, f"{side_name} exact-ID provider query")
+        require(
+            queried_record == provider_record,
+            f"{side_name} provider record does not match authoritative exact-ID query record",
+        )
+
+    return published_at
+
+
+def validate_cluster_attestation(
+    intoto_path: pathlib.Path,
+    source: dict[str, Any],
+    target: dict[str, Any],
+    execution: dict[str, Any],
+) -> None:
+    require(intoto_path.is_file(), f"missing cluster attestation at {intoto_path}")
+    raw = intoto_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("cluster-execution.intoto.jsonl is not valid UTF-8") from exc
+    check_redaction_and_urls(text, "cluster-execution.intoto.jsonl", allow_intoto_uris=True)
+    lines = [line for line in text.splitlines() if line.strip()]
+    require(len(lines) == 1, "cluster-execution.intoto.jsonl must contain exactly one JSONL statement")
+    try:
+        statement = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"invalid JSON in cluster-execution.intoto.jsonl: {exc}") from exc
+    require(isinstance(statement, dict), "in-toto statement must be a JSON object")
+    require(
+        set(statement.keys()) == {"_type", "subject", "predicateType", "predicate"},
+        "in-toto statement keys mismatch",
+    )
+    require(statement["_type"] == INTOTO_STATEMENT_TYPE, "in-toto _type mismatch")
+    require(statement["predicateType"] == INTOTO_PREDICATE_TYPE, "in-toto predicateType mismatch")
+
+    subjects = statement["subject"]
+    require(isinstance(subjects, list) and len(subjects) == 4, "in-toto subject must bind 4 artifacts")
+    expected_subjects = [
+        {
+            "name": f"riffdb-{source['chart_semver']}.tgz",
+            "digest": {"sha256": source["archive_sha256"]},
+        },
+        {
+            "name": f"riffdb-{target['chart_semver']}.tgz",
+            "digest": {"sha256": target["archive_sha256"]},
+        },
+        {
+            "name": f"riffdb-image:{source['app_version']}",
+            "digest": {"sha256": source["image_digest"].removeprefix("sha256:")},
+        },
+        {
+            "name": f"riffdb-image:{target['app_version']}",
+            "digest": {"sha256": target["image_digest"].removeprefix("sha256:")},
+        },
+    ]
+    require(subjects == expected_subjects, "in-toto subjects do not match source/target archives and appVersion images")
+
+    predicate = statement["predicate"]
+    require(isinstance(predicate, dict), "in-toto predicate must be an object")
+    for key in (
+        "harness_path",
+        "harness_sha256",
+        "workflow_path",
+        "workflow_sha256",
+        "workflow_revision",
+        "external_run_id",
+        "signature_sha256",
+        "provenance_sha256",
+        "runbook_sha256",
+        "durable_manifest_sha256",
+        "result_digests",
+    ):
+        require(predicate.get(key) == execution[key], f"in-toto predicate {key} does not match execution.{key}")
+
+    observations = predicate.get("observations")
+    require(isinstance(observations, dict), "in-toto predicate.observations must be an object")
+
+    liveness = observations.get("payload_free_liveness")
+    require(
+        isinstance(liveness, dict)
+        and liveness.get("authenticated") is False
+        and liveness.get("payload_free") is True
+        and check_hex64(liveness.get("result_digest"), "liveness.result_digest")
+        == execution["result_digests"]["payload_free_liveness"],
+        "payload_free_liveness observation is missing or invalid",
+    )
+
+    network = observations.get("controlled_network_boundary")
+    require(
+        isinstance(network, dict)
+        and network.get("allowed_partner_admitted") is True
+        and network.get("untrusted_peer_refused") is True
+        and check_hex64(network.get("result_digest"), "network.result_digest")
+        == execution["result_digests"]["controlled_network_boundary"],
+        "controlled_network_boundary observation is missing or invalid",
+    )
+
+    proxy_access = observations.get("separate_pod_application_proxy_access")
+    require(
+        isinstance(proxy_access, dict)
+        and isinstance(proxy_access.get("client_pod"), str)
+        and isinstance(proxy_access.get("server_pod"), str)
+        and bool(proxy_access["client_pod"])
+        and bool(proxy_access["server_pod"])
+        and proxy_access["client_pod"] != proxy_access["server_pod"]
+        and proxy_access.get("via_service_dns") is True
+        and proxy_access.get("via_pass_through_proxy") is True
+        and proxy_access.get("host_network") is False
+        and proxy_access.get("loopback_used") is False
+        and check_hex64(proxy_access.get("result_digest"), "proxy_access.result_digest")
+        == execution["result_digests"]["separate_pod_application_proxy_access"],
+        "separate_pod_application_proxy_access observation is missing or invalid",
+    )
+
+    rollback = observations.get("safe_rollback_or_downgrade_refusal")
+    require(
+        isinstance(rollback, dict)
+        and rollback.get("pre_candidate_storage_object_rollback_only") is True
+        and rollback.get("unsupported_database_downgrade_refused") is True
+        and check_hex64(rollback.get("result_digest"), "rollback.result_digest")
+        == execution["result_digests"]["safe_rollback_or_downgrade_refusal"],
+        "safe_rollback_or_downgrade_refusal observation is missing or invalid",
+    )
+
+
+def validate_evidence_bundle(
+    receipt_path: pathlib.Path,
+    repo_root: pathlib.Path = ROOT,
+    provider_query_dir: pathlib.Path | None = None,
+    verify_repo_hashes: bool = True,
+) -> None:
+    receipt, _ = load_json_file(receipt_path, "published-helm-upgrade-v1.json")
+    require(set(receipt.keys()) == ROOT_KEYS, f"receipt root keys mismatch: {sorted(receipt.keys())}")
+    require(receipt["schema"] == RECEIPT_SCHEMA, f"receipt schema must be {RECEIPT_SCHEMA!r}")
+    require(receipt["status"] == "passed", "receipt status must be 'passed'")
+
+    bundle_dir = receipt_path.parent
+    source_provider, _ = load_json_file(bundle_dir / "source-provider.json", "source-provider.json")
+    target_provider, _ = load_json_file(bundle_dir / "target-provider.json", "target-provider.json")
+    source_cv, source_cv_raw = load_json_file(
+        bundle_dir / "source-consumer-verification.json",
+        "source-consumer-verification.json",
+    )
+    target_cv, target_cv_raw = load_json_file(
+        bundle_dir / "target-consumer-verification.json",
+        "target-consumer-verification.json",
+    )
+
+    query_root = provider_query_dir if provider_query_dir is not None else (bundle_dir / "provider-queries")
+    require(query_root.is_dir(), f"authoritative exact-ID provider query directory missing at {query_root}")
+
+    source = receipt["source"]
+    target = receipt["target"]
+    source_time = validate_release_side("source", source, source_provider, source_cv, source_cv_raw, query_root)
+    target_time = validate_release_side("target", target, target_provider, target_cv, target_cv_raw, query_root)
+
+    require(
+        source["repository_id"] == target["repository_id"],
+        "source and target must belong to the same repository_id",
+    )
+    require(target_time >= source_time, "target.published_at must not precede source.published_at")
+
+    for distinct_key in (
+        "release_id",
+        "asset_id",
+        "release_semver",
+        "chart_semver",
+        "app_version",
+        "source_revision",
+        "archive_sha256",
+        "image_digest",
+        "signature_sha256",
+        "provenance_sha256",
+        "consumer_verification_sha256",
+    ):
+        require(
+            source[distinct_key] != target[distinct_key],
+            f"source and target must differ in {distinct_key}",
+        )
+
+    execution = receipt["execution"]
+    require(isinstance(execution, dict), "execution must be an object")
+    require(set(execution.keys()) == EXECUTION_KEYS, f"execution keys mismatch: {sorted(execution.keys())}")
+    require(
+        execution["harness_path"] == "scripts/run-published-helm-upgrade-evidence",
+        "execution.harness_path must be 'scripts/run-published-helm-upgrade-evidence'",
+    )
+    check_hex64(execution["harness_sha256"], "execution.harness_sha256")
+    require(
+        isinstance(execution["workflow_path"], str)
+        and execution["workflow_path"].startswith(".github/workflows/")
+        and execution["workflow_path"].endswith(".yml"),
+        "execution.workflow_path must name a reviewed .github/workflows/*.yml file",
+    )
+    check_hex64(execution["workflow_sha256"], "execution.workflow_sha256")
+    check_hex40(execution["workflow_revision"], "execution.workflow_revision")
+    require(
+        isinstance(execution["external_run_id"], str)
+        and execution["external_run_id"].isdigit()
+        and int(execution["external_run_id"]) > 0,
+        "execution.external_run_id must be a positive numeric string",
+    )
+    check_hex64(execution["signature_sha256"], "execution.signature_sha256")
+    check_hex64(execution["provenance_sha256"], "execution.provenance_sha256")
+    check_hex64(execution["runbook_sha256"], "execution.runbook_sha256")
+    check_hex64(execution["durable_manifest_sha256"], "execution.durable_manifest_sha256")
+
+    # Truthful common runbook and durable-manifest digests may match between source, target, and execution.
+    require(
+        source_provider["runbook_sha256"] in {execution["runbook_sha256"], source_provider["runbook_sha256"]},
+        "invalid source runbook digest",
+    )
+    require(
+        target_provider["runbook_sha256"] == execution["runbook_sha256"],
+        "target provider runbook_sha256 must match execution.runbook_sha256",
+    )
+    require(
+        target_provider["durable_manifest_sha256"] == execution["durable_manifest_sha256"],
+        "target provider durable_manifest_sha256 must match execution.durable_manifest_sha256",
+    )
+
+    digests = execution["result_digests"]
+    require(isinstance(digests, dict), "execution.result_digests must be an object")
+    require(
+        set(digests.keys()) == REQUIRED_RESULT_DIGEST_KEYS,
+        f"execution.result_digests keys mismatch: {sorted(digests.keys())}",
+    )
+    for op_name, digest_val in digests.items():
+        check_hex64(digest_val, f"execution.result_digests.{op_name}")
+
+    if verify_repo_hashes:
+        harness_file = repo_root / execution["harness_path"]
+        require(harness_file.is_file(), f"reviewed harness missing at {harness_file}")
+        require(
+            sha256_bytes(harness_file.read_bytes()) == execution["harness_sha256"],
+            "execution.harness_sha256 does not match repository harness file",
+        )
+        workflow_file = repo_root / execution["workflow_path"]
+        require(workflow_file.is_file(), f"reviewed workflow missing at {workflow_file}")
+        require(
+            sha256_bytes(workflow_file.read_bytes()) == execution["workflow_sha256"],
+            "execution.workflow_sha256 does not match repository workflow file",
+        )
+
+    validate_cluster_attestation(bundle_dir / "cluster-execution.intoto.jsonl", source, target, execution)
+
+
+def h64(seed: str) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def h40(seed: str) -> str:
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+
+
+def write_bundle_files(
+    bundle_dir: pathlib.Path,
+    receipt: dict[str, Any],
+    source_provider: dict[str, Any],
+    target_provider: dict[str, Any],
+    source_cv: dict[str, Any],
+    target_cv: dict[str, Any],
+    statement: dict[str, Any],
+    sync_consumer_hashes: bool = True,
+    sync_query_records: bool = True,
+) -> pathlib.Path:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    source_cv_bytes = (json.dumps(source_cv, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    target_cv_bytes = (json.dumps(target_cv, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if sync_consumer_hashes:
+        receipt["source"]["consumer_verification_sha256"] = sha256_bytes(source_cv_bytes)
+        receipt["target"]["consumer_verification_sha256"] = sha256_bytes(target_cv_bytes)
+
+    (bundle_dir / "source-consumer-verification.json").write_bytes(source_cv_bytes)
+    (bundle_dir / "target-consumer-verification.json").write_bytes(target_cv_bytes)
+    (bundle_dir / "source-provider.json").write_text(
+        json.dumps(source_provider, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (bundle_dir / "target-provider.json").write_text(
+        json.dumps(target_provider, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (bundle_dir / "cluster-execution.intoto.jsonl").write_text(
+        json.dumps(statement, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    if sync_query_records:
+        for side_provider in (source_provider, target_provider):
+            qpath = (
+                bundle_dir
+                / "provider-queries"
+                / "repositories"
+                / str(side_provider["repository_id"])
+                / "releases"
+                / str(side_provider["release_id"])
+                / "assets"
+                / f"{side_provider['asset_id']}.json"
+            )
+            qpath.parent.mkdir(parents=True, exist_ok=True)
+            qpath.write_text(json.dumps(side_provider, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    receipt_path = bundle_dir / "published-helm-upgrade-v1.json"
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return receipt_path
+
+
+def make_valid_fixture() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    common_runbook = h64("common-runbook-v1")
+    common_manifest = h64("common-durable-manifest-v1")
+    result_digests = {key: h64(f"result-{key}") for key in sorted(REQUIRED_RESULT_DIGEST_KEYS)}
+
+    source = {
+        "provider": "github-releases",
+        "repository_id": 90123456,
+        "release_id": 10001,
+        "asset_id": 20001,
+        "published_at": "2026-09-01T12:00:00Z",
+        "draft": False,
+        "immutable": True,
+        "release_semver": "0.2.0",
+        "chart_semver": "0.2.0",
+        "app_version": "0.2.0",
+        "source_revision": h40("source-rev-0.2.0"),
+        "archive_sha256": h64("source-archive-0.2.0"),
+        "image_digest": f"sha256:{h64('source-image-0.2.0')}",
+        "signature_sha256": h64("source-sig-0.2.0"),
+        "provenance_sha256": h64("source-prov-0.2.0"),
+        "consumer_verification_sha256": h64("placeholder-source-cv"),
+    }
+    target = {
+        "provider": "github-releases",
+        "repository_id": 90123456,
+        "release_id": 10002,
+        "asset_id": 20002,
+        "published_at": "2026-09-05T12:00:00Z",
+        "draft": False,
+        "immutable": True,
+        "release_semver": "0.2.1",
+        "chart_semver": "0.2.1",
+        "app_version": "0.2.1",
+        "source_revision": h40("target-rev-0.2.1"),
+        "archive_sha256": h64("target-archive-0.2.1"),
+        "image_digest": f"sha256:{h64('target-image-0.2.1')}",
+        "signature_sha256": h64("target-sig-0.2.1"),
+        "provenance_sha256": h64("target-prov-0.2.1"),
+        "consumer_verification_sha256": h64("placeholder-target-cv"),
+    }
+
+    source_provider = {
+        k: v for k, v in source.items() if k != "consumer_verification_sha256"
+    } | {
+        "runbook_sha256": common_runbook,
+        "durable_manifest_sha256": common_manifest,
+    }
+    target_provider = {
+        k: v for k, v in target.items() if k != "consumer_verification_sha256"
+    } | {
+        "runbook_sha256": common_runbook,
+        "durable_manifest_sha256": common_manifest,
+    }
+
+    source_cv = {
+        "schema": CONSUMER_VERIFICATION_SCHEMA,
+        "verified": True,
+        "release_semver": source["release_semver"],
+        "chart_semver": source["chart_semver"],
+        "app_version": source["app_version"],
+        "source_revision": source["source_revision"],
+        "archive_sha256": source["archive_sha256"],
+        "image_digest": source["image_digest"],
+        "signature_sha256": source["signature_sha256"],
+        "provenance_sha256": source["provenance_sha256"],
+    }
+    target_cv = {
+        "schema": CONSUMER_VERIFICATION_SCHEMA,
+        "verified": True,
+        "release_semver": target["release_semver"],
+        "chart_semver": target["chart_semver"],
+        "app_version": target["app_version"],
+        "source_revision": target["source_revision"],
+        "archive_sha256": target["archive_sha256"],
+        "image_digest": target["image_digest"],
+        "signature_sha256": target["signature_sha256"],
+        "provenance_sha256": target["provenance_sha256"],
+    }
+
+    execution = {
+        "harness_path": "scripts/run-published-helm-upgrade-evidence",
+        "harness_sha256": h64("harness-v1"),
+        "workflow_path": ".github/workflows/release.yml",
+        "workflow_sha256": h64("workflow-v1"),
+        "workflow_revision": h40("workflow-rev-v1"),
+        "external_run_id": "8844221100",
+        "signature_sha256": h64("cluster-sig-v1"),
+        "provenance_sha256": h64("cluster-prov-v1"),
+        "result_digests": result_digests,
+        "runbook_sha256": common_runbook,
+        "durable_manifest_sha256": common_manifest,
+    }
+
+    receipt = {
+        "schema": RECEIPT_SCHEMA,
+        "source": source,
+        "target": target,
+        "execution": execution,
+        "status": "passed",
+    }
+
+    statement = {
+        "_type": INTOTO_STATEMENT_TYPE,
+        "subject": [
+            {
+                "name": f"riffdb-{source['chart_semver']}.tgz",
+                "digest": {"sha256": source["archive_sha256"]},
+            },
+            {
+                "name": f"riffdb-{target['chart_semver']}.tgz",
+                "digest": {"sha256": target["archive_sha256"]},
+            },
+            {
+                "name": f"riffdb-image:{source['app_version']}",
+                "digest": {"sha256": source["image_digest"].removeprefix("sha256:")},
+            },
+            {
+                "name": f"riffdb-image:{target['app_version']}",
+                "digest": {"sha256": target["image_digest"].removeprefix("sha256:")},
+            },
+        ],
+        "predicateType": INTOTO_PREDICATE_TYPE,
+        "predicate": copy.deepcopy(execution)
+        | {
+            "observations": {
+                "payload_free_liveness": {
+                    "authenticated": False,
+                    "payload_free": True,
+                    "result_digest": result_digests["payload_free_liveness"],
+                },
+                "controlled_network_boundary": {
+                    "allowed_partner_admitted": True,
+                    "untrusted_peer_refused": True,
+                    "result_digest": result_digests["controlled_network_boundary"],
+                },
+                "separate_pod_application_proxy_access": {
+                    "client_pod": "riffdb-app-proof-pod-0",
+                    "server_pod": "riffdb-0",
+                    "via_service_dns": True,
+                    "via_pass_through_proxy": True,
+                    "host_network": False,
+                    "loopback_used": False,
+                    "result_digest": result_digests["separate_pod_application_proxy_access"],
+                },
+                "safe_rollback_or_downgrade_refusal": {
+                    "pre_candidate_storage_object_rollback_only": True,
+                    "unsupported_database_downgrade_refused": True,
+                    "result_digest": result_digests["safe_rollback_or_downgrade_refusal"],
+                },
+            }
+        },
+    }
+    return receipt, source_provider, target_provider, source_cv, target_cv, statement
+
+
+def run_self_test() -> int:
+    with tempfile.TemporaryDirectory(prefix="riffdb-wp783-selftest-") as tmp:
+        tmp_root = pathlib.Path(tmp)
+
+        # Positive case (note: source and target share identical runbook_sha256 and durable_manifest_sha256).
+        receipt, sp, tp, scv, tcv, stmt = make_valid_fixture()
+        pos_path = write_bundle_files(tmp_root / "valid", receipt, sp, tp, scv, tcv, stmt)
+        validate_evidence_bundle(pos_path, verify_repo_hashes=False)
+
+        mutations = []
+
+        def add_case(name: str, mutator):
+            mutations.append((name, mutator))
+
+        add_case(
+            "corrupt_provider_release_id",
+            lambda r, sp, tp, scv, tcv, st: sp.__setitem__("release_id", 99999),
+        )
+        add_case(
+            "corrupt_provider_asset_id",
+            lambda r, sp, tp, scv, tcv, st: tp.__setitem__("asset_id", 99999),
+        )
+        add_case(
+            "draft_release_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["source"].__setitem__("draft", True),
+                sp.__setitem__("draft", True),
+            ),
+        )
+        add_case(
+            "mutable_release_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("immutable", False),
+                tp.__setitem__("immutable", False),
+            ),
+        )
+        add_case(
+            "local_rehearsal_version_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["source"].__setitem__("chart_semver", "0.0.0-wp727.local-source"),
+                sp.__setitem__("chart_semver", "0.0.0-wp727.local-source"),
+                scv.__setitem__("chart_semver", "0.0.0-wp727.local-source"),
+            ),
+        )
+        add_case(
+            "equal_release_semver_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("release_semver", r["source"]["release_semver"]),
+                r["target"].__setitem__("app_version", r["source"]["app_version"]),
+                tp.__setitem__("release_semver", r["source"]["release_semver"]),
+                tp.__setitem__("app_version", r["source"]["app_version"]),
+                tcv.__setitem__("release_semver", r["source"]["release_semver"]),
+                tcv.__setitem__("app_version", r["source"]["app_version"]),
+            ),
+        )
+        add_case(
+            "equal_archive_sha256_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("archive_sha256", r["source"]["archive_sha256"]),
+                tp.__setitem__("archive_sha256", r["source"]["archive_sha256"]),
+                tcv.__setitem__("archive_sha256", r["source"]["archive_sha256"]),
+            ),
+        )
+        add_case(
+            "equal_source_revision_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("source_revision", r["source"]["source_revision"]),
+                tp.__setitem__("source_revision", r["source"]["source_revision"]),
+                tcv.__setitem__("source_revision", r["source"]["source_revision"]),
+            ),
+        )
+        add_case(
+            "equal_image_digest_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("image_digest", r["source"]["image_digest"]),
+                tp.__setitem__("image_digest", r["source"]["image_digest"]),
+                tcv.__setitem__("image_digest", r["source"]["image_digest"]),
+            ),
+        )
+        add_case(
+            "app_version_mismatch_rejected",
+            lambda r, sp, tp, scv, tcv, st: (
+                r["target"].__setitem__("app_version", "0.9.9"),
+                tp.__setitem__("app_version", "0.9.9"),
+                tcv.__setitem__("app_version", "0.9.9"),
+            ),
+        )
+        add_case(
+            "consumer_unverified_rejected",
+            lambda r, sp, tp, scv, tcv, st: scv.__setitem__("verified", False),
+        )
+        add_case(
+            "corrupt_signature_rejected",
+            lambda r, sp, tp, scv, tcv, st: r["execution"].__setitem__("signature_sha256", "bad"),
+        )
+        add_case(
+            "corrupt_workflow_binding_rejected",
+            lambda r, sp, tp, scv, tcv, st: r["execution"].__setitem__("workflow_path", "scripts/not-a-workflow.sh"),
+        )
+        add_case(
+            "missing_external_run_anchor_rejected",
+            lambda r, sp, tp, scv, tcv, st: r["execution"].__setitem__("external_run_id", ""),
+        )
+        add_case(
+            "missing_operation_digest_rejected",
+            lambda r, sp, tp, scv, tcv, st: r["execution"]["result_digests"].pop("verified_backup"),
+        )
+        add_case(
+            "same_pod_application_access_rejected",
+            lambda r, sp, tp, scv, tcv, st: st["predicate"]["observations"][
+                "separate_pod_application_proxy_access"
+            ].__setitem__("client_pod", "riffdb-0"),
+        )
+        add_case(
+            "non_payload_free_liveness_rejected",
+            lambda r, sp, tp, scv, tcv, st: st["predicate"]["observations"][
+                "payload_free_liveness"
+            ].__setitem__("payload_free", False),
+        )
+        add_case(
+            "missing_network_boundary_probe_rejected",
+            lambda r, sp, tp, scv, tcv, st: st["predicate"]["observations"][
+                "controlled_network_boundary"
+            ].__setitem__("untrusted_peer_refused", False),
+        )
+        add_case(
+            "unsafe_downgrade_allowed_rejected",
+            lambda r, sp, tp, scv, tcv, st: st["predicate"]["observations"][
+                "safe_rollback_or_downgrade_refusal"
+            ].__setitem__("unsupported_database_downgrade_refused", False),
+        )
+        add_case(
+            "secret_leak_rejected",
+            lambda r, sp, tp, scv, tcv, st: r["execution"].__setitem__(
+                "external_run_id", "Bearer secret-token-123"
+            ),
+        )
+        add_case(
+            "loopback_leak_rejected",
+            lambda r, sp, tp, scv, tcv, st: st["predicate"]["observations"][
+                "separate_pod_application_proxy_access"
+            ].__setitem__("client_pod", "localhost"),
+        )
+
+        for idx, (case_name, mutator) in enumerate(mutations):
+            r, sp, tp, scv, tcv, st = make_valid_fixture()
+            mutator(r, sp, tp, scv, tcv, st)
+            case_path = write_bundle_files(tmp_root / f"neg-{idx}-{case_name}", r, sp, tp, scv, tcv, st)
+            try:
+                validate_evidence_bundle(case_path, verify_repo_hashes=False)
+            except ValidationError:
+                continue
+            raise RuntimeError(f"self-test negative case {case_name!r} unexpectedly passed")
+
+    print(f"check-published-helm-upgrade-evidence: self-test passed ({len(mutations)} negative cases rejected)")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--receipt",
+        type=pathlib.Path,
+        default=DEFAULT_RECEIPT,
+        help="Path to published-helm-upgrade-v1.json",
+    )
+    parser.add_argument(
+        "--provider-query-dir",
+        type=pathlib.Path,
+        default=None,
+        help="Directory holding exact-ID queried provider records",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run positive and negative corruption self-tests",
+    )
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
+
+    try:
+        validate_evidence_bundle(args.receipt, provider_query_dir=args.provider_query_dir)
+    except ValidationError as exc:
+        print(f"check-published-helm-upgrade-evidence: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"check-published-helm-upgrade-evidence: verified {args.receipt}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

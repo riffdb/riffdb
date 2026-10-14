@@ -50,6 +50,8 @@ jobs:
           ./scripts/check-durable-format-manifest
           ./scripts/check-driver-distribution
           ./scripts/check-driver-conformance-manifests
+          ./scripts/check-published-helm-upgrade-evidence --self-test
+          ./scripts/run-published-helm-upgrade-evidence --self-test
           ./scripts/check-generated
           printf 'release_tag=%s\n' "$release_tag" >>"$GITHUB_OUTPUT"
           printf 'version=%s\n' "${release_tag#v}" >>"$GITHUB_OUTPUT"
