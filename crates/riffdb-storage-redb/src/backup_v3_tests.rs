@@ -189,6 +189,7 @@ fn image(database: &Database) -> Image {
     for namespace in N::ALL {
         if namespace.class()
             != riffdb_storage_api::ReplicationAuthorityClassV1::ReplicatedAuthoritative
+            || namespace.is_retired_locator_table()
             || matches!(namespace, N::HistoryIncarnation | N::RetentionWatermark)
         {
             continue;

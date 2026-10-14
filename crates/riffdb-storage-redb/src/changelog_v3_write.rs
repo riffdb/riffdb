@@ -733,6 +733,9 @@ pub(crate) fn table_inventory(
             .into_iter()
             .find(|namespace| namespace.table() == table.name())
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if namespace.is_retired_locator_table() {
+            continue;
+        }
         tables.insert(namespace.table());
     }
     Ok(tables)
@@ -742,6 +745,9 @@ pub(crate) fn check_predecessor(
     transaction: &WriteTransaction,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), StorageError> {
+    if mutation.namespace().is_retired_locator_table() {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
     let check = |before: Option<&[u8]>| {
         if before.is_some_and(|bytes| bytes.len() > MAX_CHANGELOG_FRAME_BYTES) {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
@@ -774,6 +780,9 @@ pub(crate) fn apply_mutation(
     transaction: &WriteTransaction,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), StorageError> {
+    if mutation.namespace().is_retired_locator_table() {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
     if let Some(key) = mutation.namespace().metadata_key() {
         let mut table = transaction.open_table(META).map_err(table_error)?;
         if let Some(value) = mutation.value() {

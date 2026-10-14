@@ -103,10 +103,7 @@ pub(crate) fn validate_write_receipt(
         receipt.mutations().iter().all(|mutation| {
             matches!(
                 mutation.namespace(),
-                N::Audit
-                    | N::AuditByRequest
-                    | N::AuditByRequestLocators
-                    | N::NextAdministrationSequence
+                N::Audit | N::AuditByRequest | N::NextAdministrationSequence
             )
         }),
     )

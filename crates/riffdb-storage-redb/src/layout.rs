@@ -34,23 +34,6 @@ pub(crate) const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::
 pub(crate) const OUTBOX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outbox");
 pub(crate) const OUTBOX_STATUS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("outbox_status");
-/// ADR-0165 durable command-derived locators.
-///
-/// A command's outcome, provenance and audits live inside its command segment
-/// in `COMMITS`, which is keyed by commit sequence, so an idempotency identity
-/// key, a provenance id and an audit request id had no durable path to their
-/// owning segment. These tables supply it.
-///
-/// They are deliberately NOT rows inside `IDEMPOTENCY`, `PROVENANCE` and
-/// `AUDIT_BY_REQUEST`: ADR-0085 derives its O(1) validated-prefix checkpoint
-/// counts from those tables' raw row counts, so a locator row there becomes a
-/// third counted class and silently corrupts the checkpoint.
-pub(crate) const IDEMPOTENCY_LOCATORS: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("idempotency_locators");
-pub(crate) const PROVENANCE_LOCATORS: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("provenance_locators");
-pub(crate) const AUDIT_BY_REQUEST_LOCATORS: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("audit_by_request_locators");
 pub(crate) const PROJECTION_STATE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("projection_state");
 pub(crate) const PROJECTION_FRONTIER: TableDefinition<&[u8], &[u8]> =
@@ -102,7 +85,7 @@ pub(crate) const VECTOR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
 pub(crate) const COLUMNAR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("columnar_projection_controls");
 
-pub(crate) const TABLE_NAMES: [&str; 44] = [
+pub(crate) const TABLE_NAMES: [&str; 41] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -144,9 +127,6 @@ pub(crate) const TABLE_NAMES: [&str; 44] = [
     "vector_evidence_index",
     "vector_projection_controls",
     "columnar_projection_controls",
-    "idempotency_locators",
-    "provenance_locators",
-    "audit_by_request_locators",
 ];
 
 pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 39] = [
@@ -275,9 +255,6 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(VECTOR_EVIDENCE_INDEX)?);
     drop(tx.open_table(VECTOR_PROJECTION_CONTROLS)?);
     drop(tx.open_table(COLUMNAR_PROJECTION_CONTROLS)?);
-    drop(tx.open_table(IDEMPOTENCY_LOCATORS)?);
-    drop(tx.open_table(PROVENANCE_LOCATORS)?);
-    drop(tx.open_table(AUDIT_BY_REQUEST_LOCATORS)?);
     Ok(())
 }
 
@@ -295,7 +272,9 @@ mod tests {
         use riffdb_storage_api::AuthoritativeNamespaceV1;
         let namespaces = AuthoritativeNamespaceV1::ALL
             .into_iter()
-            .filter(|namespace| !namespace.requires_v3_activation())
+            .filter(|namespace| {
+                !namespace.requires_v3_activation() && !namespace.is_retired_locator_table()
+            })
             .collect::<Vec<_>>();
         let tables = namespaces
             .iter()
@@ -354,13 +333,10 @@ mod tests {
             VECTOR_EVIDENCE_INDEX.name(),
             VECTOR_PROJECTION_CONTROLS.name(),
             COLUMNAR_PROJECTION_CONTROLS.name(),
-            IDEMPOTENCY_LOCATORS.name(),
-            PROVENANCE_LOCATORS.name(),
-            AUDIT_BY_REQUEST_LOCATORS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 44);
+        assert_eq!(TABLE_NAMES.len(), 41);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

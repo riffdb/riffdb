@@ -184,7 +184,11 @@ impl RedbBootstrapMaterializer {
         let read = database.begin_read().map_err(unavailable)?;
         let mut tables = std::collections::BTreeSet::new();
         for table in read.list_tables().map_err(invalid)?.take(N::ALL.len() + 2) {
-            if table.name() != PROGRESS.name() && !N::ALL.iter().any(|n| n.table() == table.name())
+            if table.name() != PROGRESS.name()
+                && !N::ALL
+                    .iter()
+                    .filter(|n| !n.is_retired_locator_table())
+                    .any(|n| n.table() == table.name())
             {
                 return Err(corrupt());
             }

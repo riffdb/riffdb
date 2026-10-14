@@ -26728,6 +26728,36 @@ work_packages:
     scale: Removes three durable rows per command and 180 bytes of journal frame per
       command; adds a bounded startup rebuild when the index snapshot cannot be proven.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: docs/performance/wp-796-retire-locators.md
+    decision: ADR-0165's three durable command-derived locator tables (idempotency_locators,
+      outbox_command_locators, and provenance_locators, namespaces 39, 40, and 41) are retired
+      from the write path, checkpoint application, and fresh table creation per ADR-0244.
+      Command-derived record resolution uses the ADR-0102 derived index, which bounded clean
+      startup loads from a verified snapshot or rebuilds within a bounded scan of at most
+      65,536 retained COMMITS rows before readiness, failing closed with CorruptedData if the
+      retained commit table exceeds the bounded ceiling without a valid snapshot. Every locator
+      lookup through the ready index fails closed with CorruptedData on a missing or mismatched
+      target command segment or an unwarmed bounded-startup index, proven by
+      a_missing_or_mismatched_locator_is_corruption_not_absence (OBL-0244-1). Pre-ADR-0244
+      durable fixtures reopen cleanly by classifying namespaces 39..=41 as retired locator
+      tables during inventory and recovery walks. In a counterbalanced 12-repetition ABBA
+      write-path comparison on the 8 vCPU, AMD EPYC 7B12 host against 3b851020a, journal frame
+      bytes fell by 432.5 B/command (-9.08%, -8.31 MB across the 19,220-command seed) and
+      434.4 B/command (-7.82%) during 32-client write-only load; seed throughput rose 1.0620x
+      (geomean 4,224.6 vs 3,977.9 ops/s, repetition spread 1.0466 vs 1.1306); 32-client
+      write-only throughput rose 1.0411x (geomean 2,231.8 vs 2,143.7 ops/s, spread 1.0629 vs
+      1.1367); and worst-case write latency fell 36.65% (geomean 103.71 ms vs 163.72 ms,
+      range 98.09-116.34 ms vs 151.83-175.41 ms).
+    decisions_taken:
+    - Retire namespaces 39, 40, and 41 from durable staging, journal frames, checkpoint
+      application, and table creation while keeping AuthoritativeNamespaceV1::is_retired_locator_table
+      so pre-ADR-0244 durable fixtures reopen without unrecognized-table errors.
+    - Enforce bounded startup completeness before readiness via MAX_STARTUP_COMMAND_DERIVED_REBUILD_SCAN_ROWS
+      (65,536) and fail closed with CorruptedData when a bounded-startup handle's derived index
+      is unwarmed or a resolved segment is missing or mismatched.
 - id: WP-795
   name: Append-only export page commitments
   tier: guarantee

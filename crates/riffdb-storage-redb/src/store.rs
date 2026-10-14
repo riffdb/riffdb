@@ -2808,54 +2808,6 @@ impl RedbStore {
         Ok(())
     }
 
-    /// Installs the ADR-0165 command-derived locator tables. Idempotent.
-    ///
-    /// These tables add no durable message type — `StoredCommandLocatorV1` is
-    /// already in the readable record registry — so the record-registry digest
-    /// is unchanged and they ride no registry transition. That is also why they
-    /// cannot be installed by the migration chain, which only advances when a
-    /// digest changes: they are installed here instead.
-    ///
-    /// Takes a write transaction only when a table is genuinely absent, so a
-    /// database that already has them pays one read transaction per open rather
-    /// than a commit.
-    fn install_command_locator_tables(&self) -> Result<(), StorageError> {
-        let transaction = self
-            .shared
-            .database
-            .begin_read()
-            .map_err(transaction_error)?;
-        // A never-initialized database gets every table from the initialization
-        // transaction. Creating them here first would make an empty layout look
-        // initialized while META is still absent.
-        if classify_read_layout(&transaction)? == LayoutState::Empty {
-            return Ok(());
-        }
-        let present = transaction
-            .open_table(crate::layout::IDEMPOTENCY_LOCATORS)
-            .is_ok()
-            && transaction
-                .open_table(crate::layout::PROVENANCE_LOCATORS)
-                .is_ok()
-            && transaction
-                .open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
-                .is_ok();
-        drop(transaction);
-        if present {
-            return Ok(());
-        }
-        let mut transaction = self
-            .shared
-            .database
-            .begin_write()
-            .map_err(transaction_error)?;
-        transaction
-            .set_durability(Durability::Immediate)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        create_all_tables(&transaction).map_err(table_error)?;
-        self.shared.commit_durable(transaction)
-    }
-
     fn ensure_current_storage_format(&self) -> Result<(), StorageError> {
         let transaction = self
             .shared
@@ -5874,6 +5826,15 @@ impl RedbOperationalPorts {
                 return Ok(None);
             }
         }
+        if !matches!(
+            source,
+            riffdb_storage_api::ChangelogAttributionV3::ColumnarProjectionControl
+                | riffdb_storage_api::ChangelogAttributionV3::OutboxTransition
+                | riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+        ) {
+            self.shared
+                .ensure_command_derived_indexes_ready_under_mutation_lease()?;
+        }
         if checkpoint_first {
             self.shared
                 .checkpoint_published_journal_suffix_for_barrier()?;
@@ -5955,6 +5916,8 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        self.shared
+            .ensure_command_derived_indexes_ready_under_mutation_lease()?;
         self.shared.poll_async_checkpoint_locked(false)?;
         self.shared.maybe_start_async_checkpoint()?;
         let mut frontier = self
@@ -6016,6 +5979,8 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
+        self.shared
+            .ensure_command_derived_indexes_ready_under_mutation_lease()?;
         self.shared.poll_async_checkpoint_locked(false)?;
         self.shared.maybe_start_async_checkpoint()?;
         let mut frontier = self
@@ -6454,33 +6419,6 @@ impl RedbWriteAccess {
         }
         self.record_observed_journal_mutation(mutation, prior.as_deref())?;
         Ok(prior)
-    }
-
-    /// Inserts a durable row whose key is new by construction, without the
-    /// `read_command_value` pre-read `put_command_value` performs.
-    ///
-    /// Used for the ADR-0165 locator rows. Each key is proven new before this is
-    /// called: an idempotency identity key by the admission reservation, a
-    /// provenance id by its uniqueness reservation, and an audit-by-request key
-    /// by a freshly allocated administration sequence that cannot collide.
-    /// Paying a read per row to re-establish that measured 12-16% of seed
-    /// throughput on its own.
-    ///
-    /// The mutation is recorded on the journal, so the row joins the same frame
-    /// and the same fsync as the command segment it describes.
-    pub(crate) fn put_command_value_assuming_absent(
-        &self,
-        table: crate::journal::JournalTable,
-        key: Vec<u8>,
-        value: Vec<u8>,
-    ) -> Result<(), StorageError> {
-        let mutation = crate::journal::JournalMutation::put(table, key, value)
-            .map_err(journal_storage_error)?;
-        self.record_command_mutation(&mutation)?;
-        if let Some(transaction) = self.transaction.as_ref() {
-            transaction.apply_journal_mutation(&mutation)?;
-        }
-        self.record_observed_journal_mutation(mutation, None)
     }
 
     pub(crate) fn delete_command_value(
@@ -8840,24 +8778,6 @@ impl RedbWriteAccess {
                 3,
             )?;
             let mut found = Vec::new();
-            // ADR-0165 locator rows carry the same (request_id, sequence) key,
-            // so a command's audit sequences are recoverable from the key alone
-            // without resolving its segment. Merged first so the physical rows
-            // below still validate their own record.
-            let locator_rows = self.read_command_range(
-                crate::journal::JournalTable::AuditByRequestLocators,
-                &prefix,
-                &upper,
-                3,
-            )?;
-            for (key, _) in locator_rows {
-                let (decoded_request, sequence) = decode_audit_by_request_key(&key)
-                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-                if decoded_request != request_id {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-                found.push(sequence);
-            }
             for (key, value) in rows {
                 let (decoded_request, sequence) = decode_audit_by_request_key(&key)
                     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
@@ -8892,8 +8812,9 @@ impl RedbWriteAccess {
                     .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))??;
                 merge_audit_sequences(&mut sequences, derived)?;
             }
-            TransientIndexState::Dormant => {}
-            TransientIndexState::Invalid => {
+            TransientIndexState::Dormant
+                if !self.shared.bounded_clean_startup.load(Ordering::Acquire) => {}
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
                 return Err(storage_error(StorageErrorKind::Unavailable));
             }
         }
@@ -8951,6 +8872,95 @@ impl SharedRedb {
     fn note_audit_sequence_begin_read(&self) {
         if let Some(controller) = &self.test_controller {
             controller.observe_audit_sequence_begin_read();
+        }
+    }
+
+    pub(crate) fn ensure_command_derived_indexes_ready(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        {
+            let state = self
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(_) => return Ok(()),
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+                TransientIndexState::Dormant
+                    if !self.bounded_clean_startup.load(Ordering::Acquire) =>
+                {
+                    return Ok(());
+                }
+                TransientIndexState::Dormant => {}
+            }
+        }
+        let _lease = self.mutation_gate.acquire()?;
+        self.ensure_command_derived_indexes_ready_under_mutation_lease()
+    }
+
+    pub(crate) fn ensure_command_derived_indexes_ready_under_mutation_lease(
+        self: &Arc<Self>,
+    ) -> Result<(), StorageError> {
+        {
+            let state = self
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(_) => return Ok(()),
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+                TransientIndexState::Dormant
+                    if !self.bounded_clean_startup.load(Ordering::Acquire) =>
+                {
+                    return Ok(());
+                }
+                TransientIndexState::Dormant => {}
+            }
+        }
+        self.checkpoint_published_journal_suffix_for_barrier()?;
+        let transaction = self.database.begin_read().map_err(transaction_error)?;
+        let indexes = if TransientIndexes::is_trivially_empty(&transaction)? {
+            drop(transaction);
+            TransientIndexes::default()
+        } else {
+            let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
+            drop(transaction);
+            self.note_transient_index_rebuild(commit_rows);
+            indexes
+        };
+        let mut state = self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(*state, TransientIndexState::Dormant) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *state = TransientIndexState::Ready(indexes);
+        Ok(())
+    }
+
+    pub(crate) fn command_derived_locator(
+        self: &Arc<Self>,
+        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
+        exact_key: &[u8],
+    ) -> Result<Option<crate::transient::CommandDerivedLocator>, StorageError> {
+        self.ensure_command_derived_indexes_ready()?;
+        let state = self
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*state {
+            TransientIndexState::Ready(indexes) => indexes.command_derived_locator(kind, exact_key),
+            TransientIndexState::Dormant if !self.bounded_clean_startup.load(Ordering::Acquire) => {
+                Ok(None)
+            }
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                Err(storage_error(StorageErrorKind::Unavailable))
+            }
         }
     }
 
@@ -9228,6 +9238,14 @@ fn classify_table_names(
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
 
+    let mut tables = tables;
+    for retired in [
+        "idempotency_locators",
+        "provenance_locators",
+        "audit_by_request_locators",
+    ] {
+        tables.remove(retired);
+    }
     let expected = TABLE_NAMES
         .iter()
         .map(|name| (*name).to_owned())
@@ -9246,9 +9264,6 @@ fn classify_table_names(
         "vector_projection_controls",
         "columnar_projection_controls",
         "application_export_page_commitments",
-        "idempotency_locators",
-        "provenance_locators",
-        "audit_by_request_locators",
     ] {
         with_newest_additive.insert(name.to_owned());
     }

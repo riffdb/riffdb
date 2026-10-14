@@ -93,6 +93,18 @@ macro_rules! namespaces {
                     _ => None,
                 }
             }
+
+            /// Returns true for the ADR-0165 locator tables retired as physical redb
+            /// tables by ADR-0244 while kept in the frozen catalog declaration.
+            #[must_use]
+            pub const fn is_retired_locator_table(self) -> bool {
+                matches!(
+                    self,
+                    Self::IdempotencyLocators
+                        | Self::ProvenanceLocators
+                        | Self::AuditByRequestLocators
+                )
+            }
         }
     };
 }

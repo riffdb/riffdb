@@ -101,6 +101,10 @@ impl<'a> PreparedViews<'a> {
         self.mutations.push(mutation);
         Ok(before)
     }
+
+    fn remove(&mut self, table: JournalTable, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+        self.stage(table, key, None)
+    }
 }
 
 impl RetainedViewAccess for PreparedViews<'_> {
@@ -114,9 +118,6 @@ impl RetainedViewAccess for PreparedViews<'_> {
         value: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
         self.stage(table, key, Some(value))
-    }
-    fn remove(&mut self, table: JournalTable, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-        self.stage(table, key, None)
     }
 }
 

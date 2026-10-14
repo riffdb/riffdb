@@ -59,7 +59,7 @@ pub(super) fn tamper(path: &Path, fault: &str) {
         "missing-locator" => {
             let mut table = write
                 .open_table(TableDefinition::<&[u8], &[u8]>::new(
-                    N::IdempotencyLocators.table(),
+                    N::EntityChainHeads.table(),
                 ))
                 .unwrap();
             let key = table.first().unwrap().unwrap().0.value().to_vec();
@@ -82,7 +82,10 @@ pub(super) fn rows(path: &Path) -> BTreeMap<(String, Vec<u8>), Vec<u8>> {
             value.value().to_vec(),
         );
     }
-    for namespace in N::ALL.into_iter().filter(|n| n.metadata_key().is_none()) {
+    for namespace in N::ALL
+        .into_iter()
+        .filter(|n| n.metadata_key().is_none() && !n.is_retired_locator_table())
+    {
         let table = read
             .open_table(TableDefinition::<&[u8], &[u8]>::new(namespace.table()))
             .unwrap();

@@ -639,28 +639,6 @@ fn materialize_retained_command_views(
     Ok(())
 }
 
-/// Removes one pruned command's locator row. A row naming another command is
-/// corruption and refuses the whole sub-range.
-fn remove_pruned_locator(
-    views: &mut impl RetainedViewAccess,
-    table: crate::journal::JournalTable,
-    key: &[u8],
-    sequence: CommitSequence,
-) -> Result<(), StorageError> {
-    let matches = match views.get(table, key)? {
-        None => return Ok(()),
-        Some(value) => matches!(
-            riffdb_storage_api::decode_command_locator_v1(value.as_slice()),
-            Ok(locator) if locator.value().commit_sequence() == sequence
-        ),
-    };
-    if !matches {
-        return Err(storage_error(StorageErrorKind::CorruptData));
-    }
-    let _ = views.remove(table, key)?;
-    Ok(())
-}
-
 fn materialize_retained_capsule_views(
     views: &mut impl RetainedViewAccess,
     capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
@@ -697,12 +675,6 @@ fn materialize_retained_capsule_views(
         idempotency_key,
         encoded_outcome.as_bytes(),
     )?;
-    remove_pruned_locator(
-        views,
-        crate::journal::JournalTable::IdempotencyLocators,
-        idempotency_key,
-        sequence,
-    )?;
 
     let provenance_key = encode_provenance_key(capsule.provenance().provenance_id());
     if let Some(stored_provenance) = views.get(
@@ -730,12 +702,6 @@ fn materialize_retained_capsule_views(
         crate::journal::JournalTable::Provenance,
         provenance_key.as_slice(),
         encoded_provenance.as_bytes(),
-    )?;
-    remove_pruned_locator(
-        views,
-        crate::journal::JournalTable::ProvenanceLocators,
-        provenance_key.as_slice(),
-        sequence,
     )?;
 
     for (member, record) in [
@@ -785,12 +751,6 @@ fn materialize_retained_capsule_views(
             record.administration_sequence(),
         );
         let encoded_request = codec::encode_service_audit_request_index_v1(request_row)?;
-        remove_pruned_locator(
-            views,
-            crate::journal::JournalTable::AuditByRequestLocators,
-            request_key.as_slice(),
-            sequence,
-        )?;
         if let Some(prior) = views.put(
             crate::journal::JournalTable::AuditByRequest,
             request_key.as_slice(),

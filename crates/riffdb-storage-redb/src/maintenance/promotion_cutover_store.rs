@@ -111,16 +111,17 @@ impl RedbMaintenanceStorage {
         edge("follower-checked");
         let tables = table_inventory(&transaction)?;
         // A request ID must never acquire another lifecycle, including command
-        // audits represented by checked locators instead of physical audit rows.
+        // audits represented by command segments instead of physical audit rows.
         let prefix = crate::keys::encode_audit_by_request_prefix(record.attempt().request_id());
-        for table in [
-            crate::layout::AUDIT_BY_REQUEST,
-            crate::layout::AUDIT_BY_REQUEST_LOCATORS,
-        ] {
-            if !tables.contains(redb::TableHandle::name(&table)) {
-                return Err(corrupt());
-            }
-            let table = transaction.open_table(table).map_err(table_error)?;
+        if !tables.contains(redb::TableHandle::name(&crate::layout::AUDIT_BY_REQUEST))
+            || !tables.contains(redb::TableHandle::name(&crate::layout::COMMITS))
+        {
+            return Err(corrupt());
+        }
+        {
+            let table = transaction
+                .open_table(crate::layout::AUDIT_BY_REQUEST)
+                .map_err(table_error)?;
             if let Some(row) = table
                 .range(prefix.as_slice()..)
                 .map_err(precommit_storage_error)?
@@ -128,6 +129,30 @@ impl RedbMaintenanceStorage {
             {
                 let (key, _) = row.map_err(precommit_storage_error)?;
                 if key.value().starts_with(&prefix) {
+                    return Err(corrupt());
+                }
+            }
+        }
+        {
+            let commits = transaction
+                .open_table(crate::layout::COMMITS)
+                .map_err(table_error)?;
+            for entry in commits.iter().map_err(precommit_storage_error)? {
+                let (_, value) = entry.map_err(precommit_storage_error)?;
+                let segment = match crate::history_stub::decode_segment_value(value.value()) {
+                    Ok(segment) => segment,
+                    Err(error)
+                        if error.kind()
+                            == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+                    {
+                        continue;
+                    }
+                    Err(_) => return Err(corrupt()),
+                };
+                if segment.value().manifest().entries().iter().any(|row| {
+                    row.kind() == riffdb_storage_api::CommandDerivedIndexKindV1::AuditRequest
+                        && row.exact_key().starts_with(&prefix)
+                }) {
                     return Err(corrupt());
                 }
             }

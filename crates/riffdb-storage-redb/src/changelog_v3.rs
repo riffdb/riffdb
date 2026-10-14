@@ -50,7 +50,6 @@ const fn is_audit_fenced_namespace(namespace: AuthoritativeNamespaceV1) -> bool 
         namespace,
         AuthoritativeNamespaceV1::Audit
             | AuthoritativeNamespaceV1::AuditByRequest
-            | AuthoritativeNamespaceV1::AuditByRequestLocators
             | AuthoritativeNamespaceV1::NextAdministrationSequence
     )
 }

@@ -602,7 +602,6 @@ impl RedbStore {
         }
         if open_mode.is_source() {
             store.ensure_current_storage_format()?;
-            store.install_command_locator_tables()?;
             store.recover_durability_journal()?;
             store.upgrade_registry_completion_pending()?;
         }

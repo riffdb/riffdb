@@ -1,11 +1,9 @@
 //! Derive a private command cut, never a synthetic source receipt.
 use super::*;
-use crate::keys::*;
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator,
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3 as M, AuthoritativeTransactionV3,
-    CommandPrefixEvidenceV1, CommandSegmentDigestV1, StoredCommandLocatorV1,
-    StoredCommandSegmentV1, proto_codec::*,
+    CommandPrefixEvidenceV1, CommandSegmentDigestV1, StoredCommandSegmentV1, proto_codec::*,
 };
 
 pub(super) fn derive(
@@ -36,45 +34,13 @@ pub(super) fn derive(
         for command in segment.commands() {
             let base = command.base();
             let prefix = command.prefix_evidence().ok_or_else(corrupt)?;
-            let locator =
-                encode_command_locator_v1(StoredCommandLocatorV1::new(base.commit_sequence()))
-                    .map_err(|_| corrupt())?;
-            let mut locators = vec![
-                put(
-                    N::IdempotencyLocators,
-                    encode_idempotency_key(
-                        &base
-                            .outcome()
-                            .identity()
-                            .storage_key()
-                            .map_err(|_| corrupt())?,
-                    ),
-                    locator.as_bytes(),
-                )?,
-                put(
-                    N::ProvenanceLocators,
-                    &encode_provenance_key(base.provenance().provenance_id()),
-                    locator.as_bytes(),
-                )?,
-            ];
-            for audit in [base.started_audit(), base.terminal_audit()] {
-                locators.push(put(
-                    N::AuditByRequestLocators,
-                    &encode_audit_by_request_key(
-                        audit.request_id(),
-                        audit.administration_sequence(),
-                    ),
-                    locator.as_bytes(),
-                )?);
-            }
             if base.commit_sequence() <= stop {
-                for mutation in prefix.mutations().iter().chain(&locators) {
+                for mutation in prefix.mutations() {
                     selected.record(mutation.clone()).map_err(|_| corrupt())?;
                 }
                 kept.push(command.clone());
                 frontier = Some(prefix.covered());
             }
-            expected_graph.extend(locators);
         }
         if !kept.is_empty() {
             let value = if kept.len() == segment.commands().len() {
