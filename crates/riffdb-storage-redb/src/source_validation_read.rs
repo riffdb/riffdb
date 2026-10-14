@@ -49,16 +49,12 @@ impl<T: ReadableTable<&'static [u8], &'static [u8]>> ReceiptRead for T {
                 },
             );
         }
-        AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-            row.value(),
-        )?)
-        .map(|receipt| {
+        crate::history_stub::decode_history_value(row.value()).map(|receipt| {
             Some(SourceReceipt {
                 receipt,
                 _work: None,
             })
         })
-        .map_err(|_| storage_error(StorageErrorKind::CorruptData))
     }
 }
 

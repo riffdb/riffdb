@@ -898,3 +898,87 @@ fn retained_history_native_receipt_preserves_full_checks_without_serialization()
     file.sync_all().unwrap();
     assert!(crate::history_stub::decode_history_value(&stub).is_err());
 }
+
+// req: STO-030, STO-031, REC-001, REC-005, REC-008, END-007, END-008
+#[test]
+fn native_source_point_receipts_keep_full_frame_checks_without_round_trip_serialization() {
+    let (scope, store, anchor) = fixture();
+    let (frame, expected, _) = source(anchor, None, Some(&vec![b'q'; 262144]));
+    let frame = frame.with_changelog(Some(crate::journal::FrameChangelogBinding::new(
+        &expected.binding(),
+        anchor.lineage().catalog_digest(),
+    )));
+    let encoded = frame.encode().unwrap();
+    let placement = crate::journal::frame_placement_after(0, &encoded).unwrap();
+    let database_path = scope.join("retained-history-source.redb");
+    let path = crate::journal::journal_path(&database_path);
+    let header =
+        crate::journal::JournalFileHeader::new(anchor.lineage().database_id(), None, [0; 32]);
+    let lane = crate::journal::JournalLane::open(&path, &header).unwrap();
+    let generation = lane.generation();
+    lane.submit(encoded).unwrap().wait().unwrap();
+    drop(lane);
+    let _resolver = crate::history_stub::HistoryResolver::register(
+        anchor.lineage().database_id(),
+        &database_path,
+        Arc::new(crate::media::RealJournalMedia),
+    );
+    let locator = crate::history_stub::StubLocator {
+        database_id: anchor.lineage().database_id(),
+        generation,
+        placement,
+    };
+    let stub = locator.receipt_stub().unwrap();
+
+    use crate::source_validation_read::ReceiptRead;
+    let sequence = expected.binding().sequence;
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(HISTORY)
+        .unwrap()
+        .insert(sequence.get().to_be_bytes().as_slice(), stub.as_slice())
+        .unwrap();
+    write.commit().unwrap();
+    let root = Arc::new(CheckpointRoot::new(
+        store.shared.database.begin_read().unwrap(),
+        7,
+    ));
+    let point = crate::source_validation_pin::ValidationSource::Checkpoint(Arc::clone(&root));
+    // These least-authority point readers grant no root or mutation proof. The
+    // suffix fixture selects the checkpoint fallback over the same exact row.
+    let suffix = ChangelogSuffix {
+        checkpoint: Some(anchor),
+        history: Some(anchor.advance(&expected).unwrap()),
+        head: None,
+        frames: 0,
+        bytes: 0,
+    };
+    crate::history_stub::RECEIPT_SERIALIZATIONS.with(|count| count.set(0));
+    assert_eq!(&*point.receipt(sequence, None).unwrap().unwrap(), &expected);
+    assert_eq!(
+        suffix.read_receipt(&root, sequence).unwrap().unwrap(),
+        expected
+    );
+    crate::history_stub::RECEIPT_SERIALIZATIONS.with(|count| {
+        assert_eq!(count.get(), 0, "source point reads must not serialize a fully checked native receipt merely to decode it again");
+    });
+    // A later read must check the actual full frame again, rather than treating
+    // an earlier successful resolution or the stub's claimed hash as evidence.
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    file.seek(SeekFrom::Start(placement.position as u64 + 256))
+        .unwrap();
+    let mut byte = [0_u8];
+    file.read_exact(&mut byte).unwrap();
+    byte[0] ^= 1;
+    file.seek(SeekFrom::Start(placement.position as u64 + 256))
+        .unwrap();
+    file.write_all(&byte).unwrap();
+    file.sync_all().unwrap();
+    assert!(point.receipt(sequence, None).is_err());
+    assert!(suffix.read_receipt(&root, sequence).is_err());
+}

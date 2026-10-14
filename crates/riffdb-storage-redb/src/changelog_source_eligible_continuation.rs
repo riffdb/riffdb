@@ -185,8 +185,8 @@ impl ContinuedProbe {
             let sequence = riffdb_storage_api::ChangelogTransactionSequence::new(self.next)
                 .ok_or_else(corrupt)?;
             let receipt = root.receipt(sequence, None)?.ok_or_else(corrupt)?;
-            let encoded = receipt.encode().map_err(value_error)?;
-            let bytes = page_bytes.checked_add(encoded.len()).ok_or_else(limit)?;
+            let encoded_len = receipt.encoded_len().map_err(value_error)?;
+            let bytes = page_bytes.checked_add(encoded_len).ok_or_else(limit)?;
             if bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES {
                 break;
             }
@@ -197,16 +197,27 @@ impl ContinuedProbe {
                 self.history.minimum_resume(),
             )
             .map_err(value_error)?;
-            if self.next == self.history.minimum_resume().sequence().get() {
-                covered
-                    .validate_terminal_receipt(&receipt)
-                    .map_err(value_error)?;
-            } else {
-                self.covered = covered.advance(&receipt).map_err(value_error)?.tail();
+            // The canonical bytes counted by this observation are also the
+            // bytes whose checksum advances its exact source chain. Prepare
+            // that successor once; adopt it only inside the existing page bound.
+            let (next_covered, encoded) =
+                if self.next == self.history.minimum_resume().sequence().get() {
+                    covered
+                        .validate_terminal_receipt(&receipt)
+                        .map_err(value_error)?;
+                    (self.covered, receipt.encode().map_err(value_error)?)
+                } else {
+                    let (successor, encoded) =
+                        covered.advance_and_encode(&receipt).map_err(value_error)?;
+                    (successor.tail(), encoded)
+                };
+            if encoded.len() != encoded_len {
+                return Err(corrupt());
             }
             if receipt.binding().sequence != sequence {
                 return Err(corrupt());
             }
+            self.covered = next_covered;
             self.bytes = self
                 .bytes
                 .checked_add(u64::try_from(encoded.len()).map_err(|_| limit())?)

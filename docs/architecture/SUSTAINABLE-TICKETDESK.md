@@ -31,6 +31,48 @@ conformance, actual scheduled population and the fixed 45-second campaign
 release still require qualification. That tighter release remains at risk:
 the saved-population first write still takes longer than 45 seconds.
 
+The fixed-schedule diagnostic at `6f35ed7e` stops near load second 2,900,
+before restore, because exact source-byte observations exceed the unchanged
+95-second gap limit. Both earlier outages recover, and all completed offered
+load windows pass. The populated database and failure evidence are retained;
+this does not establish completion of the later faults or the 45-second release.
+
+A separate copied-population diagnostic isolates the newly eligible interval:
+275,313 canonical source receipts finish in 23.63 seconds without foreground
+load. Under 100 public compiled commands and 400 named-query reads per second,
+the same scan expires at 30 seconds after 216,320 receipts. The diagnostic
+completes 24,000 fresh commands and 96,000 reads with zero retries, but its
+latency overflow prevents service-level qualification. It supplies no campaign
+or sole-cause proof. It exposes insufficient accounting throughput under
+contention without waiting for another scheduled population.
+
+The candidate correction reuses the existing fully checked native receipt
+constructor for unbudgeted point reads and encodes each admitted accounting
+successor once. Provider-admitted reads retain their original path. Full frame
+checks, canonical receipt bytes, source-chain checks, page and allocation bounds,
+capture freshness, scheduling and observation deadlines remain required. A
+regression compares both point readers with the original receipt and rejects
+later frame corruption. Focused accounting, cursor, architecture and Clippy checks pass on the required
+host. The same loaded retest still expires at 30 seconds after 259,328 receipts,
+so the correction does not close the accounting limitation. Preserve that
+failure before broader qualification. A process-scoped CPU profile attributes
+30.36 percent of sampled user CPU to namespace-to-table mapping and 32.89 percent
+to SHA-256 compression. The next candidate generates direct lookup from the
+same closed catalog declaration. Exhaustive table/key equivalence preserves
+unknown-key refusal, catalog identity and frozen fixtures, with no new cache,
+allocation, authority selector or skipped hash. The loaded retest completes the exact interval in 28.00 seconds within the
+unchanged 30-second limit. It finishes 24,000 commands and 96,000 reads without
+retries, but still reports latency overflow. Its unchanged shipping server emits
+no source-byte samples during the four-minute cold-start diagnostic. Thus the
+component pass does not establish native-worker freshness or service levels;
+the corrected server is tested separately. That actual native-worker check
+also emits no source-byte samples within 95 seconds. At shutdown it has checked
+71,168 initial rows, with no invalidations or admission refusals. The complete
+paced source/audit proof still gates initial byte capture. A separate guarantee
+review is required to decouple the read-only census from deletion authority;
+no freshness or validation threshold is relaxed. The [native accounting review](WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md)
+records the implementation boundary and failed comparisons.
+
 The controller implements accepted ADR-0292's primary-loss method. It pauses the
 original workers before preparing the named backup, binds every acknowledged
 witness record and the public included frontier, and retains the original

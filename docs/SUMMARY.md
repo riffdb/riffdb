@@ -108,6 +108,7 @@
 - [Sustainable TicketDesk Milestone](architecture/SUSTAINABLE-TICKETDESK.md)
   - [Exact-provider lifecycle implementation](architecture/WP-824-IMPLEMENTATION.md)
   - [Lifecycle native blockers and repair scope](architecture/WP-825-LIVE-OBSERVATIONS.md)
+  - [Native source accounting contention](architecture/WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md)
   - [Registry completion implementation review](architecture/WP-825-REGISTRY-COMPLETION-IMPLEMENTATION.md)
   - [Journaled source reclamation fixture review](architecture/WP-825-ADR-0278-FIXTURE-REVIEW.md)
   - [Follower acknowledgement validation implementation (ADR-0296)](architecture/WP-825-ADR-0286-IMPLEMENTATION-REVIEW.md)

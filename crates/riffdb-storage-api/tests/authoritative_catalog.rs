@@ -87,3 +87,41 @@ fn catalog_keeps_operational_delivery_and_unproven_indexes_authoritative() {
         C::ReplicationControl(ReplicationTransferV1::FollowerLocal)
     );
 }
+
+// req: REP-003, STO-012, STO-030, END-007, END-008
+#[test]
+fn catalog_dispatch_matches_closed_inventory_for_every_table_and_metadata_key() {
+    let mut tables: BTreeSet<_> = AuthoritativeNamespaceV1::ALL
+        .iter()
+        .map(|namespace| namespace.table().to_owned())
+        .collect();
+    tables.extend([String::new(), "foreign".to_owned(), "meta\0".to_owned()]);
+    let mut keys = BTreeSet::from([
+        Vec::new(),
+        vec![0xff],
+        b"bounded-test-key".to_vec(),
+        b"foreign/v1".to_vec(),
+    ]);
+    for namespace in AuthoritativeNamespaceV1::ALL {
+        if let Some(key) = namespace.metadata_key() {
+            keys.insert(key.as_bytes().to_vec());
+            let mut extended = key.as_bytes().to_vec();
+            extended.push(0);
+            keys.insert(extended);
+            keys.insert(key.as_bytes()[..key.len() - 1].to_vec());
+        }
+    }
+    for table in tables {
+        for key in &keys {
+            // Independent original inventory walk, including exact mixed-table
+            // keys. The generated dispatch never classifies a prefix or suffix.
+            let expected = AuthoritativeNamespaceV1::ALL.into_iter().find(|namespace| {
+                namespace.table() == table
+                    && namespace
+                        .metadata_key()
+                        .is_none_or(|known| known.as_bytes() == key.as_slice())
+            });
+            assert_eq!(AuthoritativeStateCatalogV1.lookup(&table, key), expected);
+        }
+    }
+}

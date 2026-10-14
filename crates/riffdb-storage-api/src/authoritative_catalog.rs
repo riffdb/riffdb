@@ -82,6 +82,17 @@ macro_rules! namespaces {
             pub const fn requires_v3_activation(self) -> bool {
                 match self { $(Self::$name => $activation,)+ }
             }
+
+            // Derive dispatch from the same closed declaration as the catalog
+            // inventory. No caller-supplied table or metadata key becomes a
+            // namespace, and receipt sorting need not scan every domain.
+            fn lookup_table_key(table: &str, key: &[u8]) -> Option<Self> {
+                match table {
+                    $( $table if Self::$name.metadata_key()
+                        .is_none_or(|expected| expected.as_bytes() == key) => Some(Self::$name), )+
+                    _ => None,
+                }
+            }
         }
     };
 }
@@ -175,15 +186,10 @@ impl AuthoritativeStateCatalogV1 {
     }
 
     /// Classifies only a known table or an exact known mixed-table key.
-    /// The fixed scan allocates nothing and does not retain caller bytes.
+    /// Declaration-derived dispatch allocates nothing and retains no caller bytes.
     #[must_use]
     pub fn lookup(self, table: &str, key: &[u8]) -> Option<AuthoritativeNamespaceV1> {
-        AuthoritativeNamespaceV1::ALL.into_iter().find(|namespace| {
-            namespace.table() == table
-                && namespace
-                    .metadata_key()
-                    .is_none_or(|expected| expected.as_bytes() == key)
-        })
+        AuthoritativeNamespaceV1::lookup_table_key(table, key)
     }
 
     /// Canonical, bounded, value-free catalog fixture; generated from this declaration.

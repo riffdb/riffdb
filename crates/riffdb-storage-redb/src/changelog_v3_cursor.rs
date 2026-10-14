@@ -265,10 +265,7 @@ impl ChangelogSuffix {
         else {
             return Ok(None);
         };
-        let receipt = AuthoritativeTransactionV3::decode(
-            &crate::history_stub::resolve_history_value(row.value())?,
-        )
-        .map_err(value_error)?;
+        let receipt = crate::history_stub::decode_history_value(row.value())?;
         if receipt.binding().sequence != sequence
             || receipt.binding().database_id != history.lineage().database_id()
             || receipt.binding().history_incarnation != history.lineage().history_incarnation()
