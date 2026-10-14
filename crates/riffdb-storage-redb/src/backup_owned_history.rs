@@ -286,6 +286,8 @@ impl OwnedBackupHistory {
     }
 
     pub(super) fn verify_full(&self) -> Result<(), StorageError> {
+        #[cfg(test)]
+        BACKUP_CONTENT_PASSES.with(|passes| passes.set(passes.get() + 1));
         self.checked(|| {
             self.verify()?;
             if sha256_reader(PositionalReader {

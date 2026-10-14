@@ -532,3 +532,50 @@ in-flight, fault placement and 60/45-second bounds unchanged. Updated handbook:
 Hazards and follow-ups: scoped acceptance, final combined-source
 CI and conformance, actual scheduled-population 45-second gate, resources and
 complete eight-hour rehearsal remain required. WP-825 stays open.
+
+
+## Original-backup boundary duplication correction — 2026-10-14
+
+The latest unprofiled saved-population check reconciles all 65,536 tickets and
+the original acknowledged command at 53.671362516 seconds. It refuses at the
+unchanged 45-second pre-release gate before submitting a fresh command. A
+profiled diagnostic passed that gate, but does not qualify the unprofiled source,
+full CI or either rehearsal. Both observations remain retained.
+
+Two native regression tests independently reproduce duplicate full original-
+backup verification: materialization and publication each perform two complete
+content passes at one boundary. The fail-first receipt is
+`b5b8ea6f82b1aea7e530b04a5a75e0cf7a5bd72fd964dae50cfcb0544241ffa5`.
+This correction implements the already accepted ADR-0290 and ADR-0299 ownership
+rules; it changes neither record's accepted text nor its required full checks.
+
+Ordinary stamp preparation reads the canonical manifest binding first, then
+acquires its existing original-backup owner before creating or copying any
+artifact. That owner verifies all original content before first use. If owned
+custody is unavailable, the native materializer performs the original complete
+backup check before copying. Other stage purposes retain their existing checks.
+At transfer publication, the retained owner verifies original-file continuity;
+a bounded manifest read still checks the exact staged manifest and receipt
+identity. Its consuming publication handoff then revalidates every original
+backup artifact, including sealed extents, before any durable intent or move.
+Without that actual owner, the complete path-based publication check remains.
+Private mutation-boundary seals and full independent post-transfer readback
+remain mandatory; no prior checksum is replaced after an unknown mutation.
+
+Required-host checks prove both one-pass boundaries, refusal of changed primary,
+active journal, marker, sealed extent and manifest before an intent exists, the
+complete fallback, and all 17 existing original-owner custody, cancellation,
+position and bounded-read guards. Verified focused receipt:
+`686f5aa912f3922bd644cf79cb6ffe151c28a8de26e89402fb1183896e5f9c33`.
+Those component checks do not establish a timing improvement or qualification.
+
+PR note: Package WP-825; Tier guarantee under accepted ADR-0290 and ADR-0299.
+Behavior removes duplicate original-backup content passes within two existing
+native boundaries while preserving their complete owned checks and fallbacks.
+Checks: fail-first native pass counters, four focused regression/refusal tests
+and 17 original custody tests on the required host. Compatibility: public APIs,
+formats, fixtures, authorization, private source seals, publication/crash order,
+resource limits and 45/60-second gates unchanged. Updated handbook:
+`docs/backup-restore.md`. Hazards and follow-ups: saved unprofiled timing gate,
+combined-source acceptance and CI, complete native crash coverage and both
+rehearsals remain required. WP-825 stays open.

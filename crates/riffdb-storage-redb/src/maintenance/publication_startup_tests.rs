@@ -22,8 +22,31 @@ fn inputs() -> StartupValidationInputs {
 }
 
 #[cfg(unix)]
+fn prepare_native_transfer_source(store: crate::RedbStore) {
+    let session = store.begin_structural_evidence(inputs()).unwrap();
+    drop(
+        finish_native_session(session)
+            .into_operational_after_catalog_validation()
+            .unwrap(),
+    );
+}
+
+#[cfg(unix)]
 fn fresh_published(
     root: &Path,
+) -> (
+    RedbMaintenanceStorage,
+    OfflineMaintenanceOperationId,
+    Vec<(PathBuf, riffdb_storage_api::BackupIntegrityChecksumV1)>,
+) {
+    fresh_published_observing(root, None, None)
+}
+
+#[cfg(unix)]
+fn fresh_published_observing(
+    root: &Path,
+    observe_materialization: Option<fn(usize)>,
+    observe_publication: Option<fn(usize)>,
 ) -> (
     RedbMaintenanceStorage,
     OfflineMaintenanceOperationId,
@@ -38,16 +61,12 @@ fn fresh_published(
         operation,
         named,
         ..
-    } = native_transfer_fixture_with_prepared_source(root, true, |store| {
-        // Complete the ordinary source startup through its real catalog and
-        // structural session; older incomplete-registry images stay cold.
-        let session = store.begin_structural_evidence(inputs()).unwrap();
-        drop(
-            finish_native_session(session)
-                .into_operational_after_catalog_validation()
-                .unwrap(),
-        );
-    });
+    } = native_transfer_fixture_with_prepared_source(
+        root,
+        true,
+        prepare_native_transfer_source,
+        observe_materialization,
+    );
     let originals: Vec<_> = fs::read_dir(&named)
         .unwrap()
         .map(|entry| {
@@ -56,9 +75,15 @@ fn fresh_published(
             (path, digest)
         })
         .collect();
+    let before_publication = crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get);
     storage
         .publish_sealed_restore(sealed, OfflineRestoreOverwritePolicyV1::RefuseNonEmpty)
         .unwrap();
+    if let Some(observe) = observe_publication {
+        observe(
+            crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get) - before_publication,
+        );
+    }
     let mut receipt = read_receipt_file(&storage.receipt_path(operation)).unwrap();
     for phase in [
         OfflineMaintenanceReceiptPhaseV1::ArtifactPublished,
@@ -1164,4 +1189,139 @@ fn native_publication_promotion_discovery_cannot_open_or_change_the_unconsumed_t
         PublicationPhase::StartupConsumed
     );
     drop(finish_native_session(session));
+}
+
+#[cfg(unix)]
+#[test]
+// req: REC-001, REC-004, REC-006, REC-008, END-001, END-008
+fn ordinary_materialization_verifies_original_backup_once_before_first_use() {
+    let scope = ScopedDirectory::new("materialization-one-backup-content-pass");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    fresh_published_observing(
+        &root,
+        Some(|passes| {
+            assert_eq!(
+                passes, 1,
+                "first use must fully validate the owned backup without a preceding duplicate path hash"
+            )
+        }),
+        None,
+    );
+}
+
+#[cfg(unix)]
+#[test]
+// req: REC-001, REC-004, REC-006, REC-008, END-001, END-008
+fn ordinary_publication_revalidates_original_backup_once_at_the_full_boundary() {
+    let scope = ScopedDirectory::new("publication-one-backup-content-pass");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    fresh_published_observing(
+        &root,
+        None,
+        Some(|passes| {
+            assert_eq!(
+                passes, 1,
+                "publication must revalidate every original artifact once through its retained owner"
+            )
+        }),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+// req: REC-001, REC-004, REC-006, REC-008, END-001, END-008
+fn ordinary_publication_without_a_retained_backup_keeps_full_content_validation() {
+    use crate::maintenance::staged::transfer_tests::native_transfer_fixture;
+    let scope = ScopedDirectory::new("publication-fallback-full-original-content");
+    let root = scope.join("fixture");
+    fs::create_dir(&root).unwrap();
+    let fixture = native_transfer_fixture(&root);
+    let before = crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get);
+    fixture
+        .storage
+        .publish_sealed_restore(
+            fixture.sealed,
+            OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+        )
+        .unwrap();
+    assert_eq!(
+        crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get) - before,
+        1,
+        "absence of the actual retained owner requires the original complete fallback check"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+// req: REC-001, REC-004, REC-006, REC-008, END-001, END-008
+fn ordinary_publication_refuses_changed_original_artifacts_before_durable_intent() {
+    use crate::maintenance::staged::transfer_tests::native_transfer_fixture_with_prepared_source;
+    use std::os::unix::fs::FileExt;
+    for artifact in 0..5 {
+        let scope = ScopedDirectory::new("publication-changed-original-content");
+        let root = scope.join("fixture");
+        fs::create_dir(&root).unwrap();
+        let fixture = native_transfer_fixture_with_prepared_source(
+            &root,
+            true,
+            prepare_native_transfer_source,
+            None,
+        );
+        let mut originals: Vec<_> = fs::read_dir(&fixture.named)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        originals.sort();
+        assert_eq!(
+            originals.len(),
+            5,
+            "exercise primary, active journal, marker, sealed extent and manifest"
+        );
+        let original = &originals[artifact];
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(original)
+            .unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+        let mut byte = [0];
+        assert_eq!(file.read_at(&mut byte, 0).unwrap(), 1);
+        file.write_all_at(&[byte[0] ^ 1], 0).unwrap();
+        file.set_modified(modified).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let error = fixture
+            .storage
+            .publish_sealed_restore(
+                fixture.sealed,
+                OfflineRestoreOverwritePolicyV1::RefuseNonEmpty,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            StorageErrorKind::CorruptData,
+            "changed original artifact {artifact}"
+        );
+        assert!(
+            original.is_file(),
+            "failure preserves the original backup evidence"
+        );
+        assert!(!fixture.configured.exists());
+        assert!(!crate::journal::journal_path(&fixture.configured).exists());
+        assert!(!crate::durable_format_marker_path(&fixture.configured).exists());
+        assert!(
+            !root
+                .join("backups/.maintenance/receipts")
+                .join(format!("{}.publication-intent-v1", fixture.operation))
+                .exists()
+        );
+        assert_eq!(
+            read_receipt_file(&fixture.storage.receipt_path(fixture.operation))
+                .unwrap()
+                .current_phase(),
+            OfflineMaintenanceReceiptPhaseV1::Offline
+        );
+    }
 }

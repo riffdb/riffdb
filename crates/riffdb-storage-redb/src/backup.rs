@@ -2238,6 +2238,7 @@ struct MaterializationTestBarrier {
 
 #[cfg(test)]
 std::thread_local! {
+    pub(crate) static BACKUP_CONTENT_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static MATERIALIZATION_CHECKSUM_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static MATERIALIZATION_TEST_BARRIER: std::cell::RefCell<Option<MaterializationTestBarrier>> = const {
         std::cell::RefCell::new(None)
@@ -2398,6 +2399,19 @@ impl RedbOfflineRestore {
         } else {
             None
         };
+        #[cfg(unix)]
+        let original_verified_by_owner = backup_history.is_some();
+        #[cfg(not(unix))]
+        let original_verified_by_owner = false;
+        if receipt_stamp && !original_verified_by_owner {
+            // The staged wrapper defers its content check to this first-use
+            // boundary. Unsupported custody retains complete original hashes;
+            // a manifest binding alone never authorizes a source read.
+            let (validated, _) = validate_immutable_backup(&self.backup_directory)?;
+            if validated != manifest {
+                return Err(corrupt());
+            }
+        }
         let copy_backup =
             |artifact: &MaterializationArtifact, name: &str| -> Result<(), StorageError> {
                 #[cfg(unix)]
@@ -3128,7 +3142,9 @@ fn validate_manifest_format_marker_bytes(
 }
 
 /// Reads the bounded canonical manifest binding, not artifact content evidence.
-/// Only a receipt that already authorizes publication may use this for reopen.
+/// Receipt-authorized reopen joins this binding to its retained native owner.
+/// Preliminary ordinary materialization must still verify all original content
+/// before its first artifact use. This read alone grants no restore authority.
 pub(crate) fn read_backup_manifest_binding(
     directory: &Path,
 ) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
@@ -3151,6 +3167,8 @@ pub(crate) fn read_backup_manifest_binding(
 pub(crate) fn validate_immutable_backup(
     directory: &Path,
 ) -> Result<(OfflineBackupManifestV1, OfflineBackupManifestIdentityV1), StorageError> {
+    #[cfg(test)]
+    BACKUP_CONTENT_PASSES.with(|passes| passes.set(passes.get() + 1));
     let (manifest, identity) = read_backup_manifest_binding(directory)?;
     let artifact = directory.join(DATABASE_ARTIFACT_FILE_NAME);
     if sha256_file(&artifact)? != manifest_checksum(&manifest)? {

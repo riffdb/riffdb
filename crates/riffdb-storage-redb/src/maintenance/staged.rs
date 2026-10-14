@@ -216,7 +216,15 @@ impl RedbStagedRestore {
 
         remove_prior_stage(&staged_directory)?;
         staged_parent_guard.verify()?;
-        let (source_manifest, manifest_identity) = validate_immutable_backup(&backup_directory)?;
+        // ADR-0299: ordinary preparation validates all original content through
+        // the owned backup acquired by the native materializer before first use.
+        // This initial binding is not content evidence; fallback construction
+        // must still perform the original full check before copying.
+        let (source_manifest, manifest_identity) = if purpose == NativeStagePurpose::OrdinaryStamp {
+            crate::backup::read_backup_manifest_binding(&backup_directory)?
+        } else {
+            validate_immutable_backup(&backup_directory)?
+        };
         backup_directory_guard.verify()?;
         fs::create_dir(&staged_directory).map_err(io_unavailable)?;
         sync_parent(&staged_directory)?;

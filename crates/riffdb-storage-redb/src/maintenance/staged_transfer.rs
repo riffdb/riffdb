@@ -45,7 +45,18 @@ impl RedbSealedStagedRestore {
         if !self.permits_native_transfer()? {
             return Err(invariant());
         }
-        let (manifest, identity) = validate_immutable_backup(&self.backup_directory)?;
+        let Some(NativeStagedOwner::Closed(owner)) = self.native_owner.as_ref() else {
+            return Err(invariant());
+        };
+        // The retained owner's consuming handoff below revalidates ALL original
+        // artifacts against its pinned manifest, including sealed history.
+        // Avoid a second complete path hash at this same publication boundary.
+        // Without that actual owner, keep the complete original fallback check.
+        let (manifest, identity) = if owner.retains_original_backup_owner()? {
+            crate::backup::read_backup_manifest_binding(&self.backup_directory)?
+        } else {
+            validate_immutable_backup(&self.backup_directory)?
+        };
         if manifest != self.manifest || identity != self.manifest_identity {
             return Err(corrupt());
         }

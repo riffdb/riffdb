@@ -546,6 +546,14 @@ seals before any move. Full readback of all three transferred files precedes fin
 publication. Other restore states retain verified copying; an interrupted transfer
 cannot switch to copying or silently rebuild the target from the backup.
 
+During eligible ordinary materialization, the retained original-backup owner
+performs the complete content check before first use. At native publication,
+that same owner revalidates all original artifacts, including sealed history.
+Bounded manifest-binding reads and continuity checks do not replace either full
+boundary check. Without the actual retained owner, the complete original-backup
+fallback check remains mandatory. Private artifact seals and independent
+post-transfer readback are unchanged.
+
 For an eligible fresh publication in the same process, the actual verified
 immutable-backup and three-artifact owners now remain alive through startup
 consumption. Original descriptors, full source seals and completed independent

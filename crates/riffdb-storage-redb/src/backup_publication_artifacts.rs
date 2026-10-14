@@ -21,6 +21,18 @@ pub(crate) struct OwnedPublicationArtifacts {
 }
 
 impl OwnedClosedMaterialization {
+    pub(crate) fn retains_original_backup_owner(&self) -> Result<bool, StorageError> {
+        self.verify()?;
+        #[cfg(unix)]
+        {
+            Ok(self.materialization.backup_history.is_some())
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(false)
+        }
+    }
+
     pub(crate) fn permits_publication_transfer(&self) -> Result<bool, StorageError> {
         self.verify()?;
         Ok(self.ordinary_source

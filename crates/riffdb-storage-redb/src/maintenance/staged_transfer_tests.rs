@@ -26,15 +26,22 @@ pub(in crate::maintenance) fn native_transfer_fixture_with_history(
     scope: &Path,
     sealed_history: bool,
 ) -> NativeTransferFixture {
-    native_transfer_fixture_inner(scope, sealed_history, false, drop)
+    native_transfer_fixture_inner(scope, sealed_history, false, drop, None)
 }
 
 pub(in crate::maintenance) fn native_transfer_fixture_with_prepared_source(
     scope: &Path,
     sealed_history: bool,
     prepare: fn(crate::RedbStore),
+    observe_materialization: Option<fn(usize)>,
 ) -> NativeTransferFixture {
-    native_transfer_fixture_inner(scope, sealed_history, true, prepare)
+    native_transfer_fixture_inner(
+        scope,
+        sealed_history,
+        true,
+        prepare,
+        observe_materialization,
+    )
 }
 
 fn native_transfer_fixture_inner(
@@ -42,6 +49,7 @@ fn native_transfer_fixture_inner(
     sealed_history: bool,
     prepared_source: bool,
     prepare: fn(crate::RedbStore),
+    observe_materialization: Option<fn(usize)>,
 ) -> NativeTransferFixture {
     let source = scope.join("source.redb");
     let mut store = crate::RedbStore::open(&source).unwrap();
@@ -125,9 +133,16 @@ fn native_transfer_fixture_inner(
         ReadableCapabilityDigestInventory::new(vec![key]).unwrap(),
         ReadableIdempotencyDigestInventory::new(vec![key]).unwrap(),
     );
+    let before_materialization = crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get);
     let mut stage = storage
         .stage_owned_recovery_restore_candidate(operation, &backup_name, inputs)
         .unwrap();
+    if let Some(observe) = observe_materialization {
+        observe(
+            crate::backup::BACKUP_CONTENT_PASSES.with(std::cell::Cell::get)
+                - before_materialization,
+        );
+    }
     drop(stage.take_owned_authorization_evidence().unwrap());
     let database = stage.manifest_identity().database_id();
     let manifest = stage.manifest_identity().clone();
