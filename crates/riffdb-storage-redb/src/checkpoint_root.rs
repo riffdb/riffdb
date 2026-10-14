@@ -260,29 +260,9 @@ pub(crate) fn derive_once<T: Copy, E>(
     Ok(*cell.get_or_init(|| value))
 }
 
-/// Cache slot for one journal table, derived from its variant.
+/// Cache slot for one journal table, derived from its stable discriminant.
 const fn journal_table_slot(table: JournalTable) -> usize {
-    match table {
-        JournalTable::Meta => 0,
-        JournalTable::Entities => 1,
-        JournalTable::SecondaryIndexes => 2,
-        JournalTable::IndexEpochs => 3,
-        JournalTable::Idempotency => 4,
-        JournalTable::IdempotencyPending => 5,
-        JournalTable::Events => 6,
-        JournalTable::EventRoutes => 7,
-        JournalTable::Outbox => 8,
-        JournalTable::Provenance => 9,
-        JournalTable::Commits => 10,
-        JournalTable::Audit => 11,
-        JournalTable::AuditByRequest => 12,
-        JournalTable::EntityChainHeads => 13,
-        JournalTable::VectorEvidence => 14,
-        JournalTable::VectorObservations => 15,
-        JournalTable::VectorEvidenceIndex => 16,
-        JournalTable::HistoryTombstones => 17,
-        JournalTable::OutboxStatus => 18,
-    }
+    (table as u8 as usize).saturating_sub(1)
 }
 
 /// Returns the cached handle, opening and storing it on first use.

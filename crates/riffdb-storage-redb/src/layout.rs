@@ -34,6 +34,15 @@ pub(crate) const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::
 pub(crate) const OUTBOX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outbox");
 pub(crate) const OUTBOX_STATUS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("outbox_status");
+// Historical journal tags 18..=20 remain readable and replayable. ADR-0244
+// removes these tables from fresh creation and new command staging; these
+// definitions exist only for exact legacy frame and retained-state access.
+pub(crate) const IDEMPOTENCY_LOCATORS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("idempotency_locators");
+pub(crate) const PROVENANCE_LOCATORS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("provenance_locators");
+pub(crate) const AUDIT_BY_REQUEST_LOCATORS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("audit_by_request_locators");
 pub(crate) const PROJECTION_STATE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("projection_state");
 pub(crate) const PROJECTION_FRONTIER: TableDefinition<&[u8], &[u8]> =

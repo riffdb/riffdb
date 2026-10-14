@@ -898,6 +898,27 @@ fn validate_canonical_entry(
                 }
             }
         }
+        // ADR-0165 locator rows: the key must decode as its own kind and the
+        // value must decode as a command locator. Anything else is closed here
+        // rather than reaching a reader that could report absence.
+        CompositeTableV1::IdempotencyLocators => {
+            crate::keys::decode_idempotency_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
+        }
+        CompositeTableV1::ProvenanceLocators => {
+            crate::keys::decode_provenance_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
+        }
+        CompositeTableV1::AuditByRequestLocators => {
+            crate::keys::decode_audit_by_request_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                crate::codec::decode_command_locator_v1(value).map_err(invalid_shape)?;
+            }
+        }
         CompositeTableV1::Idempotency => {
             let physical = decode_idempotency_key(key).map_err(invalid_shape)?;
             if let Some(value) = value {
@@ -1075,6 +1096,11 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::SecondaryIndexes => crate::journal::JournalTable::SecondaryIndexes,
         CompositeTableV1::IndexEpochs => crate::journal::JournalTable::IndexEpochs,
         CompositeTableV1::Idempotency => crate::journal::JournalTable::Idempotency,
+        CompositeTableV1::IdempotencyLocators => crate::journal::JournalTable::IdempotencyLocators,
+        CompositeTableV1::ProvenanceLocators => crate::journal::JournalTable::ProvenanceLocators,
+        CompositeTableV1::AuditByRequestLocators => {
+            crate::journal::JournalTable::AuditByRequestLocators
+        }
         CompositeTableV1::IdempotencyPending => crate::journal::JournalTable::IdempotencyPending,
         CompositeTableV1::Events => crate::journal::JournalTable::Events,
         CompositeTableV1::EventRoutes => crate::journal::JournalTable::EventRoutes,
@@ -1190,6 +1216,18 @@ mod tests {
             (CompositeTableV1::IndexEpochs, Some("index_epochs")),
             (CompositeTableV1::Idempotency, Some("idempotency")),
             (
+                CompositeTableV1::IdempotencyLocators,
+                Some("idempotency_locators"),
+            ),
+            (
+                CompositeTableV1::ProvenanceLocators,
+                Some("provenance_locators"),
+            ),
+            (
+                CompositeTableV1::AuditByRequestLocators,
+                Some("audit_by_request_locators"),
+            ),
+            (
                 CompositeTableV1::IdempotencyPending,
                 Some("idempotency_pending"),
             ),
@@ -1225,7 +1263,7 @@ mod tests {
 
         // Every variant is pinned above, so no table can silently acquire a
         // mapping without also acquiring a pin.
-        assert_eq!(CompositeTableV1::ALL.len(), 19);
+        assert_eq!(CompositeTableV1::ALL.len(), 22);
     }
 
     /// The cached frontier belongs to one published view, so a successor that

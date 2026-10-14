@@ -127,6 +127,11 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::SecondaryIndexes => crate::journal::JournalTable::SecondaryIndexes,
         CompositeTableV1::IndexEpochs => crate::journal::JournalTable::IndexEpochs,
         CompositeTableV1::Idempotency => crate::journal::JournalTable::Idempotency,
+        CompositeTableV1::IdempotencyLocators => crate::journal::JournalTable::IdempotencyLocators,
+        CompositeTableV1::ProvenanceLocators => crate::journal::JournalTable::ProvenanceLocators,
+        CompositeTableV1::AuditByRequestLocators => {
+            crate::journal::JournalTable::AuditByRequestLocators
+        }
         CompositeTableV1::IdempotencyPending => crate::journal::JournalTable::IdempotencyPending,
         CompositeTableV1::Events => crate::journal::JournalTable::Events,
         CompositeTableV1::EventRoutes => crate::journal::JournalTable::EventRoutes,

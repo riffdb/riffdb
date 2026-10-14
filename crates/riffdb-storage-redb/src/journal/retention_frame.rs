@@ -20,7 +20,10 @@ pub(super) fn retention_prune_mutation_is_closed(mutation: &JournalMutation) -> 
         JournalTable::Commits
         | JournalTable::Events
         | JournalTable::Outbox
-        | JournalTable::OutboxStatus => mutation.value().is_none(),
+        | JournalTable::OutboxStatus
+        | JournalTable::IdempotencyLocators
+        | JournalTable::ProvenanceLocators
+        | JournalTable::AuditByRequestLocators => mutation.value().is_none(),
         _ => false,
     }
 }

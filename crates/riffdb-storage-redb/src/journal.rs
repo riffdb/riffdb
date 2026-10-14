@@ -350,12 +350,17 @@ pub(crate) enum JournalTable {
     VectorEvidence = 15,
     VectorObservations = 16,
     VectorEvidenceIndex = 17,
+    /// Retired ADR-0165 locator tags retained for exact historical decoding and
+    /// replay. ADR-0244 new command writers never emit these mutations.
+    IdempotencyLocators = 18,
+    ProvenanceLocators = 19,
+    AuditByRequestLocators = 20,
     HistoryTombstones = 21,
     OutboxStatus = 22,
 }
 
 impl JournalTable {
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::Meta,
         Self::Entities,
         Self::SecondaryIndexes,
@@ -373,6 +378,9 @@ impl JournalTable {
         Self::VectorEvidence,
         Self::VectorObservations,
         Self::VectorEvidenceIndex,
+        Self::IdempotencyLocators,
+        Self::ProvenanceLocators,
+        Self::AuditByRequestLocators,
         Self::HistoryTombstones,
         Self::OutboxStatus,
     ];
@@ -396,6 +404,9 @@ impl JournalTable {
             Self::VectorEvidence => "vector_evidence",
             Self::VectorObservations => "vector_observations",
             Self::VectorEvidenceIndex => "vector_evidence_index",
+            Self::IdempotencyLocators => "idempotency_locators",
+            Self::ProvenanceLocators => "provenance_locators",
+            Self::AuditByRequestLocators => "audit_by_request_locators",
             Self::HistoryTombstones => "history_tombstones",
             Self::OutboxStatus => "outbox_status",
         }
@@ -420,6 +431,9 @@ impl JournalTable {
             15 => Ok(Self::VectorEvidence),
             16 => Ok(Self::VectorObservations),
             17 => Ok(Self::VectorEvidenceIndex),
+            18 => Ok(Self::IdempotencyLocators),
+            19 => Ok(Self::ProvenanceLocators),
+            20 => Ok(Self::AuditByRequestLocators),
             21 => Ok(Self::HistoryTombstones),
             22 => Ok(Self::OutboxStatus),
             _ => Err(JournalCodecError::UnknownTable),
@@ -447,6 +461,11 @@ impl JournalTable {
             Self::VectorEvidence => riffdb_storage_api::CompositeTableV1::VectorEvidence,
             Self::VectorObservations => riffdb_storage_api::CompositeTableV1::VectorObservations,
             Self::VectorEvidenceIndex => riffdb_storage_api::CompositeTableV1::VectorEvidenceIndex,
+            Self::IdempotencyLocators => riffdb_storage_api::CompositeTableV1::IdempotencyLocators,
+            Self::ProvenanceLocators => riffdb_storage_api::CompositeTableV1::ProvenanceLocators,
+            Self::AuditByRequestLocators => {
+                riffdb_storage_api::CompositeTableV1::AuditByRequestLocators
+            }
         }
     }
 }
@@ -1001,6 +1020,9 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::IndexEpochs
         | JournalTable::Idempotency
         | JournalTable::IdempotencyPending
+        | JournalTable::IdempotencyLocators
+        | JournalTable::ProvenanceLocators
+        | JournalTable::AuditByRequestLocators
         | JournalTable::Events
         | JournalTable::EventRoutes
         | JournalTable::Outbox
@@ -4712,6 +4734,17 @@ pub(crate) fn apply_mutation(
         }
         JournalTable::IndexEpochs => apply_byte_mutation(transaction, INDEX_EPOCHS, mutation),
         JournalTable::Idempotency => apply_byte_mutation(transaction, IDEMPOTENCY, mutation),
+        JournalTable::IdempotencyLocators => {
+            apply_byte_mutation(transaction, crate::layout::IDEMPOTENCY_LOCATORS, mutation)
+        }
+        JournalTable::ProvenanceLocators => {
+            apply_byte_mutation(transaction, crate::layout::PROVENANCE_LOCATORS, mutation)
+        }
+        JournalTable::AuditByRequestLocators => apply_byte_mutation(
+            transaction,
+            crate::layout::AUDIT_BY_REQUEST_LOCATORS,
+            mutation,
+        ),
         JournalTable::IdempotencyPending => {
             apply_byte_mutation(transaction, IDEMPOTENCY_PENDING, mutation)
         }
@@ -4772,6 +4805,27 @@ pub(crate) fn apply_validated_composite_mutation(
         CompositeTableV1::OutboxStatus => apply_byte_mutation_parts(
             transaction,
             crate::layout::OUTBOX_STATUS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::IdempotencyLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::IDEMPOTENCY_LOCATORS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::ProvenanceLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::PROVENANCE_LOCATORS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::AuditByRequestLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::AUDIT_BY_REQUEST_LOCATORS,
             mutation.key(),
             mutation.value(),
             mutation.expected_hash(),
@@ -5111,6 +5165,9 @@ fn read_value_inner_bounded(
     }
     let definition = match table {
         JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
+        JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
+        JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
         JournalTable::HistoryTombstones => crate::layout::HISTORY_TOMBSTONES,
         JournalTable::OutboxStatus => crate::layout::OUTBOX_STATUS,
         JournalTable::Entities => ENTITIES,
@@ -5154,6 +5211,9 @@ pub(crate) fn read_write_value(
     }
     let definition = match table {
         JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
+        JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
+        JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
         JournalTable::HistoryTombstones => crate::layout::HISTORY_TOMBSTONES,
         JournalTable::OutboxStatus => crate::layout::OUTBOX_STATUS,
         JournalTable::Entities => ENTITIES,
@@ -5186,6 +5246,9 @@ pub(crate) const fn byte_table_definition(
 ) -> Option<TableDefinition<'static, &'static [u8], &'static [u8]>> {
     match table {
         JournalTable::Meta => None,
+        JournalTable::IdempotencyLocators => Some(crate::layout::IDEMPOTENCY_LOCATORS),
+        JournalTable::ProvenanceLocators => Some(crate::layout::PROVENANCE_LOCATORS),
+        JournalTable::AuditByRequestLocators => Some(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
         JournalTable::HistoryTombstones => Some(crate::layout::HISTORY_TOMBSTONES),
         JournalTable::OutboxStatus => Some(crate::layout::OUTBOX_STATUS),
         JournalTable::Entities => Some(ENTITIES),
@@ -6098,6 +6161,56 @@ mod tests {
             frame.raw_equivalent_frame_bytes(),
             frame.as_bytes().len() + raw - selected
         );
+    }
+
+    // req: REC-001, REC-006, REC-007
+    #[test]
+    fn historical_locator_frame_tags_remain_byte_exact_across_supported_versions() {
+        // These are frozen historical tags, not a new writer configuration.
+        // Build independently of the retired variants so this test also
+        // compiles against the decoder that accidentally removed them.
+        for version in [
+            FRAME_VERSION_V2,
+            FRAME_VERSION_V3,
+            FRAME_VERSION_V4,
+            FRAME_VERSION_V5,
+        ] {
+            for historical_tag in [18_u8, 19, 20] {
+                let encoded = sample_frame().encode_as(version).unwrap();
+                let mut bytes = encoded.as_bytes().to_vec();
+                let header = if version == FRAME_VERSION_V2 {
+                    FRAME_HEADER_BYTES_V2
+                } else {
+                    FRAME_HEADER_BYTES
+                };
+                bytes[header] = historical_tag;
+                let footer = bytes.len() - FRAME_FOOTER_BYTES;
+                let hash = digest(&bytes[..footer]);
+                bytes[footer + 16..].copy_from_slice(&hash);
+                let (frame, actual_hash) = JournalFrame::decode(&bytes)
+                    .expect("already acknowledged locator-bearing frames remain supported");
+                assert_eq!(frame.mutations()[0].table() as u8, historical_tag);
+                assert_eq!(actual_hash, hash);
+                assert_eq!(frame.encode().unwrap().as_bytes(), bytes);
+                let mutations = frame
+                    .mutations()
+                    .iter()
+                    .map(JournalMutation::composite)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(mutations.len(), frame.mutations().len());
+                assert_eq!(mutations[0].key(), frame.mutations()[0].key());
+                assert_eq!(mutations[0].value(), frame.mutations()[0].value());
+                // Unknown tags and corruption retain their existing refusals.
+                bytes[header] = 0xff;
+                let hash = digest(&bytes[..footer]);
+                bytes[footer + 16..].copy_from_slice(&hash);
+                assert_eq!(
+                    JournalFrame::decode(&bytes),
+                    Err(JournalCodecError::UnknownTable)
+                );
+            }
+        }
     }
 
     #[test]

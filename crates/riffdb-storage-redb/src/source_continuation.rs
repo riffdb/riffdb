@@ -108,6 +108,9 @@ impl SourceContinuationFootprint {
                     | T::VectorEvidence
                     | T::VectorObservations
                     | T::VectorEvidenceIndex
+                    | T::IdempotencyLocators
+                    | T::ProvenanceLocators
+                    | T::AuditByRequestLocators
                     | T::HistoryTombstones
                     | T::OutboxStatus => true,
                 }
@@ -319,6 +322,9 @@ fn unchanged_source_or_append(
         | N::VectorEvidenceIndex
         | N::VectorProjectionControls
         | N::ColumnarProjectionControls
+        | N::IdempotencyLocators
+        | N::ProvenanceLocators
+        | N::AuditByRequestLocators
         | N::ValidatedPrefixEntityHeads
         | N::ValidatedPrefixCheckpoint
         | N::RetentionWatermark

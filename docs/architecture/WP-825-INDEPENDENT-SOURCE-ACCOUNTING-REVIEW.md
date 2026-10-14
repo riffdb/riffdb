@@ -46,3 +46,20 @@ counts and unchanged refusal of corrupt inline locators. The first merged build
 exposed obsolete locator references; its failed evidence is retained. The corrected
 merged source still requires its saved restore recheck and full C3D acceptance
 before the eight-hour rehearsal starts.
+
+
+The saved native restore recheck then exposes a reader compatibility regression
+from locator retirement before the recovery clock starts. The image's table
+inventory and checkpoint roots pass, but its last retained command frame cannot
+be decoded, causing a bounded-header sequence-discontinuity finding. An
+independent regression confirms that decoding previously supported journal table
+tags 18 through 20 returns `UnknownTable`.
+
+Retirement applies to fresh table creation and new command staging. Historical
+journal tags, exact composite mutation representation, closed key/value validation
+and replay remain supported without changing existing frame bytes, checksums or
+frontiers. The regression covers all supported journal frame versions, exact
+re-encoding, shared overlay conversion and refusal of unknown tags. Existing
+fresh-image restore tests still require that retired tables are not recreated.
+The original saved header and whole restore gates must pass on the correction;
+the failure is retained and no rehearsal qualification is inferred from builds.
