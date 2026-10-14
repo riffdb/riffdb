@@ -26632,6 +26632,27 @@ work_packages:
     scale: The saving is per frame, so it grows with throughput rather than with stored
       size, and it adds no state.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: docs/performance/sub-variance-wins-register.md
+    decision: ADR-0247 is implemented on main (landed in 6d0308093 and accepted in
+      284772dae). Envelope checksums in crates/riffdb-proto/src/envelope.rs use
+      crc32c::crc32c hardware acceleration while retaining the crc crate's software
+      slice-by-16 Castagnoli table as the test-only oracle. The obligation proof
+      crc_matches_the_software_table_across_sizes_and_alignments (OBL-0247-1) verifies
+      byte-identical checksums across payload sizes and unaligned slice offsets from 1 to
+      15 bytes, and crc_matches_the_published_castagnoli_check_vector anchors the
+      polynomial to the standard check vector 0xE3069283 for "123456789". The sub-variance
+      wins register is maintained at docs/performance/sub-variance-wins-register.md and
+      linked from docs/SUMMARY.md without quoting individual sub-variance entries as
+      system-level throughput claims.
+    decisions_taken:
+    - Retain the software crc table in dev-dependencies as the permanent test oracle
+      against which hardware crc32c is checked across sizes and alignments.
+    - Record sub-variance wins in docs/performance/sub-variance-wins-register.md under
+      ADR-0247's three admission criteria rather than claiming standalone system-level
+      percentage improvements inside the host's noise band.
 - id: WP-797
   name: Measurement host hardware baseline
   tier: guarantee
