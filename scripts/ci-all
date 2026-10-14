@@ -76,6 +76,7 @@ trap - EXIT INT TERM
 ./scripts/check-performance-freeze
 ./scripts/check-wp762-baseline-bank
 ./scripts/check-durable-group-activation --self-test
+./scripts/wp705-lifecycle-referee --self-test
 ./scripts/check-dirty-recovery-evidence
 ./scripts/check-online-retention-interference
 ./scripts/check-online-retention-interference --summary release/evidence/wp-811/online-retention-interference.json --minimum-keep-up 0.00292

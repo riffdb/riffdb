@@ -24645,7 +24645,6 @@ work_packages:
       failed campaign is retained on the hosts and none was resumed.
 - id: WP-763
   name: Durable-group formation from ready prepared work and its activation gate
-  status: completed
   tier: guarantee
   depends_on: [WP-762, WP-640]
   objective: Make every standard-profile epoch seal carry the complete already-admitted,
@@ -24700,6 +24699,7 @@ work_packages:
       applies unchanged to a future per-domain leader and holds no state proportional to load.
   human_review_triggers: *id0183
   closure:
+    status: complete
     completed_at: '2026-10-14'
     verification_receipts:
     - ./scripts/check-durable-group-activation --self-test
@@ -25635,7 +25635,7 @@ work_packages:
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
   closure:
-    status: unblocked_pending_qualification_run
+    status: complete
     completed_at: '2026-10-14'
     evidence: docs/performance/wp-777-demand-activated-columnar.md
     decision: Configured columnar sources remain cold through readiness and no-demand graceful close,
