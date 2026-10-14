@@ -144,6 +144,7 @@ pub(crate) fn plan_recovery(
     let original_tail = history.tail().sequence();
     let mut replay_from = frames.len();
     let mut previous: Option<ChangelogTransactionSequence> = None;
+    let mut verified_point: Option<ChangelogHistoryPointV3> = None;
     for (index, frame) in frames.iter().enumerate() {
         let mut assignments = frame.mutations().iter().filter(|mutation| {
             AuthoritativeStateCatalogV1.lookup(mutation.table().label(), mutation.key())
@@ -158,10 +159,12 @@ pub(crate) fn plan_recovery(
         }
         previous = Some(sequence);
         if sequence <= original_tail {
-            verify_materialized_frame(transaction, frame)?;
+            let (_, point) =
+                verify_materialized_frame_with_roots(transaction, frame, history, verified_point)?;
+            verified_point = Some(point);
         } else {
             replay_from = replay_from.min(index);
-            let receipt = receipt_from_journal(
+            let summary = crate::changelog_v3::summary_from_journal_for_catalog(
                 frame,
                 AuthoritativeTransactionBindingV3 {
                     database_id: history.lineage().database_id(),
@@ -178,14 +181,14 @@ pub(crate) fn plan_recovery(
                 history.lineage().catalog_digest(),
             )
             .map_err(value_error)?;
-            crate::primary_admission_roots::validate_write_receipt(
+            crate::primary_admission_roots::validate_write_receipt_summary(
                 &transaction
                     .open_table(crate::layout::META)
                     .map_err(table_error)?,
                 history,
-                &receipt,
+                &summary,
             )?;
-            history = history.advance(&receipt).map_err(value_error)?;
+            history = summary.advance_history(history).map_err(value_error)?;
         }
     }
     Ok(RecoveryPlan {
@@ -437,12 +440,23 @@ fn materialize_native_frame(
 /// using one pinned checkpoint. Later authoritative overwrites are irrelevant.
 /// Like bounded root validation, this checks local receipt/predecessor agreement;
 /// complete retained-history validation remains the startup/recovery owner's duty.
+#[cfg(test)]
 pub(crate) fn verify_materialized_frame(
     transaction: &ReadTransaction,
     frame: &JournalFrame,
 ) -> Result<AuthoritativeTransactionV3, StorageError> {
     let history = read_checkpoint_roots(transaction)?
         .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+    verify_materialized_frame_with_roots(transaction, frame, history, None)
+        .map(|(receipt, _)| receipt)
+}
+
+fn verify_materialized_frame_with_roots(
+    transaction: &ReadTransaction,
+    frame: &JournalFrame,
+    history: ChangelogHistoryStateV3,
+    verified_predecessor: Option<ChangelogHistoryPointV3>,
+) -> Result<(AuthoritativeTransactionV3, ChangelogHistoryPointV3), StorageError> {
     let assignment = frame
         .mutations()
         .iter()
@@ -456,43 +470,62 @@ pub(crate) fn verify_materialized_frame(
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
     let table = transaction.open_table(HISTORY).map_err(table_error)?;
-    let read = |sequence: ChangelogTransactionSequence| {
-        let row = table
-            .get(sequence.get().to_be_bytes().as_slice())
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        if row.value().len() > MAX_CHANGELOG_FRAME_BYTES {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
-        }
-        let receipt = AuthoritativeTransactionV3::decode(
-            &crate::history_stub::resolve_history_value(row.value())?,
-        )
-        .map_err(value_error)?;
-        if receipt.binding().sequence != sequence
-            || receipt.binding().database_id != history.lineage().database_id()
-            || receipt.binding().history_incarnation != history.lineage().history_incarnation()
-        {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        Ok(receipt)
-    };
-    let materialized = read(sequence)?;
+    let row = table
+        .get(sequence.get().to_be_bytes().as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    if row.value().len() > MAX_CHANGELOG_FRAME_BYTES {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let resolved = crate::history_stub::resolve_history_value(row.value())?;
+    let materialized = AuthoritativeTransactionV3::decode(&resolved).map_err(value_error)?;
     let binding = materialized.binding();
-    let point = ChangelogHistoryPointV3::from_receipt(&materialized).map_err(value_error)?;
+    if binding.sequence != sequence
+        || binding.database_id != history.lineage().database_id()
+        || binding.history_incarnation != history.lineage().history_incarnation()
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let point = crate::changelog_v3::ValidatedReceiptSummaryV3::from_decoded_receipt_and_bytes(
+        &materialized,
+        &resolved,
+    )
+    .map_err(value_error)?
+    .point();
     if sequence == history.minimum_resume().sequence() {
         if point != history.minimum_resume() {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
     } else {
-        let predecessor = read(
-            binding
-                .predecessor
-                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
-        )?;
-        if predecessor.history_hash().map_err(value_error)? != binding.prior_history_hash
-            || predecessor.binding().covered_frontier != binding.predecessor_frontier
+        let pred_sequence = binding
+            .predecessor
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if let Some(prior) = verified_predecessor.filter(|prior| prior.sequence() == pred_sequence)
         {
-            return Err(storage_error(StorageErrorKind::CorruptData));
+            if prior.history_hash() != binding.prior_history_hash
+                || prior.frontier() != binding.predecessor_frontier
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+        } else {
+            let pred_row = table
+                .get(pred_sequence.get().to_be_bytes().as_slice())
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            if pred_row.value().len() > MAX_CHANGELOG_FRAME_BYTES {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            let pred_summary =
+                crate::history_stub::resolve_history_summary_for_journal(pred_row.value())?;
+            if pred_summary.binding().sequence != pred_sequence
+                || pred_summary.binding().database_id != history.lineage().database_id()
+                || pred_summary.binding().history_incarnation
+                    != history.lineage().history_incarnation()
+                || pred_summary.history_hash() != binding.prior_history_hash
+                || pred_summary.binding().covered_frontier != binding.predecessor_frontier
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
         }
     }
     if let Some(recorded) = frame.changelog()
@@ -503,15 +536,9 @@ pub(crate) fn verify_materialized_frame(
     }
     let recovered = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
         .map_err(value_error)?;
-    let original = table
-        .get(sequence.get().to_be_bytes().as_slice())
-        .map_err(precommit_storage_error)?
-        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     // A history stub is compared by the receipt it resolves to (ADR-0263 C3).
-    if recovered.encode().map_err(value_error)?.as_slice()
-        != &*crate::history_stub::resolve_history_value(original.value())?
-    {
+    if recovered.encode().map_err(value_error)?.as_slice() != &*resolved {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    Ok(recovered)
+    Ok((recovered, point))
 }

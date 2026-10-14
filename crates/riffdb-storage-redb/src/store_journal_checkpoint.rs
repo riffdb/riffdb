@@ -108,22 +108,43 @@ impl SharedRedb {
                         ChangelogAttributionV3::RetentionPrune
                     }
                 };
-                let receipt = crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
-                    // The same binding was proven before admission to the lane.
-                    binding,
-                    source,
-                    &frame.mutations,
-                    history.lineage().catalog_digest(),
-                )
-                .map_err(value_error)?;
-                if frame.changelog_binding != Some(binding) {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
+                if frame.encoded.records_changelog() {
+                    let summary =
+                        crate::changelog_v3::summary_from_validated_mutations_for_catalog(
+                            // The same binding was proven before admission to the lane.
+                            binding,
+                            source,
+                            &frame.mutations,
+                            history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
+                    if frame.changelog_binding != Some(binding) {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    Some(PreparedHistoryAdvance::prepare_chained_summary(
+                        &transaction,
+                        history,
+                        &summary,
+                    )?)
+                } else {
+                    let receipt =
+                        crate::changelog_v3::receipt_from_validated_mutations_for_catalog(
+                            // The same binding was proven before admission to the lane.
+                            binding,
+                            source,
+                            &frame.mutations,
+                            history.lineage().catalog_digest(),
+                        )
+                        .map_err(value_error)?;
+                    if frame.changelog_binding != Some(binding) {
+                        return Err(storage_error(StorageErrorKind::CorruptData));
+                    }
+                    Some(PreparedHistoryAdvance::prepare_chained(
+                        &transaction,
+                        history,
+                        &receipt,
+                    )?)
                 }
-                Some(PreparedHistoryAdvance::prepare_chained(
-                    &transaction,
-                    history,
-                    &receipt,
-                )?)
             } else {
                 if frame.changelog_binding.is_some() {
                     return Err(storage_error(StorageErrorKind::CorruptData));

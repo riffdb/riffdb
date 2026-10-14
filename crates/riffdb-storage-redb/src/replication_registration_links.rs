@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use redb::ReadableTable;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogHistoryPointV3 as Point, ChangelogHistoryStateV3 as History, DurableCodecErrorKind,
+    AuthoritativeNamespaceV1 as N, ChangelogAttributionV3, ChangelogHistoryPointV3 as Point,
+    ChangelogHistoryStateV3 as History, DurableCodecErrorKind,
     FollowerRegistrationPhaseV1 as Phase, MAX_REPLICATION_SOURCE_HOLDS_V1,
     ReplicationAdministrationActionV1 as Action, ReplicationSourceHoldStateV1 as State,
     ReplicationSourceHoldV2 as Policy, StorageError, StorageErrorKind,
@@ -207,16 +207,16 @@ pub(crate) fn validate_point_with_admission(
         .ok_or_else(corrupt)?;
     if let Some(budget) = budget {
         let candidate = crate::history_stub::provider_receipt_from_value_v1(row.value(), budget)?;
-        if Point::from_receipt(&candidate.receipt).map_err(|_| corrupt())? != point {
+        let summary =
+            crate::changelog_v3::ValidatedReceiptSummaryV3::from_receipt(&candidate.receipt)
+                .map_err(|_| corrupt())?;
+        if summary.point() != point {
             return Err(corrupt());
         }
         return Ok(());
     }
-    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-        row.value(),
-    )?)
-    .map_err(|_| corrupt())?;
-    if Point::from_receipt(&receipt).map_err(|_| corrupt())? != point {
+    let summary = crate::history_stub::resolve_history_summary(row.value())?;
+    if summary.point() != point {
         return Err(corrupt());
     }
     Ok(())
@@ -240,10 +240,8 @@ fn validate_physical_record(
         .get(sequence.get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?
         .ok_or_else(corrupt)?;
-    let receipt = AuthoritativeTransactionV3::decode(&crate::history_stub::resolve_history_value(
-        row.value(),
-    )?)
-    .map_err(|_| corrupt())?;
+    let receipt = crate::history_stub::resolve_history_receipt_for_journal(row.value())
+        .map_err(|_| corrupt())?;
     let binding = receipt.binding();
     if binding.sequence != sequence
         || binding.database_id != history.lineage().database_id()

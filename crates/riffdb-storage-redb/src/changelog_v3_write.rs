@@ -391,28 +391,99 @@ impl PreparedHistoryAdvance {
         history: ChangelogHistoryStateV3,
         receipt: &AuthoritativeTransactionV3,
     ) -> Result<Self, StorageError> {
+        Self::validate_chained_physical_frontier(transaction, history)?;
+        Self::from_captured_predecessor(transaction, history, receipt)
+    }
+
+    /// Borrowed/summary form of [`Self::prepare_chained`] for a batch frame that
+    /// stages a [`crate::history_stub::HistoryStub`] instead of encoded receipt
+    /// bytes, avoiding allocating an unused receipt buffer on every frame.
+    pub(crate) fn prepare_chained_summary(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+        summary: &crate::changelog_v3::ValidatedReceiptSummaryV3,
+    ) -> Result<Self, StorageError> {
+        Self::validate_chained_physical_frontier(transaction, history)?;
         {
             let meta = transaction.open_table(META).map_err(table_error)?;
-            let read = |key: &str| -> Result<Vec<u8>, StorageError> {
-                let value = meta
-                    .get(key)
+            crate::primary_admission_roots::validate_write_receipt_summary(
+                &meta, history, summary,
+            )?;
+            for (namespace, expected) in [
+                (
+                    N::ChangelogHistoryState,
+                    encode_changelog_history_state_v3(history).map_err(codec_error)?,
+                ),
+                (
+                    N::NextChangelogTransaction,
+                    encode_changelog_transaction_allocator_v3(history.expected_allocator())
+                        .map_err(codec_error)?,
+                ),
+            ] {
+                let observed = meta
+                    .get(metadata_key(namespace)?)
                     .map_err(precommit_storage_error)?
                     .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-                // The same fixed-root envelope ceiling as the full root read.
-                if value.value().len() > 512 {
-                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                if observed.value() != expected.as_bytes() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
                 }
-                Ok(value.value().to_vec())
-            };
-            let frontier = decode_physical_frontier(
-                &read(META_APPLICATION_SEQUENCE)?,
-                &read(META_ADMINISTRATION_SEQUENCE)?,
-            )?;
-            if history.tail().frontier() != frontier {
-                return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }
-        Self::from_captured_predecessor(transaction, history, receipt)
+        let (assigned, allocator) = history
+            .expected_allocator()
+            .allocate_one()
+            .map_err(value_error)?;
+        if assigned != summary.binding().sequence {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let successor = summary.advance_history(history).map_err(value_error)?;
+        let encoded_history = encode_changelog_history_state_v3(successor)
+            .map_err(codec_error)?
+            .into_bytes();
+        let encoded_allocator = encode_changelog_transaction_allocator_v3(allocator)
+            .map_err(codec_error)?
+            .into_bytes();
+        if transaction
+            .open_table(HISTORY)
+            .map_err(table_error)?
+            .get(assigned.get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(Self {
+            successor,
+            encoded: Vec::new(),
+            encoded_history,
+            encoded_allocator,
+        })
+    }
+
+    fn validate_chained_physical_frontier(
+        transaction: &WriteTransaction,
+        history: ChangelogHistoryStateV3,
+    ) -> Result<(), StorageError> {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let read = |key: &str| -> Result<Vec<u8>, StorageError> {
+            let value = meta
+                .get(key)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            // The same fixed-root envelope ceiling as the full root read.
+            if value.value().len() > 512 {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            Ok(value.value().to_vec())
+        };
+        let frontier = decode_physical_frontier(
+            &read(META_APPLICATION_SEQUENCE)?,
+            &read(META_ADMINISTRATION_SEQUENCE)?,
+        )?;
+        if history.tail().frontier() != frontier {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(())
     }
 
     /// The history state this advance stages.
@@ -499,9 +570,10 @@ impl PreparedHistoryAdvance {
 
     /// Stages one frame of a multi-frame checkpoint transaction without the
     /// per-frame physical root re-read. Only for an advance produced by
-    /// [`Self::prepare_chained`] or [`Self::prepare`] inside a batch whose
-    /// owner fully re-reads the roots after its final frame and aborts the
-    /// transaction on any mismatch; `stub` is as for [`Self::stage_stub`].
+    /// [`Self::prepare_chained`], [`Self::prepare_chained_summary`], or
+    /// [`Self::prepare`] inside a batch whose owner fully re-reads the roots
+    /// after its final frame and aborts the transaction on any mismatch;
+    /// `stub` is as for [`Self::stage_stub`].
     pub(crate) fn stage_within_batch(
         self,
         transaction: &WriteTransaction,
@@ -516,6 +588,11 @@ impl PreparedHistoryAdvance {
         stub: Option<&[u8]>,
         verify_roots: bool,
     ) -> Result<(), StorageError> {
+        let value = match stub {
+            Some(stub) => stub,
+            None if !self.encoded.is_empty() => self.encoded.as_slice(),
+            None => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        };
         transaction
             .open_table(HISTORY)
             .map_err(table_error)?
@@ -526,7 +603,7 @@ impl PreparedHistoryAdvance {
                     .get()
                     .to_be_bytes()
                     .as_slice(),
-                stub.unwrap_or(self.encoded.as_slice()),
+                value,
             )
             .map_err(precommit_storage_error)?;
         #[cfg(test)]

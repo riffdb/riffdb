@@ -6,9 +6,8 @@ use std::sync::Arc;
 
 use redb::ReadableTableMetadata;
 use riffdb_storage_api::{
-    AuthoritativeStateCatalogV2, AuthoritativeTransactionV3, ChangelogAttributionV3,
-    ChangelogHistoryStateV3, EvidencePageLimit, MAX_CHANGELOG_FRAME_BYTES, StorageError,
-    StorageErrorKind,
+    AuthoritativeStateCatalogV2, ChangelogAttributionV3, ChangelogHistoryStateV3,
+    EvidencePageLimit, MAX_CHANGELOG_FRAME_BYTES, StorageError, StorageErrorKind,
 };
 
 use crate::changelog_v3_activation::{HISTORY, SOURCE_HOLDS};
@@ -327,40 +326,43 @@ impl RetainedHistoryValidation {
                 return Ok(false);
             }
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            let encoded = crate::history_stub::resolve_history_value(value.value())?;
-            if encoded.len() > MAX_CHANGELOG_FRAME_BYTES {
+            let summary = crate::history_stub::resolve_history_summary(value.value())?;
+            if summary.encoded_len() > MAX_CHANGELOG_FRAME_BYTES {
                 return Err(corrupt());
             }
-            let next = bytes.checked_add(encoded.len()).ok_or_else(corrupt)?;
+            let next = bytes
+                .checked_add(summary.encoded_len())
+                .ok_or_else(corrupt)?;
             if next > MAX_CHANGELOG_FRAME_BYTES {
                 return Ok(false);
             }
-            let receipt = AuthoritativeTransactionV3::decode(&encoded).map_err(|_| corrupt())?;
             self.step_rows[usize::from(self.initial_pass_complete)] =
                 self.step_rows[usize::from(self.initial_pass_complete)].saturating_add(1);
             #[cfg(test)]
             {
                 self.rows_read[0] += 1;
             }
-            if key.value() != receipt.binding().sequence.get().to_be_bytes()
-                || receipt.binding().sequence > self.history.tail().sequence()
+            if key.value() != summary.binding().sequence.get().to_be_bytes()
+                || summary.binding().sequence > self.history.tail().sequence()
             {
                 return Err(corrupt());
             }
             if self.first {
-                self.covered
-                    .validate_terminal_receipt(&receipt)
+                summary
+                    .validate_terminal_receipt(self.covered)
                     .map_err(|_| corrupt())?;
                 self.first = false;
             } else {
-                self.covered = self.covered.advance(&receipt).map_err(|_| corrupt())?;
+                self.covered = summary
+                    .advance_history(self.covered)
+                    .map_err(|_| corrupt())?;
             }
             if !matches!(
-                receipt.attribution(),
+                summary.attribution(),
                 ChangelogAttributionV3::HistoryReclamation
                     | ChangelogAttributionV3::ValidatedPrefixCheckpoint
             ) {
-                self.independent_sequence = receipt.binding().sequence.get();
+                self.independent_sequence = summary.binding().sequence.get();
             }
             self.after_receipt = Some(key.value().try_into().map_err(|_| corrupt())?);
             bytes = next;
