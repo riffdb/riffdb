@@ -25590,6 +25590,22 @@ work_packages:
     to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: docs/performance/wp-777-demand-activated-columnar.md
+    decision: Configured columnar sources remain cold through readiness and no-demand graceful close,
+      retaining only bounded checked registrations and one server-owned activation worker. Concurrent
+      first demand coalesces onto a single Cold -> Activating transition and immediately returns the
+      existing typed Building outcome with no rows. Activation rereads current durable selection,
+      validates the complete selected artifact, and atomically installs one immutable query view;
+      corrupt, mismatched, or unavailable selected state fails closed without rows or fallback.
+      Both WP-705 lifecycle receipts (release/evidence/wp-705/rows-65536-lifecycle-v2.json and
+      release/evidence/wp-705/complete-path-ceiling-production.json) record columnar_cold_sources=1,
+      columnar_activations=0, and columnar_population_passes=0 across no-demand readiness and close.
+    decisions_taken:
+    - Restore the permanent OBL-0195-4 proof name failed_columnar_activation_never_serves_rows_or_falls_back
+      on the selected-V1 failed-activation and rebuild test in crates/riffdb-server/src/columnar_adapter.rs.
 
 - id: WP-778
   name: Fresh-process contiguous idempotency locator coverage

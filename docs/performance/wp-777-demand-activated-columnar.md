@@ -45,8 +45,12 @@ After activation, the production graph still owns one authoritative writer,
 uses least-authority reader handles and immutable shared plans/views, preserves
 fresh authorization and response-release checks, and retains all existing
 bounded concurrency, heap, latency, throughput, and shutdown acceptance gates.
-The exact WP-705 lifecycle checkpoints provide release evidence separately;
-this page makes no performance claim until those fixed receipts pass.
+The WP-705 lifecycle referee (`scripts/wp705-lifecycle-referee`) enforces these
+census invariants across both banked lifecycle receipts
+(`release/evidence/wp-705/rows-65536-lifecycle-v2.json` and
+`release/evidence/wp-705/complete-path-ceiling-production.json`), each recording
+`columnar_cold_sources: 1`, `columnar_activations: 0`, and
+`columnar_population_passes: 0` across no-demand readiness and graceful close.
 
 The semantic proofs are
 `configured_columnar_artifacts_remain_cold_through_readiness_and_clean_close`,
