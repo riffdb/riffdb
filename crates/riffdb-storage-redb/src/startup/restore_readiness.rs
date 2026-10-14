@@ -42,20 +42,9 @@ pub(crate) fn private_restore_image_supports_bounded_readiness(
     {
         return Ok(false);
     }
-    // Registry completion predates native locator preparation. An older image
-    // must hydrate through the complete compatibility path before any deferred
-    // history proof can be admitted across that preparation write.
-    for table in [
-        crate::layout::IDEMPOTENCY_LOCATORS,
-        crate::layout::PROVENANCE_LOCATORS,
-        crate::layout::AUDIT_BY_REQUEST_LOCATORS,
-    ] {
-        match read.open_table(table) {
-            Ok(_) => {}
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
-            Err(error) => return Err(table_error(error)),
-        }
-    }
+    // ADR-0244 retires the physical locator tables. Their presence or absence
+    // grants no readiness proof; registry and native checkpoint roots above
+    // remain mandatory, and operational startup proves its derived index.
     Ok(true)
 }
 

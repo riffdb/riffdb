@@ -9253,10 +9253,8 @@ fn classify_table_names(
     // The newest additive tables are empty on install and carry no history, so
     // their absence is normalized while classifying the already-enumerated
     // predecessor layouts below. The vector and common columnar control tables
-    // are installed by their registry migrations before the successor digest;
-    // the
-    // ADR-0165 locator tables add no message type, so no digest advances for
-    // them and `install_command_locator_tables` installs them at open instead.
+    // are installed by their registry migrations before the successor digest.
+    // ADR-0244's retired locator tables were excluded explicitly above.
     // Only these exact names are normalized. No other missing or extra table is
     // hidden.
     let mut with_newest_additive = tables.clone();

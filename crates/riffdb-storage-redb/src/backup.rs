@@ -5182,7 +5182,7 @@ mod tests {
 
     // req: REC-001, REC-006, END-001
     #[test]
-    fn owned_materialization_preserves_required_native_locator_preparation() {
+    fn owned_materialization_preserves_native_restore_without_retired_locator_tables() {
         let root = TestRoot::new("owned-native-required-locators");
         let source = root.join("source.redb");
         {
@@ -5191,23 +5191,18 @@ mod tests {
         }
         {
             let database = Database::open(&source).unwrap();
-            let write = database.begin_write().unwrap();
-            assert!(
-                write
-                    .delete_table(crate::layout::IDEMPOTENCY_LOCATORS)
-                    .unwrap()
-            );
-            assert!(
-                write
-                    .delete_table(crate::layout::PROVENANCE_LOCATORS)
-                    .unwrap()
-            );
-            assert!(
-                write
-                    .delete_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
-                    .unwrap()
-            );
-            write.commit().unwrap();
+            let read = database.begin_read().unwrap();
+            for namespace in [
+                riffdb_storage_api::AuthoritativeNamespaceV1::IdempotencyLocators,
+                riffdb_storage_api::AuthoritativeNamespaceV1::ProvenanceLocators,
+                riffdb_storage_api::AuthoritativeNamespaceV1::AuditByRequestLocators,
+            ] {
+                let table = redb::TableDefinition::<&[u8], &[u8]>::new(namespace.table());
+                assert!(matches!(
+                    read.open_table(table),
+                    Err(redb::TableError::TableDoesNotExist(_))
+                ));
+            }
         }
         let backup = root.join("backup");
         let expected = RedbOfflineBackup::bind(&source, &backup)
@@ -5242,17 +5237,18 @@ mod tests {
         crate::maintenance::probe_restore_custody(&path, false);
         let database = Database::open(&path).unwrap();
         let read = database.begin_read().unwrap();
-        // The actual derived tables must exist, as they do after ordinary
-        // source startup. Complete scrub alone cannot replace preparation.
-        assert!(
-            read.open_table(crate::layout::IDEMPOTENCY_LOCATORS).is_ok(),
-            "owned restore must perform native preparation before complete validation"
-        );
-        assert!(read.open_table(crate::layout::PROVENANCE_LOCATORS).is_ok());
-        assert!(
-            read.open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
-                .is_ok()
-        );
+        // Ordinary and owned preparation must not recreate the retired tables.
+        for namespace in [
+            riffdb_storage_api::AuthoritativeNamespaceV1::IdempotencyLocators,
+            riffdb_storage_api::AuthoritativeNamespaceV1::ProvenanceLocators,
+            riffdb_storage_api::AuthoritativeNamespaceV1::AuditByRequestLocators,
+        ] {
+            let table = redb::TableDefinition::<&[u8], &[u8]>::new(namespace.table());
+            assert!(matches!(
+                read.open_table(table),
+                Err(redb::TableError::TableDoesNotExist(_))
+            ));
+        }
         validate_copied_database_facts(read_database_facts(&database).unwrap(), &manifest).unwrap();
         assert_eq!(validate_immutable_backup(&backup).unwrap(), before);
         assert!(!root.join("configured.redb").exists());

@@ -33,3 +33,16 @@ A focused public restore diagnostic uses the retained backup and archive roots u
 The proposed ADR remains unaccepted and this implementation remains isolated. Qualification still requires exact acceptance, the merged-source checks and bindings, the actual scheduled restore/release gates, and both complete rehearsals.
 
 Acceptance request: accept the exact ADR-0301 and its registration in WP-825. AGENTS.md requires a full guarantee record whose exact text a human accepts, and review when an accepted guarantee changes. Broad approval for necessary fixes remains in force; this request concerns the explicit accounting-validation boundary.
+
+
+The requested final main refresh incorporates WP-796 and accepted ADR-0244.
+Native restore no longer installs or requires the retired durable locator tables.
+Its completed-registry and native-checkpoint checks remain mandatory; operational
+startup must prove the replacement derived locator index. Logical byte accounting
+counts superseded inline locators and excludes the retired physical lookup keys.
+Regression tests cover owned complete and bounded restore with both historical
+locator-table inventories and their absence, immutable backup custody, exact byte
+counts and unchanged refusal of corrupt inline locators. The first merged build
+exposed obsolete locator references; its failed evidence is retained. The corrected
+merged source still requires its saved restore recheck and full C3D acceptance
+before the eight-hour rehearsal starts.

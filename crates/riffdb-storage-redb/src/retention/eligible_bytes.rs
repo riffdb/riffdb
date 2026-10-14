@@ -84,19 +84,11 @@ impl<'a> CountingViews<'a> {
             if change.original != change.after
                 && let Some(original) = &change.original
             {
-                // Retained full records stay in their separate resource model,
-                // including a compatible envelope rewrite. Only superseded
-                // command locators and their removed lookup keys are eligible.
+                // ADR-0244 removes physical locator deletions from retention.
+                // Count only superseded inline locators; full retained records
+                // and their lookup keys remain protected.
                 if change.after.is_none() {
-                    if !matches!(
-                        table,
-                        JournalTable::IdempotencyLocators
-                            | JournalTable::ProvenanceLocators
-                            | JournalTable::AuditByRequestLocators
-                    ) {
-                        return Err(storage_error(StorageErrorKind::InvariantViolation));
-                    }
-                    bytes.add(original.len(), key.len())?;
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
                 } else if match table {
                     JournalTable::Idempotency | JournalTable::Provenance => {
                         riffdb_storage_api::decode_command_locator_v1(original).is_ok()
@@ -154,9 +146,6 @@ impl RetainedViewAccess for CountingViews<'_> {
         value: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
         self.stage(table, key, Some(value))
-    }
-    fn remove(&mut self, table: JournalTable, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-        self.stage(table, key, None)
     }
 }
 

@@ -127,9 +127,6 @@ fn native_prune_then_outbox_drain_preserves_source_validation_qualification() {
         crate::journal::JournalTable::Idempotency,
         crate::journal::JournalTable::Provenance,
         crate::journal::JournalTable::Audit,
-        crate::journal::JournalTable::IdempotencyLocators,
-        crate::journal::JournalTable::ProvenanceLocators,
-        crate::journal::JournalTable::AuditByRequestLocators,
     ];
     let prior_rows = {
         let read = ports.begin_composite_read().unwrap();

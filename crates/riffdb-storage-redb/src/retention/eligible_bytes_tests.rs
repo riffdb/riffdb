@@ -22,7 +22,7 @@ pub(super) fn segment() -> riffdb_storage_api::StoredCommandSegmentV1 {
 }
 
 #[test]
-fn logical_bytes_count_actual_replaced_locators_and_deleted_keys_without_mutation() {
+fn logical_bytes_count_actual_replaced_inline_locators_without_retired_keys_or_mutation() {
     let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
     let capsule = capsule();
     let key = encode_idempotency_key(&capsule.outcome().identity().storage_key().unwrap()).to_vec();
@@ -31,7 +31,7 @@ fn logical_bytes_count_actual_replaced_locators_and_deleted_keys_without_mutatio
     )
     .unwrap();
     let write = ports.shared.database.begin_write().unwrap();
-    for table in [JournalTable::Idempotency, JournalTable::IdempotencyLocators] {
+    for table in [JournalTable::Idempotency] {
         write
             .open_table(crate::journal::byte_table_definition(table).unwrap())
             .unwrap()
@@ -45,12 +45,12 @@ fn logical_bytes_count_actual_replaced_locators_and_deleted_keys_without_mutatio
     assert_eq!(
         views.bytes().unwrap(),
         Bytes {
-            values: (locator.as_bytes().len() * 2) as u64,
-            keys: key.len() as u64
+            values: locator.as_bytes().len() as u64,
+            keys: 0
         }
     );
     let after = ports.begin_composite_read().unwrap();
-    for table in [JournalTable::Idempotency, JournalTable::IdempotencyLocators] {
+    for table in [JournalTable::Idempotency] {
         assert_eq!(
             after.read_value(table, &key).unwrap().unwrap(),
             locator.as_bytes()

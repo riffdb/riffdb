@@ -596,23 +596,28 @@ fn copied_extent_paths(stage: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn restore_readiness_receipt_stamp_refuses_deferred_history_for_missing_locator_images() {
-    for missing in [
-        crate::layout::IDEMPOTENCY_LOCATORS,
-        crate::layout::PROVENANCE_LOCATORS,
-        crate::layout::AUDIT_BY_REQUEST_LOCATORS,
-    ] {
+fn restore_readiness_preserves_owned_preparation_with_or_without_retired_locator_tables() {
+    for legacy_tables_present in [false, true] {
         let (root, backup, _) = fixture(false);
         let source = root.join("source.redb");
         let database = redb::Database::open(&source).unwrap();
         assert!(private_restore_image_supports_bounded_readiness(&database).unwrap());
-        let write = database.begin_write().unwrap();
-        assert!(write.delete_table(missing).unwrap());
-        write.commit().unwrap();
-        assert!(
-            !private_restore_image_supports_bounded_readiness(&database).unwrap(),
-            "registry completion cannot authorize deferred history across native table preparation"
-        );
+        if legacy_tables_present {
+            let write = database.begin_write().unwrap();
+            for namespace in [
+                riffdb_storage_api::AuthoritativeNamespaceV1::IdempotencyLocators,
+                riffdb_storage_api::AuthoritativeNamespaceV1::ProvenanceLocators,
+                riffdb_storage_api::AuthoritativeNamespaceV1::AuditByRequestLocators,
+            ] {
+                write
+                    .open_table(redb::TableDefinition::<&[u8], &[u8]>::new(
+                        namespace.table(),
+                    ))
+                    .unwrap();
+            }
+            write.commit().unwrap();
+        }
+        assert!(private_restore_image_supports_bounded_readiness(&database).unwrap());
         drop(database);
         std::fs::remove_dir_all(&backup).unwrap();
         let build = riffdb_storage_api::BackupBuildMetadataV1::new(
@@ -633,22 +638,21 @@ fn restore_readiness_receipt_stamp_refuses_deferred_history_for_missing_locator_
                 Arc::new(AtomicBool::new(false)),
             )
             .unwrap();
-        let control_error = match control.validate_complete(inputs()) {
-            Err(error) => error,
-            Ok(_) => panic!("incomplete current image cannot acquire a complete restore proof"),
-        };
-        assert_eq!(control_error.kind(), StorageErrorKind::IncompatibleFormat);
+        let control = control.validate_complete(inputs()).unwrap();
+        drop(control);
         let (_, owned) = crate::RedbOfflineRestore::bind(&backup, root.join("stage"))
             .restore_owned_stamp_preparation(
                 &root.join("configured.redb"),
                 Arc::new(AtomicBool::new(false)),
             )
             .unwrap();
-        let error = match owned.validate_readiness(inputs()) {
-            Err(error) => error,
-            Ok(_) => panic!("receipt stamping cannot bypass the complete preparation refusal"),
-        };
-        assert_eq!(error.kind(), control_error.kind());
+        let (owner, evidence) = owned.validate_readiness(inputs()).unwrap();
+        assert!(
+            evidence.archive_snapshot().is_err(),
+            "bounded readiness cannot authorize a complete archive proof"
+        );
+        drop(evidence);
+        drop(owner);
         assert_eq!(
             crate::backup::validate_immutable_backup(&backup).unwrap(),
             before

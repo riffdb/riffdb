@@ -297,7 +297,6 @@ impl RedbStore {
         }
         if self.shared.open_mode == OpenMode::OfflineSource {
             self.ensure_current_storage_format()?;
-            self.install_command_locator_tables()?;
             self.recover_durability_journal()?;
             // This routine takes its own mutation lease. No completed proof
             // lease is held here, including for a no-op registry transition.
