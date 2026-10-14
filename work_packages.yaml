@@ -26603,6 +26603,25 @@ work_packages:
     scale: Not applicable. It changes how a statistic is reported and gated, and adds no
       runtime behaviour.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [PERF-018]
+    evidence: docs/performance/benchmark-integrity.md
+    decision: ADR-0249 is accepted (9d1bc473c) and implemented in the benchmark integrity
+      protocol (docs/performance/benchmark-integrity.md). Every campaign that publishes
+      p50 and p95 publishes p99 alongside them as mandatory disclosure; a published tail
+      regression must name its mechanism while an unexplained tail movement blocks at any
+      size; and the five-generation (and six-generation) run-to-run spread of p99 on
+      identical code is banked on the 8 vCPU, AMD EPYC 7B12 bench host (1.0909 max/min and
+      1.0454 central-three spread on 9ee66abf1; 1.2381 max/min and 1.0909 central-three
+      spread on 3b851020a, roughly 2.5x the corresponding p50 spread).
+    decisions_taken:
+    - Record p99 as mandatory mechanism-attributed disclosure rather than an unstated
+      pass/fail gate, while blocking unexplained tail movements at any magnitude.
+    - Bank the five-generation and six-generation identical-code p99 spreads in
+      docs/performance/benchmark-integrity.md so any future numeric p99 threshold is
+      derived from observed host variance rather than assumed by analogy to p95.
 - id: WP-798
   name: Hardware CRC-32C and the sub-variance wins register
   tier: surface
@@ -26632,6 +26651,27 @@ work_packages:
     scale: The saving is per frame, so it grows with throughput rather than with stored
       size, and it adds no state.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: docs/performance/sub-variance-wins-register.md
+    decision: ADR-0247 is implemented on main (landed in 6d0308093 and accepted in
+      284772dae). Envelope checksums in crates/riffdb-proto/src/envelope.rs use
+      crc32c::crc32c hardware acceleration while retaining the crc crate's software
+      slice-by-16 Castagnoli table as the test-only oracle. The obligation proof
+      crc_matches_the_software_table_across_sizes_and_alignments (OBL-0247-1) verifies
+      byte-identical checksums across payload sizes and unaligned slice offsets from 1 to
+      15 bytes, and crc_matches_the_published_castagnoli_check_vector anchors the
+      polynomial to the standard check vector 0xE3069283 for "123456789". The sub-variance
+      wins register is maintained at docs/performance/sub-variance-wins-register.md and
+      linked from docs/SUMMARY.md without quoting individual sub-variance entries as
+      system-level throughput claims.
+    decisions_taken:
+    - Retain the software crc table in dev-dependencies as the permanent test oracle
+      against which hardware crc32c is checked across sizes and alignments.
+    - Record sub-variance wins in docs/performance/sub-variance-wins-register.md under
+      ADR-0247's three admission criteria rather than claiming standalone system-level
+      percentage improvements inside the host's noise band.
 - id: WP-797
   name: Measurement host hardware baseline
   tier: guarantee
@@ -26689,8 +26729,19 @@ work_packages:
       committed, not what an application can express.
     scale: Not applicable. Removing committed build artifacts reduced the repository
       from 204 MB to 66 MB, which is a side effect rather than the objective.
+  human_review_triggers: *id001
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: adr/0243-public-repository-disclosure-guards.md
+    decision: ADR-0243 is implemented on main (landed in 7da16037c, accepted in 32819ea76,
+      and custody-repaired in ec8bd7552). Machine addresses and absolute developer home
+      paths are absent from tracked files and reachable history, with benchmark machines
+      recorded by hardware specifications only. Unanchored ignore rules in .gitignore
+      reject target/ and build/ directories at any depth alongside secret-shaped filenames
+      and agent session state, with .cowboy/agent.yaml and .cowboy/security.yaml explicitly
+      allowed back. AGENTS.md states the public-repository disclosure rules and the ban on
+      blanket git add.
     decisions_taken:
     - Repair WP-552's two retained report digest references after the 2026-09-19
       public-history redaction. Verify the original reports against the old
@@ -26699,6 +26750,9 @@ work_packages:
       preserve every measurement, eligibility field and fail-closed verifier.
       This repairs historical evidence custody and makes no fresh qualification
       or package-completion claim.
+    - Unanchor build-artifact ignore rules so nested workspace target/ and build/
+      directories are ignored at any depth, and prohibit git add -A and git add . in
+      AGENTS.md.
 - id: WP-796
   name: Retire durable command-derived locator tables
   tier: guarantee

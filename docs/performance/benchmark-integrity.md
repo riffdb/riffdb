@@ -151,6 +151,39 @@ commands without page-query or projection-catch-up work.
   postflight V2 host evidence additionally binds the complete-cell CPU-steal
   delta and refuses above the fixed 1.00-percent ceiling.
 
+### Tail latency disclosure and banked p99 spread (ADR-0249)
+
+Per ADR-0249 (`WP-799`):
+
+1. **`p99` is mandatory disclosure, not an unstated pass/fail gate.** Every
+   campaign that publishes `p50` and `p95` also measures and publishes `p99`.
+   While `PERF-018` and `ADR-0171` gate throughput (`>= 0.90`) and `p95`
+   (`<= 1.25`), a `p99` figure does not by itself invalidate evidence or block
+   package closure unless a bound threshold derived from measured host spread is
+   violated.
+2. **Explained vs. unexplained tail movement.** Any published `p99` regression
+   must name its mechanism (for example, an extra `fdatasync` per `N` commits, a
+   lock held across a flush, or a checkpoint page-write burst). An **unexplained
+   tail movement blocks at any size** because an unattributed tail shift is a
+   correctness or synchronization signal rather than an accepted trade-off.
+3. **Banked 5-generation `p99` run-to-run spread on the development bench host
+   (`8 vCPU, AMD EPYC 7B12`, ext4 on network persistent disk).** Across five
+   (and six) consecutive isolated process generations of identical code under
+   32-client `write_only` load (`--full`, 19,220-command seed, ~66,000–68,500
+   operations per generation):
+
+| Revision | Generations (`p99` ms) | Min / Median / Max (`ms`) | Central-three `x4 / x2` | Max / Min spread | `p50` Max / Min |
+| --- | --- | --- | --- | --- | --- |
+| `9ee66abf1` (5 gens) | `23.069, 24.117, 23.069, 23.069, 25.166` | `23.069 / 23.069 / 25.166` | `1.0454` (`+4.54%`) | `1.0909` (`+9.09%`) | `1.0370` (`+3.70%`) |
+| `9ee66abf1` (6 gens) | `23.069, 24.117, 23.069, 23.069, 25.166, 23.069` | `23.069 / 23.069 / 25.166` | `1.0454` (`+4.54%`) | `1.0909` (`+9.09%`) | `1.0370` (`+3.70%`) |
+| `3b851020a` (5 gens) | `23.069, 22.020, 23.069, 25.166, 27.263` | `22.020 / 23.069 / 27.263` | `1.0909` (`+9.09%`) | `1.2381` (`+23.81%`) | `1.1539` (`+15.39%`) |
+| `3b851020a` (6 gens) | `23.069, 22.020, 23.069, 25.166, 27.263, 24.117` | `22.020 / 23.593 / 27.263` | `1.0909` (`+9.09%`) | `1.2381` (`+23.81%`) | `1.1539` (`+15.39%`) |
+
+   On identical code, `p99` exhibits a `9.1%` to `23.8%` max/min spread (`4.5%`
+   to `9.1%` central-three `x4 / x2` spread) across five generations on this
+   host—roughly `2.5x` the `p50` spread—confirming why `p99` cannot share a
+   `p95`-tightness threshold without rejecting valid runs on estimator noise.
+
 ### Development performance sentinel
 
 Performance-sensitive changes should use
