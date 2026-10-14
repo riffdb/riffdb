@@ -32,6 +32,17 @@ pub const MAX_INSPECTED_ORDERED_RECORDS: usize = 10_000;
 
 const PAGE_LIMIT: u16 = 500;
 
+#[path = "inspection_correlated.rs"]
+mod correlated;
+
+pub use correlated::{
+    CorrelatedCorpusNamespace, CorrelatedInspectionContinuation, CorrelatedInspectionPage,
+    CorrelatedNamespaceInspectionSession, CorrelatedTargetKey, CorrelatedTargetObservation,
+    MAX_CORRELATED_INSPECTION_PAGES, MAX_CORRELATED_INSPECTION_TOTAL_TARGETS,
+    extract_index_entry_prefix_bytes, open_correlated_opened_redb_inspection,
+    open_correlated_redb_inspection,
+};
+
 /// One declared index range and the exact contract lineage its rows carry.
 ///
 /// The lineage feeds the filtered scan's [`IndexPartitionFilter`], so a
@@ -693,6 +704,23 @@ fn open_validated(
     ),
     DurableInspectionError,
 > {
+    let (_, retained, findings, pages, ports) = open_validated_with_session(store, startup_inputs)?;
+    Ok((retained, findings, pages, ports))
+}
+
+fn open_validated_with_session(
+    store: RedbStore,
+    startup_inputs: StartupValidationInputs,
+) -> Result<
+    (
+        riffdb_storage_api::OpenSessionId,
+        RetainedMetadataV1,
+        Vec<StructuralFinding>,
+        u32,
+        RedbOperationalPorts,
+    ),
+    DurableInspectionError,
+> {
     let mut session = store
         .begin_structural_evidence(startup_inputs)
         .map_err(DurableInspectionError::Storage)?;
@@ -756,7 +784,7 @@ fn open_validated(
     let ports = dormant
         .into_operational_after_catalog_validation()
         .map_err(DurableInspectionError::Storage)?;
-    Ok((retained, findings, pages, ports))
+    Ok((open_session_id, retained, findings, pages, ports))
 }
 
 fn scan_all_commits(

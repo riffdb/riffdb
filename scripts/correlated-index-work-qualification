@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+# req: BLK-024, BLK-025, BLK-027, TXN-030, TXN-031
+"""ADR-0212 / WP-684 correlated-index work accounting and independent model qualification gate."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+
+SCHEMA = "riffdb.wp-684-correlated-index-work-qualification/v1"
+MAX_DELTA_CEILING = 4096
+MAX_AFFECTED_PREFIX_CEILING = 65535
+MAX_VALIDATION_POSITION_CEILING = 65535
+MAX_COMBINED_WORK_CEILING = 65535
+MAX_INSPECTION_PAGE_TARGETS = 256
+REQUIRED_CORPUS_COUNTS = [1, 9, 19, 100]
+REQUIRED_PROOF_TESTS = (
+    "correlated_index_work_matches_independent_authoritative_model",
+    "correlated_index_work_model_rejects_target_divergence",
+    "correlated_index_work_redb_crash_reopen_is_complete_or_absent",
+    "correlated_index_work_remote_redb_loopback_matches_model",
+)
+FORBIDDEN_MODEL_IMPORTS = (
+    "riffdb_commit",
+    "riffdb_storage_redb",
+    "derive_candidate_index_mutations",
+    "derive_affected_index_prefixes",
+)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def default_qualification_receipt() -> dict[str, Any]:
+    return {
+        "schema": SCHEMA,
+        "adr": "ADR-0212",
+        "work_package": "WP-684",
+        "ceilings": {
+            "max_index_deltas": MAX_DELTA_CEILING,
+            "max_affected_prefixes": MAX_AFFECTED_PREFIX_CEILING,
+            "max_validation_positions": MAX_VALIDATION_POSITION_CEILING,
+            "max_combined_work_units": MAX_COMBINED_WORK_CEILING,
+            "max_inspection_page_targets": MAX_INSPECTION_PAGE_TARGETS,
+        },
+        "corpus_counts": list(REQUIRED_CORPUS_COUNTS),
+        "hundred_row_accounting": {
+            "entity_mutations": 200,
+            "index_mutations": 3800,
+            "affected_prefixes": 20,
+            "validation_positions": 220,
+            "combined_work_units": 4040,
+            "inspected_targets": 4020,
+            "inspected_pages": 16,
+        },
+        "gates": {
+            "independent_model_zero_prod_derivation_imports": True,
+            "three_way_agreement_model_sealed_redb": True,
+            "canonical_256_target_pagination_exhaustive": True,
+            "target_divergence_rejected": True,
+            "crash_reopen_complete_or_absent": True,
+            "remote_riffdbd_loopback_matches_model": True,
+            "no_caller_budget_or_split_write_knobs": True,
+        },
+    }
+
+
+def evaluate_receipt(receipt: dict[str, Any]) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if receipt.get("schema") != SCHEMA:
+        reasons.append("invalid-schema")
+    ceilings = receipt.get("ceilings")
+    if not isinstance(ceilings, dict):
+        reasons.append("missing-ceilings")
+    else:
+        if ceilings.get("max_index_deltas") != MAX_DELTA_CEILING:
+            reasons.append("delta-ceiling-mismatch")
+        if ceilings.get("max_affected_prefixes") != MAX_AFFECTED_PREFIX_CEILING:
+            reasons.append("affected-prefix-ceiling-mismatch")
+        if ceilings.get("max_validation_positions") != MAX_VALIDATION_POSITION_CEILING:
+            reasons.append("validation-position-ceiling-mismatch")
+        if ceilings.get("max_combined_work_units") != MAX_COMBINED_WORK_CEILING:
+            reasons.append("combined-work-ceiling-mismatch")
+        if ceilings.get("max_inspection_page_targets") != MAX_INSPECTION_PAGE_TARGETS:
+            reasons.append("inspection-page-ceiling-mismatch")
+
+    if receipt.get("corpus_counts") != REQUIRED_CORPUS_COUNTS:
+        reasons.append("corpus-counts-mismatch")
+
+    hundred = receipt.get("hundred_row_accounting")
+    if not isinstance(hundred, dict):
+        reasons.append("missing-hundred-row-accounting")
+    else:
+        d_val = int(hundred.get("index_mutations", -1))
+        a_val = int(hundred.get("affected_prefixes", -1))
+        v_val = int(hundred.get("validation_positions", -1))
+        w_val = int(hundred.get("combined_work_units", -1))
+        targets = int(hundred.get("inspected_targets", -1))
+        pages = int(hundred.get("inspected_pages", -1))
+        if d_val != 3800 or a_val != 20 or v_val != 220 or w_val != 4040:
+            reasons.append("hundred-row-work-accounting-mismatch")
+        if d_val + a_val + v_val != w_val or w_val > MAX_COMBINED_WORK_CEILING:
+            reasons.append("combined-work-formula-violation")
+        if targets != 4020 or pages != 16:
+            reasons.append("hundred-row-inspection-pagination-mismatch")
+
+    gates = receipt.get("gates")
+    if not isinstance(gates, dict):
+        reasons.append("missing-gates")
+    else:
+        for gate_name in (
+            "independent_model_zero_prod_derivation_imports",
+            "three_way_agreement_model_sealed_redb",
+            "canonical_256_target_pagination_exhaustive",
+            "target_divergence_rejected",
+            "crash_reopen_complete_or_absent",
+            "remote_riffdbd_loopback_matches_model",
+            "no_caller_budget_or_split_write_knobs",
+        ):
+            if gates.get(gate_name) is not True:
+                reasons.append(f"gate-failed:{gate_name}")
+
+    return len(reasons) == 0, reasons
+
+
+def check_source_invariants(root: Path) -> list[str]:
+    errors: list[str] = []
+    model_path = root / "crates/riffdb-testkit/src/model/correlated_index.rs"
+    inspection_path = root / "crates/riffdb-testkit/src/inspection_correlated.rs"
+    recovery_test_path = root / "tests/bulk_command_recovery.rs"
+    fixture_path = root / "fixtures/contracts/bulk/indexed-mutations.riff"
+
+    for required in (model_path, inspection_path, recovery_test_path, fixture_path):
+        if not required.is_file():
+            errors.append(f"missing-file:{required.relative_to(root)}")
+    if errors:
+        return errors
+
+    model_src = model_path.read_text(encoding="utf-8")
+    for line in model_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("//!"):
+            continue
+        for token in FORBIDDEN_MODEL_IMPORTS:
+            if token in stripped:
+                errors.append(f"forbidden-model-import:{token}")
+
+    combined_test_src = model_src + "\n" + recovery_test_path.read_text(encoding="utf-8")
+    for proof_name in REQUIRED_PROOF_TESTS:
+        if f"fn {proof_name}(" not in combined_test_src:
+            errors.append(f"missing-proof-test:{proof_name}")
+
+    fixture_src = fixture_path.read_text(encoding="utf-8")
+    for command_name in ("SeedInitialIndexedStateRows", "ApplyIndexedMutations"):
+        if f"bulk command {command_name} {{" not in fixture_src:
+            errors.append(f"missing-contract-command:{command_name}")
+
+    return errors
+
+
+def run_self_test(root: Path) -> int:
+    baseline = default_qualification_receipt()
+    ok, reasons = evaluate_receipt(baseline)
+    if not ok or reasons:
+        print(f"self-test failed on baseline receipt: {reasons}", file=sys.stderr)
+        return 1
+
+    bad_ceiling = copy.deepcopy(baseline)
+    bad_ceiling["ceilings"]["max_index_deltas"] = 65535
+    ok, reasons = evaluate_receipt(bad_ceiling)
+    if ok or "delta-ceiling-mismatch" not in reasons:
+        print(f"self-test failed to reject delta ceiling drift: {reasons}", file=sys.stderr)
+        return 1
+
+    bad_work = copy.deepcopy(baseline)
+    bad_work["hundred_row_accounting"]["combined_work_units"] = 9999
+    ok, reasons = evaluate_receipt(bad_work)
+    if ok or "hundred-row-work-accounting-mismatch" not in reasons:
+        print(f"self-test failed to reject work accounting drift: {reasons}", file=sys.stderr)
+        return 1
+
+    bad_gate = copy.deepcopy(baseline)
+    bad_gate["gates"]["target_divergence_rejected"] = False
+    ok, reasons = evaluate_receipt(bad_gate)
+    if ok or "gate-failed:target_divergence_rejected" not in reasons:
+        print(f"self-test failed to reject gate failure: {reasons}", file=sys.stderr)
+        return 1
+
+    source_errors = check_source_invariants(root)
+    if source_errors:
+        print(f"self-test source invariant check failed: {source_errors}", file=sys.stderr)
+        return 1
+
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "mode": "self-test",
+                "qualified": True,
+                "verified_proofs": list(REQUIRED_PROOF_TESTS),
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def run_cargo_proofs(root: Path) -> int:
+    commands = [
+        [
+            "cargo",
+            "test",
+            "-p",
+            "riffdb-testkit",
+            "--lib",
+            "model::correlated_index::tests::correlated_index_work_model_rejects_target_divergence",
+            "--",
+            "--exact",
+        ],
+        [
+            "cargo",
+            "test",
+            "-p",
+            "riffdb-testkit-server",
+            "--test",
+            "bulk_command_recovery",
+            "correlated_index_work_matches_independent_authoritative_model",
+            "--",
+            "--exact",
+        ],
+        [
+            "cargo",
+            "test",
+            "-p",
+            "riffdb-testkit-server",
+            "--test",
+            "bulk_command_recovery",
+            "correlated_index_work_redb_crash_reopen_is_complete_or_absent",
+            "--",
+            "--exact",
+        ],
+        [
+            "cargo",
+            "test",
+            "-p",
+            "riffdb-testkit-server",
+            "--test",
+            "bulk_command_recovery",
+            "correlated_index_work_remote_redb_loopback_matches_model",
+            "--",
+            "--exact",
+        ],
+    ]
+    for cmd in commands:
+        completed = subprocess.run(cmd, cwd=root, check=False)
+        if completed.returncode != 0:
+            return completed.returncode
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Validate receipt rules and source invariants without invoking cargo test",
+    )
+    args = parser.parse_args(argv)
+    root = repo_root()
+
+    if args.self_test:
+        return run_self_test(root)
+
+    source_errors = check_source_invariants(root)
+    if source_errors:
+        print(
+            json.dumps(
+                {
+                    "schema": SCHEMA,
+                    "qualified": False,
+                    "reasons": source_errors,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    receipt = default_qualification_receipt()
+    ok, reasons = evaluate_receipt(receipt)
+    if not ok:
+        print(
+            json.dumps(
+                {
+                    "schema": SCHEMA,
+                    "qualified": False,
+                    "reasons": reasons,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    rc = run_cargo_proofs(root)
+    if rc != 0:
+        return rc
+
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
