@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.benchmark-report/v1",
   "report_id": "storage-fjall",
-  "source_revision": "70d5635599a2415bf782478995a6af5c1368c5be",
+  "source_revision": "e18567b7b74c2527b1f71b239d0b3584445d7e02",
   "dirty": false,
   "rust_version": "1.97.0",
   "target": "x86_64-unknown-linux-gnu",
@@ -34,7 +34,7 @@
   "performance_status": "not_run_due_to_conformance_failure",
   "failure_classification": "Fjall adapter lacks the unchanged semantic, projection, migration, and crash-recovery ports; substrate timings are excluded.",
   "raw_artifact": "benchmarks/reports/storage-fjall/raw-v1.txt",
-  "raw_sha256": "79930fe231b1df4491a22ef3edf5922e54b2d0d0dfee089396034d4842753623",
+  "raw_sha256": "563d90527671c2008eb3bb460bf70fe46443bc04f0638659626c225a78179159",
   "unsafe_postgresql_variants_included": false,
   "results": []
 }

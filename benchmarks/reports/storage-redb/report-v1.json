@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.benchmark-report/v1",
   "report_id": "storage-redb",
-  "source_revision": "469f9762ea81de3be8cc4092cc86bb0ec6a47a57",
+  "source_revision": "4854478f1f76a968447e3fadd803772be8c6a2c1",
   "dirty": false,
   "rust_version": "1.97.0",
   "target": "x86_64-unknown-linux-gnu",
@@ -34,7 +34,7 @@
   "correctness_status": "passed",
   "performance_status": "measured",
   "raw_artifact": "benchmarks/reports/storage-redb/raw-v1.txt",
-  "raw_sha256": "503d7772f4fea69ecedfa5ecb860650e3505bb57db9809fbb19468e4c9ad0bdc",
+  "raw_sha256": "50129065bb52c88fc4cf373a89a279dea3f85d7a4b221a3a12e1dbc422bde113",
   "unsafe_postgresql_variants_included": false,
   "results": [
     {

@@ -1,5 +1,5 @@
 riffdb_budget_benchmark_capture_format=1
-git_revision=94e39a9c532144714b344ed0421ce04d97f1b72e
+git_revision=56796fa3c917a1d991fdea0f4f79f4c61ce052bd
 git_dirty=false
 rust_version=1.97.0
 rust_target=x86_64-unknown-linux-gnu

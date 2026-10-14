@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.benchmark-report/v1",
   "report_id": "budget-postgresql-riffdb",
-  "source_revision": "94e39a9c532144714b344ed0421ce04d97f1b72e",
+  "source_revision": "56796fa3c917a1d991fdea0f4f79f4c61ce052bd",
   "dirty": false,
   "rust_version": "1.97.0",
   "target": "x86_64-unknown-linux-gnu",
@@ -44,7 +44,7 @@
   "correctness_status": "passed",
   "performance_status": "measured",
   "raw_artifact": "benchmarks/reports/budget-comparison/raw-v1.tsv",
-  "raw_sha256": "a0fbb66d8598725cf957001433ddcaaf364389da91d13dcd0c456e223d388bcd",
+  "raw_sha256": "2cdfd627cba56ea3f233e6fd79c9c29b27d79d74d008a28a6c634190933c8ca5",
   "unsafe_postgresql_variants_included": false,
   "comparison_qualification": {
     "matched_semantics": [

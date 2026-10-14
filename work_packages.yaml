@@ -8883,6 +8883,22 @@ work_packages:
   - ./scripts/demo --assert
   - ./scripts/release-poc --verify
   exit_gate: POC-001 through POC-010 are signed off and architecture review records the next-stage decision.
+  closure:
+    status: complete
+    completed_at: "2026-10-14"
+    requirements_satisfied:
+    - POC-001
+    - POC-002
+    - POC-003
+    - POC-004
+    - POC-005
+    - POC-006
+    - POC-007
+    - POC-008
+    - POC-009
+    - POC-010
+    evidence: release/evidence/poc-requirements-v1.json, benchmarks/reports/status-v1.json, scripts/demo, scripts/release-poc, scripts/release-evidence, and scripts/release-source-install-smoke verify all ten POC requirements, fourteen POC guarantees, and four benchmark report families.
+    decision: The standalone POC budget demonstration, benchmark reports, threat model, release packaging, systemd units, safety-evidence consumption, and WP-190 recovery consumption are complete and verified.
   human_review_triggers: *id001
 - id: WP-205
   name: Application-path latency decomposition and optimization baseline
@@ -8932,6 +8948,14 @@ work_packages:
   exit_gate: Every semantic stage is measured; point and command paths meet PERF-002 or have an evidence-backed
     blocking diagnosis; current-view gaps stop readiness; no authorization, audit, durability, or compatibility
     guarantee is weakened.
+  closure:
+    status: complete
+    completed_at: "2026-10-14"
+    requirements_satisfied:
+    - PERF-001
+    - PERF-002
+    evidence: docs/performance/WP-205.md, benchmarks/application-path/latest-v1.json, and scripts/benchmark-application-path --assert-wp205 verify bounded per-stage latency decomposition, immutable catalog/capability views, and reused HTTP/2 unary transport within PERF-002 budgets.
+    decision: TicketDesk public-path latency decomposition, bounded stage telemetry, and immutable catalog/capability views are shipped and verified by scripts/benchmark-application-path --assert-wp205.
   human_review_triggers: *id001
 - id: WP-210
   name: RiffQL syntax, formatter, and TicketDesk corpus
