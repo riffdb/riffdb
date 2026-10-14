@@ -169,3 +169,71 @@ fn corrupt_mixed_and_noncanonical_checkpoints_fail_closed() {
         Err(TokenizedTextErrorV1::InvalidCheckpoint)
     );
 }
+
+#[test]
+fn incremental_epoch_maintenance_equals_full_rebuild_over_the_same_rows() {
+    use std::collections::BTreeMap;
+
+    let partition = PartitionKeyHash::from_bytes([6; 32]);
+    let generation = ProjectionGeneration::new(2).unwrap();
+    let mut index = TokenizedTextPartitionIndexV1::new(config(), partition, generation);
+    let mut retained: BTreeMap<u64, TokenizedTextMutationV1> = BTreeMap::new();
+
+    let epochs = [
+        vec![
+            (
+                1_u64,
+                Some(upsert(1, "rust durable engine", "alpha beta gamma")),
+            ),
+            (2, Some(upsert(2, "rust query planner", "beta delta"))),
+            (3, Some(upsert(3, "projection watermark", "gamma epsilon"))),
+        ],
+        vec![
+            // Overwrite doc 2 with different terms, delete doc 3, insert doc 4 sharing terms.
+            (2, Some(upsert(2, "deterministic transaction", "zeta eta"))),
+            (3, None),
+            (4, Some(upsert(4, "rust durable engine", "alpha theta"))),
+        ],
+        vec![
+            // Re-add doc 3, delete doc 1, overwrite doc 4.
+            (3, Some(upsert(3, "projection recovery", "epsilon iota"))),
+            (1, None),
+            (4, Some(upsert(4, "final four title", "delta epsilon"))),
+        ],
+    ];
+
+    for (step, mutations_spec) in epochs.into_iter().enumerate() {
+        let seq = sequence(step as u64 + 1);
+        let mut batch = Vec::with_capacity(mutations_spec.len());
+        for (doc_id, change) in mutations_spec {
+            match change {
+                Some(mutation) => {
+                    retained.insert(doc_id, mutation.clone());
+                    batch.push(mutation);
+                }
+                None => {
+                    retained.remove(&doc_id);
+                    batch.push(TokenizedTextMutationV1::delete(key(doc_id)));
+                }
+            }
+        }
+        index.apply(seq, &batch).unwrap();
+
+        let rebuild_batch: Vec<TokenizedTextMutationV1> = retained.values().cloned().collect();
+        let rebuilt = TokenizedTextPartitionIndexV1::rebuild(
+            config(),
+            partition,
+            generation,
+            seq,
+            &rebuild_batch,
+        )
+        .unwrap();
+        assert_eq!(index, rebuilt, "diverged at epoch {}", seq.get());
+        assert_eq!(
+            index.to_checkpoint_bytes().unwrap(),
+            rebuilt.to_checkpoint_bytes().unwrap(),
+            "checkpoint bytes diverged at epoch {}",
+            seq.get()
+        );
+    }
+}

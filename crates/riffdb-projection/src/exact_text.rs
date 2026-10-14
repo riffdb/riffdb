@@ -19,7 +19,8 @@ use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommitSequence, EntityKey, EntityKeyHash, ExactTextNeedleV1,
     ExactTextOperatorV1, ExactTextOrderV1, ExactTextProfileV1, MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1,
     MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_VALUE_BYTES_V1, MAX_KEY_BYTES,
-    PartitionKeyHash, ProjectionGeneration, decode_canonical_value, encode_canonical_record,
+    PartitionKeyHash, ProjectionGeneration, canonical_record_encoded_len,
+    canonical_value_encoded_len, decode_canonical_value, encode_canonical_record,
     encode_canonical_value, hash_entity_key,
 };
 
@@ -211,21 +212,11 @@ impl ExactTextPartitionIndexV1 {
         if next_count > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 {
             return Err(ExactTextProviderErrorV1::PartitionRowLimit);
         }
-        let mut touched_equals = BTreeSet::new();
-        let mut touched_prefixes = BTreeSet::new();
-        let mut touched_suffixes = BTreeSet::new();
-        let mut touched_contains = BTreeSet::new();
+        let mut prepared = Vec::with_capacity(mutations.len());
         for mutation in mutations {
             let row = mutation.row();
             if let Some(previous) = self.rows.remove(&row) {
-                record_terms(
-                    &previous,
-                    &mut touched_equals,
-                    &mut touched_prefixes,
-                    &mut touched_suffixes,
-                    &mut touched_contains,
-                );
-                remove_value_from_postings(
+                remove_value_from_postings_sorted(
                     row,
                     &previous,
                     &mut self.equals,
@@ -238,29 +229,21 @@ impl ExactTextPartitionIndexV1 {
                 // Postings, ordering, and the stored row must all be the SAME
                 // representation. Building terms from the source while storing
                 // the folded form would index text the needle can never match.
-                let matched = self.profile.matched_form(value);
-                record_terms(
-                    &matched,
-                    &mut touched_equals,
-                    &mut touched_prefixes,
-                    &mut touched_suffixes,
-                    &mut touched_contains,
-                );
-                add_value_to_postings(
-                    row,
-                    &matched,
-                    &mut self.equals,
-                    &mut self.prefixes,
-                    &mut self.suffixes,
-                    &mut self.contains,
-                );
-                self.rows.insert(row, matched);
+                prepared.push((row, self.profile.matched_form(value)));
             }
         }
-        order_touched_postings(&mut self.equals, &touched_equals, &self.rows);
-        order_touched_postings(&mut self.prefixes, &touched_prefixes, &self.rows);
-        order_touched_postings(&mut self.suffixes, &touched_suffixes, &self.rows);
-        order_touched_postings(&mut self.contains, &touched_contains, &self.rows);
+        for (row, matched) in prepared {
+            add_value_to_postings_v1_sorted(
+                row,
+                &matched,
+                &self.rows,
+                &mut self.equals,
+                &mut self.prefixes,
+                &mut self.suffixes,
+                &mut self.contains,
+            );
+            self.rows.insert(row, matched);
+        }
         self.frontier = Some(epoch);
         Ok(())
     }
@@ -579,9 +562,8 @@ impl ExactTextIndexMutationV2 {
         if value.len() > MAX_EXACT_TEXT_VALUE_BYTES_V1 {
             return Err(ExactTextProviderErrorV1::ValueTooLong);
         }
-        if encode_canonical_record(&output)
+        if canonical_record_encoded_len(&output)
             .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?
-            .len()
             > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1
         {
             return Err(ExactTextProviderErrorV1::OutputTooLarge);
@@ -647,13 +629,8 @@ impl ExactTextPartitionIndexV2 {
         epoch: CommitSequence,
         mutations: &[ExactTextIndexMutationV2],
     ) -> Result<(), ExactTextProviderErrorV1> {
-        let mut next = self.clone();
         let mut inner = Vec::with_capacity(mutations.len());
         let mut seen = BTreeMap::<EntityKeyHash, &EntityKey>::new();
-        let mut touched_equals = BTreeSet::new();
-        let mut touched_prefixes = BTreeSet::new();
-        let mut touched_suffixes = BTreeSet::new();
-        let mut touched_contains = BTreeSet::new();
         for mutation in mutations {
             let key = mutation.row();
             let hash = hash_entity_key(key.as_bytes());
@@ -664,85 +641,105 @@ impl ExactTextPartitionIndexV2 {
                     ExactTextProviderErrorV1::EntityKeyHashCollision
                 });
             }
-            if next.keys.get(&hash).is_some_and(|stored| stored != key) {
+            if self.keys.get(&hash).is_some_and(|stored| stored != key) {
                 return Err(ExactTextProviderErrorV1::EntityKeyHashCollision);
-            }
-            if let Some(previous) = next.index.rows.get(&hash) {
-                record_terms(
-                    previous,
-                    &mut touched_equals,
-                    &mut touched_prefixes,
-                    &mut touched_suffixes,
-                    &mut touched_contains,
-                );
-                remove_value_from_postings(
-                    hash,
-                    previous,
-                    &mut next.equals,
-                    &mut next.prefixes,
-                    &mut next.suffixes,
-                    &mut next.contains,
-                );
             }
             match mutation {
                 ExactTextIndexMutationV2::Upsert { value, output, .. } => {
-                    let encoded = encode_canonical_record(output)
+                    let encoded_len = canonical_record_encoded_len(output)
                         .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
-                    if encoded.len() > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
+                    if encoded_len > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
                         return Err(ExactTextProviderErrorV1::OutputTooLarge);
                     }
-                    next.keys.insert(hash, key.clone());
-                    next.outputs.insert(hash, output.clone());
-                    record_terms(
-                        value,
-                        &mut touched_equals,
-                        &mut touched_prefixes,
-                        &mut touched_suffixes,
-                        &mut touched_contains,
-                    );
-                    add_value_to_postings(
-                        hash,
-                        value,
-                        &mut next.equals,
-                        &mut next.prefixes,
-                        &mut next.suffixes,
-                        &mut next.contains,
-                    );
                     inner.push(ExactTextIndexMutationV1::upsert(hash, value)?);
                 }
                 ExactTextIndexMutationV2::Delete { .. } => {
-                    next.keys.remove(&hash);
-                    next.outputs.remove(&hash);
                     inner.push(ExactTextIndexMutationV1::delete(hash));
                 }
             }
         }
-        next.index.apply(epoch, &inner)?;
-        order_v2_touched_postings(
-            &mut next.equals,
-            &touched_equals,
-            &next.index.rows,
-            &next.keys,
-        )?;
-        order_v2_touched_postings(
-            &mut next.prefixes,
-            &touched_prefixes,
-            &next.index.rows,
-            &next.keys,
-        )?;
-        order_v2_touched_postings(
-            &mut next.suffixes,
-            &touched_suffixes,
-            &next.index.rows,
-            &next.keys,
-        )?;
-        order_v2_touched_postings(
-            &mut next.contains,
-            &touched_contains,
-            &next.index.rows,
-            &next.keys,
-        )?;
-        *self = next;
+        if self
+            .index
+            .frontier
+            .is_some_and(|frontier| epoch <= frontier)
+        {
+            return Err(ExactTextProviderErrorV1::NonAdvancingEpoch);
+        }
+        let mut next_count = self.index.rows.len();
+        for mutation in &inner {
+            match mutation {
+                ExactTextIndexMutationV1::Upsert { row, value } => {
+                    if self.index.profile.matched_form(value).len() > MAX_EXACT_TEXT_VALUE_BYTES_V1
+                    {
+                        return Err(ExactTextProviderErrorV1::ValueTooLong);
+                    }
+                    if !self.index.rows.contains_key(row) {
+                        next_count = next_count.saturating_add(1);
+                    }
+                }
+                ExactTextIndexMutationV1::Delete { row } => {
+                    if self.index.rows.contains_key(row) {
+                        next_count = next_count.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        if next_count > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 {
+            return Err(ExactTextProviderErrorV1::PartitionRowLimit);
+        }
+        if self.index.rows.len() != self.keys.len()
+            || self
+                .index
+                .rows
+                .keys()
+                .any(|row| !self.keys.contains_key(row))
+        {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        for (mutation, inner_mutation) in mutations.iter().zip(&inner) {
+            let hash = inner_mutation.row();
+            if let Some(previous) = self.index.rows.get(&hash) {
+                remove_value_from_postings_sorted(
+                    hash,
+                    previous,
+                    &mut self.equals,
+                    &mut self.prefixes,
+                    &mut self.suffixes,
+                    &mut self.contains,
+                );
+            }
+            if matches!(mutation, ExactTextIndexMutationV2::Delete { .. }) {
+                self.keys.remove(&hash);
+                self.outputs.remove(&hash);
+            }
+        }
+        self.index.apply(epoch, &inner)?;
+        for (mutation, inner_mutation) in mutations.iter().zip(&inner) {
+            if let ExactTextIndexMutationV2::Upsert {
+                row: key, output, ..
+            } = mutation
+            {
+                let hash = inner_mutation.row();
+                self.keys.insert(hash, key.clone());
+                self.outputs.insert(hash, output.clone());
+                let matched = self
+                    .index
+                    .rows
+                    .get(&hash)
+                    .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+                add_value_to_postings_v2_sorted(
+                    hash,
+                    matched,
+                    key.as_bytes(),
+                    &self.index.rows,
+                    &self.keys,
+                    &mut self.equals,
+                    &mut self.prefixes,
+                    &mut self.suffixes,
+                    &mut self.contains,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -769,9 +766,9 @@ impl ExactTextPartitionIndexV2 {
                 return Err(ExactTextProviderErrorV1::EntityKeyHashCollision);
             }
             hashed_rows.insert(hash, value.clone());
-            let encoded = encode_canonical_record(output)
+            let encoded_len = canonical_record_encoded_len(output)
                 .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
-            if encoded.len() > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
+            if encoded_len > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
                 return Err(ExactTextProviderErrorV1::OutputTooLarge);
             }
             outputs.insert(hash, output.clone());
@@ -1029,74 +1026,167 @@ impl ExactTextPartitionIndexV3 {
             return Err(ExactTextProviderErrorV1::PartitionRowLimit);
         }
         let mut base_updates = Vec::with_capacity(mutations.len());
+        let mut mutation_filters = Vec::with_capacity(mutations.len());
         for mutation in mutations {
-            base_updates.push(match mutation {
+            match mutation {
                 ExactTextIndexMutationV3::Upsert {
                     row,
                     value,
                     filter,
                     output,
                 } => {
-                    if encode_canonical_value(filter)
-                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?
-                        .len()
-                        > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1
-                    {
+                    let encoded = encode_canonical_value(filter)
+                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+                    if encoded.len() > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
                         return Err(ExactTextProviderErrorV1::OutputTooLarge);
                     }
-                    ExactTextIndexMutationV2::upsert(row.clone(), value, output.clone())?
+                    base_updates.push(ExactTextIndexMutationV2::upsert(
+                        row.clone(),
+                        value,
+                        output.clone(),
+                    )?);
+                    mutation_filters.push(Some((filter, encoded)));
                 }
                 ExactTextIndexMutationV3::Delete(row) => {
-                    ExactTextIndexMutationV2::delete(row.clone())
+                    base_updates.push(ExactTextIndexMutationV2::delete(row.clone()));
+                    mutation_filters.push(None);
                 }
-            });
-        }
-        let mut next = self.clone();
-        next.base.apply(epoch, &base_updates)?;
-        let mut affected = BTreeSet::new();
-        for (mutation, base) in mutations.iter().zip(&base_updates) {
-            let row = hash_entity_key(base.row().as_bytes());
-            if let Some(old) = next.filters.remove(&row) {
-                affected.insert(
-                    encode_canonical_value(&old)
-                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?,
-                );
-            }
-            if let ExactTextIndexMutationV3::Upsert { filter, .. } = mutation {
-                affected.insert(
-                    encode_canonical_value(filter)
-                        .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?,
-                );
-                next.filters.insert(row, filter.clone());
             }
         }
-        // Rebuild only changed filter families. Untouched families retain their
-        // checked posting order; the base already applied replacements atomically.
-        let filters = next
-            .filters
-            .iter()
-            .filter_map(|(row, value)| match encode_canonical_value(value) {
-                Ok(encoded) if affected.contains(&encoded) => Some(Ok((*row, value.clone()))),
-                Ok(_) => None,
-                Err(_) => Some(Err(ExactTextProviderErrorV1::OutputInvalid)),
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        for filter in affected {
-            next.filtered.remove(&filter);
-        }
-        if next.filters.len() != next.base.keys.len()
-            || next
+        if self.filters.len() != self.base.keys.len()
+            || self
                 .filters
                 .keys()
-                .any(|row| !next.base.keys.contains_key(row))
+                .any(|row| !self.base.keys.contains_key(row))
         {
             return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
         }
-        next.filtered
-            .extend(build_filter_subset_postings_v3(&next.base, &filters)?);
+        for filter in self.filters.values() {
+            canonical_value_encoded_len(filter)
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+        }
+        let mut old_row_states = Vec::with_capacity(mutations.len());
+        for base in &base_updates {
+            let row = hash_entity_key(base.row().as_bytes());
+            let old_state = if let Some(old_filter) = self.filters.get(&row) {
+                let old_text = self
+                    .base
+                    .index
+                    .rows
+                    .get(&row)
+                    .cloned()
+                    .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+                let old_encoded = encode_canonical_value(old_filter)
+                    .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+                Some((old_text, old_encoded))
+            } else {
+                None
+            };
+            old_row_states.push((row, old_state));
+        }
+        self.base.apply(epoch, &base_updates)?;
+        for (row, old_state) in old_row_states {
+            if let Some((old_text, old_filter_encoded)) = old_state {
+                self.filters.remove(&row);
+                let empty = if let Some(family) = self.filtered.get_mut(&old_filter_encoded) {
+                    remove_value_from_postings_sorted(
+                        row,
+                        &old_text,
+                        &mut family.equals,
+                        &mut family.prefixes,
+                        &mut family.suffixes,
+                        &mut family.contains,
+                    );
+                    family.equals.is_empty()
+                } else {
+                    false
+                };
+                if empty {
+                    self.filtered.remove(&old_filter_encoded);
+                }
+            }
+        }
+        for (mutation, filter_info) in mutations.iter().zip(mutation_filters) {
+            if let (
+                ExactTextIndexMutationV3::Upsert { row: key, .. },
+                Some((filter, new_filter_encoded)),
+            ) = (mutation, filter_info)
+            {
+                let row = hash_entity_key(key.as_bytes());
+                self.filters.insert(row, filter.clone());
+                let matched = self
+                    .base
+                    .index
+                    .rows
+                    .get(&row)
+                    .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+                let family = self.filtered.entry(new_filter_encoded).or_default();
+                add_value_to_postings_v2_sorted(
+                    row,
+                    matched,
+                    key.as_bytes(),
+                    &self.base.index.rows,
+                    &self.base.keys,
+                    &mut family.equals,
+                    &mut family.prefixes,
+                    &mut family.suffixes,
+                    &mut family.contains,
+                )?;
+            }
+        }
         // Preserve the complete checkpoint/state ceiling before publication.
-        next.to_checkpoint_bytes()?;
-        *self = next;
+        self.validate_checkpoint_bounds()?;
+        Ok(())
+    }
+
+    fn validate_checkpoint_bounds(&self) -> Result<(), ExactTextProviderErrorV1> {
+        let _frontier = self
+            .base
+            .index
+            .frontier
+            .ok_or(ExactTextProviderErrorV1::MissingFrontier)?;
+        let mut base_bytes = 60usize;
+        for (hash, key) in &self.base.keys {
+            let value = self
+                .base
+                .index
+                .rows
+                .get(hash)
+                .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            let output = self
+                .base
+                .outputs
+                .get(hash)
+                .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            let output_len = canonical_record_encoded_len(output)
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+            if output_len > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
+                return Err(ExactTextProviderErrorV1::OutputTooLarge);
+            }
+            u16::try_from(key.as_bytes().len())
+                .map_err(|_| ExactTextProviderErrorV1::CheckpointTooLarge)?;
+            base_bytes = base_bytes
+                .checked_add(2 + key.as_bytes().len() + 2 + value.len() + 4 + output_len)
+                .ok_or(ExactTextProviderErrorV1::CheckpointTooLarge)?;
+        }
+        if base_bytes > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2 {
+            return Err(ExactTextProviderErrorV1::CheckpointTooLarge);
+        }
+        u32::try_from(base_bytes).map_err(|_| ExactTextProviderErrorV1::CheckpointTooLarge)?;
+        let mut total_bytes = 18usize
+            .checked_add(base_bytes)
+            .ok_or(ExactTextProviderErrorV1::CheckpointTooLarge)?;
+        for filter in self.filters.values() {
+            let encoded_len = canonical_value_encoded_len(filter)
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+            u32::try_from(encoded_len).map_err(|_| ExactTextProviderErrorV1::CheckpointTooLarge)?;
+            total_bytes = total_bytes
+                .checked_add(36 + encoded_len)
+                .ok_or(ExactTextProviderErrorV1::CheckpointTooLarge)?;
+        }
+        if total_bytes > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 {
+            return Err(ExactTextProviderErrorV1::CheckpointTooLarge);
+        }
         Ok(())
     }
 
@@ -1118,9 +1208,9 @@ impl ExactTextPartitionIndexV3 {
         )?;
         let mut filters = BTreeMap::new();
         for (key, (_, filter, _)) in rows {
-            let encoded = encode_canonical_value(filter)
+            let encoded_len = canonical_value_encoded_len(filter)
                 .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
-            if encoded.len() > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
+            if encoded_len > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
                 return Err(ExactTextProviderErrorV1::OutputTooLarge);
             }
             let hash = hash_entity_key(key.as_bytes());
@@ -1323,20 +1413,8 @@ fn build_filter_subset_postings_v3(
     members
         .into_iter()
         .map(|(filter, members)| {
-            let rows = base
-                .index
-                .rows
-                .iter()
-                .filter(|(row, _)| members.contains(row))
-                .map(|(row, value)| (*row, value.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let keys = base
-                .keys
-                .iter()
-                .filter(|(row, _)| members.contains(row))
-                .map(|(row, key)| (*row, key.clone()))
-                .collect::<BTreeMap<_, _>>();
-            let (equals, prefixes, suffixes, contains) = build_v2_postings(&rows, &keys)?;
+            let (equals, prefixes, suffixes, contains) =
+                build_v2_postings_for_members(&base.index.rows, &base.keys, &members)?;
             Ok((
                 filter,
                 ExactTextFilterPostingsV3 {
@@ -1348,6 +1426,38 @@ fn build_filter_subset_postings_v3(
             ))
         })
         .collect()
+}
+
+fn build_v2_postings_for_members(
+    rows: &BTreeMap<EntityKeyHash, String>,
+    keys: &BTreeMap<EntityKeyHash, EntityKey>,
+    members: &BTreeSet<EntityKeyHash>,
+) -> Result<(PostingMap, PostingMap, PostingMap, PostingMap), ExactTextProviderErrorV1> {
+    let mut equals = PostingMap::new();
+    let mut prefixes = PostingMap::new();
+    let mut suffixes = PostingMap::new();
+    let mut contains = PostingMap::new();
+    for row in members {
+        let value = rows
+            .get(row)
+            .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+        if !keys.contains_key(row) {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        add_value_to_postings(
+            *row,
+            value,
+            &mut equals,
+            &mut prefixes,
+            &mut suffixes,
+            &mut contains,
+        );
+    }
+    order_v2_postings(&mut equals, rows, keys)?;
+    order_v2_postings(&mut prefixes, rows, keys)?;
+    order_v2_postings(&mut suffixes, rows, keys)?;
+    order_v2_postings(&mut contains, rows, keys)?;
+    Ok((equals, prefixes, suffixes, contains))
 }
 
 fn result_page_from_postings(
@@ -1443,20 +1553,6 @@ fn order_v2_postings(
     Ok(())
 }
 
-fn order_v2_touched_postings(
-    postings: &mut PostingMap,
-    touched: &BTreeSet<Vec<u8>>,
-    rows: &BTreeMap<EntityKeyHash, String>,
-    keys: &BTreeMap<EntityKeyHash, EntityKey>,
-) -> Result<(), ExactTextProviderErrorV1> {
-    for term in touched {
-        if let Some(posting) = postings.get_mut(term) {
-            order_v2_posting(posting, rows, keys)?;
-        }
-    }
-    Ok(())
-}
-
 fn order_v2_posting(
     posting: &mut PostingList,
     rows: &BTreeMap<EntityKeyHash, String>,
@@ -1470,36 +1566,35 @@ fn order_v2_posting(
                 *row,
                 rows.get(row)
                     .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?
-                    .as_bytes()
-                    .to_vec(),
+                    .as_bytes(),
                 keys.get(row)
                     .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?
-                    .as_bytes()
-                    .to_vec(),
+                    .as_bytes(),
             ))
         })
         .collect::<Result<Vec<_>, ExactTextProviderErrorV1>>()?;
-    ascending
-        .sort_unstable_by(|left, right| left.1.cmp(&right.1).then_with(|| left.2.cmp(&right.2)));
+    ascending.sort_unstable_by(|left, right| left.1.cmp(right.1).then_with(|| left.2.cmp(right.2)));
     posting.ascending = ascending.iter().map(|(row, _, _)| *row).collect();
 
-    let mut descending = ascending
-        .into_iter()
-        .enumerate()
-        .map(|(position, (_, value, key))| {
-            Ok((
+    if ascending.len() > usize::from(u16::MAX) + 1 {
+        return Err(ExactTextProviderErrorV1::PartitionRowLimit);
+    }
+    let mut descending = Vec::with_capacity(ascending.len());
+    let mut end = ascending.len();
+    while end > 0 {
+        let value = ascending[end - 1].1;
+        let mut start = end - 1;
+        while start > 0 && ascending[start - 1].1 == value {
+            start -= 1;
+        }
+        for position in start..end {
+            descending.push(
                 u16::try_from(position).map_err(|_| ExactTextProviderErrorV1::PartitionRowLimit)?,
-                value,
-                key,
-            ))
-        })
-        .collect::<Result<Vec<_>, ExactTextProviderErrorV1>>()?;
-    descending
-        .sort_unstable_by(|left, right| right.1.cmp(&left.1).then_with(|| left.2.cmp(&right.2)));
-    posting.descending = descending
-        .into_iter()
-        .map(|(position, _, _)| position)
-        .collect();
+            );
+        }
+        end = start;
+    }
+    posting.descending = descending;
     Ok(())
 }
 
@@ -1548,7 +1643,57 @@ fn add_value_to_postings(
     }
 }
 
-fn remove_value_from_postings(
+fn add_value_to_postings_v1_sorted(
+    row: EntityKeyHash,
+    value: &str,
+    rows: &BTreeMap<EntityKeyHash, String>,
+    equals: &mut PostingMap,
+    prefixes: &mut PostingMap,
+    suffixes: &mut PostingMap,
+    contains: &mut PostingMap,
+) {
+    let value_bytes = value.as_bytes();
+    let (prefix_terms, suffix_terms, contains_terms) = terms(value);
+    posting_insert_v1_sorted(equals, value_bytes, row, value_bytes, rows);
+    for term in prefix_terms {
+        posting_insert_v1_sorted(prefixes, term, row, value_bytes, rows);
+    }
+    for term in suffix_terms {
+        posting_insert_v1_sorted(suffixes, term, row, value_bytes, rows);
+    }
+    for term in contains_terms {
+        posting_insert_v1_sorted(contains, term, row, value_bytes, rows);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_value_to_postings_v2_sorted(
+    row: EntityKeyHash,
+    value: &str,
+    key_bytes: &[u8],
+    rows: &BTreeMap<EntityKeyHash, String>,
+    keys: &BTreeMap<EntityKeyHash, EntityKey>,
+    equals: &mut PostingMap,
+    prefixes: &mut PostingMap,
+    suffixes: &mut PostingMap,
+    contains: &mut PostingMap,
+) -> Result<(), ExactTextProviderErrorV1> {
+    let value_bytes = value.as_bytes();
+    let (prefix_terms, suffix_terms, contains_terms) = terms(value);
+    posting_insert_v2_sorted(equals, value_bytes, row, value_bytes, key_bytes, rows, keys)?;
+    for term in prefix_terms {
+        posting_insert_v2_sorted(prefixes, term, row, value_bytes, key_bytes, rows, keys)?;
+    }
+    for term in suffix_terms {
+        posting_insert_v2_sorted(suffixes, term, row, value_bytes, key_bytes, rows, keys)?;
+    }
+    for term in contains_terms {
+        posting_insert_v2_sorted(contains, term, row, value_bytes, key_bytes, rows, keys)?;
+    }
+    Ok(())
+}
+
+fn remove_value_from_postings_sorted(
     row: EntityKeyHash,
     value: &str,
     equals: &mut PostingMap,
@@ -1557,15 +1702,15 @@ fn remove_value_from_postings(
     contains: &mut PostingMap,
 ) {
     let (prefix_terms, suffix_terms, contains_terms) = terms(value);
-    posting_remove(equals, value.as_bytes(), row);
+    posting_remove_sorted(equals, value.as_bytes(), row);
     for term in prefix_terms {
-        posting_remove(prefixes, term, row);
+        posting_remove_sorted(prefixes, term, row);
     }
     for term in suffix_terms {
-        posting_remove(suffixes, term, row);
+        posting_remove_sorted(suffixes, term, row);
     }
     for term in contains_terms {
-        posting_remove(contains, term, row);
+        posting_remove_sorted(contains, term, row);
     }
 }
 
@@ -1594,31 +1739,98 @@ fn terms(value: &str) -> ExactTermSets<'_> {
     (prefixes, suffixes, contains)
 }
 
-fn record_terms(
-    value: &str,
-    equals: &mut BTreeSet<Vec<u8>>,
-    prefixes: &mut BTreeSet<Vec<u8>>,
-    suffixes: &mut BTreeSet<Vec<u8>>,
-    contains: &mut BTreeSet<Vec<u8>>,
-) {
-    let (prefix_terms, suffix_terms, contains_terms) = terms(value);
-    equals.insert(value.as_bytes().to_vec());
-    prefixes.extend(prefix_terms.into_iter().map(<[u8]>::to_vec));
-    suffixes.extend(suffix_terms.into_iter().map(<[u8]>::to_vec));
-    contains.extend(contains_terms.into_iter().map(<[u8]>::to_vec));
-}
-
 fn posting_insert(postings: &mut PostingMap, term: &[u8], row: EntityKeyHash) {
-    // The source row map is authoritative for values, so rebuild the compact
-    // order vectors after each bounded mutation below. Incremental mutation
-    // only records membership here and cannot admit duplicates.
-    let posting = postings.entry(term.to_vec()).or_default();
+    let posting = if let Some(existing) = postings.get_mut(term) {
+        existing
+    } else {
+        postings.entry(term.to_vec()).or_default()
+    };
     if !posting.ascending.contains(&row) {
         posting.ascending.push(row);
     }
 }
 
-fn posting_remove(postings: &mut PostingMap, term: &[u8], row: EntityKeyHash) {
+fn posting_insert_v1_sorted(
+    postings: &mut PostingMap,
+    term: &[u8],
+    row: EntityKeyHash,
+    value_bytes: &[u8],
+    rows: &BTreeMap<EntityKeyHash, String>,
+) {
+    let posting = if let Some(existing) = postings.get_mut(term) {
+        existing
+    } else {
+        postings.entry(term.to_vec()).or_default()
+    };
+    let old_len = posting.ascending.len();
+    let run_start = posting
+        .ascending
+        .partition_point(|candidate| rows[candidate].as_bytes() < value_bytes);
+    let (run_end, asc_pos) =
+        if run_start < old_len && rows[&posting.ascending[run_start]].as_bytes() == value_bytes {
+            let eq_len = posting.ascending[run_start..]
+                .partition_point(|candidate| rows[candidate].as_bytes() <= value_bytes);
+            let run_end = run_start + eq_len;
+            let tie_offset =
+                posting.ascending[run_start..run_end].partition_point(|candidate| *candidate < row);
+            (run_end, run_start + tie_offset)
+        } else {
+            (run_start, run_start)
+        };
+    let desc_pos = (old_len - run_end) + (asc_pos - run_start);
+    let asc_pos_u16 = u16::try_from(asc_pos).expect("partition row bound fits u16");
+    for idx in &mut posting.descending {
+        if *idx >= asc_pos_u16 {
+            *idx += 1;
+        }
+    }
+    posting.ascending.insert(asc_pos, row);
+    posting.descending.insert(desc_pos, asc_pos_u16);
+}
+
+fn posting_insert_v2_sorted(
+    postings: &mut PostingMap,
+    term: &[u8],
+    row: EntityKeyHash,
+    value_bytes: &[u8],
+    key_bytes: &[u8],
+    rows: &BTreeMap<EntityKeyHash, String>,
+    keys: &BTreeMap<EntityKeyHash, EntityKey>,
+) -> Result<(), ExactTextProviderErrorV1> {
+    let posting = if let Some(existing) = postings.get_mut(term) {
+        existing
+    } else {
+        postings.entry(term.to_vec()).or_default()
+    };
+    let old_len = posting.ascending.len();
+    let run_start = posting
+        .ascending
+        .partition_point(|candidate| rows[candidate].as_bytes() < value_bytes);
+    let (run_end, asc_pos) =
+        if run_start < old_len && rows[&posting.ascending[run_start]].as_bytes() == value_bytes {
+            let eq_len = posting.ascending[run_start..]
+                .partition_point(|candidate| rows[candidate].as_bytes() <= value_bytes);
+            let run_end = run_start + eq_len;
+            let tie_offset = posting.ascending[run_start..run_end]
+                .partition_point(|candidate| keys[candidate].as_bytes() < key_bytes);
+            (run_end, run_start + tie_offset)
+        } else {
+            (run_start, run_start)
+        };
+    let desc_pos = (old_len - run_end) + (asc_pos - run_start);
+    let asc_pos_u16 =
+        u16::try_from(asc_pos).map_err(|_| ExactTextProviderErrorV1::PartitionRowLimit)?;
+    for idx in &mut posting.descending {
+        if *idx >= asc_pos_u16 {
+            *idx += 1;
+        }
+    }
+    posting.ascending.insert(asc_pos, row);
+    posting.descending.insert(desc_pos, asc_pos_u16);
+    Ok(())
+}
+
+fn posting_remove_sorted(postings: &mut PostingMap, term: &[u8], row: EntityKeyHash) {
     let remove_term = if let Some(posting) = postings.get_mut(term) {
         if let Some(position) = posting
             .ascending
@@ -1626,6 +1838,16 @@ fn posting_remove(postings: &mut PostingMap, term: &[u8], row: EntityKeyHash) {
             .position(|candidate| *candidate == row)
         {
             posting.ascending.remove(position);
+            if let Ok(pos_u16) = u16::try_from(position) {
+                if let Some(desc_idx) = posting.descending.iter().position(|&idx| idx == pos_u16) {
+                    posting.descending.remove(desc_idx);
+                }
+                for idx in &mut posting.descending {
+                    if *idx > pos_u16 {
+                        *idx -= 1;
+                    }
+                }
+            }
         }
         posting.ascending.is_empty()
     } else {
@@ -1642,37 +1864,31 @@ fn order_postings(postings: &mut PostingMap, rows: &BTreeMap<EntityKeyHash, Stri
     }
 }
 
-fn order_touched_postings(
-    postings: &mut PostingMap,
-    touched: &BTreeSet<Vec<u8>>,
-    rows: &BTreeMap<EntityKeyHash, String>,
-) {
-    for term in touched {
-        if let Some(posting) = postings.get_mut(term) {
-            order_posting(posting, rows);
-        }
-    }
-}
-
 fn order_posting(posting: &mut PostingList, rows: &BTreeMap<EntityKeyHash, String>) {
-    posting.ascending.sort_unstable_by(|left, right| {
-        rows[left]
-            .as_bytes()
-            .cmp(rows[right].as_bytes())
-            .then_with(|| left.cmp(right))
-    });
-    let mut positions: Vec<u16> = (0..posting.ascending.len())
-        .map(|position| u16::try_from(position).expect("partition row bound fits u16"))
+    let mut ascending: Vec<(EntityKeyHash, &[u8])> = posting
+        .ascending
+        .iter()
+        .map(|row| (*row, rows[row].as_bytes()))
         .collect();
-    positions.sort_unstable_by(|left, right| {
-        let left_row = posting.ascending[usize::from(*left)];
-        let right_row = posting.ascending[usize::from(*right)];
-        rows[&right_row]
-            .as_bytes()
-            .cmp(rows[&left_row].as_bytes())
-            .then_with(|| left_row.cmp(&right_row))
-    });
-    posting.descending = positions;
+    ascending
+        .sort_unstable_by(|left, right| left.1.cmp(right.1).then_with(|| left.0.cmp(&right.0)));
+    for (dst, (row, _)) in posting.ascending.iter_mut().zip(&ascending) {
+        *dst = *row;
+    }
+    let mut descending = Vec::with_capacity(ascending.len());
+    let mut end = ascending.len();
+    while end > 0 {
+        let value = ascending[end - 1].1;
+        let mut start = end - 1;
+        while start > 0 && ascending[start - 1].1 == value {
+            start -= 1;
+        }
+        for position in start..end {
+            descending.push(u16::try_from(position).expect("partition row bound fits u16"));
+        }
+        end = start;
+    }
+    posting.descending = descending;
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, ExactTextProviderErrorV1> {
