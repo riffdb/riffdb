@@ -646,7 +646,8 @@ fn wait_with_source_validation(
         // Ready captured pages need no checkpoint polling delay. The zero
         // wait still observes native completion, and cancellation is checked
         // between every bounded page. Paced proof work keeps its poll slice.
-        let slice = if pending && read_only_ready()? {
+        let ready = read_only_ready()?;
+        let slice = if ready {
             Duration::ZERO
         } else {
             RETENTION_LANE_CHECKPOINT_SLICE
@@ -668,7 +669,7 @@ fn wait_with_source_validation(
         let publication_finished = source_wait != SourceCheckpointWait::None
             && (source_wait == SourceCheckpointWait::Publication || checkpoint_observed)
             && !publication_pending()?;
-        if pending {
+        if pending || ready {
             pending = advance()?;
         }
         if publication_finished {
@@ -677,7 +678,7 @@ fn wait_with_source_validation(
     }
 }
 
-/// Continue only captured read-only pages during the mandatory writer rest.
+/// Continue bounded read-only observations during the mandatory writer rest.
 /// Read-only pages never authorize a new writer turn or shorten its rest.
 fn pause_with_captured_observations(
     duration: Duration,
@@ -698,14 +699,14 @@ fn pause_with_captured_observations(
         if remaining.is_zero() {
             return Ok(false);
         }
-        let slice = if pending && read_only_ready()? {
-            // This is work inside the existing wall-clock rest, not another
-            // source turn. Check stop/wake before each bounded captured page.
+        let ready = read_only_ready()?;
+        let slice = if ready {
+            // Work inside the existing wall-clock rest cannot grant a source
+            // turn. Observe stop/wake before every bounded read-only page.
             Duration::ZERO
-        } else if pending {
-            remaining.min(RETENTION_LANE_CHECKPOINT_SLICE)
         } else {
-            remaining
+            // Readiness can change even when no page was pending at entry.
+            remaining.min(RETENTION_LANE_CHECKPOINT_SLICE)
         };
         let (stopped, woke) = wait(slice);
         if stopped || woke {
@@ -714,10 +715,34 @@ fn pause_with_captured_observations(
         if elapsed() >= duration {
             return Ok(false);
         }
-        if pending {
+        if pending || ready {
             pending = advance()?;
         }
     }
+}
+
+// Capture readiness can change during a wait without a previously captured
+// page. Both wait helpers poll that pure predicate on the existing bounded
+// slice. Source proof retains its original pacing and wait deadlines.
+fn read_only_observation_ready(
+    lane: &RedbOnlineRetentionLane,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    Ok(lane.captured_read_only_observation_pending()? || lane.source_accounting_ready()?)
+}
+
+fn advance_wait_observations(
+    lane: &RedbOnlineRetentionLane,
+    status: &RetentionLaneStatus,
+) -> Result<bool, riffdb_storage_api::StorageError> {
+    lane.tick_source_accounting()?;
+    let phases = lane.advance_captured_observations_off_gate()?;
+    status.note_phases(&phases);
+    // Proof preparation is a separate operation with its own unchanged rest
+    // charge. An observation-only wake cannot renew that mutation deadline.
+    if phases.receipt_validation_pending {
+        status.note_phases(&lane.advance_captured_source_proof_off_gate()?);
+    }
+    lane.captured_observations_pending()
 }
 
 fn run_lane(
@@ -879,16 +904,10 @@ fn run_lane(
         let waiting = std::time::Instant::now();
         let paused = pause_with_captured_observations(
             rest,
-            (observation_pending, || {
-                lane.captured_read_only_observation_pending()
-            }),
+            (observation_pending, || read_only_observation_ready(lane)),
             || waiting.elapsed(),
             |slice| control.pause_observation_slice(slice),
-            || {
-                let phases = lane.advance_captured_observations_off_gate()?;
-                status.note_phases(&phases);
-                lane.captured_observations_pending()
-            },
+            || advance_wait_observations(lane, status),
         );
         match paused {
             Ok(true) => {
@@ -915,19 +934,13 @@ fn run_lane(
                     wait_with_source_validation(
                         control,
                         checkpoints_seen,
-                        (observation_pending, || {
-                            lane.captured_read_only_observation_pending()
-                        }),
+                        (observation_pending, || read_only_observation_ready(lane)),
                         (SourceCheckpointWait::from_phases(&step_phases), || {
                             lane.source_checkpoint_publication_pending()
                         }),
                         |waiting_seen, slice| lane.wait_for_journal_checkpoint(waiting_seen, slice),
                         || waiting.elapsed(),
-                        || {
-                            let phases = lane.advance_captured_observations_off_gate()?;
-                            status.note_phases(&phases);
-                            lane.captured_observations_pending()
-                        },
+                        || advance_wait_observations(lane, status),
                     )
                 });
             match checkpoint {

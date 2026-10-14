@@ -236,7 +236,7 @@ fn configured_expiry_keeps_the_original_registration_and_degradation_evidence() 
     );
 }
 
-fn stored_registration() -> (
+pub(crate) fn stored_registration() -> (
     crate::test_path::ScopedDirectory,
     crate::RedbOperationalPorts,
     Record,
@@ -279,7 +279,7 @@ fn stored_registration() -> (
     (scope, ports, record)
 }
 
-fn store_record(ports: &crate::RedbOperationalPorts, record: &Record, history: History) {
+pub(crate) fn store_record(ports: &crate::RedbOperationalPorts, record: &Record, history: History) {
     use riffdb_storage_api::{
         AdministrationSequenceAllocator, AuthoritativeMutationV3 as Mutation,
         AuthoritativeNamespaceV1 as N, AuthoritativeTransactionBindingV3,

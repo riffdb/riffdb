@@ -141,6 +141,9 @@ impl ReplicationSourceControl {
         hold: Hold,
     ) -> Result<bool, Refusal> {
         self.verify_follower_acknowledgement_admission()?;
+        if self.accounting.has_pin() {
+            return Ok(false);
+        }
         let Some((prepared, before)) = self.prepared_acknowledgement.take() else {
             return Ok(false);
         };
@@ -194,6 +197,7 @@ impl ReplicationSourceControl {
         }
         self.eligible_bytes
             .rebase_own_acknowledgement(&publication)?;
+        self.accounting.rebase_own_acknowledgement(&publication)?;
         self.online_validation
             .as_mut()
             .ok_or_else(invariant)?

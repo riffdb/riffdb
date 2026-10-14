@@ -23,6 +23,11 @@ pub(super) struct ContinuedProbe {
 }
 
 impl ContinuedProbe {
+    #[cfg(test)]
+    pub(super) fn sample_available(&self, now: Instant) -> bool {
+        self.sample(now).is_ok()
+    }
+
     pub(super) fn capture(
         previous: Option<Self>,
         root: ValidationSource,

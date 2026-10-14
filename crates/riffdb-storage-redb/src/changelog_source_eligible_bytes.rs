@@ -21,6 +21,21 @@ pub(super) struct Observer {
 }
 
 impl Observer {
+    #[cfg(test)]
+    pub(super) fn sample_available(&self, now: Instant) -> bool {
+        self.continued
+            .as_ref()
+            .is_some_and(|probe| probe.sample_available(now))
+            || self
+                .probe
+                .as_ref()
+                .is_some_and(|probe| probe.sample(now).is_some())
+    }
+
+    pub(super) fn read_only_capture_due(&self, now: Instant) -> bool {
+        self.next_capture.is_none_or(|next| now >= next) && !self.pending()
+    }
+
     pub(super) fn qualified_prefix_capture_due(&self, qualification: u64, now: Instant) -> bool {
         self.next_capture.is_none_or(|next| now >= next)
             && !self.pending()

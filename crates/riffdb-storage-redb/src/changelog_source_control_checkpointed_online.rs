@@ -145,6 +145,8 @@ impl ReplicationSourceControl {
         let (_, root, qualification) = write.commit_reclamation()?;
         let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
         walk.rebase_own_deletion(Arc::clone(&root), qualification)?;
+        self.accounting
+            .rebase_own_cut(&proof, &walk.proof()?, epoch, qualification)?;
         self.eligible_bytes.rebase_own_cut(
             ValidationSource::Checkpoint(root),
             &proof,

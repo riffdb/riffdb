@@ -57,6 +57,20 @@ pub(crate) fn fixture() -> (
     (scope, ports, states)
 }
 
+pub(crate) fn fixture_with_commit_profile(
+    profile: crate::RedbCommitProfile,
+) -> (
+    crate::test_path::ScopedDirectory,
+    RedbOperationalPorts,
+    Vec<ChangelogHistoryStateV3>,
+) {
+    let scope = crate::test_path::ScopedDirectory::new("v3-source-control-profile");
+    let (ports, states) = initialize_store(
+        RedbStore::open_with_commit_profile(scope.join("db.redb"), profile).unwrap(),
+    );
+    (scope, ports, states)
+}
+
 fn initialize(path: &std::path::Path) -> (RedbOperationalPorts, Vec<ChangelogHistoryStateV3>) {
     initialize_store(RedbStore::open(path).unwrap())
 }

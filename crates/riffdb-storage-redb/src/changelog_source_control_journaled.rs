@@ -73,7 +73,7 @@ impl ReplicationSourceControl {
         // discard the sample until the next capture cadence. Keep the two
         // existing pins and every sharing check; this bounded turn grants no
         // writer or additional snapshot. Captured pages continue off-gate.
-        if self.eligible_bytes.pending() {
+        if self.eligible_bytes.pending() || self.accounting.has_pin() {
             return Ok(0);
         }
         crash_edge("continuation-qualified");
@@ -399,6 +399,12 @@ impl ReplicationSourceControl {
             let walk = self.online_validation.as_mut().ok_or_else(invariant)?;
             let successor = ValidationSource::Composite(successor);
             walk.rebase_own_source_deletion(successor.clone(), qualification)?;
+            self.accounting.rebase_own_cut(
+                &accounting_proof,
+                &walk.proof()?,
+                epoch,
+                qualification,
+            )?;
             self.eligible_bytes.rebase_own_cut(
                 successor,
                 &accounting_proof,
@@ -464,7 +470,9 @@ fn capture(shared: &Arc<SharedRedb>) -> Result<AdmissionAttempt<ValidationSource
 
 /// A bounded actual checkpoint read, never the composite's newer tail. A long
 /// control-only suffix yields; it cannot invent independent progress.
-fn independently_checkpointed(source: &ValidationSource) -> Result<Option<u64>, StorageError> {
+pub(super) fn independently_checkpointed(
+    source: &ValidationSource,
+) -> Result<Option<u64>, StorageError> {
     let root = ValidationSource::Checkpoint(Arc::clone(source.checkpoint_pin()));
     let history = root.history()?.ok_or_else(corrupt)?;
     let mut sequence = history.tail().sequence();

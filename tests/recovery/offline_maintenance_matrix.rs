@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::fs;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -39,6 +40,7 @@ const CHILD_DATABASE: &str = "RIFFDB_WP190_MAINTENANCE_DATABASE";
 const CHILD_BACKUP_ROOT: &str = "RIFFDB_WP190_MAINTENANCE_BACKUP_ROOT";
 const CHILD_DEDICATED: &str = "dedicated-crash-child-v1";
 const CHILD_TIMEOUT: Duration = Duration::from_secs(20);
+const ABORT_SIGNAL: i32 = 6;
 const BACKUP_NAME: &str = "wp190-baseline";
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -376,10 +378,10 @@ fn spawn_expected_abort(case: CrashCase, fixture: &MaintenanceFixture) -> TestRe
         .env(CHILD_BACKUP_ROOT, fixture.backup_root.as_os_str())?;
     let mut child = ChildProcessController::spawn(&specification)?;
     let exit = child.wait_for_exit(CHILD_TIMEOUT)?;
-    if exit.status.success() {
+    if exit.status.signal() != Some(ABORT_SIGNAL) {
         return Err(test_failure(format!(
-            "{} child did not abort at its closed failpoint",
-            case.id
+            "{} child exited with {:?}, expected SIGABRT at its closed failpoint",
+            case.id, exit.status
         )));
     }
     Ok(())
@@ -419,10 +421,10 @@ fn run_child_from_environment() -> TestResult<()> {
             storage.stage_restore(operation_id(0x61), &backup_name()?, validation_inputs()?)?;
         }
         CrashAction::PublishRestore => {
-            let staged =
+            let mut staged =
                 storage.stage_restore(operation_id(0x61), &backup_name()?, validation_inputs()?)?;
             let manifest_identity = staged.manifest_identity().clone();
-            let staged_database_id = complete_structural_validation(staged.staged_database_file())?;
+            let staged_database_id = complete_owned_staged_validation(&mut staged)?;
             let sealed = staged.seal_after_validation(staged_database_id)?;
             let mut restore = storage
                 .read_receipt(operation_id(0x61))?
@@ -490,6 +492,28 @@ fn replace_with_database(path: &Path, database_id: DatabaseId) -> TestResult<()>
     )?
     .sync_all()?;
     Ok(())
+}
+
+// The stage already completed both native evidence walks. Consume that exact
+// proof without opening a second engine, and release its immutable reader before
+// sealing closes the original owner (ADR-0293).
+fn complete_owned_staged_validation(
+    staged: &mut riffdb_storage_redb::RedbStagedRestore,
+) -> TestResult<DatabaseId> {
+    let evidence = staged.take_owned_authorization_evidence()?;
+    if !evidence.matches_inputs(&validation_inputs()?) {
+        return Err(test_failure(
+            "owned staged proof has different validation inputs",
+        ));
+    }
+    let (database, session, retained, catalog, reader) = evidence.into_parts()?;
+    if !catalog.matches(database, session) || retained.database_id() != database {
+        return Err(test_failure(
+            "owned staged proof has inconsistent identities",
+        ));
+    }
+    drop(reader);
+    Ok(database)
 }
 
 fn complete_structural_validation(path: &Path) -> TestResult<DatabaseId> {
@@ -668,6 +692,59 @@ const fn failpoint_name(failpoint: RedbMaintenanceFailpoint) -> &'static str {
         RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync => {
             "after-retirement-delete-parent-sync"
         }
+        RedbMaintenanceFailpoint::NativeTransferPrimaryRename => "native-transfer-primary-rename",
+        RedbMaintenanceFailpoint::NativeTransferPrimarySourceSync => {
+            "native-transfer-primary-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferPrimaryTargetSync => {
+            "native-transfer-primary-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferJournalRename => "native-transfer-journal-rename",
+        RedbMaintenanceFailpoint::NativeTransferJournalSourceSync => {
+            "native-transfer-journal-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferJournalTargetSync => {
+            "native-transfer-journal-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferFormatMarkerRename => {
+            "native-transfer-format-marker-rename"
+        }
+        RedbMaintenanceFailpoint::NativeTransferFormatMarkerSourceSync => {
+            "native-transfer-format-marker-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferFormatMarkerTargetSync => {
+            "native-transfer-format-marker-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishPrimaryRename => "native-publish-primary-rename",
+        RedbMaintenanceFailpoint::NativePublishPrimarySourceSync => {
+            "native-publish-primary-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishPrimaryTargetSync => {
+            "native-publish-primary-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishJournalRename => "native-publish-journal-rename",
+        RedbMaintenanceFailpoint::NativePublishJournalSourceSync => {
+            "native-publish-journal-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishJournalTargetSync => {
+            "native-publish-journal-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishFormatMarkerRename => {
+            "native-publish-format-marker-rename"
+        }
+        RedbMaintenanceFailpoint::NativePublishFormatMarkerSourceSync => {
+            "native-publish-format-marker-source-sync"
+        }
+        RedbMaintenanceFailpoint::NativePublishFormatMarkerTargetSync => {
+            "native-publish-format-marker-target-sync"
+        }
+        RedbMaintenanceFailpoint::NativeTransferReadback => "native-transfer-readback",
+        RedbMaintenanceFailpoint::BeforeNativeStartupOpen => "before-native-startup-open",
+        RedbMaintenanceFailpoint::BeforeNativeIntentRemoval => "before-native-intent-removal",
+        RedbMaintenanceFailpoint::AfterNativeIntentRemoval => "after-native-intent-removal",
+        RedbMaintenanceFailpoint::AfterNativeIntentDirectorySync => {
+            "after-native-intent-directory-sync"
+        }
     }
 }
 
@@ -705,6 +782,59 @@ fn parse_failpoint(value: &str) -> Option<RedbMaintenanceFailpoint> {
         "after-retirement-stage-delete" => RedbMaintenanceFailpoint::AfterRetirementStageDelete,
         "after-retirement-delete-parent-sync" => {
             RedbMaintenanceFailpoint::AfterRetirementDeleteParentSync
+        }
+        "native-transfer-primary-rename" => RedbMaintenanceFailpoint::NativeTransferPrimaryRename,
+        "native-transfer-primary-source-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferPrimarySourceSync
+        }
+        "native-transfer-primary-target-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferPrimaryTargetSync
+        }
+        "native-transfer-journal-rename" => RedbMaintenanceFailpoint::NativeTransferJournalRename,
+        "native-transfer-journal-source-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferJournalSourceSync
+        }
+        "native-transfer-journal-target-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferJournalTargetSync
+        }
+        "native-transfer-format-marker-rename" => {
+            RedbMaintenanceFailpoint::NativeTransferFormatMarkerRename
+        }
+        "native-transfer-format-marker-source-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferFormatMarkerSourceSync
+        }
+        "native-transfer-format-marker-target-sync" => {
+            RedbMaintenanceFailpoint::NativeTransferFormatMarkerTargetSync
+        }
+        "native-publish-primary-rename" => RedbMaintenanceFailpoint::NativePublishPrimaryRename,
+        "native-publish-primary-source-sync" => {
+            RedbMaintenanceFailpoint::NativePublishPrimarySourceSync
+        }
+        "native-publish-primary-target-sync" => {
+            RedbMaintenanceFailpoint::NativePublishPrimaryTargetSync
+        }
+        "native-publish-journal-rename" => RedbMaintenanceFailpoint::NativePublishJournalRename,
+        "native-publish-journal-source-sync" => {
+            RedbMaintenanceFailpoint::NativePublishJournalSourceSync
+        }
+        "native-publish-journal-target-sync" => {
+            RedbMaintenanceFailpoint::NativePublishJournalTargetSync
+        }
+        "native-publish-format-marker-rename" => {
+            RedbMaintenanceFailpoint::NativePublishFormatMarkerRename
+        }
+        "native-publish-format-marker-source-sync" => {
+            RedbMaintenanceFailpoint::NativePublishFormatMarkerSourceSync
+        }
+        "native-publish-format-marker-target-sync" => {
+            RedbMaintenanceFailpoint::NativePublishFormatMarkerTargetSync
+        }
+        "native-transfer-readback" => RedbMaintenanceFailpoint::NativeTransferReadback,
+        "before-native-startup-open" => RedbMaintenanceFailpoint::BeforeNativeStartupOpen,
+        "before-native-intent-removal" => RedbMaintenanceFailpoint::BeforeNativeIntentRemoval,
+        "after-native-intent-removal" => RedbMaintenanceFailpoint::AfterNativeIntentRemoval,
+        "after-native-intent-directory-sync" => {
+            RedbMaintenanceFailpoint::AfterNativeIntentDirectorySync
         }
         _ => return None,
     })

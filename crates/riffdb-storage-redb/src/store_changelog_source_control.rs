@@ -30,6 +30,10 @@ pub(crate) use transaction::{AcknowledgementPublication, ControlWrite};
 #[path = "changelog_source_prefix_refresh.rs"]
 mod prefix_refresh;
 pub(crate) use prefix_refresh::{PendingPrefixRefresh, PrefixRefreshPublication};
+#[path = "changelog_source_accounting.rs"]
+mod accounting;
+#[path = "changelog_source_accounting_holds.rs"]
+mod accounting_holds;
 #[path = "replication_administration_write.rs"]
 mod administration;
 #[path = "changelog_bootstrap_attachment.rs"]
@@ -85,6 +89,7 @@ pub(crate) struct ReplicationSourceControl {
     reclamation_yields: [u64; 3],
     source_admission_census: [u64; 8],
     eligible_bytes: eligible_bytes::Observer,
+    accounting: accounting::ReadOnlyAccounting,
 }
 
 impl RedbOperationalPorts {
@@ -202,6 +207,7 @@ impl RedbOperationalPorts {
             reclamation_yields: [0; 3],
             source_admission_census: [0; 8],
             eligible_bytes: eligible_bytes::Observer::default(),
+            accounting: accounting::ReadOnlyAccounting::default(),
         }
     }
 }
@@ -276,6 +282,63 @@ impl ReplicationSourceControl {
         eprintln!(
             "riffdb-follower-ack-work-v1\tphase={phase}\tresult={result_class}\toff_gate_us={off_gate_us}\twriter_wait_us={writer_wait_us}\tgate_held_us={gate_held_us}\tinitial_rows={initial_rows}\tcontinued_rows={continued_rows}"
         );
+    }
+
+    /// A read-only capture is independent of the mutation-proof rest clock.
+    /// Prepared acknowledgement and bootstrap owners retain their existing slot.
+    pub(crate) fn source_accounting_ready(&self) -> Result<bool, StorageError> {
+        if self.shared.mutation_gate.source_admission_retired()?
+            || self.prepared_acknowledgement.is_some()
+            || self.bootstrap_read_active()
+            || self.shared.write_fenced.load(Ordering::Acquire)
+            || self.shared.is_follower_mode()
+        {
+            return Ok(false);
+        }
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        Ok(epoch != u64::MAX
+            && self.accounting.ready(
+                &self.shared,
+                &self.eligible_bytes,
+                epoch,
+                std::time::Instant::now(),
+            ))
+    }
+
+    /// Capture only; existing pages are advanced separately with cancellation
+    /// between bounded pages. This acquires no writer and never charges rest.
+    pub(crate) fn tick_source_accounting(&mut self) -> Result<(), StorageError> {
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        self.accounting.check_qualification(epoch);
+        self.eligible_bytes.check_qualification(epoch);
+        if self.accounting.has_pin()
+            || self.eligible_bytes.pending()
+            || !self.source_accounting_ready()?
+        {
+            return Ok(());
+        }
+        if let Some(walk) = self.online_validation.as_mut() {
+            walk.release_completed_pin();
+        }
+        let captured = std::time::Instant::now();
+        let source = self.shared.capture_source_validation_pin()?;
+        self.accounting
+            .capture(source, &self.shared, epoch, captured)?;
+        if self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire)
+            != epoch
+        {
+            self.accounting = accounting::ReadOnlyAccounting::default();
+        }
+        Ok(())
     }
 
     /// Exact registration retries allocate no receipt; replacement is refused.
@@ -538,6 +601,9 @@ impl ReplicationSourceControl {
         {
             return Ok(0);
         }
+        if self.accounting.has_pin() {
+            return Ok(0);
+        }
         crash_edge("continuation-qualified");
         let admission = Barrier::try_from_continuation_observed(Arc::clone(&self.shared), walk);
         let barrier = match admission {
@@ -573,6 +639,23 @@ impl ReplicationSourceControl {
     /// It cannot advance source proof, capture a pin, request a writer turn or
     /// change the source owner's preparation/rest deadline.
     pub(crate) fn advance_source_byte_observation_off_gate(&mut self) -> Result<(), StorageError> {
+        let epoch = self
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire);
+        self.accounting.check_qualification(epoch);
+        if self.accounting.has_pin() {
+            let result = self.accounting.advance_captured(
+                &self.shared,
+                &mut self.eligible_bytes,
+                epoch,
+                std::time::Instant::now(),
+            );
+            if result.is_err() {
+                self.retire_online_validation();
+            }
+            return result;
+        }
         self.eligible_bytes.check_qualification(
             self.shared
                 .source_continuation_epoch
@@ -622,6 +705,7 @@ impl ReplicationSourceControl {
 
     pub(crate) fn retire_online_validation(&mut self) {
         self.eligible_bytes.retire();
+        self.accounting = accounting::ReadOnlyAccounting::default();
         self.online_validation = None;
         self.online_license = None;
     }
@@ -641,11 +725,13 @@ impl ReplicationSourceControl {
     }
 
     pub(crate) fn captured_observations_pending(&self) -> bool {
-        self.receipt_validation_pending() || self.eligible_bytes.pending()
+        self.receipt_validation_pending()
+            || self.eligible_bytes.pending()
+            || self.accounting.has_pin()
     }
 
     pub(crate) fn captured_read_only_observation_pending(&self) -> bool {
-        self.eligible_bytes.pending()
+        self.eligible_bytes.pending() || self.accounting.has_pin()
     }
 
     pub(crate) fn reclamation_observation(&self) -> Option<[u64; 8]> {

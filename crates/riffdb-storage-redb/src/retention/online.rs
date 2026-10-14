@@ -232,7 +232,7 @@ impl RedbOnlineRetentionLane {
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .continue_captured(&self.shared);
-        self.advance_source_and_logical_observations_off_gate()
+        self.advance_source_and_logical_observations_off_gate(false)
     }
 
     #[cfg(test)]
@@ -330,15 +330,35 @@ impl RedbOnlineRetentionLane {
     pub fn advance_source_validation_off_gate(
         &self,
     ) -> Result<OnlineRetentionPhases, StorageError> {
+        self.tick_source_accounting()?;
         self.physical_bytes
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .tick(&self.shared);
-        self.advance_source_and_logical_observations_off_gate()
+        self.advance_source_and_logical_observations_off_gate(true)
+    }
+
+    /// First-party read-only accounting wakeup; no writer or mutation-proof work.
+    #[doc(hidden)]
+    pub fn tick_source_accounting(&self) -> Result<(), StorageError> {
+        self.source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .tick_source_accounting()
+    }
+
+    /// Readiness only; checking this does not capture a reader or alter rest.
+    #[doc(hidden)]
+    pub fn source_accounting_ready(&self) -> Result<bool, StorageError> {
+        self.source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .source_accounting_ready()
     }
 
     fn advance_source_and_logical_observations_off_gate(
         &self,
+        proof_work: bool,
     ) -> Result<OnlineRetentionPhases, StorageError> {
         let mut logical = self
             .logical_bytes
@@ -361,6 +381,32 @@ impl RedbOnlineRetentionLane {
         // pages continue during mandatory writer/proof rest. They cannot
         // prepare a mutation, renew a source turn or overwrite its candidate.
         source.advance_source_byte_observation_off_gate()?;
+        if !proof_work {
+            return Ok(OnlineRetentionPhases {
+                receipt_validation_pending: source.receipt_validation_pending(),
+                source_work_wait: source.source_work_wait(),
+                ..OnlineRetentionPhases::default()
+            });
+        }
+        Self::advance_source_proof_locked(&mut source)
+    }
+
+    /// Continue the existing mutation candidate under its original shared rest.
+    /// This neither captures accounting nor obtains a writer or a fresh pin.
+    #[doc(hidden)]
+    pub fn advance_captured_source_proof_off_gate(
+        &self,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
+        let mut source = self
+            .source_control
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Self::advance_source_proof_locked(&mut source)
+    }
+
+    fn advance_source_proof_locked(
+        source: &mut crate::store::ReplicationSourceControl,
+    ) -> Result<OnlineRetentionPhases, StorageError> {
         if !source.source_background_work_ready() {
             return Ok(OnlineRetentionPhases {
                 receipt_validation_pending: source.receipt_validation_pending(),
@@ -418,6 +464,8 @@ impl RedbOnlineRetentionLane {
         max_sequences: NonZeroU64,
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        // Independent accounting capture belongs to the worker's observation
+        // callbacks. A plain retention step must progress without that owner.
         self.physical_bytes
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?

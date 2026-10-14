@@ -950,3 +950,232 @@ fn pending_newer_source_byte_capture_finishes_before_an_older_mutation_proof_is_
     assert!(control.online_validation.as_ref().unwrap().is_complete());
     assert_eq!(control.reclamation_yields()[0], 1);
 }
+
+#[test]
+fn source_accounting_can_observe_a_checkpointed_prefix_before_reclamation_proof_finishes() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture_with_commit_profile(
+        crate::RedbCommitProfile::Hardened,
+    );
+    for ordinal in 0..1030 {
+        let _lease = ports.shared.mutation_gate.acquire().unwrap();
+        append(&ports, if ordinal % 2 == 0 { 17 } else { 31 });
+    }
+    let lane = ports.online_retention_lane();
+    let owner = ports.shared_source_control().unwrap();
+    let qualification = ports
+        .shared
+        .source_continuation_epoch
+        .load(Ordering::Acquire);
+    let source = ports.shared.capture_source_validation_pin().unwrap();
+    let history = source.history().unwrap().unwrap();
+    assert!(
+        history.tail().sequence().get() - history.minimum_resume().sequence().get() >= 1030,
+        "fixture must expose its actual populated immutable source pin"
+    );
+    let ceiling = history.tail().sequence().get();
+    let expected = oracle(&source, history, ceiling);
+    let mut walk = RetainedHistoryValidation::new_source(source)
+        .unwrap()
+        .unwrap();
+    walk.bind_qualification(qualification);
+    owner.lock().unwrap().online_validation = Some(walk);
+    lane.advance_source_validation_off_gate().unwrap();
+    {
+        let _lease = ports.shared.mutation_gate.acquire().unwrap();
+        append(&ports, 47);
+    }
+    assert_eq!(
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+        qualification
+    );
+    let gate = ports.shared.mutation_gate.source_census().unwrap();
+    lane.advance_source_validation_off_gate().unwrap();
+    let mut control = owner.lock().unwrap();
+    assert!(control.receipt_validation_pending());
+    assert!(control.online_license.is_none());
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), gate);
+    assert!(
+        control.eligible_bytes.pending(),
+        "read-only accounting must capture actual independently checkpointed coverage without waiting for the complete deletion proof"
+    );
+    let rows_before = control.online_validation.as_ref().unwrap().rows_read();
+    for _ in 0..16 {
+        control.advance_source_byte_observation_off_gate().unwrap();
+        if !control.eligible_bytes.pending() {
+            break;
+        }
+    }
+    let sample = control
+        .eligible_bytes
+        .continued
+        .as_ref()
+        .unwrap()
+        .sample(Instant::now())
+        .unwrap();
+    assert_eq!((sample[3], sample[5]), (ceiling, expected));
+    assert_eq!(
+        sample[4],
+        ceiling - history.minimum_resume().sequence().get()
+    );
+    assert_eq!(sample[11], sample[4]);
+    assert!(control.receipt_validation_pending());
+    assert_eq!(
+        control.online_validation.as_ref().unwrap().rows_read(),
+        rows_before
+    );
+    assert!(control.observed.is_none());
+    assert!(control.online_license.is_none());
+    assert_eq!(control.online_independent_sequence, 0);
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), gate);
+}
+
+#[test]
+fn source_accounting_preserves_source_rest_and_two_validation_pins() {
+    let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture_with_commit_profile(
+        crate::RedbCommitProfile::Hardened,
+    );
+    for ordinal in 0..1030 {
+        let _lease = ports.shared.mutation_gate.acquire().unwrap();
+        append(&ports, if ordinal % 2 == 0 { 17 } else { 31 });
+    }
+    let lane = ports.online_retention_lane();
+    let owner = ports.shared_source_control().unwrap();
+    let qualification = ports
+        .shared
+        .source_continuation_epoch
+        .load(Ordering::Acquire);
+    let source = ports.shared.capture_source_validation_pin().unwrap();
+    let history = source.history().unwrap().unwrap();
+    let ceiling = history.tail().sequence().get();
+    assert!(ceiling - history.minimum_resume().sequence().get() >= 1030);
+    let expected = oracle(&source, history, ceiling);
+    let proof_pin = Arc::downgrade(source.checkpoint_pin());
+    let mut walk = RetainedHistoryValidation::new_source(source)
+        .unwrap()
+        .unwrap();
+    walk.bind_qualification(qualification);
+    let rest_clock = Instant::now();
+    let rest_before;
+    {
+        let mut control = owner.lock().unwrap();
+        control.online_validation = Some(walk);
+        control.bind_source_scheduler();
+        control.charge_source_work(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        rest_before = control.source_pacing.as_ref().unwrap().wait(rest_clock);
+        assert!(!rest_before.is_zero());
+    }
+    let gate = ports.shared.mutation_gate.source_census().unwrap();
+    let phases = lane.advance_source_validation_off_gate().unwrap();
+    assert_eq!(
+        (
+            phases.source_initial_rows,
+            phases.source_continuation_rows,
+            phases.gate_held_us()
+        ),
+        (0, 0, 0)
+    );
+    {
+        let _lease = ports.shared.mutation_gate.acquire().unwrap();
+        append(&ports, 47);
+    }
+    assert_eq!(
+        ports
+            .shared
+            .source_continuation_epoch
+            .load(Ordering::Acquire),
+        qualification
+    );
+    let phases = lane.advance_source_validation_off_gate().unwrap();
+    assert_eq!(
+        (
+            phases.source_initial_rows,
+            phases.source_continuation_rows,
+            phases.gate_held_us()
+        ),
+        (0, 0, 0)
+    );
+    let census_pin = {
+        let control = owner.lock().unwrap();
+        assert!(
+            control.eligible_bytes.pending(),
+            "accounting capture must remain available during the actual unchanged source-proof rest"
+        );
+        let root = control
+            .eligible_bytes
+            .continued
+            .as_ref()
+            .unwrap()
+            .root
+            .as_ref()
+            .unwrap();
+        let pin = Arc::downgrade(root.checkpoint_pin());
+        assert!(
+            !pin.ptr_eq(&proof_pin),
+            "the two actual independently published roots must be distinct"
+        );
+        assert_eq!(
+            control.online_validation.as_ref().unwrap().rows_read(),
+            [0; 2]
+        );
+        assert!(
+            ports
+                .shared
+                .extent_roots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|root| root.strong_count() != 0)
+                .count()
+                <= 2,
+            "capture must retain at most the two actual validation roots"
+        );
+        pin
+    };
+    for _ in 0..16 {
+        let phases = lane.advance_captured_observations_off_gate().unwrap();
+        assert_eq!(
+            (
+                phases.source_initial_rows,
+                phases.source_continuation_rows,
+                phases.gate_held_us()
+            ),
+            (0, 0, 0)
+        );
+        if !owner.lock().unwrap().eligible_bytes.pending() {
+            break;
+        }
+    }
+    let mut control = owner.lock().unwrap();
+    let completed = control.eligible_bytes.continued.as_ref().unwrap();
+    assert!(
+        completed.root.is_none(),
+        "a completed census releases its validation pin"
+    );
+    let sample = completed.sample(Instant::now()).unwrap();
+    assert_eq!((sample[3], sample[5]), (ceiling, expected));
+    assert_eq!(
+        control.online_validation.as_ref().unwrap().rows_read(),
+        [0; 2]
+    );
+    assert!(control.observed.is_none());
+    assert!(control.online_license.is_none());
+    assert_eq!(control.online_independent_sequence, 0);
+    assert_eq!(
+        control.source_pacing.as_ref().unwrap().wait(rest_clock),
+        rest_before
+    );
+    assert_eq!(ports.shared.mutation_gate.source_census().unwrap(), gate);
+    assert!(proof_pin.upgrade().is_some());
+    control.retire_online_validation();
+    assert!(
+        proof_pin.upgrade().is_none(),
+        "retirement releases the original unfinished proof pin"
+    );
+    assert!(
+        census_pin.upgrade().is_none(),
+        "completed accounting and owner retirement release the census reader"
+    );
+}

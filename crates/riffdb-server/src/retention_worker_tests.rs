@@ -9,6 +9,101 @@ use riffdb_storage_api::{
 use riffdb_storage_redb::{RedbOperationalPorts, RedbStore};
 use riffdb_types::{DatabaseId, DigestKeyId, IncidentId, Timestamp};
 
+// req: STO-030, STO-031, REC-001, END-008
+#[test]
+fn source_accounting_capture_becoming_due_inside_rest_preserves_the_entire_rest() {
+    use std::cell::Cell;
+    let clock = Cell::new(Duration::ZERO);
+    let captured = Cell::new(None);
+    let pages = Cell::new(0_u32);
+    let checked = Cell::new(0_u32);
+    let rest = Duration::from_secs(3);
+    let due = Duration::from_secs(1);
+    let stopped = pause_with_captured_observations(
+        rest,
+        (false, || {
+            Ok(pages.get() != 0 || (captured.get().is_none() && clock.get() >= due))
+        }),
+        || clock.get(),
+        |slice| {
+            clock.set(clock.get() + slice);
+            (false, false)
+        },
+        || {
+            if captured.get().is_none() {
+                assert!(clock.get() >= due);
+                captured.set(Some(clock.get()));
+                pages.set(2);
+            } else {
+                assert!(pages.get() != 0);
+                pages.set(pages.get() - 1);
+                checked.set(checked.get() + 1);
+            }
+            Ok(pages.get() != 0)
+        },
+    )
+    .unwrap();
+    assert!(!stopped);
+    assert_eq!(
+        clock.get(),
+        rest,
+        "read-only capture cannot shorten or renew writer rest"
+    );
+    assert_eq!(
+        captured.get(),
+        Some(due),
+        "a capture becoming due during rest must run before the unchanged rest expires"
+    );
+    assert_eq!(checked.get(), 2);
+}
+
+// req: STO-030, STO-031, REC-001, END-008
+#[test]
+fn source_accounting_capture_becoming_due_inside_checkpoint_wait_grants_no_checkpoint() {
+    use std::cell::Cell;
+    let clock = Cell::new(Duration::ZERO);
+    let captured = Cell::new(None);
+    let pages = Cell::new(0_u32);
+    let checked = Cell::new(0_u32);
+    let checkpoint = wait_with_source_validation(
+        &LaneControl::default(),
+        7,
+        (false, || {
+            Ok(pages.get() != 0
+                || (captured.get().is_none() && clock.get() >= RETENTION_LANE_CHECKPOINT_SLICE))
+        }),
+        (SourceCheckpointWait::None, || {
+            panic!("no publication authority was supplied")
+        }),
+        |seen, slice| {
+            assert_eq!(seen, 7);
+            clock.set(clock.get() + slice);
+            seen
+        },
+        || clock.get(),
+        || {
+            if captured.get().is_none() {
+                captured.set(Some(clock.get()));
+                pages.set(2);
+            } else {
+                assert!(pages.get() != 0);
+                pages.set(pages.get() - 1);
+                checked.set(checked.get() + 1);
+            }
+            Ok(pages.get() != 0)
+        },
+    )
+    .unwrap();
+    assert!(!checkpoint);
+    assert_eq!(clock.get(), RETENTION_LANE_RECHECK);
+    assert_eq!(
+        captured.get(),
+        Some(RETENTION_LANE_CHECKPOINT_SLICE),
+        "a due capture must progress while checkpoint authority stays absent"
+    );
+    assert_eq!(checked.get(), 2);
+}
+
 // req: STO-030, STO-031, END-008
 #[test]
 fn completed_publication_wait_still_advances_one_captured_observation_page() {
@@ -700,6 +795,8 @@ fn writer_rest_continues_captured_physical_pages_without_starting_another_writer
             (true, || Ok(false)),
             || clock.get(),
             |slice| {
+                assert!(slice <= RETENTION_LANE_CHECKPOINT_SLICE);
+                assert!(slice <= rest.saturating_sub(clock.get()));
                 waits.set(waits.get() + 1);
                 clock.set(clock.get() + slice);
                 (false, false)
@@ -723,10 +820,9 @@ fn writer_rest_continues_captured_physical_pages_without_starting_another_writer
         rest,
         "read-only work cannot shorten writer rest"
     );
-    assert_eq!(
-        waits.get(),
-        32,
-        "exact end stops page work and sleeps the remainder"
+    assert!(
+        waits.get() > pages.get(),
+        "exact end stops page work while bounded readiness polls preserve the remainder"
     );
 }
 
@@ -756,8 +852,9 @@ fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
             (false, || Ok(false)),
             || clock.get(),
             |slice| {
-                assert_eq!(slice, RETENTION_LANE_RECHECK);
-                clock.set(slice);
+                assert!(slice <= RETENTION_LANE_CHECKPOINT_SLICE);
+                assert!(slice <= RETENTION_LANE_RECHECK.saturating_sub(clock.get()));
+                clock.set(clock.get() + slice);
                 waits += 1;
                 (false, false)
             },
@@ -765,7 +862,8 @@ fn physical_census_rest_preserves_cancellation_wake_and_no_candidate_backoff() {
         )
         .unwrap()
     );
-    assert_eq!(waits, 1);
+    assert!(waits > 1);
+    assert_eq!(clock.get(), RETENTION_LANE_RECHECK);
     let error = pause_with_captured_observations(
         RETENTION_LANE_RECHECK,
         (true, || Ok(false)),

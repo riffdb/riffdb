@@ -47,6 +47,11 @@ pub(crate) struct RegistrationLinksValidation {
 }
 
 impl RegistrationLinksValidation {
+    pub(crate) const fn bookkeeping_bound() -> usize {
+        std::mem::size_of::<Self>()
+            + MAX_REPLICATION_SOURCE_HOLDS_V1 as usize * std::mem::size_of::<Evidence>()
+    }
+
     pub(crate) fn new(
         holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
         history: History,
@@ -303,4 +308,4 @@ fn corrupt() -> StorageError {
 
 #[cfg(test)]
 #[path = "replication_registration_links_tests.rs"]
-mod tests;
+pub(crate) mod tests;
