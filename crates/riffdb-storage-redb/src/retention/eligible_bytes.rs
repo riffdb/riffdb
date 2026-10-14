@@ -80,7 +80,7 @@ impl<'a> CountingViews<'a> {
 
     fn bytes(&self) -> Result<Bytes, StorageError> {
         let mut bytes = Bytes::default();
-        for ((table, key), change) in &self.changed {
+        for ((table, _), change) in &self.changed {
             if change.original != change.after
                 && let Some(original) = &change.original
             {
