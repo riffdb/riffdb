@@ -1585,6 +1585,15 @@ work_packages:
     scale: Each target costs one point observation and one selected mutation beneath existing finite
       collection, graph, index, validation, byte, retry, and partition limits; no scan, cross-
       partition coordination, or duration/population-proportional state exists.
+  closure:
+    status: complete
+    completed_at: '2026-09-03'
+    requirements_satisfied: [BLK-036, BLK-038, BLK-039, BLK-040, BLK-041, BLK-042,
+      BLK-043, BLK-045, TXN-010, TXN-011, TXN-012, TXN-013, PERF-004, PERF-005]
+    evidence: Req-tagged runtime, coordinator, memory/redb storage, concurrency, and
+      tests/bulk_command_recovery.rs proofs (commits 7b0781818 and 11f85ce4c) execute
+      initialized mutable bindings as one absence-or-presence observation and one selected
+      Create or revision-checked Replace mutation per target under whole-command revalidation.
   human_review_triggers: *id001
 - id: WP-699
   name: Initialized transition generated recovery performance and external acceptance
@@ -1644,6 +1653,15 @@ work_packages:
     scale: Evidence is bounded by declared ordinary/collection maxima and reports constant per-plan
       plus per-selected-target work; no unbounded benchmark state, cursor walk, scan, cross-
       partition operation, or application-sized retained proof is introduced.
+  closure:
+    status: complete
+    completed_at: '2026-09-03'
+    requirements_satisfied: [BLK-036, BLK-039, BLK-040, BLK-041, BLK-042, BLK-043,
+      BLK-044, BLK-045, DRV-007, DRV-008, DRV-012, DRV-014, SAFE-004, SAFE-005,
+      PERF-004, PERF-005]
+    evidence: Req-tagged generated client, driver, CLI, MCP, process-level crash recovery
+      (tests/bulk_command_recovery.rs), and downstream capability receipts (commits 7b0781818
+      and 11f85ce4c) preserve exact initialized-transition semantics across all public surfaces.
   human_review_triggers: *id001
 - id: WP-700
   name: Profile-aware binary text interval compiler and storage conformance
@@ -1897,6 +1915,17 @@ work_packages:
       no selector grants transport, transaction, authorization, storage, MCP, or guarantee bypass.
     scale: Target sets contain at most five entries and acceptance uses bounded fresh packages and
       fixture trees; generation retains no database state and performs no operation-proportional work.
+  closure:
+    status: complete
+    completed_at: '2026-09-07'
+    requirements_satisfied: [DX-013, DX-014, DX-016, DX-017, DX-026, DX-027, DX-028,
+      DX-029, DX-030, DX-031, DX-037, DX-038, DX-039, DX-040, DX-042, DX-043,
+      DX-044, DX-045, DX-046, DX-047, DX-048, DX-049, DRV-007, DRV-008,
+      DRV-012, DRV-014]
+    evidence: Req-tagged CLI scaffold, driver-host (tests/driver_host.rs), and cross-driver
+      conformance proofs (commits eee4be079, 706bc5710, and cb0e3b0bc) verify singleton and
+      polyglot project workflows, Go-only package execution without unrelated toolchains, and
+      generated MCP catalog V6 descriptor parity.
   human_review_triggers: *id001
 - id: WP-704
   name: Clean-close certificate durable interface and fast-startup safety closure
@@ -2196,6 +2225,15 @@ work_packages:
       compiler-declared maximum; it cannot alter cost, provider, access shape, policy, snapshot, or cursor.
     scale: Work is bounded by MAX beneath existing row, byte, step, provider, policy, and response ceilings;
       validation is per compilation/request, never per row, and no population materialization is introduced.
+  closure:
+    status: complete
+    completed_at: '2026-08-29'
+    requirements_satisfied: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-017, OQ-019, OQ-022,
+      OQ-024, OQ-049, OQ-051, OQ-052, OQ-053, OQ-062, OQ-063, OQ-064, OQ-065,
+      OQ-066, OQ-067]
+    evidence: Req-tagged RiffQL syntax, query IR, compiler, executor, module, and
+      tests/operational_queries.rs proofs (commits 87db30913 and f4f284e31) enforce
+      compiler-declared Limit<MAX> bounds across planning, cost, authorization, and execution.
   human_review_triggers: *id001
 - id: WP-707
   name: Bounded-limit generated surfaces and external conformance
@@ -2244,6 +2282,16 @@ work_packages:
       target code cannot bypass authoritative validation or select an uncompiled operation or cursor route.
     scale: Generated checks are constant-time, each page is one bounded invocation/backend request, fixtures
       are finite, and no page walk, overfetch, per-row proof, or machine-dependent timing gate is introduced.
+  closure:
+    status: complete
+    completed_at: '2026-08-29'
+    requirements_satisfied: [OQ-015, OQ-016, OQ-030, OQ-062, OQ-063, OQ-064, OQ-065,
+      OQ-066, OQ-067, DX-026, DX-027, DX-028, DX-029, DX-030, DX-031, DX-046,
+      DX-047, DX-049, DX-050, DRV-007, DRV-008, DRV-012, DRV-014, DRV-015,
+      DRV-016]
+    evidence: Req-tagged generated bindings, editor/LSP, tests/driver_host.rs, and
+      tests/operational_queries.rs proofs (commits 87db30913 and f4f284e31) verify
+      bounded-limit validation and direct single-invocation page execution across all surfaces.
   human_review_triggers: *id001
 - id: WP-708
   name: Page-cardinality-independent named-query cursor identity
@@ -2303,6 +2351,15 @@ work_packages:
       policy, epoch, and continuation validation remains authoritative on every invocation.
     scale: Hash derivation is once per bounded request, resumed execution remains one compiled page,
       and no server materialization, hidden page walk, per-row proof, or raised ceiling is introduced.
+  closure:
+    status: complete
+    completed_at: '2026-08-27'
+    requirements_satisfied: [OQ-004, OQ-006, OQ-015, OQ-016, OQ-022, OQ-031, OQ-036,
+      OQ-043, OQ-062, OQ-064, OQ-066, OQ-068, OQ-069, OQ-070, OQ-071,
+      DRV-012, DRV-014, DRV-015, DRV-016, DRV-017]
+    evidence: Req-tagged query-ir, executor, service, tests/operational_queries.rs, and
+      tests/driver_host.rs proofs (commit 3e91f5cc1) verify cursor-specific invariant-parameter
+      hashing and page-size-independent continuation across all language drivers.
   human_review_triggers: *id001
 - id: WP-709
   name: Exact external larger-page coalescing acceptance
@@ -2353,6 +2410,14 @@ work_packages:
     scale: Every RiffDB call remains bounded by its compiled maximum; external count arithmetic is
       checked and finite, test populations remain bounded, and a future streaming optimization requires
       a separate accepted flow-control and partial-failure decision.
+  closure:
+    status: complete
+    completed_at: '2026-08-27'
+    requirements_satisfied: [OQ-004, OQ-016, OQ-030, OQ-031, OQ-068, OQ-069, OQ-070,
+      OQ-071, OQ-072, OQ-073, OQ-074, DRV-012, DRV-014, DRV-016, DRV-017]
+    evidence: Req-tagged executor, service, tests/operational_queries.rs, and tests/driver_host.rs
+      proofs (commit 3e91f5cc1) verify exact append-only multi-page coalescing under one opaque
+      cursor chain and downstream capability conformance.
   human_review_triggers: *id001
 - id: WP-710
   name: Columnar V2 workload ledger, format registry, and independent codec
@@ -3558,6 +3623,22 @@ work_packages:
   exit_gate: A tag produces signed, verifiable, published artifacts and a container image from a
     clean revision with no manual step, a consumer verifies them from the documented procedure, and
     an inconsistent version transition is refused before anything is published.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - ./scripts/check-version-topology
+    - ./scripts/check-generated
+    - ./scripts/publish-release-artifacts --self-test
+    evidence_artifacts:
+    - .github/workflows/release.yml
+    - scripts/publish-release-artifacts
+    - scripts/check-version-topology
+    - docs/release.md
+    requirements_satisfied: [AFC-001, VER-001, VER-004, DRV-014]
+    decisions_taken:
+    - Added tag-triggered .github/workflows/release.yml and scripts/publish-release-artifacts to gate version transitions, run scripts/release-poc --verify, build and push the tracked container image, embed DRV-014 conformance manifests into all four driver packages, sign release provenance under riffdb-release-v1, and verify consumer procedures.
+    residual_risks: []
 
 - id: WP-729
   name: Tokenized text-search declaration and frozen analyzers
@@ -4790,6 +4871,14 @@ work_packages:
       raw head, wait, provider, fallback, transport-local policy, or guarantee downgrade.
     scale: Cross-surface tests retain bounded requests, waiters, pages, processes, epochs, and
       diagnostics; generated/driver layers add no per-row work or population-sized state.
+  closure:
+    status: complete
+    completed_at: '2026-08-28'
+    requirements_satisfied: [OQ-075, OQ-078, OQ-079, OQ-080, OQ-081, OQ-082,
+      OQ-083, DRV-007, DRV-008, DRV-012, DRV-014, DRV-018, SAFE-004, SAFE-005]
+    evidence: Req-tagged gRPC, MCP, CLI, generated client, tests/driver_host.rs, and
+      tests/operational_queries.rs proofs (commit 32927da60) verify AdmissionHead query
+      consistency across all language drivers, capability negotiation, and cross-process execution.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors

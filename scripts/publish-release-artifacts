@@ -1,0 +1,567 @@
+#!/usr/bin/env python3
+# req: AFC-001, VER-001, VER-004, DRV-014
+"""Assemble, sign, verify, and publish immutable RiffDB release and driver artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
+DURABLE_MANIFEST_PATH = ROOT / "release/durable-format-manifest-v1.json"
+DISTRIBUTION_MANIFEST_PATH = ROOT / "release/distribution/manifest-v1.json"
+RELEASE_NAMESPACE = "riffdb-release-v1"
+DRIVER_NAMESPACE = "riffdb-driver-distribution-v1"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"release_publication_failed: {message}")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def write_bytes(path: Path, content: bytes, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        handle.write(content)
+    path.chmod(mode)
+
+
+def run(command: list[str], *, cwd: Path = ROOT, stdin_bytes: bytes | None = None) -> str:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        input=stdin_bytes,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stdout.decode("utf-8", errors="replace"))
+        sys.stderr.write(completed.stderr.decode("utf-8", errors="replace"))
+        fail("command failed: " + " ".join(command))
+    return completed.stdout.decode("utf-8", errors="replace")
+
+
+def verify_version_gate(release_tag: str) -> str:
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release_tag):
+        fail(f"release tag {release_tag!r} must match v<major>.<minor>.<patch>")
+    run([sys.executable, str(ROOT / "scripts/check-version-topology"), "--release-tag", release_tag])
+    return release_tag[1:]
+
+
+def verify_driver_distribution_conformance(
+    distribution: Path,
+    allowed_signers: Path,
+    identity: str,
+    version: str,
+) -> dict[str, str]:
+    run(
+        [
+            str(ROOT / "scripts/verify-driver-distributions"),
+            "--allowed-signers",
+            str(allowed_signers),
+            "--identity",
+            identity,
+            str(distribution),
+        ]
+    )
+    durable_copy = distribution / "durable-format-manifest-v1.json"
+    if not durable_copy.is_file() or durable_copy.read_bytes() != DURABLE_MANIFEST_PATH.read_bytes():
+        fail("driver distribution durable-format-manifest-v1.json is absent or drifted")
+
+    expected_manifests: dict[str, bytes] = {}
+    conformance_digests: dict[str, str] = {}
+    for language in ("go", "python", "rust", "typescript"):
+        canonical_path = ROOT / f"fixtures/driver/manifests/{language}-v1.json"
+        distributed_path = distribution / f"conformance/{language}-v1.json"
+        if not canonical_path.is_file() or not distributed_path.is_file():
+            fail(f"DRV-014 conformance manifest is absent for {language}")
+        expected = canonical_path.read_bytes()
+        if distributed_path.read_bytes() != expected:
+            fail(f"distribution DRV-014 conformance manifest drifted for {language}")
+        expected_manifests[language] = expected
+        conformance_digests[language] = hashlib.sha256(expected).hexdigest()
+
+    npm_client = distribution / "npm" / f"riffdb-client-{version}.tgz"
+    if not npm_client.is_file():
+        fail("TypeScript @riffdb/client archive is absent from distribution")
+    with tarfile.open(npm_client, "r:gz") as archive:
+        member = archive.extractfile("package/conformance-manifest-v1.json")
+        if member is None or member.read() != expected_manifests["typescript"]:
+            fail("TypeScript @riffdb/client archive lacks exact DRV-014 conformance manifest")
+
+    python_alias = distribution / "pypi" / f"riffdb-{version}-py3-none-any.whl"
+    if not python_alias.is_file():
+        fail("Python riffdb wheel is absent from distribution")
+    with zipfile.ZipFile(python_alias) as archive:
+        manifest_member = f"riffdb-{version}.dist-info/conformance-manifest-v1.json"
+        if (
+            manifest_member not in archive.namelist()
+            or archive.read(manifest_member) != expected_manifests["python"]
+        ):
+            fail("Python riffdb wheel lacks exact DRV-014 conformance manifest")
+
+    go_zip = distribution / "go-proxy/riffdb.dev/application/@v" / f"v{version}.zip"
+    if not go_zip.is_file():
+        fail("Go proxy zip is absent from distribution")
+    with zipfile.ZipFile(go_zip) as archive:
+        manifest_member = f"riffdb.dev/application@v{version}/conformance-manifest-v1.json"
+        if (
+            manifest_member not in archive.namelist()
+            or archive.read(manifest_member) != expected_manifests["go"]
+        ):
+            fail("Go module zip lacks exact DRV-014 conformance manifest")
+
+    rust_crate = distribution / "crates" / f"riffdb-client-rust-{version}.crate"
+    if not rust_crate.is_file():
+        fail("Rust riffdb-client-rust crate archive is absent from distribution")
+    with tarfile.open(rust_crate, "r:gz") as archive:
+        member = archive.extractfile(f"riffdb-client-rust-{version}/conformance-manifest-v1.json")
+        if member is None or member.read() != expected_manifests["rust"]:
+            fail("Rust riffdb-client-rust crate lacks exact DRV-014 conformance manifest")
+
+    return conformance_digests
+
+
+def assemble_release_publication(
+    *,
+    release_tag: str,
+    bundle_archive: Path,
+    driver_distributions: list[Path],
+    driver_allowed_signers: Path,
+    driver_identity: str,
+    signing_key: Path,
+    container_image_digest: str,
+    output_dir: Path,
+) -> None:
+    version = verify_version_gate(release_tag)
+    if not bundle_archive.is_file() or bundle_archive.is_symlink():
+        fail("release bundle archive must be an existing regular file")
+    if output_dir.exists():
+        fail("output directory must not already exist")
+    if not re.fullmatch(
+        r"ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}", container_image_digest
+    ):
+        fail("container image digest must be an immutable ghcr.io/@sha256:... reference")
+
+    expected_prefix = f"riffdb-{version}-"
+    if not bundle_archive.name.startswith(expected_prefix) or not bundle_archive.name.endswith(".tar.gz"):
+        fail("release bundle archive name does not match release version")
+    bundle_root = bundle_archive.name[: -len(".tar.gz")]
+
+    with tarfile.open(bundle_archive, "r:gz") as archive:
+        names = {member.name for member in archive.getmembers()}
+        required_members = {
+            f"{bundle_root}/VERSION",
+            f"{bundle_root}/REVISION",
+            f"{bundle_root}/SHA256SUMS",
+            f"{bundle_root}/release/sbom.cdx.json",
+            f"{bundle_root}/release/durable-format-manifest-v1.json",
+            f"{bundle_root}/release/poc-requirements-v1.json",
+        }
+        if not required_members.issubset(names):
+            fail("release bundle archive is missing required SBOM, durable-format, or evidence members")
+        bundle_version = archive.extractfile(f"{bundle_root}/VERSION").read().decode("utf-8").strip()
+        bundle_revision = archive.extractfile(f"{bundle_root}/REVISION").read().decode("utf-8").strip()
+        bundle_durable = archive.extractfile(
+            f"{bundle_root}/release/durable-format-manifest-v1.json"
+        ).read()
+        bundle_sbom = archive.extractfile(f"{bundle_root}/release/sbom.cdx.json").read()
+
+    if bundle_version != version:
+        fail("release bundle VERSION disagrees with release tag")
+    if bundle_durable != DURABLE_MANIFEST_PATH.read_bytes():
+        fail("release bundle durable-format-manifest-v1.json disagrees with repository manifest")
+
+    if not driver_distributions:
+        fail("at least one verified driver distribution is required")
+
+    driver_targets: dict[str, str] = {}
+    conformance_digests: dict[str, str] = {}
+    staged_parent = output_dir.parent
+    staged_parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".riffdb-release-publish-", dir=staged_parent))
+    staged = temporary / "publication"
+    staged.mkdir()
+    try:
+        write_bytes(staged / bundle_archive.name, bundle_archive.read_bytes())
+        write_bytes(staged / "sbom.cdx.json", bundle_sbom)
+        write_bytes(staged / "durable-format-manifest-v1.json", bundle_durable)
+        write_bytes(staged / "version-topology-v1.json", TOPOLOGY_PATH.read_bytes())
+
+        for dist in driver_distributions:
+            conformance_digests = verify_driver_distribution_conformance(
+                dist, driver_allowed_signers, driver_identity, version
+            )
+            receipt = json.loads((dist / "metadata/artifacts-v1.json").read_text(encoding="utf-8"))
+            if receipt.get("version") != version or receipt.get("revision") != bundle_revision:
+                fail("driver distribution revision or version disagrees with release bundle")
+            target = str(receipt.get("target", ""))
+            if target in driver_targets:
+                fail(f"duplicate driver distribution target: {target}")
+            driver_targets[target] = sha256_file(dist / "checksums.sha256")
+            shutil.copytree(dist, staged / "drivers" / target)
+
+        for language in ("go", "python", "rust", "typescript"):
+            write_bytes(
+                staged / "conformance" / f"{language}-v1.json",
+                (ROOT / f"fixtures/driver/manifests/{language}-v1.json").read_bytes(),
+            )
+
+        durable_doc = json.loads(bundle_durable.decode("utf-8"))
+        provenance = {
+            "schema": "riffdb.release-provenance/v1",
+            "release_tag": release_tag,
+            "version": version,
+            "revision": bundle_revision,
+            "bundle_archive": {
+                "name": bundle_archive.name,
+                "sha256": sha256_file(staged / bundle_archive.name),
+            },
+            "sbom": {
+                "path": "sbom.cdx.json",
+                "sha256": sha256_file(staged / "sbom.cdx.json"),
+            },
+            "durable_format_manifest": {
+                "path": "durable-format-manifest-v1.json",
+                "sha256": sha256_file(staged / "durable-format-manifest-v1.json"),
+                "alpha_epoch": durable_doc["alpha_epoch"],
+                "writer": durable_doc["writer"],
+                "record_registry_digest": durable_doc["record_registry_digest"],
+                "compatibility_fixture_digest": durable_doc["compatibility_fixture_digest"],
+            },
+            "version_topology": {
+                "path": "version-topology-v1.json",
+                "sha256": sha256_file(staged / "version-topology-v1.json"),
+            },
+            "container_image": {
+                "dockerfile": "release/container/Dockerfile",
+                "digest_reference": container_image_digest,
+            },
+            "driver_distributions": driver_targets,
+            "driver_conformance_manifests": conformance_digests,
+            "signing_namespace": RELEASE_NAMESPACE,
+        }
+        write_bytes(staged / "release-provenance-v1.json", canonical_json(provenance))
+
+        checksum_lines: list[str] = []
+        for path in sorted(staged.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(staged).as_posix()
+            if rel in {"SHA256SUMS", "SHA256SUMS.sig"}:
+                continue
+            checksum_lines.append(f"{sha256_file(path)}  {rel}")
+        write_bytes(staged / "SHA256SUMS", ("\n".join(checksum_lines) + "\n").encode("utf-8"))
+
+        run(
+            [
+                "ssh-keygen",
+                "-Y",
+                "sign",
+                "-f",
+                str(signing_key),
+                "-n",
+                RELEASE_NAMESPACE,
+                str(staged / "SHA256SUMS"),
+            ]
+        )
+        sig_path = staged / "SHA256SUMS.sig"
+        if not sig_path.is_file() or sig_path.is_symlink():
+            fail("ssh-keygen did not produce SHA256SUMS.sig")
+        sig_path.chmod(0o644)
+        staged.rename(output_dir)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def verify_release_publication(
+    *,
+    publication_dir: Path,
+    allowed_signers: Path,
+    identity: str,
+    expected_tag: str | None = None,
+) -> None:
+    if not publication_dir.is_dir() or publication_dir.is_symlink():
+        fail("publication directory must be a real directory")
+    checksums = publication_dir / "SHA256SUMS"
+    signature = publication_dir / "SHA256SUMS.sig"
+    provenance_path = publication_dir / "release-provenance-v1.json"
+    if not checksums.is_file() or not signature.is_file() or not provenance_path.is_file():
+        fail("signed release checksums or provenance manifest is absent")
+
+    run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(allowed_signers),
+            "-I",
+            identity,
+            "-n",
+            RELEASE_NAMESPACE,
+            "-s",
+            str(signature),
+        ],
+        stdin_bytes=checksums.read_bytes(),
+    )
+    run(["sha256sum", "--strict", "--check", "SHA256SUMS"], cwd=publication_dir)
+
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    if provenance.get("schema") != "riffdb.release-provenance/v1":
+        fail("release provenance schema is invalid")
+    if expected_tag is not None and provenance.get("release_tag") != expected_tag:
+        fail("release provenance tag does not match expected tag")
+    version = verify_version_gate(str(provenance.get("release_tag", "")))
+    if provenance.get("version") != version:
+        fail("release provenance version disagrees with release tag")
+    for language in ("go", "python", "rust", "typescript"):
+        manifest_path = publication_dir / "conformance" / f"{language}-v1.json"
+        if not manifest_path.is_file():
+            fail(f"published DRV-014 conformance manifest is absent for {language}")
+        if sha256_file(manifest_path) != provenance.get("driver_conformance_manifests", {}).get(language):
+            fail(f"published DRV-014 conformance manifest digest mismatch for {language}")
+
+
+def run_self_test() -> None:
+    scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="riffdb-release-publish-selftest-", dir=scratch_root))
+    try:
+        version = "0.1.0"
+        revision = "a" * 40
+        target = "x86_64-unknown-linux-gnu"
+        bundle_name = f"riffdb-{version}-{target}"
+        bundle_archive = scratch / f"{bundle_name}.tar.gz"
+        sbom_bytes = b'{"bomFormat":"CycloneDX","specVersion":"1.5"}\n'
+        durable_bytes = DURABLE_MANIFEST_PATH.read_bytes()
+        req_bytes = b'{"schema":"riffdb.poc-evidence-manifest/v1"}\n'
+
+        with tarfile.open(bundle_archive, "w:gz") as archive:
+            for rel, content in (
+                (f"{bundle_name}/VERSION", f"{version}\n".encode("utf-8")),
+                (f"{bundle_name}/REVISION", f"{revision}\n".encode("utf-8")),
+                (f"{bundle_name}/SHA256SUMS", b""),
+                (f"{bundle_name}/release/sbom.cdx.json", sbom_bytes),
+                (f"{bundle_name}/release/durable-format-manifest-v1.json", durable_bytes),
+                (f"{bundle_name}/release/poc-requirements-v1.json", req_bytes),
+            ):
+                info = tarfile.TarInfo(rel)
+                info.size = len(content)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(content))
+
+        dist = scratch / "driver-dist"
+        dist.mkdir()
+        write_bytes(dist / "manifest-v1.json", DISTRIBUTION_MANIFEST_PATH.read_bytes())
+        write_bytes(dist / "durable-format-manifest-v1.json", durable_bytes)
+        for language in ("go", "python", "rust", "typescript"):
+            write_bytes(
+                dist / f"conformance/{language}-v1.json",
+                (ROOT / f"fixtures/driver/manifests/{language}-v1.json").read_bytes(),
+            )
+
+        npm_buf = io.BytesIO()
+        with tarfile.open(fileobj=npm_buf, mode="w:gz") as archive:
+            ts_bytes = (ROOT / "fixtures/driver/manifests/typescript-v1.json").read_bytes()
+            info = tarfile.TarInfo("package/conformance-manifest-v1.json")
+            info.size = len(ts_bytes)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(ts_bytes))
+        write_bytes(dist / "npm" / f"riffdb-client-{version}.tgz", npm_buf.getvalue())
+
+        py_wheel = dist / "pypi" / f"riffdb-{version}-py3-none-any.whl"
+        py_wheel.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(py_wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                f"riffdb-{version}.dist-info/conformance-manifest-v1.json",
+                (ROOT / "fixtures/driver/manifests/python-v1.json").read_bytes(),
+            )
+
+        go_zip = dist / "go-proxy/riffdb.dev/application/@v" / f"v{version}.zip"
+        go_zip.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(go_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                f"riffdb.dev/application@v{version}/conformance-manifest-v1.json",
+                (ROOT / "fixtures/driver/manifests/go-v1.json").read_bytes(),
+            )
+
+        rust_buf = io.BytesIO()
+        with tarfile.open(fileobj=rust_buf, mode="w:gz") as archive:
+            rs_bytes = (ROOT / "fixtures/driver/manifests/rust-v1.json").read_bytes()
+            info = tarfile.TarInfo(f"riffdb-client-rust-{version}/conformance-manifest-v1.json")
+            info.size = len(rs_bytes)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(rs_bytes))
+        write_bytes(dist / "crates" / f"riffdb-client-rust-{version}.crate", rust_buf.getvalue())
+
+        write_bytes(
+            dist / "metadata/artifacts-v1.json",
+            canonical_json(
+                {
+                    "schema": "riffdb.driver-distribution-artifacts/v1",
+                    "version": version,
+                    "revision": revision,
+                    "target": target,
+                    "source_clean": True,
+                    "artifacts": [],
+                    "secrets_included": False,
+                }
+            ),
+        )
+        dist_checksums: list[str] = []
+        for path in sorted(dist.rglob("*")):
+            if path.is_file():
+                dist_checksums.append(f"{sha256_file(path)}  {path.relative_to(dist).as_posix()}")
+        write_bytes(dist / "checksums.sha256", ("\n".join(dist_checksums) + "\n").encode("utf-8"))
+
+        keys_dir = scratch / "keys"
+        keys_dir.mkdir()
+        key_path = keys_dir / "release-ed25519"
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "riffdb-release", "-f", str(key_path)])
+        pubkey = run(["ssh-keygen", "-y", "-f", str(key_path)]).strip()
+        driver_signers = keys_dir / "driver-allowed-signers"
+        release_signers = keys_dir / "release-allowed-signers"
+        write_bytes(
+            driver_signers,
+            f'riffdb-release namespaces="{DRIVER_NAMESPACE}" {pubkey}\n'.encode("utf-8"),
+        )
+        write_bytes(
+            release_signers,
+            f'riffdb-release namespaces="{RELEASE_NAMESPACE}" {pubkey}\n'.encode("utf-8"),
+        )
+        run([str(ROOT / "scripts/sign-driver-distributions"), "--key", str(key_path), str(dist)])
+
+        # 1. Negative test: inconsistent release tag must fail before publication.
+        bad_out = scratch / "bad-tag-publication"
+        try:
+            assemble_release_publication(
+                release_tag="v0.9.0",
+                bundle_archive=bundle_archive,
+                driver_distributions=[dist],
+                driver_allowed_signers=driver_signers,
+                driver_identity="riffdb-release",
+                signing_key=key_path,
+                container_image_digest="ghcr.io/riffdb/riffdb@sha256:" + ("b" * 64),
+                output_dir=bad_out,
+            )
+        except SystemExit:
+            if bad_out.exists():
+                fail("failed version transition check still published output")
+        else:
+            fail("self-test did not refuse mismatched release tag before publication")
+
+        # 2. Positive test: assemble and verify signed release publication.
+        pub_out = scratch / "publication"
+        assemble_release_publication(
+            release_tag="v0.1.0",
+            bundle_archive=bundle_archive,
+            driver_distributions=[dist],
+            driver_allowed_signers=driver_signers,
+            driver_identity="riffdb-release",
+            signing_key=key_path,
+            container_image_digest="ghcr.io/riffdb/riffdb@sha256:" + ("b" * 64),
+            output_dir=pub_out,
+        )
+        verify_release_publication(
+            publication_dir=pub_out,
+            allowed_signers=release_signers,
+            identity="riffdb-release",
+            expected_tag="v0.1.0",
+        )
+
+        # 3. Negative test: tampering with a published artifact must fail verification.
+        tampered = pub_out / "sbom.cdx.json"
+        tampered.write_bytes(b'{"tampered":true}\n')
+        try:
+            verify_release_publication(
+                publication_dir=pub_out,
+                allowed_signers=release_signers,
+                identity="riffdb-release",
+                expected_tag="v0.1.0",
+            )
+        except SystemExit:
+            pass
+        else:
+            fail("self-test did not reject tampered release artifact")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    print("WP-728 release publication, provenance, and version-gate self-test: passed")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="mode")
+    parser.add_argument("--self-test", action="store_true")
+
+    assemble_parser = subparsers.add_parser("assemble")
+    assemble_parser.add_argument("--release-tag", required=True)
+    assemble_parser.add_argument("--bundle-archive", required=True, type=Path)
+    assemble_parser.add_argument("--driver-distribution", required=True, action="append", type=Path)
+    assemble_parser.add_argument("--driver-allowed-signers", required=True, type=Path)
+    assemble_parser.add_argument("--driver-identity", required=True)
+    assemble_parser.add_argument("--signing-key", required=True, type=Path)
+    assemble_parser.add_argument("--container-image-digest", required=True)
+    assemble_parser.add_argument("--output", required=True, type=Path)
+
+    verify_parser = subparsers.add_parser("verify")
+    verify_parser.add_argument("--publication", required=True, type=Path)
+    verify_parser.add_argument("--allowed-signers", required=True, type=Path)
+    verify_parser.add_argument("--identity", required=True)
+    verify_parser.add_argument("--expected-tag")
+
+    arguments = parser.parse_args()
+    if arguments.self_test:
+        run_self_test()
+        return 0
+    if arguments.mode == "assemble":
+        assemble_release_publication(
+            release_tag=arguments.release_tag,
+            bundle_archive=arguments.bundle_archive,
+            driver_distributions=arguments.driver_distribution,
+            driver_allowed_signers=arguments.driver_allowed_signers,
+            driver_identity=arguments.driver_identity,
+            signing_key=arguments.signing_key,
+            container_image_digest=arguments.container_image_digest,
+            output_dir=arguments.output,
+        )
+        return 0
+    if arguments.mode == "verify":
+        verify_release_publication(
+            publication_dir=arguments.publication,
+            allowed_signers=arguments.allowed_signers,
+            identity=arguments.identity,
+            expected_tag=arguments.expected_tag,
+        )
+        return 0
+    parser.print_help(sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,3 +1,4 @@
+// req: BLK-039, BLK-041, BLK-045
 #![forbid(unsafe_code)]
 
 //! WP-561 process-crash recovery evidence for atomic collection commands.

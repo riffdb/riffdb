@@ -135,3 +135,60 @@ That verifier checks both content hashes and the semantic 90-second,
 three-repetition, idle-host, safe-app durability, stability, correctness, and
 concurrency matrix. It does not rerun the benchmark during routine release
 verification.
+
+## Signed Tag Release Automation and Consumer Verification
+
+Tagging a release revision (`v<major>.<minor>.<patch>`) triggers
+`.github/workflows/release.yml`. Before building or publishing any artifact, the
+`version-gate` job requires a clean checkout and runs:
+
+```bash
+./scripts/check-version-topology --release-tag v0.1.0
+./scripts/check-durable-format-manifest
+./scripts/check-driver-distribution
+./scripts/check-driver-conformance-manifests
+./scripts/check-generated
+```
+
+A tag whose semantic version, transition class (`VER-004`), topology record
+(`VER-001`), or durable-format manifest (`AFC-001`) disagrees with the source
+tree fails closed before any binary bundle, container image, or driver package
+is built or published.
+
+After the version gate passes, the release workflow:
+
+1. executes `./scripts/release-poc --verify` on the clean revision;
+2. builds and verifies the `x86_64` and `aarch64` four-ecosystem driver
+   distributions (`Rust`, `Go`, `TypeScript`, and `Python`), embedding each
+   language's exact `DRV-014` `conformance-manifest-v1.json` in the published
+   package archive as well as under `conformance/<language>-v1.json`;
+3. builds the container image from the tracked `release/container/Dockerfile`
+   using the verified release binaries, runs `./scripts/check-container-startup`,
+   and pushes the digest-pinned image to `ghcr.io`; and
+4. runs `./scripts/publish-release-artifacts assemble` and
+   `./scripts/publish-release-artifacts verify` to bind the release bundle,
+   CycloneDX SBOM (`sbom.cdx.json`), durable-format manifest
+   (`durable-format-manifest-v1.json`), version topology
+   (`version-topology-v1.json`), container image digest, and four `DRV-014`
+   conformance manifests into `release-provenance-v1.json` and `SHA256SUMS`,
+   signed with `ssh-keygen -Y sign` under namespace `riffdb-release-v1` and
+   attested with SLSA build provenance.
+
+A consumer verifies a downloaded release publication using only an
+out-of-band trusted `riffdb-release-allowed-signers` file and standard
+operating-system tools before extracting or executing any binary:
+
+```bash
+ssh-keygen -Y verify \
+  -f /protected/riffdb-release-allowed-signers \
+  -I riffdb-release \
+  -n riffdb-release-v1 \
+  -s SHA256SUMS.sig < SHA256SUMS
+sha256sum --strict --check SHA256SUMS
+```
+
+Once `SHA256SUMS` is verified, `release-provenance-v1.json` pins the exact Git
+revision, bundle archive digest, CycloneDX SBOM digest, durable-format manifest
+digest (`alpha_epoch`, `writer`, `record_registry_digest`, and
+`compatibility_fixture_digest`), container image `@sha256:...` digest, and the
+four `DRV-014` driver conformance manifest digests.

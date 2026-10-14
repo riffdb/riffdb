@@ -187,7 +187,7 @@ process.exit(result.status ?? 1);
         "type": "module",
         "exports": {".": "./dist/index.js", "./operator": "./dist/operator.js"},
         "types": "./dist/index.d.ts",
-        "files": ["dist", "README.md"],
+        "files": ["dist", "README.md", "conformance-manifest-v1.json"],
         "engines": {"node": ">=22"},
     }
     runtime_files: dict[str, tuple[bytes, int]] = {
@@ -195,6 +195,10 @@ process.exit(result.status ?? 1);
         "README.md": ((ROOT / "clients/typescript/runtime/README.md").read_bytes(), 0o644),
         "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
         "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+        "conformance-manifest-v1.json": (
+            (ROOT / "fixtures/driver/manifests/typescript-v1.json").read_bytes(),
+            0o644,
+        ),
     }
     for source in sorted((ROOT / "clients/typescript/runtime/dist").iterdir()):
         if source.is_file() and not source.is_symlink() and not source.name.endswith((".test.js", ".test.d.ts")):
@@ -287,6 +291,10 @@ Requires-Dist: riffdb-application =={VERSION}
         {
             f"{meta_dist}/METADATA": (meta_metadata, 0o644),
             f"{meta_dist}/WHEEL": (b"Wheel-Version: 1.0\nGenerator: riffdb-wp601\nRoot-Is-Purelib: true\nTag: py3-none-any\n", 0o644),
+            f"{meta_dist}/conformance-manifest-v1.json": (
+                (ROOT / "fixtures/driver/manifests/python-v1.json").read_bytes(),
+                0o644,
+            ),
             f"{meta_dist}/licenses/LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             f"{meta_dist}/licenses/LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
         },
@@ -308,6 +316,7 @@ def go_proxy(output: Path, epoch: int) -> None:
             "go.mod": mod,
             "runtime.go": (ROOT / "clients/go/runtime/runtime.go").read_bytes(),
             "README.md": (ROOT / "clients/go/runtime/README.md").read_bytes(),
+            "conformance-manifest-v1.json": (ROOT / "fixtures/driver/manifests/go-v1.json").read_bytes(),
             "LICENSE-MIT": (ROOT / "LICENSE-MIT").read_bytes(),
             "LICENSE-APACHE": (ROOT / "LICENSE-APACHE").read_bytes(),
         }
@@ -413,6 +422,10 @@ def rust_packages(output: Path, scratch: Path) -> None:
     staged = scratch / "rust-workspace"
     copy_repository(staged)
     stage_generator_templates(staged)
+    write(
+        staged / "crates/riffdb-client-rust/conformance-manifest-v1.json",
+        (ROOT / "fixtures/driver/manifests/rust-v1.json").read_bytes(),
+    )
     workspace = staged / "Cargo.toml"
     content = workspace.read_text(encoding="utf-8")
     marker = "publish = false"
@@ -580,6 +593,11 @@ def main() -> int:
         write(staged / "manifest-v1.json", PLAN_PATH.read_bytes())
         write(staged / "durable-format-manifest-v1.json", (ROOT / "release/durable-format-manifest-v1.json").read_bytes())
         write(staged / "quickstart-v1.json", QUICKSTART_PATH.read_bytes())
+        for language in ("go", "python", "rust", "typescript"):
+            write(
+                staged / f"conformance/{language}-v1.json",
+                (ROOT / f"fixtures/driver/manifests/{language}-v1.json").read_bytes(),
+            )
         write(staged / "README.md", (ROOT / "release/distribution/README.md").read_bytes())
         write(staged / "LICENSE-MIT", (ROOT / "LICENSE-MIT").read_bytes())
         write(staged / "LICENSE-APACHE", (ROOT / "LICENSE-APACHE").read_bytes())

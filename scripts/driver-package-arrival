@@ -212,6 +212,11 @@ def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
     )
     run([str(project / "node_modules/.bin/riffdb"), "--help"], cwd=project, environment=environment)
     assert_editor_assets(project / "node_modules/@riffdb/cli/editor")
+    assert_conformance_manifest(
+        distribution,
+        "typescript",
+        project / "node_modules/@riffdb/client/conformance-manifest-v1.json",
+    )
     run(
         [
             "node",
@@ -223,6 +228,16 @@ def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
         cwd=project,
         environment=environment,
     )
+
+
+def assert_conformance_manifest(distribution: Path, language: str, candidate: Path) -> None:
+    expected_path = ROOT / f"fixtures/driver/manifests/{language}-v1.json"
+    distributed = distribution / f"conformance/{language}-v1.json"
+    if not regular(distributed) or not regular(candidate):
+        fail(f"packaged DRV-014 conformance manifest is absent for {language}")
+    expected = expected_path.read_bytes()
+    if distributed.read_bytes() != expected or candidate.read_bytes() != expected:
+        fail(f"packaged DRV-014 conformance manifest differs from canonical input for {language}")
 
 
 def smoke_python(distribution: Path, scratch: Path) -> None:
@@ -255,6 +270,12 @@ def smoke_python(distribution: Path, scratch: Path) -> None:
     if len(site_packages) != 1:
         fail("Python CLI editor grammar asset root is absent or ambiguous")
     assert_editor_assets(site_packages[0])
+    dist_info = sorted(
+        (virtual / "lib").glob(f"python*/site-packages/riffdb-{VERSION}.dist-info/conformance-manifest-v1.json")
+    )
+    if len(dist_info) != 1:
+        fail("Python DRV-014 conformance manifest is absent from installed dist-info")
+    assert_conformance_manifest(distribution, "python", dist_info[0])
     run(
         [
             str(python),
@@ -298,6 +319,14 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
     )
     run(["go", "mod", "tidy"], cwd=project, environment=environment)
     run(["go", "test", "./..."], cwd=project, environment=environment)
+    go_manifest = (
+        scratch
+        / "go-path"
+        / "pkg/mod/riffdb.dev"
+        / f"application@v{VERSION}"
+        / "conformance-manifest-v1.json"
+    )
+    assert_conformance_manifest(distribution, "go", go_manifest)
 
 
 def smoke_rust(distribution: Path, scratch: Path) -> None:
@@ -320,6 +349,11 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
         roots[name] = safe_extract_crate(archive, unpacked, f"{name}-{VERSION}")
     assert_editor_assets(roots["riffdb-cli"] / "assets/editor")
     assert_generator_assets(roots["riffdb-query-module"] / "assets/generators")
+    assert_conformance_manifest(
+        distribution,
+        "rust",
+        roots["riffdb-client-rust"] / "conformance-manifest-v1.json",
+    )
     config = scratch / ".cargo/config.toml"
     patches = ["[patch.crates-io]"]
     for name in order:
