@@ -12,10 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 from lib.ticketdesk_lifecycle_campaign_restore_evidence import (
     FILES, RULES, RestoreEvidenceError, protocol_snapshot, validate_protocol,
     validate_clock, public_operation_witnesses, first_write_witness,
+    validate_read_admission,
 )
 from lib.ticketdesk_lifecycle_campaign_maintenance import REQUIRED
 from lib.ticketdesk_lifecycle_campaign_restore_clock import SECOND
-from test_evidence import fixture, restore_clock_fixture, CHECK
+from test_evidence import fixture, restore_clock_fixture, restore_read_admission_fixture, CHECK
 
 
 def campaign_clock():
@@ -28,6 +29,23 @@ def campaign_clock():
 
 
 class RestoreEvidenceTests(unittest.TestCase):
+    def test_read_admission_cannot_hide_a_write_gap_or_readiness_pause_cost(self):
+        _, _, clock = campaign_clock()
+        original = restore_read_admission_fixture(clock)
+        validate_read_admission(original, clock, expected_generation=5, expected_version=2)
+        for mode in ('write', 'regression', 'generation', 'version', 'early', 'late_read', 'late_pause', 'boolean'):
+            value = deepcopy(original)
+            if mode == 'write': value['reading_ack']['completed_commands'] += 1
+            elif mode == 'regression': value['quiesced_ack']['completed_reads'] = 0
+            elif mode == 'generation': value['reading_ack']['generation'] = 4
+            elif mode == 'version': value['quiesced_ack']['contract_version'] = 1
+            elif mode == 'early': value['requested_ns'] = clock['backup']['durable_at_ns'] - 1
+            elif mode == 'late_read': value['reading_ns'] = clock['loss_ns']
+            elif mode == 'late_pause': value['quiesced_ns'] = clock['loss_ns'] + 2 * SECOND
+            else: value['initial']['completed_commands'] = True
+            with self.subTest(mode=mode), self.assertRaises(RestoreEvidenceError):
+                validate_read_admission(value, clock)
+
     def test_first_write_requires_retained_original_worker_acknowledgement_in_the_restored_phase(self):
         for mode in ('valid', 'no_new_ack', 'old_phase', 'late', 'boolean'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:

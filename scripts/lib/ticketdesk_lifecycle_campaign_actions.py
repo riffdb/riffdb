@@ -31,6 +31,7 @@ class CampaignActions:
         self.restore_clock = None
         self.restore_release = self.restore_witness = self.restore_backup = None
         self.restore_receipt = None
+        self.restore_read_admission = None
 
     def close(self):
         for owner in (self.restore_witness, self.restore_backup):
@@ -84,6 +85,8 @@ class CampaignActions:
         clock.backup_durable(runtime.elapsed(), operation,
             manifest_sha256=self.restore_backup.manifest_sha256,
             artifacts=self.restore_backup.artifacts)
+        release.allow_restore_reads(runtime.elapsed())
+        self.wait(lambda: release.restore_reads_started(runtime.elapsed()), planned)
         runtime.tick(force_native=True)
         private_write(runtime.root, 'campaign-restore-preparation.json', json.dumps(dict(
             schema='riffdb.ticketdesk-lifecycle-restore-preparation/v2', method=clock.method,
@@ -280,6 +283,12 @@ class CampaignActions:
                     and self.restore_clock.loss_ns == started
                     and self.restore_clock.deadline_ns == deadline,
                     "campaign_restore_backup_required")
+            release.pause_restore_reads(runtime.elapsed())
+            self.wait(lambda: release.restore_readers_quiesced(runtime.elapsed()), deadline, active=False)
+            self.restore_read_admission = release.restore_read_witness
+            private_write(runtime.root, 'campaign-restore-read-admission.json',
+                json.dumps(self.restore_read_admission, sort_keys=True).encode()+b'\n')
+        private_write(runtime.root, 'load.recover', f'{kind} {runtime.generation}\n'.encode('ascii'))
         runtime.stop_sampler(deadline)
         runtime.stop_server(kind, deadline)
         if kind == "backup_restore":
@@ -361,6 +370,10 @@ class CampaignActions:
         if kind == 'backup_restore':
             self.restore_clock.phase_completed('state_reconciliation', runtime.elapsed())
         self.release_workers(kind, started, plan["duration_s"], deadline, release, restore=kind == "backup_restore")
+        if kind in ('graceful_restart', 'process_kill', 'backup_restore'):
+            require((runtime.root / 'load.recover').read_bytes() == f'{kind} {runtime.generation - 1}\n'.encode('ascii'),
+                    'campaign_recovery_control')
+            (runtime.root / 'load.recover').unlink()
         if kind == 'backup_restore':
             self.restore_clock.phase_completed('first_write', runtime.elapsed())
             receipt = self.restore_clock.finish(runtime.elapsed())

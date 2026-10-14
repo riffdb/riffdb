@@ -342,10 +342,11 @@ class CampaignRuntime:
             outbox = [component for component in components if component.get("component") == "outbox"]
             require(len(outbox) == 1 and type(outbox[0].get("status")) is str
                     and outbox[0]["status"] in {"healthy", "degraded", "unavailable"}, "campaign_seed_drain")
-            observed = self.observer()
-            require(observed["events_checked"] <= 1024 and observed["release_generation"] == 1
-                    and observed["history_incarnation"] == 1, "campaign_seed_observer")
-            if outbox[0]["status"] == "healthy" and observed["events_checked"] == 1024: break
+            observed = self.prelude_observer()
+            if observed is not None:
+                require(observed["events_checked"] <= 1024 and observed["release_generation"] == 1
+                        and observed["history_incarnation"] == 1, "campaign_seed_observer")
+                if outbox[0]["status"] == "healthy" and observed["events_checked"] == 1024: break
             threading.Event().wait(min(1, max(0, 900 - (time.monotonic() - started))))
         else: raise CampaignError("campaign_seed_drain")
         self.start_sampler()
@@ -375,6 +376,21 @@ class CampaignRuntime:
         self.epochs.bind_log(self.server_log,self.elapsed())
         self.begin_extent_incarnation()
         self.tick(force_native=True)
+
+    def prelude_observer(self):
+        require(self.origin is None and self.roster is None, "campaign_prelude_state")
+        owner = self.outputs["observer"]
+        require(owner.failure is None and self.children["observer"].poll() is None,
+                "campaign_observer_gap")
+        latest = owner.latest
+        if latest is None:
+            return None
+        age = time.monotonic_ns() - latest[0]
+        require(age >= 0, "campaign_observer_gap")
+        # Seeding precedes the offered clock. A complete batch may still be
+        # acknowledging its 32 events; wait within the existing seed-drain
+        # deadline, without refreshing or using its previous observation.
+        return dict(latest[1]) if age <= 5 * SECOND else None
 
     def observer(self):
         owner = self.outputs["observer"]

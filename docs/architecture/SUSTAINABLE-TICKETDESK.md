@@ -8,16 +8,16 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-13 UTC)
+## Current status (2026-10-14 UTC)
 
 WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
 has started. Both local main and upstream main are integrated through the
 latest recorded source prerequisites.
 
-Ordinary shipping revision `cab031e5` passes the saved primary-loss gate on the
-required host: the first new acknowledged write completes in **53.56 seconds**,
+Ordinary shipping revision `282115c2` passes the saved primary-loss gate on the
+required host: the first new acknowledged write completes in **49.54 seconds**,
 and exact original replay plus independent reconciliation of all 65,536 tickets
-complete in **56.47 seconds**. Backup creation takes 17.51 seconds before loss;
+complete in **52.69 seconds**. Backup creation takes 17.52 seconds before loss;
 there are no later acknowledgements missing from the selected backup. A separate
 actual process kill after another acknowledged write preserves the same target
 inode, both earlier identities and the new identity, all ticket state, and
@@ -29,7 +29,7 @@ its only two failures are architecture guards corrected separately, after
 which all 59 architecture tests pass. Final combined-source CI, four-language
 conformance, actual scheduled population and the fixed 45-second campaign
 release still require qualification. That tighter release remains at risk:
-restore alone consumes about 46.5 seconds after the saved helper's target setup.
+the saved-population first write still takes longer than 45 seconds.
 
 The controller implements accepted ADR-0292's primary-loss method. It pauses the
 original workers before preparing the named backup, binds every acknowledged
@@ -38,6 +38,27 @@ read-only backup descriptors until the unchanged 5,400-second fault. Its one
 60-second deadline includes target setup, public restore, readiness, replay,
 full state reconciliation and the original workers' first new acknowledgement.
 The fixed 45-second release and all other fault clocks remain unchanged.
+
+After the backup is durable, the original load admits reads while writes remain
+fenced at that acknowledged prefix. Its existing 32,768-job queue retains every
+original offer and timestamp; a fenced write does not occupy a worker ahead of
+an admissible read. At primary loss, the controller pauses and drains those
+readers inside the original recovery deadline before stopping the server.
+Separate worker acknowledgements prove read progress and final quiescence with
+the same command count, generation, contract and history incarnation. Pausing
+all 500 offers per second throughout preparation and recovery would exceed the
+unchanged queue, so that prior controller behavior cannot qualify a campaign.
+Process replacement declares its existing bounded uncertainty-recovery marker
+before interruption and retires it after the original workers resume.
+
+A separate live admission check completes 18,000 commands and 72,000 reads on a
+fresh 65,536-ticket population. Reads progress through a 75-second write fence,
+and the original workers resume after an actual server kill and restart. Every
+original acknowledgement and all final ticket states reconcile. That checks
+admission carriage; it supplies no backup-restore or campaign qualification.
+Pre-offer seeding waits for a fresh complete observer batch inside its existing
+900-second drain deadline. It neither refreshes stale samples nor changes the
+five-second observer freshness limit after the offered clock starts.
 
 New qualification uses manifest/receipt V2 and a separately hashed protocol
 artifact, frozen before offered work begins. Preparation, source interruption,

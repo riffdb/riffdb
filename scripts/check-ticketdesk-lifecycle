@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 from lib.ticketdesk_lifecycle_campaign_restore_evidence import (
-    RestoreEvidenceError, validate_clock, validate_protocol,
+    RestoreEvidenceError, validate_clock, validate_protocol, validate_read_admission,
 )
 
 
@@ -176,7 +176,7 @@ def validate(manifest, receipt, *, short_rehearsal=False):
 
     shape(receipt, {"schema", "classification", "evidence_kind", "manifest_sha256",
                     "source_revision", "artifacts", "checks", "actions",
-                    "reclaimed_generations", "windows", "restore_clock"})
+                    "reclaimed_generations", "windows", "restore_clock", "restore_read_admission"})
     require(receipt["schema"] == RECEIPT_SCHEMA, "schema")
     require(receipt["classification"] == "rehearsal" and receipt["evidence_kind"] == "measured", "classification")
     digest(receipt["manifest_sha256"])
@@ -228,6 +228,7 @@ def validate(manifest, receipt, *, short_rehearsal=False):
         preparation = validate_clock(receipt['restore_clock'],
             protocol_sha256=manifest['artifacts']['restore_protocol'],
             plan=restore_plan, action=restore_action)
+        validate_read_admission(receipt['restore_read_admission'], receipt['restore_clock'])
     except RestoreEvidenceError as error:
         raise EvidenceError(str(error)) from error
     require(all(preparation[1] <= low or preparation[0] >= high

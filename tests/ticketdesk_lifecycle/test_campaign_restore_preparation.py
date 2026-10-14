@@ -20,6 +20,24 @@ from lib.ticketdesk_lifecycle_campaign_restore_clock import FIXED
 
 
 class RestorePreparationTests(unittest.TestCase):
+    def test_actual_restart_declares_original_generation_recovery_before_stopping_the_server(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = self.runtime(Path(temporary))
+            runtime.generation = 3
+            actions = CampaignActions(runtime, None)
+            actions.wait = Mock()
+            release = Mock()
+            def stop(kind, _deadline):
+                self.assertEqual(kind, 'graceful_restart')
+                path = runtime.root / 'load.recover'
+                self.assertTrue(path.is_file(),
+                    'original offered worker must observe its declared fault before process interruption')
+                self.assertEqual(path.read_bytes(), b'graceful_restart 3\n')
+            runtime.stop_server = stop
+            actions.replace('graceful_restart', LOSS, LOSS + 60 * SECOND, release)
+            self.assertTrue((runtime.root / 'load.recover').is_file())
+            release.pause_load.assert_called_once()
+
     def test_actual_preparation_binds_quiescence_public_frontier_operation_and_original_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -67,6 +85,16 @@ class RestorePreparationTests(unittest.TestCase):
                 owner.start(started)
                 return owner
             actions.quiesce, actions.call, actions.maintenance = quiesce, health, create
+            def wait_for_worker(condition, _deadline, **_options):
+                # Explicit controller fixture acknowledgement, not native evidence.
+                self.assertTrue((root / 'load.restore-reads').is_file())
+                value = dict(schema='riffdb.ticketdesk-lifecycle-restore-reads-active/v1',
+                    generation=5, contract_version=2, history_incarnation=1,
+                    completed_commands=2, completed_reads=282)
+                (root / 'load.restore-reads-active').write_text(json.dumps(value))
+                now.value += SECOND // 10
+                self.assertTrue(condition())
+            actions.wait = wait_for_worker
             try:
                 self.assertTrue(actions.prepare_restore_if_due(now.value))
                 self.assertEqual(actions.restore_clock.preparation['started_ns'], LOSS - 60 * SECOND)
@@ -76,6 +104,8 @@ class RestorePreparationTests(unittest.TestCase):
                 self.assertLess(actions.restore_clock.backup['durable_at_ns'], LOSS)
                 self.assertTrue((root / 'load.quiesce').exists())
                 self.assertTrue((root / 'campaign-restore-preparation.json').is_file())
+                self.assertTrue((root / 'load.restore-reads').is_file(),
+                    'durable backup preparation must admit reads while command admissions remain fenced')
                 runtime.stop_sampler.assert_not_called()
                 runtime.stop_server.assert_not_called()
                 now.value = LOSS
@@ -86,7 +116,7 @@ class RestorePreparationTests(unittest.TestCase):
     def runtime(self, root):
         for name in ('data', 'projections'):
             (root / name).mkdir()
-        return SimpleNamespace(root=root, incarnation=1, version=2,
+        return SimpleNamespace(root=root, incarnation=1, version=2, generation=5,
             identity={}, server_log=root / 'server.stderr', epochs=Mock(),
             elapsed=lambda: LOSS, remaining=lambda _deadline: 60.0,
             stop_sampler=Mock(), stop_server=Mock(), start_server=Mock(),
@@ -111,9 +141,11 @@ class RestorePreparationTests(unittest.TestCase):
             runtime = self.runtime(Path(temporary))
             actions = CampaignActions(runtime, None)
             actions.maintenance = Mock()
+            actions.wait = Mock()
             actions.restore_clock, _, _ = prepared()
             deadline = lose(actions.restore_clock)
-            actions.replace('backup_restore', LOSS, deadline, None)
+            release = Mock(restore_read_witness={})
+            actions.replace('backup_restore', LOSS, deadline, release)
             actions.maintenance.assert_called_once_with('restore', LOSS, deadline)
             self.assertEqual(runtime.incarnation, 2)
             self.assertTrue((runtime.root / 'retained-pre-restore-data').is_dir())

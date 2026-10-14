@@ -1,5 +1,6 @@
 //! Bounded offered-load probe; lifecycle orchestration remains controller-owned.
 
+use std::collections::VecDeque;
 use std::env;
 use std::io::Read;
 use std::io::{self, Write};
@@ -8,7 +9,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Barrier, mpsc};
+use tokio::sync::Barrier;
 use tokio::task::JoinSet;
 
 use super::application::{GetTicketParams, GetTicketResult};
@@ -140,6 +141,12 @@ pub(super) struct Release {
 
 struct AdmissionState {
     paused: bool,
+    restore_reads: bool,
+    restore_generation: Option<u64>,
+    restore_after_reads: Option<u64>,
+    paused_commands: Option<u64>,
+    queue: VecDeque<Job>,
+    closed: bool,
     release: Arc<Release>,
     resume_after_commands: Option<u64>,
 }
@@ -155,6 +162,12 @@ impl Admission {
         Self {
             state: Mutex::new(AdmissionState {
                 paused: false,
+                restore_reads: false,
+                restore_generation: None,
+                restore_after_reads: None,
+                paused_commands: None,
+                queue: VecDeque::with_capacity(QUEUE),
+                closed: false,
                 release: Arc::new(release),
                 resume_after_commands: None,
             }),
@@ -163,6 +176,7 @@ impl Admission {
         }
     }
 
+    #[cfg(test)]
     fn admit(&self, peak: &AtomicU32) -> Result<Option<(Active, Arc<Release>)>> {
         let state = self.state.lock().map_err(|_| "admission_state")?;
         if state.paused {
@@ -175,13 +189,58 @@ impl Admission {
     }
 
     fn pause(&self) -> Result<()> {
-        self.state.lock().map_err(|_| "admission_state")?.paused = true;
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        state.paused = true;
+        state.restore_reads = false;
         Ok(())
+    }
+
+    fn offer(&self, job: Job) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        if state.closed || state.queue.len() == QUEUE {
+            return Err("offered_queue_bound");
+        }
+        state.queue.push_back(job);
+        drop(state);
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    fn close_offers(&self) -> Result<()> {
+        self.state.lock().map_err(|_| "admission_state")?.closed = true;
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    fn take_job(&self, peak: &AtomicU32) -> Result<Dispatch> {
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        let index = if !state.paused {
+            (!state.queue.is_empty()).then_some(0)
+        } else if state.restore_reads {
+            state
+                .queue
+                .iter()
+                .position(|job| matches!(job.operation, Operation::Read(_)))
+        } else {
+            None
+        };
+        let Some(index) = index else {
+            return Ok(if state.closed && state.queue.is_empty() {
+                Dispatch::Closed
+            } else {
+                Dispatch::Pending
+            });
+        };
+        // Selection and reservation share the original admission mutex. A
+        // paused write never occupies a worker waiting ahead of readable jobs.
+        let active = Active::reserve(&self.current, peak)?;
+        let job = state.queue.remove(index).ok_or("offered_queue_state")?;
+        Ok(Dispatch::Admitted(job, active, Arc::clone(&state.release)))
     }
 
     fn quiesced(&self) -> Result<bool> {
         let state = self.state.lock().map_err(|_| "admission_state")?;
-        Ok(state.paused && self.current.load(Ordering::Acquire) == 0)
+        Ok(state.paused && !state.restore_reads && self.current.load(Ordering::Acquire) == 0)
     }
 
     #[cfg(test)]
@@ -192,6 +251,7 @@ impl Admission {
     fn replace_at(&self, release: Release, resume_after_commands: Option<u64>) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| "admission_state")?;
         if !state.paused
+            || state.restore_reads
             || self.current.load(Ordering::Acquire) != 0
             || state.resume_after_commands.is_some()
             || release.generation <= state.release.generation
@@ -214,14 +274,57 @@ impl Admission {
     }
 
     fn resume(&self) -> Result<()> {
-        self.state.lock().map_err(|_| "admission_state")?.paused = false;
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        if state
+            .restore_generation
+            .is_some_and(|generation| state.release.generation <= generation)
+        {
+            return Err("restore_read_unfenced_release");
+        }
+        state.paused = false;
+        state.restore_reads = false;
+        state.restore_generation = None;
+        state.restore_after_reads = None;
+        state.paused_commands = None;
+        drop(state);
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    fn allow_restore_reads(&self, commands: u64, reads: u64) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| "admission_state")?;
+        if !state.paused
+            || state.paused_commands != Some(commands)
+            || state.resume_after_commands.is_some()
+        {
+            return Err("restore_reads_requires_quiescence");
+        }
+        if state.restore_generation.is_none() {
+            if self.current.load(Ordering::Acquire) != 0 {
+                return Err("restore_reads_requires_quiescence");
+            }
+            state.restore_generation = Some(state.release.generation);
+            state.restore_after_reads = Some(reads);
+        } else if !state.restore_reads || state.restore_generation != Some(state.release.generation)
+        {
+            return Err("restore_reads_repeated");
+        }
+        state.restore_reads = true;
+        drop(state);
         self.changed.notify_waiters();
         Ok(())
     }
 
     fn poll(&self, root: &Path, metrics: &Mutex<Metrics>) -> Result<()> {
         let paused = root.join("load.quiesce").exists();
-        if paused {
+        let restore_reads = restore_reads_requested(root, self.release()?.as_ref())?;
+        if restore_reads && !paused {
+            return Err("restore_reads_requires_quiescence");
+        }
+        if restore_reads {
+            let totals = metrics.lock().map_err(|_| "observation_state")?;
+            self.allow_restore_reads(totals.total_commands, totals.total_reads)?;
+        } else if paused {
             self.pause()?;
         }
         let phase = root.join("load.phase");
@@ -252,6 +355,62 @@ impl Admission {
                     self.release()?.generation,
                     totals.total_commands,
                     totals.total_reads
+                ),
+            )?;
+            self.state
+                .lock()
+                .map_err(|_| "admission_state")?
+                .paused_commands = Some(totals.total_commands);
+        }
+        self.confirm_restore_reads(root, metrics)?;
+        Ok(())
+    }
+
+    fn confirm_restore_reads(&self, root: &Path, metrics: &Mutex<Metrics>) -> Result<()> {
+        let (release, reading, after, commands) = {
+            let state = self.state.lock().map_err(|_| "admission_state")?;
+            if state.restore_generation.is_none() {
+                return Ok(());
+            }
+            (
+                Arc::clone(&state.release),
+                state.restore_reads,
+                state.restore_after_reads.ok_or("restore_read_state")?,
+                state.paused_commands.ok_or("restore_read_state")?,
+            )
+        };
+        let totals = metrics.lock().map_err(|_| "observation_state")?;
+        if totals.total_commands != commands {
+            return Err("restore_read_acknowledgement_gap");
+        }
+        let (name, schema) = if reading {
+            if totals.total_reads <= after {
+                return Ok(());
+            }
+            (
+                "load.restore-reads-active",
+                "riffdb.ticketdesk-lifecycle-restore-reads-active/v1",
+            )
+        } else {
+            if !self.quiesced()? {
+                return Ok(());
+            }
+            (
+                "load.restore-readers-quiesced",
+                "riffdb.ticketdesk-lifecycle-restore-readers-quiesced/v1",
+            )
+        };
+        if !root.join(name).exists() {
+            publish_quiescence(
+                root,
+                name,
+                &format!(
+                    "{{\"schema\":\"{schema}\",\"generation\":{},\"contract_version\":{},\"history_incarnation\":{},\"completed_commands\":{},\"completed_reads\":{}}}\n",
+                    release.generation,
+                    release.version,
+                    release.incarnation,
+                    totals.total_commands,
+                    totals.total_reads,
                 ),
             )?;
         }
@@ -296,7 +455,12 @@ impl Admission {
 pub(super) fn publish_quiescence(root: &Path, name: &str, encoded: &str) -> Result<()> {
     if !matches!(
         name,
-        "load.quiesced" | "observer.quiesced" | "load.resumed" | "load.terminal"
+        "load.quiesced"
+            | "observer.quiesced"
+            | "load.resumed"
+            | "load.terminal"
+            | "load.restore-reads-active"
+            | "load.restore-readers-quiesced"
     ) || encoded.len() > 4096
     {
         return Err("quiescence_output");
@@ -367,7 +531,71 @@ pub(super) fn read_release(root: &Path, path: &Path) -> Result<Release> {
     })
 }
 
-#[derive(Clone, Copy)]
+fn restore_reads_requested(root: &Path, release: &Release) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let path = root.join("load.restore-reads");
+    let before = match std::fs::symlink_metadata(&path) {
+        Ok(info) => info,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("restore_read_control"),
+    };
+    if !before.is_file() || before.len() == 0 || before.len() > 128 || before.nlink() != 1 {
+        return Err("restore_read_control");
+    }
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                && matches!(std::fs::symlink_metadata(&path), Err(ref e) if e.kind() == io::ErrorKind::NotFound) =>
+        {
+            return Ok(false);
+        }
+        Err(_) => return Err("restore_read_control"),
+    };
+    let identity = |info: &std::fs::Metadata| {
+        (
+            info.dev(),
+            info.ino(),
+            info.len(),
+            info.mtime(),
+            info.mtime_nsec(),
+            info.ctime(),
+            info.ctime_nsec(),
+        )
+    };
+    let opened = file.metadata().map_err(|_| "restore_read_control")?;
+    if identity(&opened) != identity(&before) || opened.nlink() != 1 {
+        return Err("restore_read_control");
+    }
+    let mut bytes = Vec::with_capacity(129);
+    (&mut file)
+        .take(129)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "restore_read_control")?;
+    let after = file.metadata().map_err(|_| "restore_read_control")?;
+    let named = match std::fs::symlink_metadata(&path) {
+        Ok(info) => info,
+        // Removing this operation-local marker intentionally closes read
+        // admission. Never keep reads enabled using a retired descriptor.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("restore_read_control"),
+    };
+    let expected = format!(
+        "{} {} {}\n",
+        release.generation, release.version, release.incarnation
+    );
+    if bytes != expected.as_bytes()
+        || identity(&opened) != identity(&after)
+        || identity(&opened) != identity(&named)
+        || !named.is_file()
+        || named.nlink() != 1
+    {
+        return Err("restore_read_control");
+    }
+    Ok(true)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
     Update(u64),
     Read(u64),
@@ -377,6 +605,12 @@ struct Job {
     operation: Operation,
     offered: Instant,
     window: u64,
+}
+
+enum Dispatch {
+    Pending,
+    Closed,
+    Admitted(Job, Active, Arc<Release>),
 }
 
 /// Bound on how long a closed window waits for its offered operations to
@@ -617,8 +851,6 @@ pub(super) async fn run() -> Result<()> {
         Err(_) => return Err("offered_clock_configuration"),
     };
     let shared_clock = shared_clock_requested(clock_configuration.as_deref())?;
-    let (sender, receiver) = mpsc::channel::<Job>(QUEUE);
-    let receiver = Arc::new(tokio::sync::Mutex::new(receiver));
     let ready = Arc::new(Barrier::new(WORKERS as usize + 1));
     let metrics = Arc::new(Mutex::new(Metrics::new(duration.min(300))));
     let current = Arc::new(AtomicU32::new(0));
@@ -656,7 +888,6 @@ pub(super) async fn run() -> Result<()> {
     let offered_commands = Arc::new(AtomicU64::new(0));
     let mut workers = JoinSet::new();
     for worker in 0..u64::from(WORKERS) {
-        let receiver = Arc::clone(&receiver);
         let ready = Arc::clone(&ready);
         let metrics = Arc::clone(&metrics);
         let admission = Arc::clone(&admission);
@@ -680,18 +911,15 @@ pub(super) async fn run() -> Result<()> {
             }
             ready.wait().await;
             loop {
-                let job = { receiver.lock().await.recv().await };
-                let Some(job) = job else {
-                    return Ok::<_, &'static str>(());
-                };
-                let (active, next_release) = loop {
+                let (job, active, next_release) = loop {
                     let notified = admission.changed.notified();
                     tokio::pin!(notified);
                     notified.as_mut().enable();
-                    if let Some(admitted) = admission.admit(&peak)? {
-                        break admitted;
+                    match admission.take_job(&peak)? {
+                        Dispatch::Admitted(job, active, release) => break (job, active, release),
+                        Dispatch::Closed => return Ok::<_, &'static str>(()),
+                        Dispatch::Pending => notified.await,
                     }
-                    notified.await;
                 };
                 if next_release.generation != release.generation {
                     client =
@@ -834,13 +1062,11 @@ pub(super) async fn run() -> Result<()> {
                     }
                 }
             }
-            sender
-                .try_send(Job {
-                    operation,
-                    offered: Instant::now(),
-                    window,
-                })
-                .map_err(|_| "offered_queue_bound")?;
+            admission.offer(Job {
+                operation,
+                offered: Instant::now(),
+                window,
+            })?;
         }
     }
     // Close the last observed window at its deadline. Its operations still
@@ -859,7 +1085,7 @@ pub(super) async fn run() -> Result<()> {
         peak.load(Ordering::Acquire),
         Instant::now() + WINDOW_SETTLE,
     )?;
-    drop(sender);
+    admission.close_offers()?;
     tokio::time::timeout(Duration::from_secs(60), async {
         while let Some(result) = workers.join_next().await {
             result.map_err(|_| "worker")??;
@@ -910,6 +1136,272 @@ pub(super) async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ReadPreparationRoot(PathBuf);
+    impl ReadPreparationRoot {
+        fn new(tag: &str) -> Self {
+            let root = Self(
+                std::env::temp_dir()
+                    .join(format!("riffdb-preparation-{tag}-{}", std::process::id())),
+            );
+            std::fs::create_dir(&root.0).unwrap();
+            root
+        }
+    }
+    impl Drop for ReadPreparationRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn read_preparation_admission() -> Admission {
+        Admission::new(
+            Release {
+                generation: 1,
+                version: 1,
+                incarnation: 1,
+                credential: "application.credential".into(),
+            },
+            Arc::new(AtomicU32::new(0)),
+        )
+    }
+
+    #[test]
+    // req: END-007, END-008, END-010
+    fn ordinary_offers_keep_fifo_window_and_original_offer_time() {
+        let admission = read_preparation_admission();
+        let peak = AtomicU32::new(0);
+        let offered = Instant::now();
+        let operations = [
+            Operation::Update(0),
+            Operation::Read(0),
+            Operation::Read(1),
+            Operation::Update(1),
+        ];
+        for operation in operations {
+            admission
+                .offer(Job {
+                    operation,
+                    offered,
+                    window: 7,
+                })
+                .unwrap();
+        }
+        admission.close_offers().unwrap();
+        assert!(
+            admission
+                .offer(Job {
+                    operation: Operation::Read(9),
+                    offered,
+                    window: 7
+                })
+                .is_err()
+        );
+        for expected in operations {
+            let Dispatch::Admitted(job, active, release) = admission.take_job(&peak).unwrap()
+            else {
+                panic!("offered job must remain available");
+            };
+            assert_eq!(job.operation, expected);
+            assert_eq!(job.offered, offered);
+            assert_eq!(job.window, 7);
+            assert_eq!(release.generation, 1);
+            drop(active);
+        }
+        assert!(matches!(
+            admission.take_job(&peak).unwrap(),
+            Dispatch::Closed
+        ));
+    }
+
+    #[test]
+    // req: END-007, END-008, END-010
+    fn preparation_reads_bypass_fenced_writes_under_one_unchanged_queue_bound() {
+        let root = ReadPreparationRoot::new("queue-bound");
+        let admission = read_preparation_admission();
+        let metrics = Mutex::new(Metrics::new(300));
+        let peak = AtomicU32::new(0);
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let offered = Instant::now();
+        for ordinal in 0..QUEUE - 1 {
+            admission
+                .offer(Job {
+                    operation: Operation::Update(ordinal as u64),
+                    offered,
+                    window: 0,
+                })
+                .unwrap();
+        }
+        admission
+            .offer(Job {
+                operation: Operation::Read(17),
+                offered,
+                window: 0,
+            })
+            .unwrap();
+        assert!(
+            admission
+                .offer(Job {
+                    operation: Operation::Read(18),
+                    offered,
+                    window: 0
+                })
+                .is_err()
+        );
+        std::fs::write(root.0.join("load.restore-reads"), b"1 1 1\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let Dispatch::Admitted(job, active, _) = admission.take_job(&peak).unwrap() else {
+            panic!("a fenced write must not occupy every worker ahead of reads");
+        };
+        assert_eq!(job.operation, Operation::Read(17));
+        assert_eq!(job.offered, offered);
+        assert_eq!(admission.state.lock().unwrap().queue.len(), QUEUE - 1);
+        drop(active);
+        assert!(matches!(
+            admission.take_job(&peak).unwrap(),
+            Dispatch::Pending
+        ));
+        admission
+            .offer(Job {
+                operation: Operation::Read(18),
+                offered,
+                window: 0,
+            })
+            .unwrap();
+        assert!(
+            admission
+                .offer(Job {
+                    operation: Operation::Read(19),
+                    offered,
+                    window: 0
+                })
+                .is_err()
+        );
+        assert!(
+            !root.0.join("load.restore-reads-active").exists(),
+            "a control marker alone cannot claim a completed public read"
+        );
+    }
+
+    #[test]
+    // req: END-007, END-008, END-010
+    fn preparation_read_progress_and_full_pause_require_actual_completed_admissions() {
+        let root = ReadPreparationRoot::new("phase-handover");
+        let admission = read_preparation_admission();
+        let metrics = Mutex::new(Metrics::new(300));
+        let peak = AtomicU32::new(0);
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        std::fs::write(root.0.join("load.restore-reads"), b"1 1 1\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let offered = Instant::now();
+        admission
+            .offer(Job {
+                operation: Operation::Update(0),
+                offered,
+                window: 0,
+            })
+            .unwrap();
+        admission
+            .offer(Job {
+                operation: Operation::Read(0),
+                offered,
+                window: 0,
+            })
+            .unwrap();
+        let Dispatch::Admitted(job, active, _) = admission.take_job(&peak).unwrap() else {
+            panic!("read");
+        };
+        assert_eq!(job.operation, Operation::Read(0));
+        metrics
+            .lock()
+            .unwrap()
+            .record(0, job.operation, Duration::ZERO, 0)
+            .unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(root.0.join("load.restore-reads-active").is_file());
+        std::fs::remove_file(root.0.join("load.restore-reads")).unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(!root.0.join("load.restore-readers-quiesced").exists());
+        assert!(matches!(
+            admission.take_job(&peak).unwrap(),
+            Dispatch::Pending
+        ));
+        drop(active);
+        admission.poll(&root.0, &metrics).unwrap();
+        assert!(root.0.join("load.restore-readers-quiesced").is_file());
+        std::fs::remove_file(root.0.join("load.quiesce")).unwrap();
+        assert_eq!(
+            admission.poll(&root.0, &metrics),
+            Err("restore_read_unfenced_release")
+        );
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        std::fs::write(root.0.join("next.credential"), b"private fixture\n").unwrap();
+        std::fs::write(root.0.join("load.phase"), b"2 1 2 next.credential\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        std::fs::remove_file(root.0.join("load.quiesce")).unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let Dispatch::Admitted(job, active, release) = admission.take_job(&peak).unwrap() else {
+            panic!("write");
+        };
+        assert_eq!(job.operation, Operation::Update(0));
+        assert_eq!(release.generation, 2);
+        assert_eq!(release.incarnation, 2);
+        drop(active);
+    }
+
+    #[tokio::test]
+    // req: END-007, END-008, END-010
+    async fn queued_read_and_mode_change_between_registration_and_wait_keep_the_wakeup() {
+        let root = ReadPreparationRoot::new("read-notification");
+        let admission = Arc::new(read_preparation_admission());
+        let metrics = Mutex::new(Metrics::new(300));
+        std::fs::write(root.0.join("load.quiesce"), b"pause\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        let (registered, registration) = tokio::sync::oneshot::channel();
+        let (continue_wait, continuation) = tokio::sync::oneshot::channel();
+        let owned = Arc::clone(&admission);
+        let worker = tokio::spawn(async move {
+            let peak = AtomicU32::new(0);
+            let notified = owned.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            assert!(matches!(owned.take_job(&peak).unwrap(), Dispatch::Pending));
+            registered.send(()).unwrap();
+            continuation.await.unwrap();
+            notified.await;
+            let Dispatch::Admitted(job, active, _) = owned.take_job(&peak).unwrap() else {
+                panic!("registered read must remain dispatched");
+            };
+            assert_eq!(job.operation, Operation::Read(9));
+            drop(active);
+        });
+        registration.await.unwrap();
+        admission
+            .offer(Job {
+                operation: Operation::Update(0),
+                offered: Instant::now(),
+                window: 0,
+            })
+            .unwrap();
+        admission
+            .offer(Job {
+                operation: Operation::Read(9),
+                offered: Instant::now(),
+                window: 0,
+            })
+            .unwrap();
+        std::fs::write(root.0.join("load.restore-reads"), b"1 1 1\n").unwrap();
+        admission.poll(&root.0, &metrics).unwrap();
+        continue_wait.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(admission.current.load(Ordering::Acquire), 0);
+        assert_eq!(admission.state.lock().unwrap().queue.len(), 1);
+    }
 
     // req: END-007, END-008, END-010
     #[test]

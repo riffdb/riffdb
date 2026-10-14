@@ -458,3 +458,77 @@ final-source full CI, conformance and the eight-hour rehearsal remain outstandin
 Package WP-825; Tier guarantee under accepted ADR-0299; Compatibility unchanged
 for database formats, fixtures and application interfaces; Handbook updated:
 `docs/backup-restore.md`; Hazards and follow-ups remain the unqualified gates above.
+
+
+## Shipping fresh-owner result and bounded preparation admission
+
+The ordinary four-binary build of committed source `282115c2` matches all 5,215
+tracked source hashes. The unchanged saved primary-loss helper passes: first new
+acknowledgement at 49.536762712 seconds and complete exact replay plus all 65,536
+tickets reconciled at 52.692918736 seconds. Backup creation takes 17.515013575
+seconds before loss. The helper, deadline and original oracle are unchanged.
+Verified shipping receipt:
+`8e50d785bf14160dbd0730915a62b386aedc46a8b58bb0660521ab3baea73bd4`.
+
+An actual SIGKILL after another new acknowledgement and restart of that same
+target preserves its inode, the new and earlier replay identities, all ticket
+state, and the immutable backup and receipt bytes. Verified crash receipt:
+`aa014a175bb6ec25e790b5350ff64014a5a92a9bae040536fc0c8f31acb80b9a`.
+These saved-population observations do not qualify the scheduled population,
+fixed 45-second release, full CI or either measured campaign.
+
+Controller review identifies two concrete faults before a campaign launch.
+Pausing all work from backup preparation through the fixed release accumulates
+more than the existing 32,768-job queue can hold. The replacement path also
+omits the marker required by the existing bounded uncertainty-recovery worker.
+Both behaviors fail the targeted baseline; verified failing-check receipt:
+`8ac93c0f5ac575d9129c9c821c12fe168e141f08a96e4a1335c0d1a04921d5ef`.
+
+The correction uses the same bounded queue and admission mutex. After the
+selected backup is durable, fenced writes remain queued with their original
+arrival timestamps while the original workers dispatch reads. Read progress
+must preserve the complete acknowledged command prefix. At loss, all readers
+must settle on the original recovery deadline before server replacement. The
+frozen V2 evidence protocol includes worker source and separate read-progress
+and quiescence records; missing, rewound or mismatched records refuse. Every
+process replacement publishes its original generation's recovery declaration
+before stopping and removes it only after actual worker resumption.
+
+Required-host checks pass all 396 controller tests, all 15 worker probe tests,
+the deterministic notification schedule and worker Clippy. Independent receipts:
+`79fe467aa6141556fcc8a8502cbce91fba4572db9f97b4acda8f1e3710730253`
+and `5bcc4e26bebe8a33164d8f64f3329df53f6291bd49577be9b1b93647e97b3fcb`.
+Two live admission attempts stop during seed preparation on an observer
+freshness refusal before exercising the new admission mode. The observer is
+acknowledging its initial batches; those batches publish only after up to 32
+acknowledgements. The actual population-drain regression reproduces the eager
+refusal before offered work begins. Preparation now waits for a fresh complete
+observation inside its unchanged 900-second drain deadline, without using or
+refreshing a stale sample. A failed or dead worker still refuses immediately;
+the five-second freshness rule after offered work starts is unchanged. Both
+failed attempts remain retained.
+
+The corrected live check completes all 18,000 commands and 72,000 reads against
+a fresh 65,536-ticket population. For 75.002472008 seconds, writes remain fenced
+at 1,010 acknowledgements while reads advance from 4,057 to 34,138. The original
+workers retain the 32,768-job queue and original arrival clock. After final
+reader quiescence and an actual server SIGKILL, those same worker processes
+reconnect under the next generation; a new acknowledgement completes within
+8.714086831 seconds. Every original witness record and all 65,536 final ticket
+states reconcile. Verified live receipt:
+`3af045378c6b9327d25109f3c4ccac6b37908441692336a86557a945881a5584`.
+This is an admission and ordinary-restart check, not a backup restore, moved
+campaign fault, scheduled-population timing or measured campaign qualification.
+
+PR note: Package WP-825; Tier guarantee under accepted ADR-0292 and ADR-0299;
+Behavior keeps backup preparation within the existing offered queue and requires
+actual read-only progress, final reader quiescence and declared fault recovery.
+Checks: required-host fail-first controller checks, all 396 controller tests,
+worker concurrency tests and Clippy; shipping saved whole60 and post-ACK crash
+checks cover the preceding native source. Compatibility: database formats,
+frozen durable fixtures, application interfaces, original offered clock, queue,
+in-flight, fault placement and 60/45-second bounds unchanged. Updated handbook:
+`docs/backup-restore.md` and `docs/architecture/SUSTAINABLE-TICKETDESK.md`.
+Hazards and follow-ups: scoped acceptance, final combined-source
+CI and conformance, actual scheduled-population 45-second gate, resources and
+complete eight-hour rehearsal remain required. WP-825 stays open.

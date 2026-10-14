@@ -61,6 +61,7 @@ def fixture():
     plan = next(row for row in manifest['faults'] if row['kind'] == 'backup_restore')
     action = next(row for row in receipt['actions'] if row['kind'] == 'backup_restore')
     receipt['restore_clock'] = restore_clock_fixture(plan, action)
+    receipt['restore_read_admission'] = restore_read_admission_fixture(receipt['restore_clock'])
     return manifest, receipt
 
 
@@ -86,7 +87,27 @@ def restore_clock_fixture(plan, action):
         qualifies_complete_campaign=False)
 
 
+def restore_read_admission_fixture(clock):
+    from lib.ticketdesk_lifecycle_campaign_restore_clock import SECOND
+    commands = clock['preparation']['acknowledged_commands']
+    initial = dict(schema='riffdb.ticketdesk-lifecycle-quiesced/v1', generation=5,
+                   completed_commands=commands, completed_reads=commands * 4)
+    def ack(schema, reads):
+        return dict(schema=schema, generation=5, contract_version=2, history_incarnation=1,
+                    completed_commands=commands, completed_reads=reads)
+    return dict(schema='riffdb.ticketdesk-lifecycle-restore-read-admission/v1', initial=initial,
+        requested_ns=clock['backup']['durable_at_ns'] + SECOND,
+        reading_ns=clock['backup']['durable_at_ns'] + 2 * SECOND,
+        pause_requested_ns=clock['loss_ns'], quiesced_ns=clock['loss_ns'] + SECOND // 20,
+        reading_ack=ack('riffdb.ticketdesk-lifecycle-restore-reads-active/v1', commands * 4 + 1),
+        quiesced_ack=ack('riffdb.ticketdesk-lifecycle-restore-readers-quiesced/v1', commands * 4 + 2),
+        qualifies_complete_campaign=False)
+
+
 class EvidenceTests(unittest.TestCase):
+    def test_restore_read_admission_witness_cannot_be_omitted_from_qualification(self):
+        self.rejected(lambda m, r: r.pop('restore_read_admission'), 'shape')
+
     def test_current_qualification_rejects_the_legacy_combined_restore_clock(self):
         self.rejected(lambda m, r: r.update(schema='riffdb.ticketdesk-lifecycle-receipt/v1'), 'schema')
 

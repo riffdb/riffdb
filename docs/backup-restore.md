@@ -605,6 +605,11 @@ primary loss and remains separately visible, including its service interruption
 and affected offered-work windows. Recovery retains one 60-second deadline from
 primary loss through the first acknowledged write, exact replay and full state
 reconciliation. Old combined-clock failures cannot be reclassified.
+After the backup becomes durable, the campaign can continue reads while keeping
+writes fenced at its included acknowledgement prefix. It pauses and drains those
+readers after primary loss, charging that work to the same recovery deadline.
+Original offers, queue and in-flight bounds, preparation interruption and read
+progress remain part of the evidence; this adds no post-backup write-loss allowance.
 
 The immutable backup artifact preserves the source bytes, including a matching
 certificate. Private restore staging nevertheless drives the complete

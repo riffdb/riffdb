@@ -18,6 +18,7 @@ from .ticketdesk_lifecycle_history_components import native_record
 from .ticketdesk_lifecycle_native_observer import FIELDS as NATIVE_FIELDS
 from .ticketdesk_lifecycle_campaign_restore_evidence import (
     protocol_snapshot, validate_protocol, validate_clock, public_operation_witnesses, first_write_witness,
+    validate_read_admission,
 )
 import io
 
@@ -240,6 +241,13 @@ def reconcile(runtime,result):
         'campaign_reconciliation_restore_preparation')
     restore_operations = public_operation_witnesses(root, clock, duration_s=duration)
     restore_first_write = first_write_witness(root, clock)
+    raw, inputs['restore_read_admission'] = read_private(root, 'campaign-restore-read-admission.json', maximum=4096)
+    restore_read_admission = decode(raw)
+    require(restore_read_admission == result['restore_read_admission'],
+            'campaign_reconciliation_restore_read_admission')
+    validate_read_admission(restore_read_admission, clock,
+        expected_generation=result['terminal']['generation'] - 1,
+        expected_version=result['terminal']['contract_version'])
     raw,inputs['load']=read_private(root,'original-load/load.stdout',maximum=290*4096)
     parser=CampaignLoadStream(duration_s=duration,require_shared_clock=True)
     source=io.BytesIO(raw);load_rows=[]
@@ -295,6 +303,7 @@ def reconcile(runtime,result):
         restore_clock=clock, restore_preparation_interval_s=preparation_interval,
         restore_public_operations=restore_operations,
         restore_first_write=restore_first_write,
+        restore_read_admission=restore_read_admission,
         consumer_backlog_basis='conservative_offered_organization_zero_matches_less_observed_acknowledgements',
         eligible_history_basis='canonical_logical_history_and_removed_keys_only',
         qualifies_complete_campaign=False)

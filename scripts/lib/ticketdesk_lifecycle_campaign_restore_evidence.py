@@ -16,16 +16,18 @@ from .ticketdesk_lifecycle_campaign_restore_clock import (
 from .ticketdesk_lifecycle_campaign_maintenance import UUID7, REQUIRED, PHASES, MAX_POLLS
 from .ticketdesk_lifecycle_campaign_owner_reconciliation import read_private, decode, operators
 from .ticketdesk_lifecycle_campaign_operator import CampaignOperator
-from .ticketdesk_lifecycle_campaign_quiescence import RESUMED_KEYS
+from .ticketdesk_lifecycle_campaign_quiescence import RESUMED_KEYS, LOAD_KEYS
 
 RULES = dict(primary_loss_limit_seconds=60, preparation_limit_seconds=60,
     backup_before_loss=True, unchanged_fault_placement=True,
     acknowledgement_gap_allowed=False, exact_replay_and_state_inside_deadline=True,
-    preparation_windows_visible=True, other_fault_clocks_unchanged=True)
+    preparation_windows_visible=True, other_fault_clocks_unchanged=True,
+    preparation_reads_progress_with_writes_fenced=True)
 FILES = frozenset({'scripts/check-ticketdesk-lifecycle',
+    'examples/ticketdesk/src/lifecycle_workload/probe.rs',
     'adr/0292-recovery-clock-begins-at-primary-loss.md'} | {
     'scripts/lib/ticketdesk_lifecycle_campaign_' + name + '.py' for name in (
-        'actions', 'execution', 'quiescence', 'maintenance', 'entrypoint',
+        'actions', 'execution', 'quiescence', 'maintenance', 'entrypoint', 'runtime',
         'finalization', 'reconciliation', 'restore_clock', 'restore_inputs', 'restore_evidence')})
 
 
@@ -258,3 +260,38 @@ def first_write_witness(root, clock):
             and acknowledgement['completed_reads'] <= instant // SECOND * 400,
             'restore_evidence_first_write')
     return dict(input=proof, observation=value)
+
+
+def validate_read_admission(value, clock, *, expected_generation=None, expected_version=None):
+    shape(value, {'schema', 'initial', 'requested_ns', 'reading_ack', 'reading_ns',
+        'pause_requested_ns', 'quiesced_ack', 'quiesced_ns', 'qualifies_complete_campaign'})
+    require(value['schema'] == 'riffdb.ticketdesk-lifecycle-restore-read-admission/v1'
+            and value['qualifies_complete_campaign'] is False, 'restore_evidence_read_admission')
+    initial, reading, quiesced = value['initial'], value['reading_ack'], value['quiesced_ack']
+    shape(initial, LOAD_KEYS)
+    shape(reading, RESUMED_KEYS)
+    shape(quiesced, RESUMED_KEYS)
+    for row in (initial, reading, quiesced):
+        for key in row.keys() - {'schema'}:
+            number(row[key])
+    require(initial['schema'] == 'riffdb.ticketdesk-lifecycle-quiesced/v1'
+            and reading['schema'] == 'riffdb.ticketdesk-lifecycle-restore-reads-active/v1'
+            and quiesced['schema'] == 'riffdb.ticketdesk-lifecycle-restore-readers-quiesced/v1'
+            and 1 <= initial['generation'] <= 16
+            and initial['generation'] == reading['generation'] == quiesced['generation']
+            and (expected_generation is None or initial['generation'] == expected_generation)
+            and 1 <= reading['contract_version'] <= 2
+            and reading['contract_version'] == quiesced['contract_version']
+            and (expected_version is None or reading['contract_version'] == expected_version)
+            and reading['history_incarnation'] == quiesced['history_incarnation'] == 1
+            and initial['completed_commands'] == reading['completed_commands']
+                == quiesced['completed_commands'] == clock['preparation']['acknowledged_commands']
+            and initial['completed_reads'] < reading['completed_reads'] <= quiesced['completed_reads'],
+            'restore_evidence_read_admission')
+    requested, progressed, paused, done = (number(value[key]) for key in
+        ('requested_ns', 'reading_ns', 'pause_requested_ns', 'quiesced_ns'))
+    setup = next(p['completed_ns'] for p in clock['phases'] if p['kind'] == 'target_setup')
+    require(clock['backup']['durable_at_ns'] <= requested <= progressed < clock['loss_ns']
+            <= paused <= done <= setup <= clock['deadline_ns']
+            and quiesced['completed_reads'] <= done // SECOND * 400,
+            'restore_evidence_read_admission')

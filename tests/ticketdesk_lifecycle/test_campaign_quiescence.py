@@ -13,6 +13,73 @@ SECOND = 1000000000
 
 
 class WorkerHandover(unittest.TestCase):
+    def restore_read_control(self, root):
+        from test_campaign_restore_clock import prepared, LOSS
+        controls = []
+        def begin(clock):
+            control = QuiescentRelease(root, generation=5, version=2, incarnation=1, restore_clock=clock)
+            control.begin(LOSS - 30 * SECOND)
+            self.acknowledgements(root, generation=5, version=2)
+            path = root / 'load.quiesced'
+            value = json.loads(path.read_text())
+            value.update(completed_commands=530000, completed_reads=2120000)
+            path.write_text(json.dumps(value))
+            self.assertTrue(control.poll(LOSS - 29 * SECOND))
+            controls.append(control)
+        clock, _, _ = prepared(before_acknowledgements=begin)
+        return clock, controls[0]
+
+    def restore_read_ack(self, root, *, reading=True, **changes):
+        name = 'load.restore-reads-active' if reading else 'load.restore-readers-quiesced'
+        schema = ('riffdb.ticketdesk-lifecycle-restore-reads-active/v1' if reading else
+                  'riffdb.ticketdesk-lifecycle-restore-readers-quiesced/v1')
+        value = dict(schema=schema, generation=5, contract_version=2, history_incarnation=1,
+                     completed_commands=530000, completed_reads=2120001 + int(not reading))
+        value.update(changes)
+        (root / name).write_text(json.dumps(value))
+
+    def test_backup_read_phase_requires_public_read_progress_then_full_pause_on_original_deadline(self):
+        from test_campaign_restore_clock import LOSS, lose
+        from lib.ticketdesk_lifecycle_campaign_restore_evidence import validate_read_admission
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clock, control = self.restore_read_control(root)
+            control.allow_restore_reads(LOSS - 9 * SECOND)
+            self.assertEqual((root / 'load.restore-reads').read_bytes(), b'5 2 1\n')
+            self.assertTrue((root / 'load.quiesce').exists())
+            self.assertFalse(control.restore_reads_started(LOSS - 8 * SECOND))
+            self.restore_read_ack(root)
+            self.assertTrue(control.restore_reads_started(LOSS - 8 * SECOND))
+            lose(clock)
+            control.pause_restore_reads(LOSS)
+            self.assertFalse((root / 'load.restore-reads').exists())
+            self.assertFalse(control.restore_readers_quiesced(LOSS + SECOND // 20))
+            self.restore_read_ack(root, reading=False)
+            self.assertTrue(control.restore_readers_quiesced(LOSS + SECOND // 20))
+            clock.phase_completed('target_setup', LOSS + SECOND)
+            value = dict(preparation=clock.preparation, backup=clock.backup, loss_ns=clock.loss_ns,
+                         deadline_ns=clock.deadline_ns, phases=clock.phases)
+            validate_read_admission(control.restore_read_witness, value,
+                                    expected_generation=5, expected_version=2)
+            self.assertEqual(clock.deadline_ns, LOSS + 60 * SECOND)
+            self.assertTrue((root / 'load.quiesce').exists())
+
+    def test_read_phase_cannot_hide_a_new_write_stale_owner_or_missing_read_completion(self):
+        from test_campaign_restore_clock import LOSS
+        for change in (dict(completed_commands=530001), dict(completed_reads=2120000),
+                       dict(generation=4), dict(contract_version=1), dict(history_incarnation=2),
+                       dict(completed_commands=True)):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, control = self.restore_read_control(root)
+                control.allow_restore_reads(LOSS - 9 * SECOND)
+                self.restore_read_ack(root, **change)
+                with self.assertRaises(QuiescenceError):
+                    control.restore_reads_started(LOSS - 8 * SECOND)
+                self.restore_read_ack(root)
+                with self.assertRaisesRegex(QuiescenceError, 'quiescence_failed'):
+                    control.restore_reads_started(LOSS - 7 * SECOND)
+
     def test_only_bound_restore_preparation_can_bridge_the_original_fault_deadline(self):
         from test_campaign_restore_clock import prepared, lose, LOSS
         for mode in ('valid', 'overrun', 'different_start', 'failed_clock'):

@@ -68,6 +68,8 @@ class QuiescentRelease:
         require(restore_clock is None or isinstance(restore_clock, RestoreRecoveryClock),
                 'quiescence_restore_clock')
         self._restore_clock = restore_clock
+        self._restore_reads = None
+        self._restore_read_witness = None
 
     @property
     def snapshot(self):
@@ -80,6 +82,10 @@ class QuiescentRelease:
     @property
     def resumed_snapshot(self):
         return deepcopy(self._resumed)
+
+    @property
+    def restore_read_witness(self):
+        return deepcopy(self._restore_read_witness)
 
     def _tick(self, now_ns):
         integer(now_ns)
@@ -106,7 +112,9 @@ class QuiescentRelease:
         integer(now_ns)
         require(self._state == "idle" and type(pause_load) is bool, "quiescence_state")
         require(not any((self.root / name).exists() for name in
-                        ("load.quiesced", "observer.quiesced", "observer.restore", "load.resumed")),
+                        ("load.quiesced", "observer.quiesced", "observer.restore", "load.resumed",
+                         "load.restore-reads", ".load.restore-reads.pending", "load.restore-reads-active",
+                         "load.restore-readers-quiesced", "load.recover")),
                 "quiescence_stale")
         self._started = self._last_ns = now_ns
         if self._restore_clock is not None:
@@ -127,6 +135,79 @@ class QuiescentRelease:
         require(self._observer is not None, "quiescence_not_ready")
         self._marker("load.quiesce")
         self._load_paused = True
+
+    @fenced
+    def allow_restore_reads(self, now_ns):
+        require(self._restore_clock is not None and self._restore_clock.state == 'backup_durable'
+                and self._restore_reads is None and self.poll(now_ns), 'quiescence_restore_reads')
+        require(self._restore_clock.preparation['acknowledged_commands']
+                == self._snapshot['load']['completed_commands'], 'quiescence_restore_read_identity')
+        pending, marker = self.root / '.load.restore-reads.pending', self.root / 'load.restore-reads'
+        require(not pending.exists() and not marker.exists(), 'quiescence_stale')
+        encoded = f'{self.generation} {self.version} {self.incarnation}\n'.encode('ascii')
+        descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write(encoded); output.flush(); os.fsync(output.fileno())
+        pending.rename(marker)
+        self._restore_reads = dict(requested_ns=now_ns, reading_ack=None, reading_ns=None,
+                                   pause_requested_ns=None, quiesced_ack=None, quiesced_ns=None)
+
+    def _restore_read_ack(self, name, schema):
+        value = self._ack(name, RESUMED_KEYS, schema)
+        if value is not None:
+            require(value['contract_version'] == self.version
+                    and value['history_incarnation'] == self.incarnation
+                    and value['completed_commands'] == self._snapshot['load']['completed_commands'],
+                    'quiescence_restore_read_identity')
+        return value
+
+    @fenced
+    def restore_reads_started(self, now_ns):
+        self._tick(now_ns)
+        require(self._restore_reads is not None and self._restore_reads['pause_requested_ns'] is None,
+                'quiescence_restore_reads')
+        value = self._restore_read_ack('load.restore-reads-active',
+                                      'riffdb.ticketdesk-lifecycle-restore-reads-active/v1')
+        if value is None:
+            return False
+        require(value['completed_reads'] > self._snapshot['load']['completed_reads'],
+                'quiescence_restore_read_progress')
+        require(self._restore_reads['reading_ack'] in (None, value), 'quiescence_record')
+        if self._restore_reads['reading_ack'] is None:
+            self._restore_reads.update(reading_ack=value, reading_ns=now_ns)
+        return True
+
+    @fenced
+    def pause_restore_reads(self, now_ns):
+        self._tick(now_ns)
+        require(self._restore_clock is not None and self._restore_clock.state == 'recovering'
+                and self._restore_reads is not None and self._restore_reads['reading_ack'] is not None
+                and self._restore_reads['pause_requested_ns'] is None, 'quiescence_restore_reads')
+        marker = self.root / 'load.restore-reads'
+        with marker.open('rb') as source:
+            encoded = source.read(129)
+        require(encoded == f'{self.generation} {self.version} {self.incarnation}\n'.encode('ascii'),
+                'quiescence_restore_read_identity')
+        marker.unlink()
+        self._restore_reads['pause_requested_ns'] = now_ns
+
+    @fenced
+    def restore_readers_quiesced(self, now_ns):
+        self._tick(now_ns)
+        require(self._restore_reads is not None and self._restore_reads['pause_requested_ns'] is not None,
+                'quiescence_restore_reads')
+        value = self._restore_read_ack('load.restore-readers-quiesced',
+                                      'riffdb.ticketdesk-lifecycle-restore-readers-quiesced/v1')
+        if value is None:
+            return False
+        require(value['completed_reads'] >= self._restore_reads['reading_ack']['completed_reads'],
+                'quiescence_restore_read_progress')
+        require(self._restore_reads['quiesced_ack'] in (None, value), 'quiescence_record')
+        if self._restore_reads['quiesced_ack'] is None:
+            self._restore_reads.update(quiesced_ack=value, quiesced_ns=now_ns)
+        self._restore_read_witness = dict(schema='riffdb.ticketdesk-lifecycle-restore-read-admission/v1',
+            initial=self.snapshot['load'], **deepcopy(self._restore_reads), qualifies_complete_campaign=False)
+        return True
 
     def _ack(self, name, keys, schema, *, generation=None):
         path = self.root / name
@@ -172,6 +253,8 @@ class QuiescentRelease:
     @fenced
     def publish(self, now_ns, *, credential, version, incarnation, restore=False):
         require(self.poll(now_ns), "quiescence_not_ready")
+        require(self._restore_reads is None or (self._restore_read_witness is not None
+                and not (self.root / 'load.restore-reads').exists()), 'quiescence_restore_reads')
         require(type(restore) is bool and type(version) is int
                 and self.version <= version <= 2
                 and integer(incarnation) == self.incarnation + int(restore)
@@ -222,4 +305,6 @@ class QuiescentRelease:
         (self.root / "observer.quiesced").unlink()
         (self.root / "load.resumed").unlink()
         (self.root / "observer.restore").unlink(missing_ok=True)
+        for name in ('load.restore-reads-active', 'load.restore-readers-quiesced'):
+            (self.root / name).unlink(missing_ok=True)
         self._state = "complete"

@@ -230,10 +230,12 @@ class CampaignFinalization:
         runtime.memory.__exit__(None,None,None)
         runtime.disk.output.close(); runtime.disk.output=None
         os.close(runtime.disk.archive); runtime.disk.archive=None
-        require(self.actions.restore_receipt is not None and self.actions.restore_clock.complete,
+        require(self.actions.restore_receipt is not None and self.actions.restore_clock.complete
+                and self.actions.restore_read_admission is not None,
                 'campaign_restore_clock_incomplete')
         return dict(schema="riffdb.ticketdesk-lifecycle-finalization/v2", terminal=terminal,
             native_endpoint=endpoint, components=components, terminal_memory=memory,
             terminal_disk=disk, state=state, archive=archive, measured_extents=extents,
             actions=self.timeline.actions, restore_clock=self.actions.restore_receipt,
+            restore_read_admission=self.actions.restore_read_admission,
             qualifies_complete_campaign=False)
