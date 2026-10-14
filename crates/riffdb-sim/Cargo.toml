@@ -25,3 +25,8 @@ serde_json = { version = "=1.0.150", default-features = false, features = ["std"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "replication_acceptance"
+path = "../../tests/replication_acceptance.rs"
+

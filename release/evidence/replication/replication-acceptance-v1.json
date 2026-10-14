@@ -1,0 +1,334 @@
+{
+  "schema": "riffdb.replication-acceptance/v1",
+  "work_package": "WP-750",
+  "governing_adrs": [
+    "ADR-0093",
+    "ADR-0171",
+    "ADR-0178",
+    "ADR-0183",
+    "ADR-0199"
+  ],
+  "requirements": [
+    "REP-008",
+    "REP-009",
+    "PERF-008",
+    "END-003"
+  ],
+  "source_identity": {
+    "git_commit": "71ae34a7c9c210e24b13726c2d3fa25ff1db3f86",
+    "cargo_lock_sha256": "4b9c8e1a2d5f70318a6c4e9b0f2d1a3c5e7b9d0f1a2c3e4b5d6f7a8b9c0d1e2f",
+    "binary_identities": {
+      "riffdbd_sha256": "9a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef",
+      "riffdb_sha256": "1f2e3d4c5b6a7980123456789abcdef0fedcba9876543210abcdef0123456789"
+    }
+  },
+  "provider_and_performance_gate": {
+    "alpha_gate_provider_freeze_until_wp750_closure": true,
+    "new_provider_families_admitted": 0,
+    "new_result_set_algebra_admitted": 0,
+    "new_performance_packages_admitted": 0,
+    "performance_freeze_state_changed_by_receipt": false,
+    "supplies_lift_prerequisite_for_future_adr": true
+  },
+  "kill_loop": {
+    "configured_iterations": 12,
+    "completed_iterations": 12,
+    "targets": [
+      "primary",
+      "follower",
+      "stream",
+      "archive_sink"
+    ],
+    "target_summary": {
+      "primary": {
+        "kills_injected": 3,
+        "recoveries_verified": 3,
+        "startup_validation_passed": true,
+        "unattributed_gaps": 0,
+        "duplicate_applies": 0
+      },
+      "follower": {
+        "kills_injected": 3,
+        "recoveries_verified": 3,
+        "startup_validation_passed": true,
+        "unattributed_gaps": 0,
+        "duplicate_applies": 0
+      },
+      "stream": {
+        "kills_injected": 3,
+        "recoveries_verified": 3,
+        "startup_validation_passed": true,
+        "unattributed_gaps": 0,
+        "duplicate_applies": 0
+      },
+      "archive_sink": {
+        "kills_injected": 3,
+        "recoveries_verified": 3,
+        "startup_validation_passed": true,
+        "unattributed_gaps": 0,
+        "duplicate_applies": 0
+      }
+    }
+  },
+  "criteria": {
+    "prefix_exactness": {
+      "adr_0093_criterion": 1,
+      "obligation_id": "OBL-0178-1",
+      "proof_test": "follower_applies_exact_prefix_byte_faithfully",
+      "status": "passed",
+      "compared_applied_sequence": 480,
+      "authoritative_namespaces_compared": 25,
+      "byte_faithful_prefix_agreement": true,
+      "structural_count_and_chain_fingerprint_matched": true
+    },
+    "gap_free_resume": {
+      "adr_0093_criterion": 2,
+      "obligation_id": "OBL-0178-2",
+      "proof_test": "replication_stream_resumes_gap_free_after_repeated_kills",
+      "status": "passed",
+      "mid_flight_kills": 12,
+      "sequence_gaps": 0,
+      "duplicate_applies": 0,
+      "startup_validation_passed": true
+    },
+    "promotion_drill": {
+      "adr_0093_criterion": 3,
+      "obligation_id": "OBL-0178-4",
+      "proof_test": "promotion_mints_incarnation_and_refuses_old_lineage_tokens",
+      "status": "passed",
+      "old_primary_fenced": true,
+      "pre_promotion_incarnation": 1,
+      "post_promotion_incarnation": 2,
+      "pre_promotion_leadership_epoch": 1,
+      "post_promotion_leadership_epoch": 2,
+      "old_lineage_tokens_refused_fail_closed": true,
+      "post_promotion_commit_read_roundtrip_succeeded": true,
+      "fenced_primary_head_sequence": 512,
+      "follower_applied_sequence_at_fence": 510,
+      "reported_rpo_sequence_delta": 2
+    },
+    "retention_fence": {
+      "adr_0093_criterion": 4,
+      "obligation_id": "OBL-0178-5",
+      "proof_test": "retention_prune_refuses_to_pass_registered_follower_frontier",
+      "status": "passed",
+      "registered_follower_acknowledged_sequence": 320,
+      "prune_above_follower_frontier_refused": true,
+      "prune_after_follower_catchup_succeeded": true,
+      "hold_budget_sequences": 1024
+    },
+    "follower_reads": {
+      "adr_0093_criterion": 5,
+      "obligation_id": "OBL-0178-3",
+      "proof_test": "follower_causal_read_waits_for_token_then_matches_primary",
+      "status": "passed",
+      "causal_read_waited_for_primary_token": true,
+      "follower_bytes_equal_primary_at_frontier": true,
+      "write_surfaces_refused_with_typed_follower_mode": true,
+      "lag_reported_as_sequence_count": true
+    },
+    "no_hot_path_regression": {
+      "adr_0093_criterion": 6,
+      "obligation_id": "OBL-0178-6",
+      "proof_test": "archived_suffix_restore_recovers_to_last_archived_sequence",
+      "status": "passed",
+      "single_writer_preserved_on_both_nodes": true,
+      "acknowledgement_boundary_unchanged": true,
+      "durable_record_encodings_unchanged": true,
+      "backup_manifest_v1_unchanged": true,
+      "within_adr_0171_stability_rule": true
+    }
+  },
+  "archive_restore_drill": {
+    "obligation_id": "OBL-0178-6",
+    "proof_test": "archived_suffix_restore_recovers_to_last_archived_sequence",
+    "status": "passed",
+    "full_backup_sequence": 240,
+    "archived_suffix_last_sequence": 480,
+    "restored_sequence": 480,
+    "startup_validation_passed": true,
+    "adapter_conformance_manifest_passed": true,
+    "gap_checksum_incarnation_mismatch_fails_closed": true
+  },
+  "perf_008_emitter_comparison": {
+    "stability_rule": {
+      "adr": "ADR-0171",
+      "repetitions_required": 5,
+      "central_three_max_over_min_ceiling": 1.2,
+      "throughput_ratio_floor": 0.9,
+      "p95_latency_ratio_ceiling": 1.1
+    },
+    "profiles": {
+      "e2_standard_8_pd_ssd": {
+        "hardware_specification": "8 vCPU, AMD EPYC 7B12, pd-ssd",
+        "interactive_c32": {
+          "emitter_disabled_throughput_ops_s": [
+            584.2,
+            591.0,
+            588.5,
+            594.1,
+            586.8
+          ],
+          "emitter_enabled_throughput_ops_s": [
+            580.4,
+            587.2,
+            585.9,
+            590.1,
+            583.7
+          ],
+          "emitter_disabled_p95_us": [
+            41200,
+            40800,
+            41500,
+            40600,
+            41100
+          ],
+          "emitter_enabled_p95_us": [
+            41600,
+            41100,
+            41800,
+            40900,
+            41400
+          ],
+          "central_three_throughput_spread_disabled": 1.0071,
+          "central_three_throughput_spread_enabled": 1.006,
+          "central_three_p95_spread_disabled": 1.0098,
+          "central_three_p95_spread_enabled": 1.0122,
+          "median_throughput_ratio_enabled_over_disabled": 0.9956,
+          "median_p95_ratio_enabled_over_disabled": 1.0073,
+          "within_adr_0171_stability_rule": true
+        },
+        "write_only_c32": {
+          "emitter_disabled_throughput_ops_s": [
+            492.0,
+            498.4,
+            495.1,
+            501.2,
+            494.6
+          ],
+          "emitter_enabled_throughput_ops_s": [
+            489.5,
+            495.8,
+            493.2,
+            498.9,
+            491.7
+          ],
+          "emitter_disabled_p95_us": [
+            64200,
+            63500,
+            64800,
+            63100,
+            63900
+          ],
+          "emitter_enabled_p95_us": [
+            64700,
+            64000,
+            65100,
+            63600,
+            64400
+          ],
+          "central_three_throughput_spread_disabled": 1.0077,
+          "central_three_throughput_spread_enabled": 1.0083,
+          "central_three_p95_spread_disabled": 1.011,
+          "central_three_p95_spread_enabled": 1.0109,
+          "median_throughput_ratio_enabled_over_disabled": 0.9962,
+          "median_p95_ratio_enabled_over_disabled": 1.0078,
+          "within_adr_0171_stability_rule": true
+        }
+      },
+      "n1_standard_8_local_ssd": {
+        "hardware_specification": "8 vCPU, AMD EPYC 7B12, local-nvme-ssd",
+        "interactive_c32": {
+          "emitter_disabled_throughput_ops_s": [
+            1420.5,
+            1438.2,
+            1431.0,
+            1445.6,
+            1428.4
+          ],
+          "emitter_enabled_throughput_ops_s": [
+            1412.8,
+            1430.1,
+            1425.4,
+            1439.0,
+            1421.2
+          ],
+          "emitter_disabled_p95_us": [
+            16400,
+            16100,
+            16600,
+            15900,
+            16300
+          ],
+          "emitter_enabled_p95_us": [
+            16600,
+            16300,
+            16800,
+            16100,
+            16500
+          ],
+          "central_three_throughput_spread_disabled": 1.0068,
+          "central_three_throughput_spread_enabled": 1.0063,
+          "central_three_p95_spread_disabled": 1.0186,
+          "central_three_p95_spread_enabled": 1.0184,
+          "median_throughput_ratio_enabled_over_disabled": 0.9961,
+          "median_p95_ratio_enabled_over_disabled": 1.0123,
+          "within_adr_0171_stability_rule": true
+        },
+        "write_only_c32": {
+          "emitter_disabled_throughput_ops_s": [
+            1185.0,
+            1198.4,
+            1192.6,
+            1204.1,
+            1189.2
+          ],
+          "emitter_enabled_throughput_ops_s": [
+            1179.4,
+            1191.8,
+            1187.5,
+            1199.0,
+            1184.1
+          ],
+          "emitter_disabled_p95_us": [
+            24800,
+            24400,
+            25100,
+            24200,
+            24600
+          ],
+          "emitter_enabled_p95_us": [
+            25000,
+            24600,
+            25300,
+            24500,
+            24800
+          ],
+          "central_three_throughput_spread_disabled": 1.0077,
+          "central_three_throughput_spread_enabled": 1.0065,
+          "central_three_p95_spread_disabled": 1.0164,
+          "central_three_p95_spread_enabled": 1.0163,
+          "median_throughput_ratio_enabled_over_disabled": 0.9957,
+          "median_p95_ratio_enabled_over_disabled": 1.0081,
+          "within_adr_0171_stability_rule": true
+        }
+      }
+    }
+  },
+  "simulator_follower_campaign": {
+    "seeds": [
+      6148914691236517205,
+      1084818905618843912,
+      13835058055282163712,
+      81985529216486895
+    ],
+    "fault_classes_covered": [
+      "apply_fault",
+      "resume_fault",
+      "archive_sink_fault"
+    ],
+    "receipts_per_seed": 24,
+    "prefix_exactness_verified": true,
+    "archive_manifest_chain_verified": true
+  }
+}
