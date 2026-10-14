@@ -46,7 +46,7 @@
     "dirty": false,
     "raw_artifact": "benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl",
     "raw_sha256": "ce126348feff2e732e52b72d5e404a5e4f40026c1bc8662dd68c146c00022003",
-    "revision": "831a06adf2577eb08f4110935148714e45c87294",
+    "revision": "3d076d6dce74e35fd0e48255b121394667af034c",
     "rust_version": "rustc 1.97.0 (2d8144b78 2026-07-07);binary: rustc;commit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3;commit-date: 2026-07-07;host: x86_64-unknown-linux-gnu;release: 1.97.0;LLVM version: 22.1.6;",
     "target": "x86_64-unknown-linux-gnu"
   },

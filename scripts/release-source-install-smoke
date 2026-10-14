@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# req: DX-002
+# req: DX-002, POC-001, POC-002, POC-003, POC-004, POC-005, POC-006, POC-007, POC-008, POC-009, POC-010, PERF-001, PERF-002
 set -euo pipefail
 export LC_ALL=C
 umask 077

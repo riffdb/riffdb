@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+# req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+# req: OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+"""Verify ADR-0161 Decision 14 one/four-worker 100k-row scaling and simultaneous-interactive p95 qualification."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+SCHEMA = "riffdb.wp-713-columnar-parallel-qualification/v1"
+MIN_ONE_TO_FOUR_WORKER_THROUGHPUT_RATIO = 1.50
+MAX_FOUR_WORKER_INTERACTIVE_P95_RATIO = 1.10
+MAX_INPUT_BYTES = 4 * 1024 * 1024
+FORBIDDEN_VALUE_KEYS = frozenset(
+    {
+        "tenant_id",
+        "org_id",
+        "primary_key",
+        "entity_key",
+        "field_value",
+        "predicate_literal",
+        "cursor_bytes",
+        "raw_row",
+    }
+)
+
+
+def load_bounded_json(path: Path) -> dict[str, Any]:
+    raw = path.read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError(f"{path}: input exceeds {MAX_INPUT_BYTES} bytes")
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    return data
+
+
+def contains_forbidden_keys(node: Any) -> bool:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in FORBIDDEN_VALUE_KEYS or contains_forbidden_keys(value):
+                return True
+        return False
+    if isinstance(node, list):
+        return any(contains_forbidden_keys(item) for item in node)
+    return False
+
+
+def evaluate_receipt(receipt: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    if contains_forbidden_keys(receipt):
+        return False, ["non-value-free-evidence"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "single_threaded_batch",
+            "reasons": ["non-value-free-evidence"],
+        }
+
+    gates = receipt.get("gates")
+    workers = receipt.get("parallel_100k_corpus")
+    if not isinstance(gates, dict) or not isinstance(workers, dict):
+        return False, ["missing-sections"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "single_threaded_batch",
+            "reasons": ["missing-sections"],
+        }
+
+    required_bool_gates = (
+        ("correctness_unchanged", "correctness-gate-failed"),
+        ("write_path_no_regression", "write-regression"),
+        ("catch_up_no_regression", "catch-up-regression"),
+        ("freshness_safe_points_preserved", "freshness-gate-failed"),
+        ("lifecycle_active_only_admission", "lifecycle-gate-failed"),
+        ("no_projection_zero_open_and_walk", "no-projection-gate-failed"),
+    )
+    for key, code in required_bool_gates:
+        if gates.get(key) is not True:
+            reasons.append(code)
+
+    one_w = workers.get("one_worker")
+    four_w = workers.get("four_workers")
+    if not isinstance(one_w, dict) or not isinstance(four_w, dict):
+        reasons.append("missing-worker-profile")
+        return False, reasons, {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "single_threaded_batch",
+            "reasons": reasons,
+        }
+
+    one_qps = float(one_w["scan_100k_queries_per_sec"])
+    four_qps = float(four_w["scan_100k_queries_per_sec"])
+    one_interactive_p95_ns = float(one_w["simultaneous_interactive_p95_ns"])
+    four_interactive_p95_ns = float(four_w["simultaneous_interactive_p95_ns"])
+
+    if one_qps <= 0.0 or one_interactive_p95_ns <= 0.0:
+        reasons.append("invalid-baseline-measurement")
+        return False, reasons, {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "single_threaded_batch",
+            "reasons": reasons,
+        }
+
+    throughput_ratio = four_qps / one_qps
+    interactive_p95_ratio = four_interactive_p95_ns / one_interactive_p95_ns
+
+    if throughput_ratio < MIN_ONE_TO_FOUR_WORKER_THROUGHPUT_RATIO:
+        reasons.append("scaling-threshold-miss")
+    if interactive_p95_ratio > MAX_FOUR_WORKER_INTERACTIVE_P95_RATIO:
+        reasons.append("interactive-tail-regression")
+
+    qualified = len(reasons) == 0
+    return qualified, reasons, {
+        "schema": SCHEMA,
+        "qualified": qualified,
+        "selected_executor": "parallel_batch_qualified" if qualified else "single_threaded_batch",
+        "reasons": reasons,
+        "metrics": {
+            "one_worker_100k_qps": round(one_qps, 4),
+            "four_worker_100k_qps": round(four_qps, 4),
+            "one_to_four_worker_throughput_ratio": round(throughput_ratio, 6),
+            "one_worker_interactive_p95_ns": round(one_interactive_p95_ns, 2),
+            "four_worker_interactive_p95_ns": round(four_interactive_p95_ns, 2),
+            "four_worker_interactive_p95_ratio": round(interactive_p95_ratio, 6),
+        },
+    }
+
+
+def registered_receipt() -> dict[str, Any]:
+    return {
+        "schema": SCHEMA,
+        "corpus": "registered_100k_row_parallel_and_simultaneous_interactive_v1",
+        "static_worker_ceiling": 4,
+        "gates": {
+            "correctness_unchanged": True,
+            "write_path_no_regression": True,
+            "catch_up_no_regression": True,
+            "freshness_safe_points_preserved": True,
+            "lifecycle_active_only_admission": True,
+            "no_projection_zero_open_and_walk": True,
+        },
+        "parallel_100k_corpus": {
+            "one_worker": {
+                "scan_100k_queries_per_sec": 168.0,
+                "simultaneous_interactive_p95_ns": 1_850_000.0,
+            },
+            "four_workers": {
+                "scan_100k_queries_per_sec": 312.0,
+                "simultaneous_interactive_p95_ns": 1_960_000.0,
+            },
+        },
+    }
+
+
+def run_self_test() -> int:
+    baseline = registered_receipt()
+    ok, reasons, verdict = evaluate_receipt(baseline)
+    if not ok or reasons or verdict["selected_executor"] != "parallel_batch_qualified":
+        print(f"self-test failed: expected baseline qualification, got {verdict}", file=sys.stderr)
+        return 1
+
+    # Throughput ratio < 1.50 retains single_threaded_batch.
+    scaling_miss = copy.deepcopy(baseline)
+    scaling_miss["parallel_100k_corpus"]["four_workers"]["scan_100k_queries_per_sec"] = 220.0
+    ok, reasons, verdict = evaluate_receipt(scaling_miss)
+    if ok or "scaling-threshold-miss" not in reasons or verdict["selected_executor"] != "single_threaded_batch":
+        print(f"self-test failed: expected scaling-threshold-miss, got {verdict}", file=sys.stderr)
+        return 1
+
+    # Interactive p95 > 1.10x single-worker p95 retains single_threaded_batch.
+    tail_miss = copy.deepcopy(baseline)
+    tail_miss["parallel_100k_corpus"]["four_workers"]["simultaneous_interactive_p95_ns"] = 2_100_000.0
+    ok, reasons, verdict = evaluate_receipt(tail_miss)
+    if ok or "interactive-tail-regression" not in reasons or verdict["selected_executor"] != "single_threaded_batch":
+        print(f"self-test failed: expected interactive-tail-regression, got {verdict}", file=sys.stderr)
+        return 1
+
+    # Cold/no-projection gate failure rejects parallel activation.
+    no_proj_fail = copy.deepcopy(baseline)
+    no_proj_fail["gates"]["no_projection_zero_open_and_walk"] = False
+    ok, reasons, _ = evaluate_receipt(no_proj_fail)
+    if ok or "no-projection-gate-failed" not in reasons:
+        print(f"self-test failed: expected no-projection-gate-failed, got {reasons}", file=sys.stderr)
+        return 1
+
+    # Non-value-free payload fails closed.
+    leaked = copy.deepcopy(baseline)
+    leaked["org_id"] = "secret-org"
+    ok, reasons, _ = evaluate_receipt(leaked)
+    if ok or reasons != ["non-value-free-evidence"]:
+        print(f"self-test failed: expected non-value-free-evidence, got {reasons}", file=sys.stderr)
+        return 1
+
+    print("columnar-parallel-qualification: self-test passed (5 scenarios)")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt", type=Path, help="Path to parallel qualification receipt JSON")
+    parser.add_argument("--self-test", action="store_true", help="Run self-test suite")
+    args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
+
+    receipt = load_bounded_json(args.receipt) if args.receipt else registered_receipt()
+    ok, _, verdict = evaluate_receipt(receipt)
+    print(json.dumps(verdict, indent=2, sort_keys=True))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+# req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+# req: OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048
+# req: OQ-049, OQ-050, OQ-051, OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+"""Verify ADR-0161 Decision 8 single-threaded V1, V2 scalar, and V2 batch mechanics qualification."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+SCHEMA = "riffdb.wp-712-columnar-vectorized-qualification/v1"
+MIN_CPU_REDUCTION_RATIO = 0.35
+MIN_COMPLETE_QUERY_THROUGHPUT_RATIO = 1.50
+MAX_SELECTIVE_PRUNING_REGRESSION_RATIO = 0.05
+MAX_INPUT_BYTES = 4 * 1024 * 1024
+FORBIDDEN_VALUE_KEYS = frozenset(
+    {
+        "tenant_id",
+        "org_id",
+        "primary_key",
+        "entity_key",
+        "field_value",
+        "predicate_literal",
+        "cursor_bytes",
+        "raw_row",
+    }
+)
+
+
+def load_bounded_json(path: Path) -> dict[str, Any]:
+    raw = path.read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError(f"{path}: input exceeds {MAX_INPUT_BYTES} bytes")
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    return data
+
+
+def contains_forbidden_keys(node: Any) -> bool:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in FORBIDDEN_VALUE_KEYS or contains_forbidden_keys(value):
+                return True
+        return False
+    if isinstance(node, list):
+        return any(contains_forbidden_keys(item) for item in node)
+    return False
+
+
+def evaluate_receipt(receipt: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    if contains_forbidden_keys(receipt):
+        return False, ["non-value-free-evidence"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "v2_scalar",
+            "reasons": ["non-value-free-evidence"],
+        }
+
+    gates = receipt.get("gates")
+    lanes = receipt.get("single_threaded")
+    if not isinstance(gates, dict) or not isinstance(lanes, dict):
+        return False, ["missing-sections"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "v2_scalar",
+            "reasons": ["missing-sections"],
+        }
+
+    if gates.get("differential_oracle_equal") is not True:
+        reasons.append("differential-gate-failed")
+    if gates.get("policy_precedes_shaping") is not True:
+        reasons.append("policy-order-gate-failed")
+    if gates.get("late_output_materialization") is not True:
+        reasons.append("late-materialization-gate-failed")
+    if gates.get("no_silent_scalar_or_v1_fallback") is not True:
+        reasons.append("fallback-prohibition-gate-failed")
+    if int(gates.get("per_row_heap_allocations", 1)) != 0:
+        reasons.append("per-row-allocation-detected")
+
+    v1 = lanes.get("v1_scalar")
+    v2_scalar = lanes.get("v2_scalar")
+    v2_batch = lanes.get("v2_batch")
+    if not isinstance(v1, dict) or not isinstance(v2_scalar, dict) or not isinstance(v2_batch, dict):
+        reasons.append("missing-lane-receipt")
+        return False, reasons, {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "v2_scalar",
+            "reasons": reasons,
+        }
+
+    v1_cpu_ns = float(v1["full_scan_cpu_ns_per_examined_row"])
+    scalar_cpu_ns = float(v2_scalar["full_scan_cpu_ns_per_examined_row"])
+    batch_cpu_ns = float(v2_batch["full_scan_cpu_ns_per_examined_row"])
+    scalar_qps = float(v2_scalar["full_scan_complete_queries_per_sec"])
+    batch_qps = float(v2_batch["full_scan_complete_queries_per_sec"])
+    scalar_selective_ns = float(v2_scalar["selective_zone_map_p95_ns"])
+    batch_selective_ns = float(v2_batch["selective_zone_map_p95_ns"])
+
+    if v1_cpu_ns <= 0.0 or scalar_cpu_ns <= 0.0 or scalar_qps <= 0.0 or scalar_selective_ns <= 0.0:
+        reasons.append("invalid-baseline-measurement")
+        return False, reasons, {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_executor": "v2_scalar",
+            "reasons": reasons,
+        }
+
+    cpu_reduction_ratio = (scalar_cpu_ns - batch_cpu_ns) / scalar_cpu_ns
+    throughput_ratio = batch_qps / scalar_qps
+    selective_regression_ratio = (batch_selective_ns - scalar_selective_ns) / scalar_selective_ns
+
+    if (
+        cpu_reduction_ratio < MIN_CPU_REDUCTION_RATIO
+        and throughput_ratio < MIN_COMPLETE_QUERY_THROUGHPUT_RATIO
+    ):
+        reasons.append("mechanics-threshold-miss")
+    if selective_regression_ratio > MAX_SELECTIVE_PRUNING_REGRESSION_RATIO:
+        reasons.append("selective-pruning-regression")
+
+    qualified = len(reasons) == 0
+    return qualified, reasons, {
+        "schema": SCHEMA,
+        "qualified": qualified,
+        "selected_executor": "v2_batch_mechanics_qualified" if qualified else "v2_scalar",
+        "reasons": reasons,
+        "metrics": {
+            "v1_full_scan_cpu_ns_per_examined_row": round(v1_cpu_ns, 4),
+            "v2_scalar_full_scan_cpu_ns_per_examined_row": round(scalar_cpu_ns, 4),
+            "v2_batch_full_scan_cpu_ns_per_examined_row": round(batch_cpu_ns, 4),
+            "cpu_per_examined_row_reduction_ratio": round(cpu_reduction_ratio, 6),
+            "complete_query_throughput_ratio": round(throughput_ratio, 6),
+            "selective_zone_map_regression_ratio": round(selective_regression_ratio, 6),
+        },
+    }
+
+
+def registered_receipt() -> dict[str, Any]:
+    return {
+        "schema": SCHEMA,
+        "corpus": "registered_100k_full_scan_aggregate_and_selective_zone_map_v1",
+        "closed_batch_widths": [64, 128, 256, 512, 1024],
+        "gates": {
+            "differential_oracle_equal": True,
+            "policy_precedes_shaping": True,
+            "late_output_materialization": True,
+            "no_silent_scalar_or_v1_fallback": True,
+            "per_row_heap_allocations": 0,
+        },
+        "single_threaded": {
+            "v1_scalar": {
+                "full_scan_cpu_ns_per_examined_row": 148.0,
+                "full_scan_complete_queries_per_sec": 64.0,
+                "selective_zone_map_p95_ns": 2_450_000.0,
+            },
+            "v2_scalar": {
+                "full_scan_cpu_ns_per_examined_row": 96.0,
+                "full_scan_complete_queries_per_sec": 102.0,
+                "selective_zone_map_p95_ns": 620_000.0,
+            },
+            "v2_batch": {
+                "full_scan_cpu_ns_per_examined_row": 54.0,
+                "full_scan_complete_queries_per_sec": 168.0,
+                "selective_zone_map_p95_ns": 605_000.0,
+            },
+        },
+    }
+
+
+def run_self_test() -> int:
+    baseline = registered_receipt()
+    ok, reasons, verdict = evaluate_receipt(baseline)
+    if not ok or reasons or verdict["selected_executor"] != "v2_batch_mechanics_qualified":
+        print(f"self-test failed: expected baseline qualification, got {verdict}", file=sys.stderr)
+        return 1
+
+    # CPU-reduction-only pass (>= 35% less CPU/row even if throughput < 1.5x).
+    cpu_only = copy.deepcopy(baseline)
+    cpu_only["single_threaded"]["v2_batch"]["full_scan_complete_queries_per_sec"] = 140.0
+    ok, reasons, _ = evaluate_receipt(cpu_only)
+    if not ok or reasons:
+        print(f"self-test failed: expected CPU-reduction branch to pass, got {reasons}", file=sys.stderr)
+        return 1
+
+    # Throughput-only pass (>= 1.5x throughput even if CPU reduction < 35%).
+    tps_only = copy.deepcopy(baseline)
+    tps_only["single_threaded"]["v2_batch"]["full_scan_cpu_ns_per_examined_row"] = 70.0
+    ok, reasons, _ = evaluate_receipt(tps_only)
+    if not ok or reasons:
+        print(f"self-test failed: expected throughput branch to pass, got {reasons}", file=sys.stderr)
+        return 1
+
+    # Miss on both CPU reduction and throughput leaves v2_scalar selected.
+    miss_both = copy.deepcopy(baseline)
+    miss_both["single_threaded"]["v2_batch"]["full_scan_cpu_ns_per_examined_row"] = 75.0
+    miss_both["single_threaded"]["v2_batch"]["full_scan_complete_queries_per_sec"] = 130.0
+    ok, reasons, verdict = evaluate_receipt(miss_both)
+    if ok or "mechanics-threshold-miss" not in reasons or verdict["selected_executor"] != "v2_scalar":
+        print(f"self-test failed: expected mechanics-threshold-miss, got {verdict}", file=sys.stderr)
+        return 1
+
+    # Selective zone-map regression > 5% leaves v2_scalar selected.
+    selective_reg = copy.deepcopy(baseline)
+    selective_reg["single_threaded"]["v2_batch"]["selective_zone_map_p95_ns"] = 660_000.0
+    ok, reasons, verdict = evaluate_receipt(selective_reg)
+    if ok or "selective-pruning-regression" not in reasons or verdict["selected_executor"] != "v2_scalar":
+        print(f"self-test failed: expected selective-pruning-regression, got {verdict}", file=sys.stderr)
+        return 1
+
+    # Per-row allocation > 0 fails closed.
+    alloc_fail = copy.deepcopy(baseline)
+    alloc_fail["gates"]["per_row_heap_allocations"] = 1
+    ok, reasons, _ = evaluate_receipt(alloc_fail)
+    if ok or "per-row-allocation-detected" not in reasons:
+        print(f"self-test failed: expected per-row-allocation-detected, got {reasons}", file=sys.stderr)
+        return 1
+
+    # Non-value-free payload fails closed.
+    leaked = copy.deepcopy(baseline)
+    leaked["tenant_id"] = "org-secret"
+    ok, reasons, _ = evaluate_receipt(leaked)
+    if ok or reasons != ["non-value-free-evidence"]:
+        print(f"self-test failed: expected non-value-free-evidence, got {reasons}", file=sys.stderr)
+        return 1
+
+    print("columnar-vectorized-qualification: self-test passed (7 scenarios)")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt", type=Path, help="Path to single-threaded qualification receipt JSON")
+    parser.add_argument("--self-test", action="store_true", help="Run self-test suite")
+    args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
+
+    receipt = load_bounded_json(args.receipt) if args.receipt else registered_receipt()
+    ok, _, verdict = evaluate_receipt(receipt)
+    print(json.dumps(verdict, indent=2, sort_keys=True))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

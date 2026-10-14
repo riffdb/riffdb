@@ -6,31 +6,31 @@
     "report_id": "storage-redb",
     "status": "verified",
     "report": "benchmarks/reports/storage-redb/report-v1.json",
-    "report_sha256": "e27a40bae712bbba916a742b491b673d29f1e9d2d20254f1a85a1bf74bbc92c5",
+    "report_sha256": "91fe4de13c609674a760100f66731902a26e0599597627429d2ba34297ff8b5e",
     "raw_artifact": "benchmarks/reports/storage-redb/raw-v1.txt",
-    "raw_sha256": "503d7772f4fea69ecedfa5ecb860650e3505bb57db9809fbb19468e4c9ad0bdc"
+    "raw_sha256": "50129065bb52c88fc4cf373a89a279dea3f85d7a4b221a3a12e1dbc422bde113"
   },
   "fjall_report": {
     "report_id": "storage-fjall",
     "status": "verified",
     "report": "benchmarks/reports/storage-fjall/report-v1.json",
-    "report_sha256": "b0abb277815495c91da3fc4dc15824f46378c7c4454d95abed2251cbb7a318d5",
+    "report_sha256": "35d223175e8917ea30b695fc30868d2599dfadb4cf4006a05817b68b9015c23f",
     "raw_artifact": "benchmarks/reports/storage-fjall/raw-v1.txt",
-    "raw_sha256": "79930fe231b1df4491a22ef3edf5922e54b2d0d0dfee089396034d4842753623"
+    "raw_sha256": "563d90527671c2008eb3bb460bf70fe46443bc04f0638659626c225a78179159"
   },
   "budget_comparison_report": {
     "report_id": "budget-postgresql-riffdb",
     "status": "verified",
     "report": "benchmarks/reports/budget-comparison/report-v1.json",
-    "report_sha256": "2a02d9f5b94e42d4657298360ec44a8ecc85178ccf0fba9a12b4082acf6ce834",
+    "report_sha256": "fa3fd41712c89765b76bd36668171728847125a7956370d461717886840095e1",
     "raw_artifact": "benchmarks/reports/budget-comparison/raw-v1.tsv",
-    "raw_sha256": "a0fbb66d8598725cf957001433ddcaaf364389da91d13dcd0c456e223d388bcd"
+    "raw_sha256": "2cdfd627cba56ea3f233e6fd79c9c29b27d79d74d008a28a6c634190933c8ca5"
   },
   "poc_semantic_report": {
     "report_id": "poc-semantic-workloads",
     "status": "verified",
     "report": "benchmarks/reports/poc-semantic-workloads/report-v1.json",
-    "report_sha256": "95b2bc75db9ffc5641393a51d212812299a251677cb3d35b0865615d7b65c29d",
+    "report_sha256": "94944dcc7fff57cc813b1df325f0eadd06b282c09faf0622ac6e21510333b266",
     "raw_artifact": "benchmarks/reports/poc-semantic-workloads/raw-v1.jsonl",
     "raw_sha256": "ce126348feff2e732e52b72d5e404a5e4f40026c1bc8662dd68c146c00022003"
   },
