@@ -160,4 +160,29 @@ contract IndexedMutationBulk version 1 {
     }
     return IndexedMutationsApplied {}
   }
+
+  bulk command SeedInitialIndexedStateRows {
+    input request_id: uuid
+    input mutations: list<IndexedMutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      create IndexedState(
+        mutation.partition_id,
+        mutation.category,
+        mutation.item_id,
+        mutation.relation,
+        mutation.subject
+      ) as state else StateAlreadyExists {}
+      set state.subject_category = mutation.subject_category
+      set state.subject_id = mutation.subject_id
+      set state.subject_relation = mutation.subject_relation
+      set state.subject_kind = mutation.subject_kind
+      set state.qualifier = mutation.qualifier
+      set state.condition_context = mutation.condition_context
+      set state.inserted_at = mutation.inserted_at
+      set state.active = mutation.expected_active
+      set state.revision = mutation.expected_revision
+    }
+    return IndexedStatesSeeded {}
+  }
 }

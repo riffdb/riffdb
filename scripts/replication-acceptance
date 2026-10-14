@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+# req: REP-008, REP-009, PERF-008, END-003
+"""Validate and drive the ADR-0093 / ADR-0178 replication acceptance campaign receipt (WP-750)."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_RECEIPT = ROOT / "release/evidence/replication/replication-acceptance-v1.json"
+
+SCHEMA = "riffdb.replication-acceptance/v1"
+EXPECTED_ADRS = ["ADR-0093", "ADR-0171", "ADR-0178", "ADR-0183", "ADR-0199"]
+EXPECTED_REQS = ["REP-008", "REP-009", "PERF-008", "END-003"]
+EXPECTED_TARGETS = ["primary", "follower", "stream", "archive_sink"]
+EXPECTED_PROFILES = ["e2_standard_8_pd_ssd", "n1_standard_8_local_ssd"]
+EXPECTED_CELLS = ["interactive_c32", "write_only_c32"]
+EXPECTED_FAULTS = ["apply_fault", "resume_fault", "archive_sink_fault"]
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def central_three_spread(samples: list[float]) -> float:
+    ordered = sorted(samples)
+    middle = ordered[1:-1]
+    return middle[-1] / middle[0]
+
+
+def median_five(samples: list[float]) -> float:
+    return sorted(samples)[2]
+
+
+def validate_receipt(doc: dict[str, Any], min_kill_iterations: int = 4) -> list[str]:
+    errors: list[str] = []
+    if doc.get("schema") != SCHEMA:
+        errors.append(f"schema must be {SCHEMA!r}")
+    if doc.get("work_package") != "WP-750":
+        errors.append("work_package must be 'WP-750'")
+    if doc.get("governing_adrs") != EXPECTED_ADRS:
+        errors.append(f"governing_adrs must be {EXPECTED_ADRS}")
+    if doc.get("requirements") != EXPECTED_REQS:
+        errors.append(f"requirements must be {EXPECTED_REQS}")
+
+    src = doc.get("source_identity")
+    if not isinstance(src, dict):
+        errors.append("source_identity must be an object")
+    else:
+        if not isinstance(src.get("git_commit"), str) or not HEX40.match(src["git_commit"]):
+            errors.append("source_identity.git_commit must be 40-char hex")
+        if not isinstance(src.get("cargo_lock_sha256"), str) or not HEX64.match(src["cargo_lock_sha256"]):
+            errors.append("source_identity.cargo_lock_sha256 must be 64-char hex")
+        bins = src.get("binary_identities")
+        if not isinstance(bins, dict):
+            errors.append("source_identity.binary_identities must be an object")
+        else:
+            for key in ("riffdbd_sha256", "riffdb_sha256"):
+                val = bins.get(key)
+                if not isinstance(val, str) or not HEX64.match(val):
+                    errors.append(f"binary_identities.{key} must be 64-char hex")
+
+    gate = doc.get("provider_and_performance_gate")
+    if not isinstance(gate, dict):
+        errors.append("provider_and_performance_gate must be an object")
+    else:
+        if gate.get("alpha_gate_provider_freeze_until_wp750_closure") is not True:
+            errors.append("alpha_gate_provider_freeze_until_wp750_closure must be true")
+        for zero_key in (
+            "new_provider_families_admitted",
+            "new_result_set_algebra_admitted",
+            "new_performance_packages_admitted",
+        ):
+            if gate.get(zero_key) != 0:
+                errors.append(f"{zero_key} must be 0")
+        if gate.get("performance_freeze_state_changed_by_receipt") is not False:
+            errors.append("performance_freeze_state_changed_by_receipt must be false")
+        if gate.get("supplies_lift_prerequisite_for_future_adr") is not True:
+            errors.append("supplies_lift_prerequisite_for_future_adr must be true")
+
+    kill_loop = doc.get("kill_loop")
+    if not isinstance(kill_loop, dict):
+        errors.append("kill_loop must be an object")
+    else:
+        configured = kill_loop.get("configured_iterations")
+        completed = kill_loop.get("completed_iterations")
+        if not isinstance(configured, int) or configured < min_kill_iterations:
+            errors.append(f"kill_loop.configured_iterations must be >= {min_kill_iterations}")
+        if completed != configured:
+            errors.append("kill_loop.completed_iterations must equal configured_iterations")
+        if kill_loop.get("targets") != EXPECTED_TARGETS:
+            errors.append(f"kill_loop.targets must be {EXPECTED_TARGETS}")
+        summary = kill_loop.get("target_summary")
+        if not isinstance(summary, dict):
+            errors.append("kill_loop.target_summary must be an object")
+        else:
+            total_kills = 0
+            for target in EXPECTED_TARGETS:
+                entry = summary.get(target)
+                if not isinstance(entry, dict):
+                    errors.append(f"kill_loop.target_summary.{target} missing")
+                    continue
+                kills = entry.get("kills_injected", 0)
+                recoveries = entry.get("recoveries_verified", -1)
+                if not isinstance(kills, int) or kills < 1:
+                    errors.append(f"kill_loop.target_summary.{target}.kills_injected must be >= 1")
+                if recoveries != kills:
+                    errors.append(f"kill_loop.target_summary.{target}.recoveries_verified must equal kills_injected")
+                if entry.get("startup_validation_passed") is not True:
+                    errors.append(f"kill_loop.target_summary.{target}.startup_validation_passed must be true")
+                if entry.get("unattributed_gaps") != 0:
+                    errors.append(f"kill_loop.target_summary.{target}.unattributed_gaps must be 0")
+                if entry.get("duplicate_applies") != 0:
+                    errors.append(f"kill_loop.target_summary.{target}.duplicate_applies must be 0")
+                if isinstance(kills, int):
+                    total_kills += kills
+            if isinstance(completed, int) and total_kills != completed:
+                errors.append("sum of target kills_injected must equal completed_iterations")
+
+    criteria = doc.get("criteria")
+    if not isinstance(criteria, dict):
+        errors.append("criteria must be an object")
+    else:
+        expected_criteria = [
+            ("prefix_exactness", 1, "OBL-0178-1", "follower_applies_exact_prefix_byte_faithfully"),
+            ("gap_free_resume", 2, "OBL-0178-2", "replication_stream_resumes_gap_free_after_repeated_kills"),
+            ("promotion_drill", 3, "OBL-0178-4", "promotion_mints_incarnation_and_refuses_old_lineage_tokens"),
+            ("retention_fence", 4, "OBL-0178-5", "retention_prune_refuses_to_pass_registered_follower_frontier"),
+            ("follower_reads", 5, "OBL-0178-3", "follower_causal_read_waits_for_token_then_matches_primary"),
+            ("no_hot_path_regression", 6, "OBL-0178-6", "archived_suffix_restore_recovers_to_last_archived_sequence"),
+        ]
+        if list(criteria.keys()) != [name for name, _, _, _ in expected_criteria]:
+            errors.append("criteria must contain exact 6 ADR-0093 criteria in canonical order")
+        for name, idx, obl, proof in expected_criteria:
+            c = criteria.get(name)
+            if not isinstance(c, dict):
+                errors.append(f"criteria.{name} missing")
+                continue
+            if c.get("adr_0093_criterion") != idx:
+                errors.append(f"criteria.{name}.adr_0093_criterion must be {idx}")
+            if c.get("obligation_id") != obl:
+                errors.append(f"criteria.{name}.obligation_id must be {obl!r}")
+            if c.get("proof_test") != proof:
+                errors.append(f"criteria.{name}.proof_test must be {proof!r}")
+            if c.get("status") != "passed":
+                errors.append(f"criteria.{name}.status must be 'passed'")
+
+        c1 = criteria.get("prefix_exactness", {})
+        if isinstance(c1, dict):
+            if c1.get("byte_faithful_prefix_agreement") is not True:
+                errors.append("prefix_exactness.byte_faithful_prefix_agreement must be true")
+            if c1.get("structural_count_and_chain_fingerprint_matched") is not True:
+                errors.append("prefix_exactness.structural_count_and_chain_fingerprint_matched must be true")
+            if not isinstance(c1.get("authoritative_namespaces_compared"), int) or c1["authoritative_namespaces_compared"] < 20:
+                errors.append("prefix_exactness.authoritative_namespaces_compared must be >= 20")
+
+        c2 = criteria.get("gap_free_resume", {})
+        if isinstance(c2, dict):
+            if c2.get("sequence_gaps") != 0 or c2.get("duplicate_applies") != 0:
+                errors.append("gap_free_resume must record 0 sequence_gaps and 0 duplicate_applies")
+            if c2.get("startup_validation_passed") is not True:
+                errors.append("gap_free_resume.startup_validation_passed must be true")
+
+        c3 = criteria.get("promotion_drill", {})
+        if isinstance(c3, dict):
+            if c3.get("old_primary_fenced") is not True:
+                errors.append("promotion_drill.old_primary_fenced must be true")
+            if c3.get("old_lineage_tokens_refused_fail_closed") is not True:
+                errors.append("promotion_drill.old_lineage_tokens_refused_fail_closed must be true")
+            if c3.get("post_promotion_commit_read_roundtrip_succeeded") is not True:
+                errors.append("promotion_drill.post_promotion_commit_read_roundtrip_succeeded must be true")
+            pre_inc = c3.get("pre_promotion_incarnation", 0)
+            post_inc = c3.get("post_promotion_incarnation", 0)
+            pre_ep = c3.get("pre_promotion_leadership_epoch", 0)
+            post_ep = c3.get("post_promotion_leadership_epoch", 0)
+            if post_inc != pre_inc + 1 or post_ep != pre_ep + 1:
+                errors.append("promotion_drill must increment incarnation and leadership_epoch by 1")
+            head = c3.get("fenced_primary_head_sequence", -1)
+            applied = c3.get("follower_applied_sequence_at_fence", -2)
+            rpo = c3.get("reported_rpo_sequence_delta", -3)
+            if head < applied or (head - applied) != rpo:
+                errors.append("promotion_drill.reported_rpo_sequence_delta must equal head - applied")
+
+        c4 = criteria.get("retention_fence", {})
+        if isinstance(c4, dict):
+            if c4.get("prune_above_follower_frontier_refused") is not True:
+                errors.append("retention_fence.prune_above_follower_frontier_refused must be true")
+            if c4.get("prune_after_follower_catchup_succeeded") is not True:
+                errors.append("retention_fence.prune_after_follower_catchup_succeeded must be true")
+
+        c5 = criteria.get("follower_reads", {})
+        if isinstance(c5, dict):
+            if c5.get("causal_read_waited_for_primary_token") is not True:
+                errors.append("follower_reads.causal_read_waited_for_primary_token must be true")
+            if c5.get("follower_bytes_equal_primary_at_frontier") is not True:
+                errors.append("follower_reads.follower_bytes_equal_primary_at_frontier must be true")
+            if c5.get("write_surfaces_refused_with_typed_follower_mode") is not True:
+                errors.append("follower_reads.write_surfaces_refused_with_typed_follower_mode must be true")
+            if c5.get("lag_reported_as_sequence_count") is not True:
+                errors.append("follower_reads.lag_reported_as_sequence_count must be true")
+
+        c6 = criteria.get("no_hot_path_regression", {})
+        if isinstance(c6, dict):
+            for key in (
+                "single_writer_preserved_on_both_nodes",
+                "acknowledgement_boundary_unchanged",
+                "durable_record_encodings_unchanged",
+                "backup_manifest_v1_unchanged",
+                "within_adr_0171_stability_rule",
+            ):
+                if c6.get(key) is not True:
+                    errors.append(f"no_hot_path_regression.{key} must be true")
+
+    archive = doc.get("archive_restore_drill")
+    if not isinstance(archive, dict):
+        errors.append("archive_restore_drill must be an object")
+    else:
+        if archive.get("status") != "passed":
+            errors.append("archive_restore_drill.status must be 'passed'")
+        full_seq = archive.get("full_backup_sequence", 0)
+        last_seq = archive.get("archived_suffix_last_sequence", 0)
+        restored_seq = archive.get("restored_sequence", -1)
+        if not (isinstance(full_seq, int) and isinstance(last_seq, int) and last_seq > full_seq and restored_seq == last_seq):
+            errors.append("archive_restore_drill must restore to archived_suffix_last_sequence > full_backup_sequence")
+        for key in (
+            "startup_validation_passed",
+            "adapter_conformance_manifest_passed",
+            "gap_checksum_incarnation_mismatch_fails_closed",
+        ):
+            if archive.get(key) is not True:
+                errors.append(f"archive_restore_drill.{key} must be true")
+
+    perf = doc.get("perf_008_emitter_comparison")
+    if not isinstance(perf, dict):
+        errors.append("perf_008_emitter_comparison must be an object")
+    else:
+        rule = perf.get("stability_rule", {})
+        if not isinstance(rule, dict) or rule.get("adr") != "ADR-0171" or rule.get("repetitions_required") != 5:
+            errors.append("perf_008_emitter_comparison.stability_rule must specify ADR-0171 and 5 repetitions")
+        profiles = perf.get("profiles")
+        if not isinstance(profiles, dict) or list(profiles.keys()) != EXPECTED_PROFILES:
+            errors.append(f"perf_008_emitter_comparison.profiles must be {EXPECTED_PROFILES}")
+        else:
+            for prof_name in EXPECTED_PROFILES:
+                prof = profiles[prof_name]
+                if not isinstance(prof, dict):
+                    errors.append(f"profile {prof_name} must be an object")
+                    continue
+                for cell_name in EXPECTED_CELLS:
+                    cell = prof.get(cell_name)
+                    if not isinstance(cell, dict):
+                        errors.append(f"{prof_name}.{cell_name} missing")
+                        continue
+                    for vec_key in (
+                        "emitter_disabled_throughput_ops_s",
+                        "emitter_enabled_throughput_ops_s",
+                        "emitter_disabled_p95_us",
+                        "emitter_enabled_p95_us",
+                    ):
+                        vec = cell.get(vec_key)
+                        if not isinstance(vec, list) or len(vec) != 5 or not all(isinstance(x, (int, float)) and x > 0 for x in vec):
+                            errors.append(f"{prof_name}.{cell_name}.{vec_key} must have 5 positive numbers")
+                    if any(f"{prof_name}.{cell_name}" in e for e in errors):
+                        continue
+                    dis_tput = [float(x) for x in cell["emitter_disabled_throughput_ops_s"]]
+                    en_tput = [float(x) for x in cell["emitter_enabled_throughput_ops_s"]]
+                    dis_p95 = [float(x) for x in cell["emitter_disabled_p95_us"]]
+                    en_p95 = [float(x) for x in cell["emitter_enabled_p95_us"]]
+                    for spread_name, samples in (
+                        ("central_three_throughput_spread_disabled", dis_tput),
+                        ("central_three_throughput_spread_enabled", en_tput),
+                        ("central_three_p95_spread_disabled", dis_p95),
+                        ("central_three_p95_spread_enabled", en_p95),
+                    ):
+                        computed = central_three_spread(samples)
+                        recorded = float(cell.get(spread_name, 999.0))
+                        if computed > 1.20 or abs(computed - recorded) > 0.002:
+                            errors.append(f"{prof_name}.{cell_name}.{spread_name} exceeds ADR-0171 1.20 ceiling or mismatches samples")
+                    tput_ratio = median_five(en_tput) / median_five(dis_tput)
+                    p95_ratio = median_five(en_p95) / median_five(dis_p95)
+                    if tput_ratio < 0.90 or abs(tput_ratio - float(cell.get("median_throughput_ratio_enabled_over_disabled", 0.0))) > 0.002:
+                        errors.append(f"{prof_name}.{cell_name} throughput ratio out of stability bounds")
+                    if p95_ratio > 1.10 or abs(p95_ratio - float(cell.get("median_p95_ratio_enabled_over_disabled", 99.0))) > 0.002:
+                        errors.append(f"{prof_name}.{cell_name} p95 ratio out of stability bounds")
+                    if cell.get("within_adr_0171_stability_rule") is not True:
+                        errors.append(f"{prof_name}.{cell_name}.within_adr_0171_stability_rule must be true")
+
+    sim = doc.get("simulator_follower_campaign")
+    if not isinstance(sim, dict):
+        errors.append("simulator_follower_campaign must be an object")
+    else:
+        seeds = sim.get("seeds")
+        if not isinstance(seeds, list) or len(seeds) < 4 or not all(isinstance(s, int) and s > 0 for s in seeds):
+            errors.append("simulator_follower_campaign.seeds must contain >= 4 positive integer seeds")
+        if sim.get("fault_classes_covered") != EXPECTED_FAULTS:
+            errors.append(f"simulator_follower_campaign.fault_classes_covered must be {EXPECTED_FAULTS}")
+        if not isinstance(sim.get("receipts_per_seed"), int) or sim["receipts_per_seed"] < 16:
+            errors.append("simulator_follower_campaign.receipts_per_seed must be >= 16")
+        if sim.get("prefix_exactness_verified") is not True:
+            errors.append("simulator_follower_campaign.prefix_exactness_verified must be true")
+        if sim.get("archive_manifest_chain_verified") is not True:
+            errors.append("simulator_follower_campaign.archive_manifest_chain_verified must be true")
+
+    return errors
+
+
+def run_self_test(base_doc: dict[str, Any]) -> None:
+    errors = validate_receipt(base_doc)
+    if errors:
+        raise SystemExit(f"committed receipt failed validation: {errors}")
+
+    mutations: list[tuple[str, Any]] = []
+
+    m1 = copy.deepcopy(base_doc)
+    m1["criteria"]["prefix_exactness"]["status"] = "failed"
+    mutations.append(("failed criterion", m1))
+
+    m2 = copy.deepcopy(base_doc)
+    m2["criteria"]["gap_free_resume"]["sequence_gaps"] = 1
+    mutations.append(("sequence gap", m2))
+
+    m3 = copy.deepcopy(base_doc)
+    m3["criteria"]["promotion_drill"]["reported_rpo_sequence_delta"] = 99
+    mutations.append(("rpo delta mismatch", m3))
+
+    m4 = copy.deepcopy(base_doc)
+    m4["kill_loop"]["target_summary"]["archive_sink"]["kills_injected"] = 0
+    mutations.append(("unkilled target", m4))
+
+    m5 = copy.deepcopy(base_doc)
+    m5["perf_008_emitter_comparison"]["profiles"]["e2_standard_8_pd_ssd"]["interactive_c32"][
+        "emitter_enabled_throughput_ops_s"
+    ] = [400.0, 410.0, 500.0, 620.0, 700.0]
+    mutations.append(("central three spread > 1.20", m5))
+
+    m6 = copy.deepcopy(base_doc)
+    m6["perf_008_emitter_comparison"]["profiles"]["n1_standard_8_local_ssd"]["write_only_c32"][
+        "emitter_enabled_p95_us"
+    ] = [30000, 30100, 30200, 30300, 30400]
+    mutations.append(("p95 regression", m6))
+
+    m7 = copy.deepcopy(base_doc)
+    m7["provider_and_performance_gate"]["new_provider_families_admitted"] = 1
+    mutations.append(("provider admitted before wp750 closure", m7))
+
+    m8 = copy.deepcopy(base_doc)
+    m8["provider_and_performance_gate"]["performance_freeze_state_changed_by_receipt"] = True
+    mutations.append(("freeze state changed by receipt", m8))
+
+    m9 = copy.deepcopy(base_doc)
+    m9["simulator_follower_campaign"]["fault_classes_covered"] = ["apply_fault"]
+    mutations.append(("missing simulator fault class", m9))
+
+    m10 = copy.deepcopy(base_doc)
+    m10["archive_restore_drill"]["gap_checksum_incarnation_mismatch_fails_closed"] = False
+    mutations.append(("archive restore fail-closed disabled", m10))
+
+    for label, mutated in mutations:
+        if not validate_receipt(mutated):
+            raise SystemExit(f"self-test negative case did not fail closed: {label}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt", type=Path, default=DEFAULT_RECEIPT)
+    parser.add_argument("--kill-iterations", type=int, default=4)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    doc = json.loads(args.receipt.read_text(encoding="utf-8"))
+    if args.self_test:
+        run_self_test(doc)
+        print("replication-acceptance: self-test passed (6 ADR-0093 criteria + 10 negative cases)")
+        return 0
+
+    errors = validate_receipt(doc, min_kill_iterations=args.kill_iterations)
+    if errors:
+        for err in errors:
+            print(f"error: {err}", file=sys.stderr)
+        return 1
+    print("replication-acceptance: receipt valid")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

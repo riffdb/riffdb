@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+# req: GOV-006, HBK-002, HBK-005, HBK-011
+"""Enforce ADR-0181 section 6 / GOV-006 agent-audience handbook rules (WP-759 / OBL-0181-6).
+
+Rules verified:
+1. Public handbook pages (every markdown file under docs/ not listed in
+   docs/handbook-exclusions.txt or the fixed meta set SUMMARY.md,
+   CONTRIBUTING.md, 404.md) carry no work-package (WP-NNN) or ADR (ADR-NNNN)
+   identifier.
+2. docs/known-limitations.md states one sentence per limitation bullet item in
+   public vocabulary.
+3. When campaign-03 and campaign-04 evaluation receipts are supplied, median
+   time to first committed row and total rescue count in campaign 04 are not
+   worse than campaign 03 on every retained (language, brief) cell, and the
+   published 25% slowest-cell improvement target is recorded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import fnmatch
+import json
+import re
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DOCS = ROOT / "docs"
+
+ALWAYS_EXCLUDED = {"SUMMARY.md", "CONTRIBUTING.md", "404.md"}
+WP_OR_ADR_RE = re.compile(r"\b(?:WP-\d+|ADR-\d+)\b")
+INLINE_CODE_RE = re.compile(r"`[^`]*`")
+SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
+
+
+def load_exclusions(docs_dir: Path) -> list[str]:
+    exclusions_file = docs_dir / "handbook-exclusions.txt"
+    if not exclusions_file.is_file():
+        return []
+    patterns: list[str] = []
+    for raw in exclusions_file.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def is_excluded(rel_posix: str, patterns: list[str]) -> bool:
+    if rel_posix in ALWAYS_EXCLUDED:
+        return True
+    for pattern in patterns:
+        if fnmatch.fnmatch(rel_posix, pattern):
+            return True
+        if pattern.endswith("/**") and rel_posix.startswith(pattern[:-2]):
+            return True
+    return False
+
+
+def strip_code_fences_and_inline(markdown: str) -> str:
+    out_lines: list[str] = []
+    in_fence = False
+    for line in markdown.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            out_lines.append(INLINE_CODE_RE.sub("CODE", line))
+    return "\n".join(out_lines)
+
+
+def count_sentences(bullet_text: str) -> int:
+    cleaned = INLINE_CODE_RE.sub("CODE", bullet_text.strip())
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    matches = SENTENCE_END_RE.findall(cleaned)
+    return len(matches)
+
+
+def check_known_limitations(path: Path) -> list[str]:
+    errors: list[str] = []
+    if not path.is_file():
+        return [f"missing {path}"]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    bullets: list[tuple[int, str]] = []
+    current_start = 0
+    current_parts: list[str] = []
+    in_fence = False
+
+    for lineno, line in enumerate(lines, start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if line.startswith("- "):
+            if current_parts:
+                bullets.append((current_start, " ".join(current_parts)))
+            current_start = lineno
+            current_parts = [line[2:].strip()]
+        elif current_parts and (line.startswith("  ") or line.startswith("\t")):
+            current_parts.append(line.strip())
+        elif current_parts and not line.strip():
+            bullets.append((current_start, " ".join(current_parts)))
+            current_parts = []
+
+    if current_parts:
+        bullets.append((current_start, " ".join(current_parts)))
+
+    if not bullets:
+        errors.append("known-limitations.md contains no limitation bullet items")
+        return errors
+
+    for lineno, text in bullets:
+        sentences = count_sentences(text)
+        if sentences != 1:
+            errors.append(
+                f"known-limitations.md:{lineno}: limitation item has {sentences} sentences (expected exactly 1)"
+            )
+    return errors
+
+
+def check_docs_tree(docs_dir: Path) -> list[str]:
+    errors: list[str] = []
+    patterns = load_exclusions(docs_dir)
+    public_count = 0
+
+    for md_path in sorted(docs_dir.rglob("*.md")):
+        rel = md_path.relative_to(docs_dir).as_posix()
+        if is_excluded(rel, patterns):
+            continue
+        public_count += 1
+        prose = strip_code_fences_and_inline(md_path.read_text(encoding="utf-8"))
+        for match in WP_OR_ADR_RE.finditer(prose):
+            errors.append(f"docs/{rel}: public handbook page cites internal identifier {match.group(0)}")
+
+    if public_count == 0:
+        errors.append("no public handbook pages discovered")
+
+    errors.extend(check_known_limitations(docs_dir / "known-limitations.md"))
+    return errors
+
+
+def check_campaign_comparison(c3: dict[str, Any], c4: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if c4.get("schema") != "riffdb.agent-application-campaign-comparison/v1":
+        errors.append("campaign 04 receipt schema must be 'riffdb.agent-application-campaign-comparison/v1'")
+    if c4.get("baseline_campaign") != "campaign-03" or c4.get("evaluated_campaign") != "campaign-04":
+        errors.append("campaign 04 receipt must bind baseline_campaign='campaign-03' and evaluated_campaign='campaign-04'")
+    if c4.get("slowest_cell_target_reduction_ratio") != 0.25:
+        errors.append("campaign 04 receipt must record slowest_cell_target_reduction_ratio == 0.25")
+    if c4.get("target_is_release_gate") is not False:
+        errors.append("campaign 04 slowest-cell reduction target must be marked target_is_release_gate=false")
+
+    c3_cells = {
+        (cell["language"], cell["brief"]): cell
+        for cell in c3.get("cells", [])
+        if isinstance(cell, dict) and "language" in cell and "brief" in cell
+    }
+    c4_cells = {
+        (cell["language"], cell["brief"]): cell
+        for cell in c4.get("cells", [])
+        if isinstance(cell, dict) and "language" in cell and "brief" in cell
+    }
+    if not c3_cells:
+        errors.append("campaign 03 receipt has no cells")
+        return errors
+
+    for key, base_cell in c3_cells.items():
+        if key not in c4_cells:
+            errors.append(f"campaign 04 missing retained cell {key[0]}/{key[1]}")
+            continue
+        cand_cell = c4_cells[key]
+        base_ttf = float(base_cell["median_time_to_first_committed_row_s"])
+        cand_ttf = float(cand_cell["median_time_to_first_committed_row_s"])
+        base_rescues = int(base_cell["total_rescue_count"])
+        cand_rescues = int(cand_cell["total_rescue_count"])
+        if cand_ttf > base_ttf:
+            errors.append(
+                f"cell {key[0]}/{key[1]} regressed median_time_to_first_committed_row_s: {cand_ttf} > {base_ttf}"
+            )
+        if cand_rescues > base_rescues:
+            errors.append(
+                f"cell {key[0]}/{key[1]} regressed total_rescue_count: {cand_rescues} > {base_rescues}"
+            )
+    return errors
+
+
+def run_self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="riffdb-handbook-audience-") as tmp:
+        docs = Path(tmp) / "docs"
+        (docs / "architecture").mkdir(parents=True)
+        (docs / "operations").mkdir(parents=True)
+
+        (docs / "handbook-exclusions.txt").write_text(
+            "# Excluded evidence pages\narchitecture/WP-759-EVIDENCE.md\n",
+            encoding="utf-8",
+        )
+        (docs / "SUMMARY.md").write_text(
+            "# Summary\n\n- [Known Limitations](known-limitations.md)\n- [Quickstart](quickstart.md)\n- [Operations](operations/install.md)\n",
+            encoding="utf-8",
+        )
+        (docs / "quickstart.md").write_text(
+            "# Quickstart\n\nCompile your contract and invoke commands through the generated client.\n",
+            encoding="utf-8",
+        )
+        (docs / "operations" / "install.md").write_text(
+            "# Installation\n\nRun `riffdb install` to configure the user-scope service.\n",
+            encoding="utf-8",
+        )
+        (docs / "known-limitations.md").write_text(
+            "# Known Limitations\n\n"
+            "## Deployment\n\n"
+            "- Linux is the supported deployment platform for protected credential loading.\n"
+            "- Hosted MCP listens only on literal loopback addresses.\n\n"
+            "## Queries\n\n"
+            "- Ad-hoc CLI aggregations accept integer columns only for `sum`.\n",
+            encoding="utf-8",
+        )
+        # Excluded page is allowed to cite WP and ADR numbers.
+        (docs / "architecture" / "WP-759-EVIDENCE.md").write_text(
+            "# Evidence\n\nTracked under WP-759 and ADR-0181.\n",
+            encoding="utf-8",
+        )
+
+        clean_errors = check_docs_tree(docs)
+        if clean_errors:
+            raise SystemExit(f"clean synthetic handbook failed: {clean_errors}")
+
+        # Negative 1: WP number in public page.
+        (docs / "quickstart.md").write_text(
+            "# Quickstart\n\nAdded in WP-759 for agent onboarding.\n",
+            encoding="utf-8",
+        )
+        if not any("WP-759" in e for e in check_docs_tree(docs)):
+            raise SystemExit("self-test failed to reject WP number in public page")
+
+        # Negative 2: ADR number in public page.
+        (docs / "quickstart.md").write_text(
+            "# Quickstart\n\nFollows ADR-0181 compatibility rules.\n",
+            encoding="utf-8",
+        )
+        if not any("ADR-0181" in e for e in check_docs_tree(docs)):
+            raise SystemExit("self-test failed to reject ADR number in public page")
+
+        # Restore clean quickstart.
+        (docs / "quickstart.md").write_text(
+            "# Quickstart\n\nCompile your contract and invoke commands through the generated client.\n",
+            encoding="utf-8",
+        )
+
+        # Negative 3: Multi-sentence bullet in known-limitations.md.
+        (docs / "known-limitations.md").write_text(
+            "# Known Limitations\n\n"
+            "- Linux is the supported deployment platform. Other platforms are unsupported.\n",
+            encoding="utf-8",
+        )
+        if not any("2 sentences" in e for e in check_docs_tree(docs)):
+            raise SystemExit("self-test failed to reject multi-sentence limitation bullet")
+
+        # Campaign comparison checks (positive + 3 negatives).
+        c3 = {
+            "campaign": "campaign-03",
+            "cells": [
+                {"language": "rust", "brief": "b1", "median_time_to_first_committed_row_s": 11.0, "total_rescue_count": 0},
+                {"language": "typescript", "brief": "b1", "median_time_to_first_committed_row_s": 316.0, "total_rescue_count": 0},
+                {"language": "python", "brief": "b2", "median_time_to_first_committed_row_s": 600.0, "total_rescue_count": 0},
+                {"language": "go", "brief": "b2", "median_time_to_first_committed_row_s": 1680.0, "total_rescue_count": 0},
+            ],
+        }
+        c4 = {
+            "schema": "riffdb.agent-application-campaign-comparison/v1",
+            "baseline_campaign": "campaign-03",
+            "evaluated_campaign": "campaign-04",
+            "slowest_cell_target_reduction_ratio": 0.25,
+            "target_is_release_gate": False,
+            "cells": [
+                {"language": "rust", "brief": "b1", "median_time_to_first_committed_row_s": 10.5, "total_rescue_count": 0},
+                {"language": "typescript", "brief": "b1", "median_time_to_first_committed_row_s": 290.0, "total_rescue_count": 0},
+                {"language": "python", "brief": "b2", "median_time_to_first_committed_row_s": 540.0, "total_rescue_count": 0},
+                {"language": "go", "brief": "b2", "median_time_to_first_committed_row_s": 1220.0, "total_rescue_count": 0},
+            ],
+        }
+        if check_campaign_comparison(c3, c4):
+            raise SystemExit("clean campaign-04 comparison failed validation")
+
+        c4_slow = copy.deepcopy(c4)
+        c4_slow["cells"][1]["median_time_to_first_committed_row_s"] = 350.0
+        if not check_campaign_comparison(c3, c4_slow):
+            raise SystemExit("self-test failed to reject time-to-first-row regression")
+
+        c4_rescue = copy.deepcopy(c4)
+        c4_rescue["cells"][0]["total_rescue_count"] = 1
+        if not check_campaign_comparison(c3, c4_rescue):
+            raise SystemExit("self-test failed to reject rescue-count regression")
+
+        c4_missing = copy.deepcopy(c4)
+        c4_missing["cells"].pop()
+        if not check_campaign_comparison(c3, c4_missing):
+            raise SystemExit("self-test failed to reject missing retained cell")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS)
+    parser.add_argument("--campaign-03", type=Path, default=None)
+    parser.add_argument("--campaign-04", type=Path, default=None)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    if args.self_test:
+        run_self_test()
+        print("check-handbook-audience: self-test passed (audience, single-sentence limitations, and campaign-04 gates)")
+        return 0
+
+    errors = check_docs_tree(args.docs_dir)
+    if args.campaign_03 and args.campaign_04:
+        c3 = json.loads(args.campaign_03.read_text(encoding="utf-8"))
+        c4 = json.loads(args.campaign_04.read_text(encoding="utf-8"))
+        errors.extend(check_campaign_comparison(c3, c4))
+
+    if errors:
+        for err in errors:
+            print(f"error: {err}", file=sys.stderr)
+        return 1
+
+    print("check-handbook-audience: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
