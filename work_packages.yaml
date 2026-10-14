@@ -29020,6 +29020,16 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-005: advance only the admitted rustls patch 0.23.45 to 0.23.46 for
+      RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349.
+      cargo deny check PASS and cargo audit PASS on the required host; all 20
+      exact server/client transport architecture tests PASS. Only rustls's
+      resolved version/checksum change; all other versions, checksums and
+      dependency edges, ring provider, feature declarations and build requirements
+      stay fixed. Receipt ed19e210e3bd3b0bbd274fff9e518b18e2d0a33fa587919bb24de15e1fc66769.
+      Preserve public/durable interfaces and all 45/60-second and campaign gates;
+      this decision does not close the package or qualify a rehearsal.
+    - >-
       D-008 native accounting contention investigation: frozen 6f35ed7e's
       fixed-schedule diagnostic stops near second 2,900 on source-byte freshness,
       before restore. Preserve its database and evidence. A copied 275,313-row

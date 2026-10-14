@@ -615,3 +615,34 @@ Compatibility: no frozen fixture bytes, durable format or runtime interface
 changed; handbook behavior is unaffected. Hazards and follow-ups: verify all
 four shipping executables are unchanged before reusing the saved restore proof,
 then complete current-source CI, crash gates and both full rehearsals.
+
+
+## D-005 TLS dependency maintenance — 2026-10-14
+
+All 7,108 workspace tests pass, but the following unchanged dependency gate
+refuses rustls 0.23.45 for RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
+Full CI therefore remains failed, and no rehearsal starts. The standing D-005
+rule permits the exact patch update within the already admitted ADR-0226 TLS
+closure. Its target becomes rustls 0.23.46; every other resolved package,
+checksum and dependency edge is unchanged. Existing ring features, build script,
+minimum compiler, licenses, private unsafe prohibition and public trust remain.
+Both cargo deny and cargo audit pass, together with 20 exact server/client
+architecture tests; receipt:
+`ed19e210e3bd3b0bbd274fff9e518b18e2d0a33fa587919bb24de15e1fc66769`.
+
+Normal public operator/application renewal on a copy preserves the saved
+150,000-command, 600,000-read population, original acknowledgement replay and
+all 65,536 ticket states; the prior immutable fixture is unchanged. This avoids
+repeating population preparation when its ephemeral controls expire. Receipt:
+`87c60504eb8673a64210dc65f686c2e0037d598f910ca6fcdb943bc63a7f7b66`.
+The dependency changes executable bytes, so the older saved restore timing
+proof cannot qualify this patch. Fresh shipping restore, native recovery,
+complete source CI and both full rehearsals remain mandatory.
+
+PR note: Package WP-825; Tier guarantee under accepted ADR-0226 and D-005.
+Behavior updates one admitted TLS patch and retains exact architecture pins.
+Checks: original advisory failure, strict resolved-graph/archive comparison,
+unchanged cargo deny and cargo audit gates and 20 architecture tests.
+Compatibility: no provider, feature, public interface, format or advisory-policy
+change. Updated handbook: `docs/security.md`. Hazards and follow-ups: qualify
+actual patched transport and shipping restore before final CI and either run.

@@ -347,7 +347,7 @@ fn lockfile_has_one_exact_ring_tls_stack_and_no_alternative_or_compression_stack
 
     for (package, version) in [
         ("ring", "0.17.14"),
-        ("rustls", "0.23.45"),
+        ("rustls", "0.23.46"),
         ("rustls-pki-types", "1.15.1"),
         ("rustls-webpki", "0.103.14"),
         ("tokio-rustls", "0.26.4"),
