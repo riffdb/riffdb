@@ -51,7 +51,7 @@ completed handshake. The published 0.23.45 manifest additionally requires
 ## Decision
 
 1. Amend only ADR-0105's exact reviewed TLS dependency closure: advance
-   `rustls 0.23.43 -> 0.23.45` and
+   `rustls 0.23.43 -> 0.23.46` and
    `rustls-webpki 0.103.13 -> 0.103.14`. Keep rustls transitive; do not add a
    first-party direct rustls dependency. Advance both existing webpki pins in
    the server and Rust client manifests, preserving their exact feature lists
@@ -67,8 +67,8 @@ completed handshake. The published 0.23.45 manifest additionally requires
    implementation for review rather than widening this permission.
 
 3. Freeze the published crates.io archive SHA-256 checksums:
-   - rustls 0.23.45:
-     `0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634`;
+   - rustls 0.23.46:
+     `48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf`;
    - rustls-webpki 0.103.14:
      `0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a`.
    The downloaded manifests preserve Rust 1.71 minimum and the existing
@@ -151,3 +151,22 @@ completed handshake. The published 0.23.45 manifest additionally requires
 - Source/manifests/checksums were inspected while drafting. The patched runtime
   has not yet been built or tested in this workspace; those are acceptance-gated
   implementation checks, not evidence claimed by this proposal.
+
+
+### D-005 patch maintenance — 2026-10-14
+
+WP-825 advances the admitted rustls patch from 0.23.45 to 0.23.46 for
+RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349,
+under the standing D-005 implementation-choice directive. The target pin and
+archive checksum above reflect this maintenance; original acceptance is retained.
+The [upstream release](https://github.com/rustls/rustls/releases/tag/v%2F0.23.46)
+contains the fixes. Only rustls's resolved version and checksum change; every
+other package and dependency edge, ring provider, feature declaration and native
+build requirement remain unchanged. Rustls's build script is byte-identical,
+Rust 1.71 minimum and licenses remain, and unsafe code remains forbidden.
+`cargo deny check` and `cargo audit` both pass, as do all 20 exact server/client
+transport architecture tests. Verified required-host receipt:
+`ed19e210e3bd3b0bbd274fff9e518b18e2d0a33fa587919bb24de15e1fc66769`.
+This administrative pin update changes no public or durable interface, permits
+no advisory exception and grants no rehearsal qualification. Focused transport,
+fresh shipping restore, recovery and complete-source CI remain required.
