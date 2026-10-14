@@ -79,6 +79,7 @@ trap - EXIT INT TERM
 ./scripts/wp705-lifecycle-referee --self-test
 ./scripts/columnar-vectorized-qualification --self-test
 ./scripts/columnar-parallel-qualification --self-test
+./scripts/columnar-program-b-referee --self-test
 ./scripts/correlated-index-work-qualification --self-test
 ./scripts/check-dirty-recovery-evidence
 ./scripts/check-online-retention-interference
