@@ -68,9 +68,7 @@ fn partial_or_downgraded_v3_layout_refuses_before_legacy_repair_or_journal_creat
                 transaction.delete_table(crate::layout::ENTITIES).unwrap();
             }
             3 => {
-                transaction
-                    .delete_table(crate::layout::IDEMPOTENCY_LOCATORS)
-                    .unwrap();
+                transaction.delete_table(crate::layout::PROVENANCE).unwrap();
             }
             4 => {
                 transaction

@@ -408,23 +408,6 @@ fn check_private_archive_case(
                 );
             }
         }
-        for namespace in [
-            N::IdempotencyLocators,
-            N::ProvenanceLocators,
-            N::AuditByRequestLocators,
-        ] {
-            let table = read
-                .open_table(TableDefinition::<&[u8], &[u8]>::new(namespace.table()))
-                .unwrap();
-            assert_eq!(
-                table.len().unwrap(),
-                stop * if namespace == N::AuditByRequestLocators {
-                    2
-                } else {
-                    1
-                }
-            );
-        }
         let meta = read.open_table(META).unwrap();
         assert!(
             meta.get(N::ReplicationFollowerState.metadata_key().unwrap())

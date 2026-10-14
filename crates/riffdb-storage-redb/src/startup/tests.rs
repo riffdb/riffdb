@@ -774,12 +774,10 @@ fn complete_authority_snapshot(path: &Path) -> CompleteAuthoritySnapshot {
             .collect(),
     ];
     drop(meta);
-    for definition in crate::layout::BYTE_TABLES.into_iter().chain([
-        crate::layout::VALIDATED_PREFIX_ENTITY_HEADS,
-        crate::layout::IDEMPOTENCY_LOCATORS,
-        crate::layout::PROVENANCE_LOCATORS,
-        crate::layout::AUDIT_BY_REQUEST_LOCATORS,
-    ]) {
+    for definition in crate::layout::BYTE_TABLES
+        .into_iter()
+        .chain([crate::layout::VALIDATED_PREFIX_ENTITY_HEADS])
+    {
         let table = read
             .open_table(definition)
             .expect("open byte table snapshot");

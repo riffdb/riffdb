@@ -2799,8 +2799,8 @@ fn absence_resolution_keeps_its_order_and_its_evidence_private() {
         .expect("operational lookup end")
         .0;
     let locator = operational
-        .find("JournalTable::IdempotencyLocators")
-        .expect("exact durable locator");
+        .find("ports.command_derived_member(")
+        .expect("transient command-derived locator");
     let covers = operational
         .find("command_derived_index_covers(")
         .expect("command-derived coverage predicate");
@@ -2809,6 +2809,6 @@ fn absence_resolution_keeps_its_order_and_its_evidence_private() {
         .expect("bounded history fallback");
     assert!(
         locator < covers && covers < scan,
-        "the exact locator read precedes the derived-index predicate, which precedes the scan"
+        "the transient locator read precedes the derived-index predicate, which precedes the scan"
     );
 }

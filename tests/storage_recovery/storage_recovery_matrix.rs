@@ -4957,31 +4957,36 @@ fn prepare_checkpointed_command_database(path: &Path) {
 fn durable_locators_are_written_without_populating_the_counted_tables() {
     let path = TestDatabasePath::new("locators-written-counted-empty");
     let _ = prepare_committed_command_database(&path.0);
-    assert!(retention_raw_table_has_rows(
-        &path.0,
-        "idempotency_locators"
-    ));
-    assert!(retention_raw_table_has_rows(&path.0, "provenance_locators"));
-    assert!(retention_raw_table_has_rows(
-        &path.0,
-        "audit_by_request_locators"
-    ));
+    {
+        let database = Database::open(&path.0).expect("open raw");
+        let read = database.begin_read().expect("read");
+        for retired in [
+            "idempotency_locators",
+            "provenance_locators",
+            "audit_by_request_locators",
+        ] {
+            assert!(
+                matches!(
+                    read.open_table(TableDefinition::<&[u8], &[u8]>::new(retired)),
+                    Err(redb::TableError::TableDoesNotExist(_))
+                ),
+                "retired locator table {retired} must not exist"
+            );
+        }
+    }
     assert!(!retention_raw_table_has_rows(&path.0, "idempotency"));
     assert!(!retention_raw_table_has_rows(&path.0, "provenance"));
     assert!(!retention_raw_table_has_rows(&path.0, "audit_by_request"));
     let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen"));
     assert!(
         findings.is_empty(),
-        "locator rows must validate: {findings:?}"
+        "segment-owned command authority must validate without locator tables: {findings:?}"
     );
 }
 
-/// ADR-0165's central guarantee: a durably committed command is recognised as
-/// already admitted even with the transient population index dormant.
-///
-/// Before the locator existed this returned "never admitted", so a retry
-/// re-executed the command. The bounded clean-close start is what makes the
-/// index dormant, which is exactly the state ADR-0156 readiness leaves it in.
+/// ADR-0244's central guarantee: a durably committed command is recognised as
+/// already admitted after a bounded startup by warming the transient
+/// command-derived index before admission proceeds.
 #[test]
 // req: REC-004
 fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
@@ -5017,25 +5022,17 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     let outcome = candidate.recheck_admission().expect("recheck admission");
     assert!(
         !matches!(outcome, CandidateAdmissionResult::Proceed(_)),
-        "a durably committed command must not be admitted again with the index dormant"
+        "a durably committed command must not be admitted again after a bounded start"
     );
     assert_eq!(
         ports.transient_index_rebuilds(),
-        0,
-        "recognising it must not have required rebuilding the population index"
+        1,
+        "recognising it warms the transient command-derived index once"
     );
 }
 
 /// A write on a bounded (index-dormant) start must validate the administration
 /// tail against the command-owned audit record the AUDIT row locates.
-///
-/// The AUDIT row for a command-owned audit holds a `CommandAuditLocatorV1`, not
-/// the record. The write-side decode arm used to map that locator to `None`
-/// because resolving it had historically needed the transient index, and the
-/// derived half is `None` on a bounded start, so the fail-closed `(None, None)`
-/// join declared an intact database corrupt. Absence manufactured from a record
-/// that is present -- the same class as the outcome and provenance defects, on
-/// the write path.
 #[test]
 fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
     let path = TestDatabasePath::new("locator-audit-tail-bounded");
@@ -5069,11 +5066,23 @@ fn an_undecodable_idempotency_locator_fails_closed() {
     let path = TestDatabasePath::new("locator-undecodable");
     prepare_legacy_clean_start_fixture(&path.0);
     let (fixture, _) = prepare_committed_command_database(&path.0);
-    overwrite_first_row(&path.0, "idempotency_locators", &[0xFF, 0xFF, 0xFF, 0xFF]);
-    assert!(
-        readmission_is_corrupt(&path.0, &fixture),
-        "an undecodable locator must be CorruptData, never absence"
+    let second = command_fixture_at(2);
+    insert_raw_row(
+        &path.0,
+        "idempotency",
+        second
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        &[0xFF, 0xFF, 0xFF, 0xFF],
     );
+    assert!(
+        readmission_is_corrupt(&path.0, &second),
+        "an undecodable idempotency locator must be CorruptData, never absence"
+    );
+    let _ = fixture;
 }
 
 /// A locator naming a segment that does not contain the key fails closed.
@@ -5081,7 +5090,8 @@ fn an_undecodable_idempotency_locator_fails_closed() {
 fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
     let path = TestDatabasePath::new("locator-wrong-segment");
     prepare_legacy_clean_start_fixture(&path.0);
-    let (fixture, _) = prepare_committed_command_database(&path.0);
+    let _ = prepare_committed_command_database(&path.0);
+    let second = command_fixture_at(2);
     // Sequence 9_999 has no segment at all, so nothing owns the key.
     let encoded = riffdb_storage_api::encode_command_locator_v1(
         riffdb_storage_api::StoredCommandLocatorV1::new(
@@ -5089,10 +5099,123 @@ fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
         ),
     )
     .expect("encode a locator for an absent segment");
-    overwrite_first_row(&path.0, "idempotency_locators", encoded.as_bytes());
+    insert_raw_row(
+        &path.0,
+        "idempotency",
+        second
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        encoded.as_bytes(),
+    );
     assert!(
-        readmission_is_corrupt(&path.0, &fixture),
+        readmission_is_corrupt(&path.0, &second),
         "a locator naming a segment without the key must be CorruptData, never absence"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
+    let path = TestDatabasePath::new("adr-0244-missing-or-mismatched-locator");
+    prepare_legacy_clean_start_fixture(&path.0);
+    let (first, second) = prepare_two_command_database(&path.0);
+
+    // 1. Bounded open leaves population index dormant; command-derived lookups
+    // warm the transient index and never report absence for committed commands.
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write clean-close certificate");
+    drop(ports);
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("bounded reopen"));
+    assert!(ports.clean_close_fast_startup());
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(
+        ports
+            .read_stored_outcome(first.pending.identity())
+            .expect("read stored outcome after bounded open")
+            .as_ref(),
+        Some(first.records.stored_outcome())
+    );
+    assert_eq!(ports.transient_index_rebuilds(), 1);
+    assert_eq!(
+        ports
+            .read_provenance(second.records.provenance().provenance_id())
+            .expect("read provenance after bounded open")
+            .as_ref(),
+        Some(second.records.provenance())
+    );
+    drop(ports);
+
+    // 2. A CommandLocator in IDEMPOTENCY or PROVENANCE whose target segment is
+    // missing or mismatched fails closed with CorruptData, never absence.
+    let third = command_fixture_at(3);
+    let missing_locator = riffdb_storage_api::encode_command_locator_v1(
+        riffdb_storage_api::StoredCommandLocatorV1::new(
+            CommitSequence::new(9_999).expect("absent sequence"),
+        ),
+    )
+    .expect("encode missing segment locator");
+    let mismatched_locator = riffdb_storage_api::encode_command_locator_v1(
+        riffdb_storage_api::StoredCommandLocatorV1::new(
+            CommitSequence::new(2).expect("existing mismatched sequence"),
+        ),
+    )
+    .expect("encode mismatched segment locator");
+
+    insert_raw_row(
+        &path.0,
+        "idempotency",
+        third
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        missing_locator.as_bytes(),
+    );
+    insert_raw_row(
+        &path.0,
+        "provenance",
+        third.records.provenance().provenance_id().as_bytes(),
+        mismatched_locator.as_bytes(),
+    );
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen with bad locators"));
+    assert_eq!(
+        ports
+            .read_stored_outcome(third.pending.identity())
+            .expect_err("missing target segment in IDEMPOTENCY must fail closed")
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        ports
+            .read_provenance(third.records.provenance().provenance_id())
+            .expect_err("mismatched target segment in PROVENANCE must fail closed")
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    drop(ports);
+
+    insert_raw_row(
+        &path.0,
+        "idempotency",
+        third
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        mismatched_locator.as_bytes(),
+    );
+    assert!(
+        readmission_is_corrupt(&path.0, &third),
+        "mismatched target segment in IDEMPOTENCY must fail closed on admission"
     );
 }
 
@@ -5113,7 +5236,7 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
     for fixture in [&first, &second] {
         let AdmissionLookupResultV1::Found(state) = ports
             .lookup_admission(fixture.candidates.clone())
-            .expect("every prior locator remains readable")
+            .expect("every prior command remains readable")
         else {
             panic!("every prior identity must remain terminal");
         };
@@ -5125,26 +5248,34 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
 
     let malformed_path = TestDatabasePath::new("fresh-locator-malformed-row");
     prepare_legacy_clean_start_fixture(&malformed_path.0);
-    let (malformed, _) = prepare_committed_command_database(&malformed_path.0);
-    overwrite_first_row(
+    let _ = prepare_committed_command_database(&malformed_path.0);
+    let malformed = command_fixture_at(2);
+    insert_raw_row(
         &malformed_path.0,
-        "idempotency_locators",
+        "idempotency",
+        malformed
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
         &[0xff, 0xff, 0xff, 0xff],
     );
     assert!(readmission_is_corrupt(&malformed_path.0, &malformed));
 
     let wrong_capsule_path = TestDatabasePath::new("fresh-locator-wrong-capsule-identity");
     prepare_legacy_clean_start_fixture(&wrong_capsule_path.0);
-    let (expected, _) = prepare_two_command_database(&wrong_capsule_path.0);
+    let _ = prepare_two_command_database(&wrong_capsule_path.0);
+    let expected = command_fixture_at(3);
     let wrong_locator = riffdb_storage_api::encode_command_locator_v1(
         riffdb_storage_api::StoredCommandLocatorV1::new(
             CommitSequence::new(2).expect("existing wrong command sequence"),
         ),
     )
     .expect("encode locator to a real but differently identified command");
-    overwrite_exact_row(
+    insert_raw_row(
         &wrong_capsule_path.0,
-        "idempotency_locators",
+        "idempotency",
         expected
             .pending
             .identity()
@@ -5203,39 +5334,13 @@ fn fresh_locator_write_miss_retains_current_semantics_and_gates_only_coverage() 
     ));
 }
 
-/// Replaces the first row's value in a raw table, leaving its key intact.
-fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
-    let database = Database::open(path).expect("open raw");
-    let definition = TableDefinition::<&[u8], &[u8]>::new(table_name);
-    let write = database.begin_write().expect("begin raw write");
-    {
-        let read = database.begin_read().expect("raw read");
-        let key = read
-            .open_table(definition)
-            .expect("table")
-            .first()
-            .expect("first")
-            .map(|(key, _)| key.value().to_vec())
-            .expect("a locator row to damage");
-        let mut table = write.open_table(definition).expect("raw table");
-        table.insert(key.as_slice(), value).expect("overwrite");
-    }
-    write.commit().expect("commit raw damage");
-}
-
-fn overwrite_exact_row(path: &Path, table_name: &str, key: &[u8], value: &[u8]) {
+fn insert_raw_row(path: &Path, table_name: &str, key: &[u8], value: &[u8]) {
     let database = Database::open(path).expect("open raw");
     let definition = TableDefinition::<&[u8], &[u8]>::new(table_name);
     let write = database.begin_write().expect("begin raw write");
     {
         let mut table = write.open_table(definition).expect("raw table");
-        assert!(
-            table
-                .insert(key, value)
-                .expect("overwrite exact row")
-                .is_some(),
-            "the exact locator row must already exist"
-        );
+        table.insert(key, value).expect("insert raw row");
     }
     write.commit().expect("commit raw damage");
 }

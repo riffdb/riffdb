@@ -44,10 +44,24 @@ pub(crate) fn exact_current_tables(
 ) -> Result<(), StorageError> {
     // One catalog-derived set, not another copied layout or additive-table
     // normalization. Active V3 never permits repairing a missing authority table.
-    let expected: BTreeSet<_> = N::ALL.into_iter().map(N::table).collect();
+    let expected: BTreeSet<_> = N::ALL
+        .into_iter()
+        .filter(|namespace| !namespace.is_retired_locator_table())
+        .map(N::table)
+        .collect();
+    let active_tables: BTreeSet<_> = tables
+        .iter()
+        .map(String::as_str)
+        .filter(|&name| {
+            !matches!(
+                name,
+                "idempotency_locators" | "provenance_locators" | "audit_by_request_locators"
+            )
+        })
+        .collect();
     if !multimaps.is_empty()
-        || tables.len() != expected.len()
-        || tables.iter().any(|name| !expected.contains(name.as_str()))
+        || active_tables.len() != expected.len()
+        || active_tables.iter().any(|name| !expected.contains(name))
     {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }

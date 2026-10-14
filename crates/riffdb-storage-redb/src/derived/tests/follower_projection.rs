@@ -78,7 +78,9 @@ fn authority(path: &std::path::Path) -> std::collections::BTreeMap<(N, Vec<u8>),
     let read = database.begin_read().unwrap();
     let mut result = std::collections::BTreeMap::new();
     for namespace in N::ALL {
-        if namespace.class() == riffdb_storage_api::ReplicationAuthorityClassV1::RebuildableLocal {
+        if namespace.class() == riffdb_storage_api::ReplicationAuthorityClassV1::RebuildableLocal
+            || namespace.is_retired_locator_table()
+        {
             continue;
         }
         if let Some(key) = namespace.metadata_key() {

@@ -62,10 +62,20 @@ fn validate_inventory(root: &CheckpointRoot, catalog: [u8; 32]) -> Result<(), St
     if !v2 && catalog != AuthoritativeStateCatalogV1.digest() {
         return Err(super::corrupt());
     }
-    let expected: BTreeSet<_> = N::ALL.into_iter().map(N::table).collect();
+    let expected: BTreeSet<_> = N::ALL
+        .into_iter()
+        .filter(|namespace| !namespace.is_retired_locator_table())
+        .map(N::table)
+        .collect();
     let mut observed = BTreeSet::new();
     for table in root.list_tables().map_err(precommit_storage_error)? {
         let name = table.name();
+        if matches!(
+            name,
+            "idempotency_locators" | "provenance_locators" | "audit_by_request_locators"
+        ) {
+            continue;
+        }
         if !expected.contains(name) || !observed.insert(name.to_owned()) {
             return Err(super::corrupt());
         }
@@ -163,6 +173,9 @@ impl StateCursor {
     }
 
     fn next_row(&self, namespace: N) -> Result<Option<AuthoritativeStateRowV3>, StorageError> {
+        if namespace.is_retired_locator_table() {
+            return Ok(None);
+        }
         if let Some(key) = namespace.metadata_key() {
             return self.metadata(namespace, key);
         }

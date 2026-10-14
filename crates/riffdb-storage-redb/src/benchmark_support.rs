@@ -26,10 +26,9 @@ use crate::journal::{
     EncodedJournalFrame, JournalFrame, JournalMutation, JournalMutationBuffer, JournalTable,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, AUDIT_BY_REQUEST_LOCATORS, BYTE_TABLES, COMMITS, ENTITIES,
-    EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_LOCATORS, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
-    META, META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT,
-    OUTBOX, PROVENANCE, PROVENANCE_LOCATORS, SECONDARY_INDEXES, create_all_tables,
+    AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
+    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE,
+    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, PROVENANCE, SECONDARY_INDEXES, create_all_tables,
 };
 use crate::store::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 
@@ -449,11 +448,7 @@ pub fn recovery_authority_snapshot_v1(
     }
     drop(meta);
 
-    for definition in BYTE_TABLES.into_iter().chain([
-        IDEMPOTENCY_LOCATORS,
-        PROVENANCE_LOCATORS,
-        AUDIT_BY_REQUEST_LOCATORS,
-    ]) {
+    for definition in BYTE_TABLES {
         let name = definition.name();
         hash_component(&mut hasher, name.as_bytes());
         let table =

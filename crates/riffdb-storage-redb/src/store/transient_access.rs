@@ -32,7 +32,11 @@ impl RedbOperationalPorts {
                         return Ok(None);
                     }
                 }
-                TransientIndexState::Dormant if !required => return Ok(None),
+                TransientIndexState::Dormant
+                    if !required || !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
+                {
+                    return Ok(None);
+                }
                 TransientIndexState::Dormant | TransientIndexState::Invalid => {
                     return Err(storage_error(StorageErrorKind::Unavailable));
                 }
@@ -61,7 +65,11 @@ impl RedbOperationalPorts {
                     }
                     return read(indexes, &access);
                 }
-                TransientIndexState::Dormant if !required => return Ok(None),
+                TransientIndexState::Dormant
+                    if !required || !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
+                {
+                    return Ok(None);
+                }
                 TransientIndexState::Dormant | TransientIndexState::Invalid => {
                     return Err(storage_error(StorageErrorKind::Unavailable));
                 }
@@ -75,8 +83,9 @@ impl RedbOperationalPorts {
         kind: CommandDerivedIndexKindV1,
         key: &[u8],
     ) -> Result<Option<(Arc<StoredCommandSegmentV1>, CommandDerivedLocator)>, StorageError> {
+        self.shared.ensure_command_derived_indexes_ready()?;
         self.with_command_indexes(
-            false,
+            true,
             |indexes| indexes.has_command_member(kind, key),
             |indexes, access| {
                 indexes.command_derived_member(kind, key, |first| {
@@ -185,8 +194,12 @@ impl RedbWriteAccess {
                     )
                 })?
             }
-            TransientIndexState::Dormant => None,
-            TransientIndexState::Invalid => {
+            TransientIndexState::Dormant
+                if !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
+            {
+                None
+            }
+            TransientIndexState::Dormant | TransientIndexState::Invalid => {
                 return Err(storage_error(StorageErrorKind::Unavailable));
             }
         };

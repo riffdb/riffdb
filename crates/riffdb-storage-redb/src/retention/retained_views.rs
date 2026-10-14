@@ -14,13 +14,12 @@ pub(super) trait RetainedViewAccess {
         key: &[u8],
         value: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError>;
-    fn remove(&mut self, table: JournalTable, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError>;
 }
 
 type RetainedTable<'a> = crate::changelog_v3_capture::CapturedTable<'a, 'a, &'static [u8]>;
 
 pub(super) struct DirectRetainedViews<'a> {
-    tables: [(JournalTable, RetainedTable<'a>); 8],
+    tables: [(JournalTable, RetainedTable<'a>); 5],
 }
 
 impl<'a> DirectRetainedViews<'a> {
@@ -49,22 +48,6 @@ impl<'a> DirectRetainedViews<'a> {
                 (
                     JournalTable::EventRoutes,
                     write.open_table(EVENT_ROUTES).map_err(table_error)?,
-                ),
-                (
-                    JournalTable::IdempotencyLocators,
-                    write
-                        .open_table(IDEMPOTENCY_LOCATORS)
-                        .map_err(table_error)?,
-                ),
-                (
-                    JournalTable::ProvenanceLocators,
-                    write.open_table(PROVENANCE_LOCATORS).map_err(table_error)?,
-                ),
-                (
-                    JournalTable::AuditByRequestLocators,
-                    write
-                        .open_table(AUDIT_BY_REQUEST_LOCATORS)
-                        .map_err(table_error)?,
                 ),
             ],
         })
@@ -102,12 +85,6 @@ impl RetainedViewAccess for DirectRetainedViews<'_> {
     ) -> Result<Option<Vec<u8>>, StorageError> {
         self.table_mut(table)?
             .insert(key, value)
-            .map(|value| value.map(|value| value.value().to_vec()))
-            .map_err(precommit_storage_error)
-    }
-    fn remove(&mut self, table: JournalTable, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-        self.table_mut(table)?
-            .remove(key)
             .map(|value| value.map(|value| value.value().to_vec()))
             .map_err(precommit_storage_error)
     }

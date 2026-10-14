@@ -34,7 +34,7 @@ fn inventory_fixture() -> (
     // not catalog semantics or a serving database's readiness.
     let transaction = store.shared.database.begin_write().unwrap();
     for namespace in N::ALL {
-        if namespace.requires_v3_activation() {
+        if namespace.requires_v3_activation() || namespace.is_retired_locator_table() {
             continue;
         }
         if let Some(key) = namespace.metadata_key() {
@@ -66,7 +66,9 @@ fn inventory_fixture() -> (
     let pin = store.shared.database.begin_read().unwrap();
     let mut expected = Rows::new();
     for namespace in N::ALL {
-        if namespace.class() != Class::ReplicatedAuthoritative {
+        if namespace.class() != Class::ReplicatedAuthoritative
+            || namespace.is_retired_locator_table()
+        {
             continue;
         }
         if let Some(key) = namespace.metadata_key() {
@@ -105,7 +107,11 @@ fn replication_inventory_classifies_every_storage_namespace() {
         .collect();
     assert_eq!(
         tables,
-        N::ALL.into_iter().map(|n| n.table().to_owned()).collect()
+        N::ALL
+            .into_iter()
+            .filter(|n| !n.is_retired_locator_table())
+            .map(|n| n.table().to_owned())
+            .collect()
     );
     let mut classified = BTreeSet::new();
     for table in &tables {
@@ -127,7 +133,12 @@ fn replication_inventory_classifies_every_storage_namespace() {
         .into_iter()
         .filter(|n| n.class() == Class::ReplicatedAuthoritative)
         .collect();
-    assert!(authority.is_subset(&classified));
+    let physical_authority: BTreeSet<_> = authority
+        .iter()
+        .copied()
+        .filter(|n| !n.is_retired_locator_table())
+        .collect();
+    assert!(physical_authority.is_subset(&classified));
     assert_eq!(
         AuthoritativeStateCatalogV1.canonical_fixture(),
         include_str!("../../../fixtures/replication/authoritative-state-catalog-v1.txt")

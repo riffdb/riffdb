@@ -246,9 +246,6 @@ fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
         N::SecondaryIndexes,
         N::IndexEpochs,
         N::Commits,
-        N::IdempotencyLocators,
-        N::ProvenanceLocators,
-        N::AuditByRequestLocators,
         N::NextApplicationSequence,
         N::NextAdministrationSequence,
     ] {

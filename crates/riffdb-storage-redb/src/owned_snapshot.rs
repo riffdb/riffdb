@@ -61,6 +61,7 @@ pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
     derived: Option<std::sync::Arc<redb::ReadTransaction>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
+    shared: Option<std::sync::Arc<crate::store::SharedRedb>>,
 }
 
 impl RedbOwnedSnapshot {
@@ -69,6 +70,7 @@ impl RedbOwnedSnapshot {
             access,
             derived: None,
             source_pins: None,
+            shared: None,
         }
     }
 
@@ -121,6 +123,7 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
             access: self.begin_composite_read()?,
             derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
             source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
+            shared: Some(std::sync::Arc::clone(&self.shared)),
         })
     }
 }
@@ -210,26 +213,51 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
     ) -> Result<Option<StoredOutcomeV1>, StorageError> {
         let key = identity.storage_key().map_err(|_| invariant())?;
         let encoded_key = encode_idempotency_key(&key);
-        let encoded = match self
-            .access
-            .read_value(JournalTable::Idempotency, encoded_key)?
+        if let Some(shared) = self.shared.as_ref()
+            && let Some(locator) = shared.command_derived_locator(
+                riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
+                encoded_key,
+            )?
         {
-            Some(encoded) => encoded,
-            None => {
-                let Some(locator) = self
+            let first_commit_sequence = locator.segment_first;
+            let Some(frontier) = self.access.application_frontier()? else {
+                return Ok(None);
+            };
+            if first_commit_sequence <= frontier {
+                if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
+                    || locator.member_ordinal != 0
+                {
+                    return Err(corrupt());
+                }
+                let raw = self
                     .access
-                    .read_value(JournalTable::IdempotencyLocators, encoded_key)?
-                else {
-                    return Ok(None);
-                };
-                let locator = decode_command_locator_v1(&locator)?.into_parts().0;
-                let command = command_member_at_access(&self.access, locator.commit_sequence())?
+                    .read_value(
+                        JournalTable::Commits,
+                        &encode_application_sequence_key(first_commit_sequence),
+                    )?
                     .ok_or_else(corrupt)?;
+                let segment = riffdb_storage_api::decode_command_segment_v1(&raw)
+                    .map_err(crate::error::codec_error)?
+                    .into_parts()
+                    .0;
+                let command = segment
+                    .commands()
+                    .get(usize::from(locator.command_ordinal))
+                    .ok_or_else(corrupt)?;
+                if command.commit_sequence() > frontier {
+                    return Ok(None);
+                }
                 if command.base().outcome().identity() != identity {
                     return Err(corrupt());
                 }
                 return Ok(Some(command.base().outcome().clone()));
             }
+        }
+        let Some(encoded) = self
+            .access
+            .read_value(JournalTable::Idempotency, encoded_key)?
+        else {
+            return Ok(None);
         };
         match decode_idempotency_record_v1(&encoded)?.into_parts().0 {
             IdempotencyRecordV1::StoredOutcome(outcome) if outcome.identity() == identity => {
@@ -272,23 +300,51 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         provenance_id: ProvenanceId,
     ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
         let encoded_key = encode_provenance_key(provenance_id);
+        if let Some(shared) = self.shared.as_ref()
+            && let Some(locator) = shared.command_derived_locator(
+                riffdb_storage_api::CommandDerivedIndexKindV1::Provenance,
+                encoded_key.as_slice(),
+            )?
+        {
+            let first_commit_sequence = locator.segment_first;
+            let Some(frontier) = self.access.application_frontier()? else {
+                return Ok(None);
+            };
+            if first_commit_sequence <= frontier {
+                if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
+                    || locator.member_ordinal != 0
+                {
+                    return Err(corrupt());
+                }
+                let raw = self
+                    .access
+                    .read_value(
+                        JournalTable::Commits,
+                        &encode_application_sequence_key(first_commit_sequence),
+                    )?
+                    .ok_or_else(corrupt)?;
+                let segment = riffdb_storage_api::decode_command_segment_v1(&raw)
+                    .map_err(crate::error::codec_error)?
+                    .into_parts()
+                    .0;
+                let command = segment
+                    .commands()
+                    .get(usize::from(locator.command_ordinal))
+                    .ok_or_else(corrupt)?;
+                if command.commit_sequence() > frontier {
+                    return Ok(None);
+                }
+                if command.base().provenance().provenance_id() != provenance_id {
+                    return Err(corrupt());
+                }
+                return Ok(Some(command.base().provenance().clone()));
+            }
+        }
         let Some(encoded) = self
             .access
             .read_value(JournalTable::Provenance, encoded_key.as_slice())?
         else {
-            let Some(locator) = self
-                .access
-                .read_value(JournalTable::ProvenanceLocators, encoded_key.as_slice())?
-            else {
-                return Ok(None);
-            };
-            let locator = decode_command_locator_v1(&locator)?.into_parts().0;
-            let command = command_member_at_access(&self.access, locator.commit_sequence())?
-                .ok_or_else(corrupt)?;
-            if command.base().provenance().provenance_id() != provenance_id {
-                return Err(corrupt());
-            }
-            return Ok(Some(command.base().provenance().clone()));
+            return Ok(None);
         };
         let record = match decode_command_locator_v1(&encoded) {
             Ok(locator) => {

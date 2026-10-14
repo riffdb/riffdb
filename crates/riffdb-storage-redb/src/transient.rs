@@ -190,6 +190,13 @@ impl TransientIndexDelta {
 }
 
 impl TransientIndexes {
+    pub(crate) fn is_trivially_empty(transaction: &ReadTransaction) -> Result<bool, StorageError> {
+        Ok(table_row_count(transaction, COMMITS)? == 0
+            && table_row_count(transaction, EVENT_ROUTES)? == 0
+            && table_row_count(transaction, OUTBOX)? == 0
+            && table_row_count(transaction, OUTBOX_STATUS)? == 0)
+    }
+
     /// Rebuilds every transient population index from durable tables.
     ///
     /// Walks the whole `COMMITS` table, decoding each command segment and
@@ -367,6 +374,15 @@ impl TransientIndexes {
     ) -> Result<bool, StorageError> {
         let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
         Ok(indexes.index(kind).contains_key(key))
+    }
+
+    pub(crate) fn command_derived_locator(
+        &self,
+        kind: CommandDerivedIndexKindV1,
+        exact_key: &[u8],
+    ) -> Result<Option<CommandDerivedLocator>, StorageError> {
+        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
+        Ok(indexes.index(kind).get(exact_key).copied())
     }
 
     pub(crate) fn has_command_at(&self, sequence: CommitSequence) -> Result<bool, StorageError> {
