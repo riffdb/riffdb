@@ -28508,6 +28508,21 @@ work_packages:
   - Transaction ordering, conflict ownership, validation, atomicity, outcome
     sequencing, authorization, or redaction would change.
   - A guarantee appears impossible or implementation requires out-of-scope paths.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [PERF-008, PERF-019, TXN-041, TXN-042, TXN-043,
+      TXN-044, REP-002, REP-003, REC-001, REC-002]
+    evidence: docs/performance/wp-820-intake-preparation.md,
+      release/evidence/wp-820/private-admitted-owner-ab-20261001.json,
+      release/evidence/wp-820/full-symbol-frame-pointer-cpu-20261001.json
+    decision: Retain private admitted-state command field ownership (ac21c38ca)
+      after repeated positive c32 alternating write-only (+1.60% at 60 s and
+      +2.54% at 90 s) and interactive (+1.16%) production banks and stratified
+      same-run safe-app PostgreSQL qualifications. Reject streaming receipt
+      checksums (a138fb895) and private batch-core boxing (bbc4d6d01) after
+      negative repeated production comparisons; retain complete frame-pointer
+      caller attribution and numeric storage/payload evidence.
 
 - id: WP-821
   name: Sustainable TicketDesk architecture gate and evidence contract
