@@ -1051,4 +1051,226 @@ mod tests {
             Err(ColumnarBatchBoundError::InvalidCompilerMaximum)
         );
     }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048
+    // req: OQ-049, OQ-050, OQ-051, OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn columnar_policy_precedes_selection_and_output_lane_materialization() {
+        use crate::batch::aggregate::{
+            AggregatePartialBudget, CanonicalPartialIdentity, ExactAggregateLeafBuilder,
+            ExactAggregateMergeAccumulator, ExactAggregatePartialValue,
+        };
+        use crate::batch::{
+            BorrowedLaneBatch, ColumnarPredicateKernel, MonotoneSelection, PredicateWorkCharge,
+        };
+        use crate::segment_v2::{SegmentV2Cell, SegmentV2Predicate, SegmentV2SegmentId};
+        use riffdb_types::{
+            AggregateSemanticIdentityV1, CanonicalString, CanonicalValue,
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_STATE_BYTES_V1,
+        };
+
+        // 1. Sealed phase execution order places eligibility and policy before predicate,
+        //    aggregate, order, and output-only materialization.
+        let draft = valid_draft();
+        let checked = draft
+            .check(&checked_facts())
+            .expect("sealed batch program checks");
+        assert_eq!(
+            checked.facts.phases.in_execution_order(),
+            [
+                checked.facts.phases.eligibility.as_slice(),
+                checked.facts.phases.policy.as_slice(),
+                checked.facts.phases.predicate.as_slice(),
+                checked.facts.phases.aggregate.as_slice(),
+                checked.facts.phases.order.as_slice(),
+                checked.facts.phases.output.as_slice(),
+            ]
+        );
+
+        // 2. Policy admission runs before predicate/aggregate/output:
+        //    Row 0 is denied by policy and contains Missing in the predicate/aggregate lane
+        //    plus a forbidden sentinel in the output-only lane.
+        //    Row 1 is admitted by policy, rejected by predicate, and contains a forbidden
+        //    sentinel in the output-only lane.
+        //    Rows 2 and 3 are admitted by policy and pass the predicate; only rows 2 and 3
+        //    contribute to aggregates or materialize the output-only lane.
+        let policy_mask = [false, true, true, true];
+        let predicate_and_agg_lane = [
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Value(CanonicalValue::I64(-10)),
+            SegmentV2Cell::Value(CanonicalValue::I64(25)),
+            SegmentV2Cell::Value(CanonicalValue::I64(75)),
+        ];
+        let output_only_lane = [
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Value(CanonicalValue::String(
+                CanonicalString::new("row-2-visible").expect("canonical string"),
+            )),
+            SegmentV2Cell::Value(CanonicalValue::String(
+                CanonicalString::new("row-3-visible").expect("canonical string"),
+            )),
+        ];
+        let lanes = [
+            predicate_and_agg_lane.as_slice(),
+            output_only_lane.as_slice(),
+        ];
+        let batch = BorrowedLaneBatch::new(width(), &lanes).expect("batch");
+        let mut selection = MonotoneSelection::all(&batch);
+
+        // Policy admission clears row 0 before predicate evaluation.
+        selection
+            .retain(&policy_mask)
+            .expect("policy admission retains 3 rows");
+        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![1, 2, 3]);
+
+        // Predicate kernel inspects only policy-admitted rows (3 rows, not 4), so row 0's
+        // Missing cell cannot trigger MissingField or consume predicate work.
+        let kernel = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::I64, SegmentV2LogicalType::String],
+            SegmentV2Predicate::GreaterThan(CanonicalValue::I64(0)),
+        )
+        .expect("predicate kernel");
+        let mut charge = PredicateWorkCharge::new(3).expect("exact 3 policy-admitted rows");
+        kernel
+            .apply(&batch, &mut selection, &mut charge)
+            .expect("predicate succeeds on policy-admitted rows");
+        assert_eq!(charge.remaining(), 0);
+        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![2, 3]);
+
+        // Aggregate accumulation sees only selected rows [2, 3].
+        let selected_agg_cells: Vec<SegmentV2Cell> = selection
+            .indices()
+            .map(|row| batch.lanes()[0][row].clone())
+            .collect();
+        let identity = CanonicalPartialIdentity::new(0, SegmentV2SegmentId::from_bytes([7; 16]), 0);
+        let mut budget = AggregatePartialBudget::new(
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        )
+        .expect("budget");
+        let mut leaf = ExactAggregateLeafBuilder::new(
+            identity,
+            AggregateSemanticIdentityV1::Sum,
+            Some(&SegmentV2LogicalType::I64),
+            &mut budget,
+        )
+        .expect("sum leaf");
+        leaf.accumulate(&selected_agg_cells, &mut budget)
+            .expect("accumulate selected rows");
+        let mut merge = ExactAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Sum,
+            Some(&SegmentV2LogicalType::I64),
+            &[identity],
+            &mut budget,
+        )
+        .expect("sum merge");
+        merge
+            .merge_leaf(leaf.finalize(), &mut budget)
+            .expect("merge leaf");
+        assert_eq!(
+            merge.finish().expect("finish sum"),
+            ExactAggregatePartialValue::Sum {
+                coefficient: 100,
+                scale: 0,
+            }
+        );
+
+        // Late output-only lane materialization decodes only surviving selected indices [2, 3];
+        // rejected rows [0, 1] are never touched.
+        let materialized_outputs: Vec<&str> = selection
+            .indices()
+            .map(|row| match &batch.lanes()[1][row] {
+                SegmentV2Cell::Value(CanonicalValue::String(s)) => s.as_str(),
+                other => panic!("rejected row output lane was decoded: {other:?}"),
+            })
+            .collect();
+        assert_eq!(materialized_outputs, vec!["row-2-visible", "row-3-visible"]);
+    }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048
+    // req: OQ-049, OQ-050, OQ-051, OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn columnar_batch_resources_and_failure_precedence_are_bounded() {
+        use crate::batch::{
+            BorrowedLaneBatch, CLOSED_BATCH_WIDTHS, ColumnarPredicateKernel,
+            ColumnarPredicateKernelError, MonotoneSelection, PredicateWorkCharge,
+        };
+        use crate::segment_v2::{SegmentV2Cell, SegmentV2Predicate};
+        use riffdb_types::CanonicalValue;
+
+        // 1. Every closed width checks its exact selection and optional-state byte ceilings,
+        //    and any non-closed width fails closed.
+        for &closed_width in &CLOSED_BATCH_WIDTHS {
+            let chosen =
+                ColumnarBatchWidth::choose(closed_width, 1, closed_width).expect("closed width");
+            assert_eq!(chosen.get(), closed_width);
+
+            let mut draft = valid_draft();
+            draft.width = chosen;
+            draft.resources.rows = closed_width;
+            draft.resources.selection_bytes = closed_width / 8;
+            // valid_draft() has 2 optional lanes, each requiring 2 state maps (Missing + Null).
+            draft.resources.optional_state_bytes = (closed_width / 8) * 2 * 2;
+            let checked = draft
+                .check(&checked_facts())
+                .expect("resource plan for closed width checks");
+            assert_eq!(checked.width.get(), closed_width);
+            assert_eq!(checked.charges.rows, closed_width);
+            assert_eq!(checked.charges.selection_bytes, closed_width / 8);
+            assert_eq!(checked.charges.optional_state_bytes, (closed_width / 8) * 4);
+        }
+
+        for invalid_width in [0usize, 32, 63, 65, 192, 513, 1025, 2048] {
+            assert_eq!(
+                ColumnarBatchWidth::choose(invalid_width, 1, invalid_width),
+                Err(ColumnarBatchBoundError::InvalidCompilerMaximum)
+            );
+        }
+
+        // 2. Deterministic failure precedence is width-invariant across all closed batch widths:
+        //    Partitioning a 130-row corpus across widths 64, 128, 256, 512, and 1024 yields the
+        //    exact same first closed failure class without partial results.
+        let mut corpus: Vec<SegmentV2Cell> = (0i32..130)
+            .map(|idx| SegmentV2Cell::Value(CanonicalValue::I64(i64::from(idx))))
+            .collect();
+        // Inject a deterministic MissingField failure at canonical row 70 and a LaneIntegrity
+        // failure later at canonical row 120; row 70 must win under every closed batch width.
+        corpus[70] = SegmentV2Cell::Missing;
+        corpus[120] = SegmentV2Cell::Value(CanonicalValue::U64(999));
+
+        for &closed_width in &CLOSED_BATCH_WIDTHS {
+            let chosen =
+                ColumnarBatchWidth::choose(closed_width, 1, closed_width).expect("closed width");
+            let kernel = ColumnarPredicateKernel::new(
+                0,
+                &[SegmentV2LogicalType::I64],
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+            )
+            .expect("i64 kernel");
+
+            let mut first_error = None;
+            for chunk in corpus.chunks(chosen.get()) {
+                let lanes = [chunk];
+                let batch = BorrowedLaneBatch::new(chosen, &lanes).expect("chunk batch");
+                let mut selection = MonotoneSelection::all(&batch);
+                let mut charge = PredicateWorkCharge::new(chunk.len()).expect("chunk charge");
+                if let Err(err) = kernel.apply(&batch, &mut selection, &mut charge) {
+                    // On failure, the batch selection and work charge remain atomic (unmodified).
+                    assert_eq!(selection.selected(), chunk.len());
+                    assert_eq!(charge.remaining(), chunk.len());
+                    first_error = Some(err);
+                    break;
+                }
+            }
+            assert_eq!(
+                first_error,
+                Some(ColumnarPredicateKernelError::MissingField),
+                "width={closed_width} must observe identical failure precedence"
+            );
+        }
+    }
 }

@@ -2662,6 +2662,22 @@ work_packages:
     scale: Widths, vectors, partials, heaps, decoded lanes, outputs, arithmetic, and diagnostics are
       compiler bounded per batch/query with no population-sized materialization.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - cargo +1.97.0 test -p riffdb-types -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-columnar -p riffdb-policy --all-features
+    - ./scripts/check-columnar-batch-architecture
+    - ./scripts/check-columnar-batch-architecture --self-test
+    - ./scripts/columnar-vectorized-qualification --self-test
+    - ./scripts/check-version-topology
+    - ./scripts/check-workspace-policy
+    - ./scripts/check-requirement-coverage
+    - cargo +1.97.0 fmt --all -- --check
+    - cargo +1.97.0 clippy -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-columnar -p riffdb-policy --all-targets --all-features -- -D warnings
+    decisions_taken:
+    - Retained the reviewed compiler-sealed V2 batch program, monotone selection vectors, exact/borrowed/distinct aggregate partial builders and merge accumulators, canonical group-state leaf/merge owners, and bounded Top-N heap in crates/riffdb-columnar/src/batch under scripts/check-columnar-batch-architecture token/allocation/arithmetic freeze.
+    - Proved OBL-0161-1 (vectorized_columnar_batches_match_independent_scalar_oracle), OBL-0161-2 (columnar_policy_precedes_selection_and_output_lane_materialization), OBL-0161-3 (columnar_batch_resources_and_failure_precedence_are_bounded), and OBL-0161-4 (scripts/columnar-vectorized-qualification) across all closed batch widths (64, 128, 256, 512, 1024).
 - id: WP-713
   name: Bounded parallel columnar scans and public projected-query activation
   depends_on: [WP-432, WP-667, WP-712]

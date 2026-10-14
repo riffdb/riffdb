@@ -1746,4 +1746,294 @@ mod tests {
         assert_eq!(selection.indices().collect::<Vec<_>>(), vec![0]);
         assert_eq!(charge.remaining(), 1);
     }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002, QRY-003, QRY-004, QRY-005
+    // req: OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048
+    // req: OQ-049, OQ-050, OQ-051, OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+    #[test]
+    fn vectorized_columnar_batches_match_independent_scalar_oracle() {
+        use super::aggregate::{
+            AggregateFieldOptionality, AggregatePartialBudget, BorrowedAggregatePartialValue,
+            BorrowedAggregateScalar, CanonicalPartialIdentity, ExactAggregateLeafBuilder,
+            ExactAggregateMergeAccumulator, ExactAggregatePartialValue,
+            ExactBorrowedAggregateLeafBuilder, ExactBorrowedAggregateMergeAccumulator,
+            ExactDistinctAggregateLeafBuilder, ExactDistinctAggregateMergeAccumulator,
+            SealedAggregateInputFacts,
+        };
+        use super::top_n::{
+            BoundedTopN, TopNComparisonProfile, TopNNoValuePlacement, TopNOrderTerm,
+            TopNProgramBinding, TopNSource, TopNValueDirection,
+        };
+        use crate::PrimaryKeyBytes;
+        use crate::segment_v2::SegmentV2SegmentId;
+        use riffdb_types::{
+            AggregateSemanticIdentityV1, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1, ProjectionGeneration, QueryPlanHash,
+        };
+
+        let dataset_i64 = [
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Null,
+            SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+            SegmentV2Cell::Value(CanonicalValue::I64(-42)),
+            SegmentV2Cell::Value(CanonicalValue::I64(0)),
+            SegmentV2Cell::Value(CanonicalValue::I64(7)),
+            SegmentV2Cell::Value(CanonicalValue::I64(19)),
+            SegmentV2Cell::Value(CanonicalValue::I64(19)),
+            SegmentV2Cell::Value(CanonicalValue::I64(100)),
+            SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+        ];
+        let dataset_u64 = [
+            SegmentV2Cell::Value(CanonicalValue::U64(0)),
+            SegmentV2Cell::Null,
+            SegmentV2Cell::Value(CanonicalValue::U64(5)),
+            SegmentV2Cell::Value(CanonicalValue::U64(12)),
+            SegmentV2Cell::Value(CanonicalValue::U64(12)),
+            SegmentV2Cell::Value(CanonicalValue::U64(25)),
+            SegmentV2Cell::Value(CanonicalValue::U64(40)),
+            SegmentV2Cell::Value(CanonicalValue::U64(99)),
+            SegmentV2Cell::Value(CanonicalValue::U64(144)),
+            SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+        ];
+        let predicates = [
+            SegmentV2Predicate::Equal(CanonicalValue::I64(19)),
+            SegmentV2Predicate::LessThan(CanonicalValue::I64(20)),
+            SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(19)),
+            SegmentV2Predicate::GreaterThan(CanonicalValue::I64(-50)),
+            SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+            SegmentV2Predicate::IsNull,
+            SegmentV2Predicate::IsPresent,
+        ];
+
+        for &closed_width in &CLOSED_BATCH_WIDTHS {
+            let width =
+                ColumnarBatchWidth::choose(closed_width, 1, closed_width).expect("closed width");
+
+            // 1. Differential predicate evaluation across all cells and operators.
+            for predicate in &predicates {
+                let expected: Result<Vec<usize>, ScalarOracleError> = dataset_i64
+                    .iter()
+                    .enumerate()
+                    .filter_map(
+                        |(idx, cell)| match independent_scalar_oracle(cell, predicate) {
+                            Ok(true) => Some(Ok(idx)),
+                            Ok(false) => None,
+                            Err(err) => Some(Err(err)),
+                        },
+                    )
+                    .collect();
+
+                let lanes = [dataset_i64.as_slice(), dataset_u64.as_slice()];
+                let batch = BorrowedLaneBatch::new(width, &lanes).expect("borrowed batch");
+                let kernel = ColumnarPredicateKernel::new(
+                    0,
+                    &[SegmentV2LogicalType::I64, SegmentV2LogicalType::U64],
+                    predicate.clone(),
+                )
+                .expect("sealed kernel");
+                let mut selection = MonotoneSelection::all(&batch);
+                let mut charge =
+                    PredicateWorkCharge::new(dataset_i64.len()).expect("bounded predicate charge");
+                let actual = match kernel.apply(&batch, &mut selection, &mut charge) {
+                    Ok(()) => Ok(selection.indices().collect::<Vec<_>>()),
+                    Err(ColumnarPredicateKernelError::MissingField) => {
+                        Err(ScalarOracleError::MissingField)
+                    }
+                    Err(ColumnarPredicateKernelError::UnsupportedPredicate) => {
+                        Err(ScalarOracleError::UnsupportedPredicate)
+                    }
+                    Err(_) => Err(ScalarOracleError::KernelUnexpected),
+                };
+                assert_eq!(
+                    actual, expected,
+                    "width={closed_width} predicate={predicate:?}"
+                );
+            }
+
+            // 2. Differential exact aggregate (Count, Sum, Mean), borrowed extrema (Min, Max),
+            //    and distinct (CountDistinctPresent) over present rows [3..9].
+            let present_i64 = &dataset_i64[3..9];
+            let scalar_sum: i128 = present_i64
+                .iter()
+                .map(|cell| match cell {
+                    SegmentV2Cell::Value(CanonicalValue::I64(v)) => i128::from(*v),
+                    other => panic!("unexpected cell in present slice: {other:?}"),
+                })
+                .sum();
+            let scalar_count = u64::try_from(present_i64.len()).expect("u64 count");
+
+            let seg_a = SegmentV2SegmentId::from_bytes([1; 16]);
+            let seg_b = SegmentV2SegmentId::from_bytes([2; 16]);
+            let identities = [
+                CanonicalPartialIdentity::new(0, seg_a, 0),
+                CanonicalPartialIdentity::new(0, seg_a, 1),
+                CanonicalPartialIdentity::new(0, seg_b, 0),
+            ];
+            let chunks: [&[SegmentV2Cell]; 3] =
+                [&present_i64[0..2], &present_i64[2..4], &present_i64[4..6]];
+            let mut budget = AggregatePartialBudget::new(
+                MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+                MAX_AGGREGATE_STATE_BYTES_V1,
+            )
+            .expect("aggregate budget");
+            let mut sum_merge = ExactAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::Sum,
+                Some(&SegmentV2LogicalType::I64),
+                &identities,
+                &mut budget,
+            )
+            .expect("sum accumulator");
+            let mut mean_merge = ExactAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::Mean,
+                Some(&SegmentV2LogicalType::I64),
+                &identities,
+                &mut budget,
+            )
+            .expect("mean accumulator");
+            let binding = TopNProgramBinding::new(
+                Some(TopNComparisonProfile::CanonicalScalarV1),
+                QueryPlanHash::from_bytes([9; 32]),
+                ProjectionGeneration::new(1).expect("generation 1"),
+            )
+            .expect("program binding");
+            let input_facts = SealedAggregateInputFacts::new(
+                Some(binding),
+                binding,
+                AggregateFieldOptionality::Optional,
+            );
+            let mut min_merge = ExactBorrowedAggregateMergeAccumulator::new(
+                input_facts,
+                AggregateSemanticIdentityV1::Min,
+                &SegmentV2LogicalType::I64,
+                None,
+                &identities,
+                &mut budget,
+            )
+            .expect("min accumulator");
+            let mut distinct_merge = ExactDistinctAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::CountDistinctPresent,
+                &SegmentV2LogicalType::I64,
+                16,
+                &identities,
+                &mut budget,
+            )
+            .expect("distinct accumulator");
+
+            for (identity, chunk) in identities.iter().copied().zip(chunks) {
+                let mut sum_leaf = ExactAggregateLeafBuilder::new(
+                    identity,
+                    AggregateSemanticIdentityV1::Sum,
+                    Some(&SegmentV2LogicalType::I64),
+                    &mut budget,
+                )
+                .expect("sum leaf");
+                sum_leaf.accumulate(chunk, &mut budget).expect("sum chunk");
+                sum_merge
+                    .merge_leaf(sum_leaf.finalize(), &mut budget)
+                    .expect("merge sum leaf");
+
+                let mut mean_leaf = ExactAggregateLeafBuilder::new(
+                    identity,
+                    AggregateSemanticIdentityV1::Mean,
+                    Some(&SegmentV2LogicalType::I64),
+                    &mut budget,
+                )
+                .expect("mean leaf");
+                mean_leaf
+                    .accumulate(chunk, &mut budget)
+                    .expect("mean chunk");
+                mean_merge
+                    .merge_leaf(mean_leaf.finalize(), &mut budget)
+                    .expect("merge mean leaf");
+
+                let mut min_leaf = ExactBorrowedAggregateLeafBuilder::new(
+                    identity,
+                    input_facts,
+                    AggregateSemanticIdentityV1::Min,
+                    &SegmentV2LogicalType::I64,
+                    None,
+                    &mut budget,
+                )
+                .expect("min leaf");
+                min_leaf.accumulate(chunk, &mut budget).expect("min chunk");
+                min_merge
+                    .merge_leaf(min_leaf.finalize(), &mut budget)
+                    .expect("merge min leaf");
+
+                let mut distinct_leaf = ExactDistinctAggregateLeafBuilder::new(
+                    identity,
+                    AggregateSemanticIdentityV1::CountDistinctPresent,
+                    &SegmentV2LogicalType::I64,
+                    16,
+                    &mut budget,
+                )
+                .expect("distinct leaf");
+                distinct_leaf
+                    .accumulate(chunk, &mut budget)
+                    .expect("distinct chunk");
+                distinct_merge
+                    .merge_leaf(distinct_leaf.finalize(), &mut budget)
+                    .expect("merge distinct leaf");
+            }
+
+            assert_eq!(
+                sum_merge.finish().expect("sum finish"),
+                ExactAggregatePartialValue::Sum {
+                    coefficient: scalar_sum,
+                    scale: 0,
+                }
+            );
+            assert_eq!(
+                mean_merge.finish().expect("mean finish"),
+                ExactAggregatePartialValue::Mean {
+                    coefficient: scalar_sum,
+                    scale: 0,
+                    count: scalar_count,
+                }
+            );
+            assert_eq!(
+                min_merge.finish().expect("min finish"),
+                BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(
+                    &CanonicalValue::I64(-42)
+                )))
+            );
+            assert_eq!(distinct_merge.finish().expect("distinct finish"), 5);
+
+            // 3. Differential BoundedTopN selection against scalar sort + take(limit).
+            let primary_keys: Vec<PrimaryKeyBytes> = (0..present_i64.len())
+                .map(|idx| {
+                    PrimaryKeyBytes::from_entity_key_bytes(vec![
+                        u8::try_from(idx + 1).expect("key byte"),
+                    ])
+                })
+                .collect();
+            let order_terms = [TopNOrderTerm::new(
+                SegmentV2LogicalType::I64,
+                TopNValueDirection::Descending,
+                TopNNoValuePlacement::PresentOnly,
+            )];
+            let order_lanes = [present_i64];
+            let source =
+                TopNSource::new(binding, &order_terms, &primary_keys, &order_lanes).expect("topn");
+            let mut top_n = BoundedTopN::new(&source, 3).expect("top 3");
+            for row in 0..present_i64.len() {
+                top_n.push(row).expect("push row");
+            }
+            let page = top_n.finish().expect("finish top 3");
+            let winners: Vec<Vec<u8>> = page
+                .primary_key_slices()
+                .map(|res| res.expect("winner key").to_vec())
+                .collect();
+            // Values at present_i64 indices 0..6 are [-42, 0, 7, 19, 19, 100] with keys [1..=6].
+            // Descending order with ascending primary-key tie-break yields keys [6] (100), [4] (19, pk=4), [5] (19, pk=5).
+            assert_eq!(winners, vec![vec![6], vec![4], vec![5]]);
+            assert!(page.has_more());
+            assert_eq!(
+                page.cursor_primary_key()
+                    .expect("cursor")
+                    .map(PrimaryKeyBytes::as_bytes),
+                Some([5u8].as_slice())
+            );
+        }
+    }
 }
