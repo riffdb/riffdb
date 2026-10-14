@@ -163,11 +163,82 @@ The frozen classes are:
 | wide bounded named read | board 50/200/450 | 6 ms | 12 ms |
 | compiled command | four representative commands | 10 ms | 15 ms |
 
-The absolute ceilings gate N1 and E2. All three profiles additionally gate each
-operation/statistic against the exact WP-674 RiffDB low-water bank at no more
-than `1.10x`. Safe-application PostgreSQL runs in every unary cell and minimal
-PostgreSQL is retained as a full disclosure report. Their p50/p95 ratios remain
-published evidence, not unary release gates.
+The absolute ceilings are outer admission floors for N1 and E2 rather than the
+tight regression boundary: because ordinary named reads execute at `0.517–0.953 ms`
+p50 on N1 and `1.399–2.246 ms` p50 on E2, the `3 ms / 6 ms` ceiling has
+`1.9x–5.8x` headroom on point reads. The **operative unary non-regression gate**
+is the frozen WP-674 RiffDB low-water bank (`release/evidence/wp-674/baseline-v1.json`),
+enforced by `./scripts/check-wp674-unary-baseline` at no more than `1.10x` per
+scenario, percentile (`p50` and `p95`), and profile (`workstation`, `n1`, and `e2`).
+No published service level can be met by an artifact that has regressed against
+the frozen low-water bank.
+
+### WP-726 unary transport floor and PostgreSQL unary ratio disclosure
+
+In the banked WP-674 release-build receipts (`docs/performance/wp-726-unary-transport-floor.md`),
+stage decomposition of single-stream point reads shows that `93.5–94.6%` of unary
+latency occurs outside storage/query execution (`execute`):
+
+- On **N1** `point_get_ticket` (client mean `538.3 µs`, p50 `534.1 µs` vs
+  `postgres_safe_app` p50 `250.1 µs`, `2.14x`), the outside-server client/TLS/HTTP2
+  residual is `395.1 µs` (`415.4 µs` on `list_project_members` against the retired
+  `1.10x` target of `294.4 µs`), and inside `server_handler` (`143.2 µs`) the
+  non-`execute` stages (`transport_adapt` + `encode_convert` = `13.40 µs`,
+  `authn` + `authorize_*` = `24.96 µs`, `admission_context` + `spawn_dispatch` +
+  `plan_lookup` + `param_materialize` = `45.42 µs`, await/handoff = `29.64 µs`)
+  total `113.4 µs`, while query `execute` is `29.78 µs`.
+- On **E2** `point_get_ticket` (client mean `1,573.2 µs`, p50 `1,598.3 µs` vs
+  `postgres_safe_app` p50 `348.9 µs`, `4.58x`), the outside-server client/TLS/HTTP2
+  residual is `1,183.8 µs`, inside-server non-`execute` stages total `287.6 µs`
+  (`transport_adapt` + `encode_convert` = `42.03 µs`, `authn` + `authorize_*` =
+  `67.26 µs`, `admission_context` + `spawn_dispatch` + `plan_lookup` +
+  `param_materialize` = `105.53 µs`, await/handoff = `72.80 µs`), and query
+  `execute` is `101.78 µs`.
+- The Rust harness (`riffdb-client-rust`) connects directly to `riffdbd` without
+  `riffdb-driverd`, so this floor contains zero Unix-socket driver-host hops;
+  under `ADR-0148` (`DRV-004`), Python shares the `riffdb-driver-host` protocol
+  core in-process while Go and TypeScript use one local Unix socket.
+
+Because every stage in this floor implements a required safety guarantee
+(authenticated TLS/HTTP2 framing, typed Protobuf serialization, per-request
+capability authentication, compiled plan lookup, and fresh pre/post row-policy
+evaluation), WP-726 records this floor as RiffDB's honest unary cost for alpha.
+Safe-application PostgreSQL runs in every unary cell and minimal PostgreSQL is
+retained as a full disclosure report. Their p50/p95 ratios remain published
+evidence in the handbook, not unary release gates:
+
+- **Ordinary named reads (7 scenarios)**:
+  - **N1**: RiffDB p50 `0.517–0.953 ms` (p95 `0.617–1.060 ms`, p99 `0.684–1.123 ms`,
+    max `0.729–1.257 ms`) vs `postgres_safe_app` p50 `0.241–0.479 ms` (p95
+    `0.276–0.524 ms`, p99 `0.289–0.600 ms`, max `0.495–1.120 ms`), yielding
+    safe-app ratios of **`1.56x–2.43x` p50** (`2.14x` on `point_get_ticket`,
+    `2.15x` on `point_get_user`) and **`1.63x–2.49x` p95** (minimal PG ratios
+    `2.53x–7.55x` p50, `2.37x–5.26x` p95).
+  - **E2**: RiffDB p50 `1.399–2.246 ms` (p95 `2.038–2.997 ms`, p99 `2.299–3.328 ms`,
+    max `2.596–4.105 ms`) vs `postgres_safe_app` p50 `0.335–0.801 ms` (p95
+    `1.365–3.081 ms`, p99 `1.971–3.665 ms`, max `2.600–4.116 ms`), yielding
+    safe-app ratios of **`2.32x–4.72x` p50** (`4.58x` on `point_get_ticket`,
+    `4.18x` on `point_get_user`) and **`0.82x–1.51x` p95** (minimal PG ratios
+    `1.79x–4.62x` p50, `1.28x–3.09x` p95).
+- **Wide bounded named reads (`board_page_50`, `board_page_200`, `board_page_450`)**:
+  - **N1**: RiffDB p50 `2.043–4.381 ms` (p95 `2.180–4.628 ms`, p99 `2.279–4.757 ms`,
+    max `2.611–4.986 ms`) vs `postgres_safe_app` p50 `1.918–4.666 ms` (p95
+    `2.128–4.903 ms`, p99 `2.230–5.001 ms`, max `2.467–5.076 ms`), yielding
+    safe-app ratios of **`0.63x–1.49x` p50** and **`0.63x–1.49x` p95**.
+  - **E2**: RiffDB p50 `3.656–6.282 ms` (p95 `4.344–7.510 ms`, p99 `4.617–8.897 ms`,
+    max `5.255–11.834 ms`) vs `postgres_safe_app` p50 `2.651–5.185 ms` (p95
+    `3.723–6.112 ms`, p99 `4.098–6.573 ms`, max `5.255–7.745 ms`), yielding
+    safe-app ratios of **`0.90x–1.41x` p50** and **`0.89x–1.36x` p95**.
+- **Compiled commands (`create_comment`, `swap_member_roles`, `close_ticket_with_comment`, `open_ticket_with_labels`)**:
+  - **N1**: RiffDB p50 `3.532–4.346 ms` (p95 `3.924–4.797 ms`, p99 `4.155–5.056 ms`,
+    max `2,054.8–2,093.2 ms`) vs `postgres_safe_app` p50 `2.286–2.574 ms` (p95
+    `2.618–2.917 ms`, p99 `2.844–4.019 ms`, max `4.602–6.597 ms`), yielding
+    safe-app ratios of **`1.46x–1.71x` p50** and **`1.43x–1.66x` p95**.
+  - **E2**: RiffDB p50 `7.831–9.001 ms` (p95 `9.317–10.818 ms`, p99 `10.074–12.184 ms`,
+    max `1,500.4–1,598.8 ms`) vs `postgres_safe_app` p50 `7.426–9.203 ms` (p95
+    `12.448–14.677 ms`, p99 `14.381–16.748 ms`, max `17.361–19.344 ms`), yielding
+    safe-app ratios of **`0.94x–1.05x` p50** and **`0.72x–0.77x` p95**.
+
 
 Every unary row also carries exact request and response bytes under the frozen
 `riffdb.app-baseline-canonical-semantic-frame/v1` encoding. This counts the

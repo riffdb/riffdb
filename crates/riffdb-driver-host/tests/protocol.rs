@@ -185,6 +185,7 @@ fn non_finite_driver_vector_bits_fail_before_dispatch() {
     );
 }
 
+// req: DRV-004
 #[test]
 fn handshake_registry_identities_are_frozen() {
     let request = DriverRequest::Handshake {
