@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# req: VER-001, VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008
+# req: AFC-001, VER-001, VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008
 """Validate the release-significant version topology without third-party modules."""
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import re
@@ -14,6 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
 DURABLE_MANIFEST_PATH = ROOT / "release/durable-format-manifest-v1.json"
+RELEASE_PAIRS_PATH = ROOT / "fixtures/compatibility/release-pairs-v1.json"
+DISTRIBUTION_MANIFEST_PATH = ROOT / "release/distribution/manifest-v1.json"
 
 CLASSIFICATIONS = {
     "durable",
@@ -197,6 +200,9 @@ def validate(
     topology: dict,
     durable: dict,
     *,
+    release_pairs: dict | None = None,
+    distribution_manifest: dict | None = None,
+    release_tag: str | None = None,
     check_sources: bool = True,
     source_overrides: dict[str, str] | None = None,
 ) -> list[str]:
@@ -211,6 +217,30 @@ def validate(
         errors.append("topology policy_adr must be ADR-0124")
     if topology.get("release") != durable.get("release"):
         errors.append("topology release does not match durable manifest release")
+    if release_tag is not None:
+        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release_tag):
+            errors.append(f"release tag {release_tag!r} must match v<major>.<minor>.<patch>")
+        elif release_tag[1:] != topology.get("release"):
+            errors.append(
+                f"release tag {release_tag!r} does not match topology release {topology.get('release')!r}"
+            )
+    if distribution_manifest is not None and distribution_manifest.get("version") != topology.get("release"):
+        errors.append("distribution manifest version does not match topology release")
+    if durable.get("schema") != "riffdb.durable-format-manifest/v1":
+        errors.append("durable manifest schema must be riffdb.durable-format-manifest/v1")
+    if not isinstance(durable.get("alpha_epoch"), int) or durable.get("alpha_epoch", 0) < 1:
+        errors.append("durable manifest alpha_epoch must be a positive integer")
+    if not isinstance(durable.get("writer"), int) or durable.get("writer", -1) < 0:
+        errors.append("durable manifest writer must be a non-negative integer")
+    for hash_key in ("record_registry_digest", "compatibility_fixture_digest"):
+        digest = durable.get(hash_key)
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"durable manifest {hash_key} must be a 64-character hex SHA-256")
+    if durable.get("downgrade") != "unsupported":
+        errors.append("durable manifest downgrade posture must be unsupported")
+    if durable.get("breaking_epoch_posture") != "export_reimport_only":
+        errors.append("durable manifest breaking_epoch_posture must be export_reimport_only")
+
     window = topology.get("supported_release_window")
     expected_window = {
         "minimum": durable.get("minimum_supported_source_release"),
@@ -231,6 +261,7 @@ def validate(
         errors.append("domain ids must be unique")
 
     durable_key_counts: dict[str, int] = {}
+    durable_breaking_domains: list[str] = []
     for domain in domains:
         if not isinstance(domain, dict):
             errors.append("domain entry must be an object")
@@ -254,7 +285,8 @@ def validate(
         if domain.get("writer_policy") not in WRITER_POLICIES:
             errors.append(f"{domain_id}: unknown writer policy")
         last_change = domain.get("last_change")
-        if not isinstance(last_change, dict) or last_change.get("classification") not in CHANGE_CLASSES:
+        change_class = last_change.get("classification") if isinstance(last_change, dict) else None
+        if not isinstance(last_change, dict) or change_class not in CHANGE_CLASSES:
             errors.append(f"{domain_id}: invalid last_change classification")
         elif not isinstance(last_change.get("decision"), str) or not last_change["decision"]:
             errors.append(f"{domain_id}: last_change decision must be nonempty")
@@ -279,6 +311,16 @@ def validate(
             errors.append(f"{domain_id}: at least one current identity is required")
         if domain.get("writer_policy") in {"single_current", "external_baseline"} and len(current) != 1:
             errors.append(f"{domain_id}: writer policy requires exactly one current identity")
+
+        if change_class == "writer_transition":
+            if domain.get("classification") != "durable":
+                errors.append(f"{domain_id}: writer_transition requires a durable domain")
+            elif domain.get("writer_policy") == "single_current" and len(readable) < 2:
+                errors.append(
+                    f"{domain_id}: writer_transition must retain at least one prior readable identity"
+                )
+        if change_class == "breaking_epoch" and domain.get("classification") == "durable":
+            durable_breaking_domains.append(domain_id)
 
         lifecycle = domain.get("lifecycle")
         lifecycle_sets: dict[str, list[str]] = {}
@@ -364,6 +406,34 @@ def validate(
                     if durable.get(key) != expected:
                         errors.append(f"{domain_id}: manifest scalar {key} drifted")
 
+    if release_pairs is not None:
+        if release_pairs.get("schema") != "riffdb.durable-release-pairs/v1":
+            errors.append("release-pairs schema must be riffdb.durable-release-pairs/v1")
+        breaking_epochs = release_pairs.get("breaking_epochs")
+        if not isinstance(breaking_epochs, list):
+            errors.append("release-pairs breaking_epochs must be a list")
+        elif bool(durable_breaking_domains) != bool(breaking_epochs):
+            errors.append(
+                "breaking_epoch transition is inconsistent with release-pairs breaking_epochs"
+            )
+        edges = release_pairs.get("edges")
+        if not isinstance(edges, list) or not edges:
+            errors.append("release-pairs edges must be a nonempty list")
+        else:
+            expected_target = {
+                "epoch": durable.get("alpha_epoch"),
+                "writer": durable.get("writer"),
+            }
+            for edge in edges:
+                if (
+                    isinstance(edge, dict)
+                    and edge.get("target_release") == durable.get("release")
+                    and edge.get("target") != expected_target
+                ):
+                    errors.append(
+                        f"release-pairs edge target {edge.get('target')} disagrees with durable manifest {expected_target}"
+                    )
+
     used_durable_keys = set(durable_key_counts)
     duplicate_keys = sorted(key for key, count in durable_key_counts.items() if count != 1)
     if used_durable_keys != DURABLE_WINDOW_KEYS or duplicate_keys:
@@ -376,7 +446,12 @@ def validate(
     return errors
 
 
-def run_negative_self_tests(topology: dict, durable: dict) -> list[str]:
+def run_negative_self_tests(
+    topology: dict,
+    durable: dict,
+    release_pairs: dict,
+    distribution_manifest: dict,
+) -> list[str]:
     failures: list[str] = []
 
     reordered = copy.deepcopy(topology)
@@ -406,6 +481,43 @@ def run_negative_self_tests(topology: dict, durable: dict) -> list[str]:
     if not any("disagrees with durable manifest" in error for error in validate(durable_mismatch, durable, check_sources=False)):
         failures.append("negative self-test did not reject durable-manifest drift")
 
+    bad_tag_errors = validate(
+        topology,
+        durable,
+        release_pairs=release_pairs,
+        distribution_manifest=distribution_manifest,
+        release_tag="v9.9.9",
+        check_sources=False,
+    )
+    if not any("release tag 'v9.9.9' does not match topology release" in error for error in bad_tag_errors):
+        failures.append("negative self-test did not reject mismatched release tag")
+
+    bad_transition = copy.deepcopy(topology)
+    durable_single = next(
+        domain
+        for domain in bad_transition["domains"]
+        if domain["classification"] == "durable"
+        and domain["writer_policy"] == "single_current"
+        and len(domain["readable_identities"]) == 1
+    )
+    durable_single["last_change"]["classification"] = "writer_transition"
+    if not any(
+        "writer_transition must retain at least one prior readable identity" in error
+        for error in validate(bad_transition, durable, release_pairs=release_pairs, check_sources=False)
+    ):
+        failures.append("negative self-test did not reject writer_transition without prior reader")
+
+    bad_breaking = copy.deepcopy(topology)
+    durable_breaking = next(
+        domain for domain in bad_breaking["domains"] if domain["classification"] == "durable"
+    )
+    durable_breaking["last_change"]["classification"] = "breaking_epoch"
+    if not any(
+        "breaking_epoch transition is inconsistent with release-pairs" in error
+        for error in validate(bad_breaking, durable, release_pairs=release_pairs, check_sources=False)
+    ):
+        failures.append("negative self-test did not reject inconsistent breaking_epoch transition")
+
     family_domain = next(
         domain for domain in topology["domains"] if domain["id"] == "executable_ir.contract_bundle"
     )
@@ -422,10 +534,24 @@ def run_negative_self_tests(topology: dict, durable: dict) -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--release-tag",
+        help="Verify that the given release tag (for example v0.1.0) matches the topology and durable manifest.",
+    )
+    arguments = parser.parse_args()
     topology = load_json(TOPOLOGY_PATH)
     durable = load_json(DURABLE_MANIFEST_PATH)
-    errors = validate(topology, durable)
-    errors.extend(run_negative_self_tests(topology, durable))
+    release_pairs = load_json(RELEASE_PAIRS_PATH)
+    distribution_manifest = load_json(DISTRIBUTION_MANIFEST_PATH)
+    errors = validate(
+        topology,
+        durable,
+        release_pairs=release_pairs,
+        distribution_manifest=distribution_manifest,
+        release_tag=arguments.release_tag,
+    )
+    errors.extend(run_negative_self_tests(topology, durable, release_pairs, distribution_manifest))
     if errors:
         print("version topology validation failed:", file=sys.stderr)
         for error in sorted(set(errors)):

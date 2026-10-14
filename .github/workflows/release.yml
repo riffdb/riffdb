@@ -1,0 +1,342 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to verify (for example v0.1.0)"
+        required: false
+        default: "v0.1.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riffdb-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+  SOURCE_DATE_EPOCH: "1735689600"
+
+jobs:
+  version-gate:
+    name: version topology and transition gate
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      version: ${{ steps.tag.outputs.version }}
+      revision: ${{ steps.tag.outputs.revision }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Resolve and enforce release tag and version topology
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            release_tag="${{ inputs.release_tag || 'v0.1.0' }}"
+          fi
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+          ./scripts/check-version-topology --release-tag "$release_tag"
+          ./scripts/check-durable-format-manifest
+          ./scripts/check-driver-distribution
+          ./scripts/check-driver-conformance-manifests
+          ./scripts/check-generated
+          printf 'release_tag=%s\n' "$release_tag" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${release_tag#v}" >>"$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+
+  release-bundle:
+    name: verified POC release bundle
+    needs: [version-gate]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler postgresql postgresql-client jq
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Install pinned Cargo verification tools
+        run: |
+          source scripts/tool-versions
+          cargo +1.98.1 install --locked cargo-deny --version "$RIFFDB_CARGO_DENY_VERSION"
+          cargo +1.98.1 install --locked cargo-audit --version "$RIFFDB_CARGO_AUDIT_VERSION"
+          cargo +1.98.1 install --locked cargo-machete --version "$RIFFDB_CARGO_MACHETE_VERSION"
+      - name: Run scripts/release-poc --verify on clean revision
+        run: ./scripts/release-poc --verify
+      - name: Upload verified POC release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: riffdb-release-poc-bundle
+          path: |
+            target/wp200/release/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            target/wp200/release/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if-no-files-found: error
+
+  driver-packages:
+    name: verified driver packages (${{ matrix.arch }})
+    needs: [version-gate]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Build native CLI
+        run: cargo +1.98.1 build --release --locked -p riffdb-cli
+      - name: Build pinned manylinux Python runtime
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: build
+          maturin-version: v1.14.1
+          rust-toolchain: 1.98.1
+          target: ${{ matrix.target }}
+          manylinux: 2_28
+          working-directory: clients/python/runtime
+          args: --release --locked --compatibility pypi --out ../../../target/wp728-python
+      - name: Build and verify driver distribution with DRV-014 conformance manifests
+        env:
+          RIFFDB_TMP_ROOT: ${{ runner.temp }}/riffdb-wp728-driver
+        run: |
+          wheel="$(find target/wp728-python -maxdepth 1 -type f -name 'riffdb_application-0.1.0-*.whl' -print -quit)"
+          [[ -n "$wheel" ]]
+          ./scripts/build-driver-distributions \
+            --output "$GITHUB_WORKSPACE/target/wp728-distribution-${{ matrix.target }}" \
+            --binary-dir "$GITHUB_WORKSPACE/target/release" \
+            --python-wheel "$GITHUB_WORKSPACE/$wheel" \
+            --target "${{ matrix.target }}"
+          mkdir -p "$RIFFDB_TMP_ROOT/signing"
+          ssh-keygen -q -t ed25519 -N '' -C riffdb-release -f "$RIFFDB_TMP_ROOT/signing/key"
+          printf 'riffdb-release namespaces="riffdb-driver-distribution-v1" %s\n' \
+            "$(ssh-keygen -y -f "$RIFFDB_TMP_ROOT/signing/key")" \
+            >"$RIFFDB_TMP_ROOT/signing/allowed-signers"
+          ./scripts/sign-driver-distributions \
+            --key "$RIFFDB_TMP_ROOT/signing/key" \
+            "$GITHUB_WORKSPACE/target/wp728-distribution-${{ matrix.target }}"
+          ./scripts/driver-package-arrival \
+            --distribution "$GITHUB_WORKSPACE/target/wp728-distribution-${{ matrix.target }}" \
+            --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
+            --identity riffdb-release \
+            --receipt "$GITHUB_WORKSPACE/target/wp728-package-arrival-${{ matrix.target }}.json"
+          rm -f "$GITHUB_WORKSPACE/target/wp728-distribution-${{ matrix.target }}/checksums.sha256.sig"
+      - name: Upload verified unsigned driver distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: riffdb-driver-distribution-${{ matrix.target }}
+          path: target/wp728-distribution-${{ matrix.target }}/**
+          if-no-files-found: error
+
+  container-image:
+    name: build and publish tracked container image
+    needs: [version-gate, release-bundle]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image_digest: ${{ steps.image.outputs.image_digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download verified POC release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: riffdb-release-poc-bundle
+          path: target/wp200/release
+      - name: Extract verified release binaries and build tracked Dockerfile
+        id: image
+        shell: bash
+        run: |
+          version="${{ needs.version-gate.outputs.version }}"
+          bundle="riffdb-${version}-x86_64-unknown-linux-gnu"
+          (
+            cd target/wp200/release
+            sha256sum -c "${bundle}.tar.gz.sha256"
+            tar -xzf "${bundle}.tar.gz"
+          )
+          mkdir -p target/release
+          install -m 0755 "target/wp200/release/${bundle}/bin/riffdb" target/release/riffdb
+          install -m 0755 "target/wp200/release/${bundle}/bin/riffdbd" target/release/riffdbd
+          ./scripts/check-container-startup
+          image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image_tag="${image_repo}:${{ needs.version-gate.outputs.release_tag }}"
+          docker build -f release/container/Dockerfile --build-arg RIFFDB_PROFILE=release -t "$image_tag" .
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" == refs/tags/v* ]]; then
+            printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+            docker push "$image_tag"
+            digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$image_tag")"
+          else
+            image_id="$(docker inspect --format='{{.Id}}' "$image_tag" | sed 's/^sha256://')"
+            digest="${image_repo}@sha256:${image_id}"
+          fi
+          printf 'image_digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+
+  publish-release:
+    name: sign, attest, and publish release and driver packages
+    needs: [version-gate, release-bundle, driver-packages, container-image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download verified POC release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: riffdb-release-poc-bundle
+          path: target/wp728-inputs/bundle
+      - name: Download x86_64 driver distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: riffdb-driver-distribution-x86_64-unknown-linux-gnu
+          path: target/wp728-inputs/drivers/x86_64-unknown-linux-gnu
+      - name: Download aarch64 driver distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: riffdb-driver-distribution-aarch64-unknown-linux-gnu
+          path: target/wp728-inputs/drivers/aarch64-unknown-linux-gnu
+      - name: Sign, assemble, and verify complete release publication
+        env:
+          RIFFDB_RELEASE_SSH_KEY: ${{ secrets.RIFFDB_RELEASE_SSH_KEY }}
+        shell: bash
+        run: |
+          umask 077
+          key_dir="${RUNNER_TEMP}/riffdb-release-keys"
+          mkdir -p "$key_dir"
+          if [[ -n "${RIFFDB_RELEASE_SSH_KEY}" ]]; then
+            printf '%s\n' "${RIFFDB_RELEASE_SSH_KEY}" >"$key_dir/release-ed25519"
+            chmod 0600 "$key_dir/release-ed25519"
+            ssh-keygen -y -f "$key_dir/release-ed25519" >"$key_dir/release-ed25519.pub"
+          else
+            ssh-keygen -q -t ed25519 -N '' -C riffdb-release -f "$key_dir/release-ed25519"
+          fi
+          pubkey="$(cat "$key_dir/release-ed25519.pub")"
+          printf 'riffdb-release namespaces="riffdb-driver-distribution-v1" %s\n' "$pubkey" \
+            >"$key_dir/driver-allowed-signers"
+          printf 'riffdb-release namespaces="riffdb-release-v1" %s\n' "$pubkey" \
+            >"$key_dir/release-allowed-signers"
+          chmod 0644 "$key_dir/driver-allowed-signers" "$key_dir/release-allowed-signers"
+
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            dist="$GITHUB_WORKSPACE/target/wp728-inputs/drivers/$target"
+            chmod 0755 "$dist/install/riffdb-install" "$dist/bin/$target/riffdb"
+            ./scripts/sign-driver-distributions --key "$key_dir/release-ed25519" "$dist"
+            ./scripts/verify-driver-distributions \
+              --allowed-signers "$key_dir/driver-allowed-signers" \
+              --identity riffdb-release \
+              "$dist"
+          done
+
+          version="${{ needs.version-gate.outputs.version }}"
+          bundle="$GITHUB_WORKSPACE/target/wp728-inputs/bundle/riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          publication="$GITHUB_WORKSPACE/target/wp728-publication"
+          ./scripts/publish-release-artifacts assemble \
+            --release-tag "${{ needs.version-gate.outputs.release_tag }}" \
+            --bundle-archive "$bundle" \
+            --driver-distribution "$GITHUB_WORKSPACE/target/wp728-inputs/drivers/x86_64-unknown-linux-gnu" \
+            --driver-distribution "$GITHUB_WORKSPACE/target/wp728-inputs/drivers/aarch64-unknown-linux-gnu" \
+            --driver-allowed-signers "$key_dir/driver-allowed-signers" \
+            --driver-identity riffdb-release \
+            --signing-key "$key_dir/release-ed25519" \
+            --container-image-digest "${{ needs.container-image.outputs.image_digest }}" \
+            --output "$publication"
+          ./scripts/publish-release-artifacts verify \
+            --publication "$publication" \
+            --allowed-signers "$key_dir/release-allowed-signers" \
+            --identity riffdb-release \
+            --expected-tag "${{ needs.version-gate.outputs.release_tag }}"
+          install -m 0644 "$key_dir/release-allowed-signers" "$publication/riffdb-release-allowed-signers"
+          install -m 0644 "$key_dir/driver-allowed-signers" "$publication/riffdb-driver-allowed-signers"
+      - name: Attest build provenance over published artifacts
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c # v2.2.3
+        with:
+          subject-path: |
+            target/wp728-publication/riffdb-${{ needs.version-gate.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            target/wp728-publication/sbom.cdx.json
+            target/wp728-publication/durable-format-manifest-v1.json
+            target/wp728-publication/version-topology-v1.json
+            target/wp728-publication/release-provenance-v1.json
+            target/wp728-publication/SHA256SUMS
+      - name: Publish immutable GitHub Release and ecosystem driver packages
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        shell: bash
+        run: |
+          publication="$GITHUB_WORKSPACE/target/wp728-publication"
+          version="${{ needs.version-gate.outputs.version }}"
+          tag="${{ needs.version-gate.outputs.release_tag }}"
+          (
+            cd "$publication/drivers"
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              -czf "$publication/riffdb-driver-distribution-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+              x86_64-unknown-linux-gnu
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              -czf "$publication/riffdb-driver-distribution-${version}-aarch64-unknown-linux-gnu.tar.gz" \
+              aarch64-unknown-linux-gnu
+          )
+          gh release create "$tag" \
+            --verify-tag \
+            --title "RiffDB $tag" \
+            --notes-file release/RELEASE_NOTES.md \
+            "$publication/riffdb-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            "$publication/sbom.cdx.json" \
+            "$publication/durable-format-manifest-v1.json" \
+            "$publication/version-topology-v1.json" \
+            "$publication/release-provenance-v1.json" \
+            "$publication/SHA256SUMS" \
+            "$publication/SHA256SUMS.sig" \
+            "$publication/riffdb-release-allowed-signers" \
+            "$publication/riffdb-driver-allowed-signers" \
+            "$publication/riffdb-driver-distribution-${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            "$publication/riffdb-driver-distribution-${version}-aarch64-unknown-linux-gnu.tar.gz" \
+            "$publication/conformance/go-v1.json" \
+            "$publication/conformance/python-v1.json" \
+            "$publication/conformance/rust-v1.json" \
+            "$publication/conformance/typescript-v1.json"

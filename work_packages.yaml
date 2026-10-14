@@ -3558,6 +3558,22 @@ work_packages:
   exit_gate: A tag produces signed, verifiable, published artifacts and a container image from a
     clean revision with no manual step, a consumer verifies them from the documented procedure, and
     an inconsistent version transition is refused before anything is published.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - ./scripts/check-version-topology
+    - ./scripts/check-generated
+    - ./scripts/publish-release-artifacts --self-test
+    evidence_artifacts:
+    - .github/workflows/release.yml
+    - scripts/publish-release-artifacts
+    - scripts/check-version-topology
+    - docs/release.md
+    requirements_satisfied: [AFC-001, VER-001, VER-004, DRV-014]
+    decisions_taken:
+    - Added tag-triggered .github/workflows/release.yml and scripts/publish-release-artifacts to gate version transitions, run scripts/release-poc --verify, build and push the tracked container image, embed DRV-014 conformance manifests into all four driver packages, sign release provenance under riffdb-release-v1, and verify consumer procedures.
+    residual_risks: []
 
 - id: WP-729
   name: Tokenized text-search declaration and frozen analyzers

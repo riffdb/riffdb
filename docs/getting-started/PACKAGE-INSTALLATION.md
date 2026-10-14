@@ -208,7 +208,10 @@ Run both verification commands from the distribution root. They use only the
 separately trusted signer file and operating-system tools, so verification does
 not bootstrap through executable code from the untrusted bundle. The installer
 then rechecks the selected binary against that signed inventory before
-atomically publishing it. Registry credentials and signing keys are never
+atomically publishing it. Each published runtime package (`riffdb-client-rust`,
+`riffdb.dev/application`, `@riffdb/client`, and `riffdb`) and the distribution's
+`conformance/` directory also carry the language's exact `DRV-014`
+`conformance-manifest-v1.json`. Registry credentials and signing keys are never
 included in a distribution or receipt.
 
 ## Sealed and offline installations

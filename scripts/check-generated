@@ -99,6 +99,7 @@ if rg -l -F 'riffdb\\.cmd\\.' \
 fi
 
 ./scripts/check-driver-conformance-manifests >/dev/null
+./scripts/publish-release-artifacts --self-test >/dev/null 2>&1
 
 snapshot "$after"
 if ! diff -r -- "$before" "$after"; then
