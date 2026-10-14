@@ -51,6 +51,7 @@ case "$command" in
     check)
         require_version lychee "$RIFFDB_LYCHEE_VERSION"
         ./scripts/check-handbook-source
+        ./scripts/check-handbook-audience --self-test
         ./scripts/generate-handbook-diagrams --check
         ./scripts/generate-cli-reference --check
         require_version mdbook "$RIFFDB_MDBOOK_VERSION"

@@ -82,6 +82,7 @@ trap - EXIT INT TERM
 ./scripts/columnar-program-b-referee --self-test
 ./scripts/correlated-index-work-qualification --self-test
 ./scripts/replication-acceptance --self-test
+./scripts/check-handbook-audience --self-test
 ./scripts/check-dirty-recovery-evidence
 ./scripts/check-online-retention-interference
 ./scripts/check-online-retention-interference --summary release/evidence/wp-811/online-retention-interference.json --minimum-keep-up 0.00292
