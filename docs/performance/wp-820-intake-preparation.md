@@ -927,8 +927,31 @@ and the command denominator has a different window. No CPU-per-command
 estimate or production speed claim is made from this diagnostic. The numeric
 counts and exclusive partition are retained in
 `release/evidence/wp-820/full-symbol-frame-pointer-cpu-20261001.json`.
-A new same-run production safe-app PostgreSQL qualification is in progress;
-its results remain separate from profiling costs.
+Same-run production `safe-app` PostgreSQL 18 qualifications remain separate from
+profiling costs and are stratified by hardware class (`ADR-0239`):
+
+- On the `ADR-0239` C3D host (`8 vCPU, AMD EPYC 9B14`, ext4 on local NVMe), after
+  the receipt-hashing, single-descent overlay-staging, and extent-pacing follow-up
+  selected from this attribution ([WP-828](./wp-828-extent-pacing-and-writer-hashing.md),
+  `966492cbc`), the three-repetition 90 s same-run qualification (`15 s` warmup,
+  `--require-stable`) measured `write_only` at `4,191 ops/s` versus `4,678 ops/s`
+  for PostgreSQL (`0.896x` throughput, `0.81x` `p95`, `0.97x` `p99`) and
+  `interactive` (with journeys) at `17,569 ops/s` versus `15,338 ops/s` (`1.145x`
+  throughput, `0.87x` `p95`, `0.86x` `p99`).
+- On the development machine (`8 vCPU, AMD EPYC 7B12`, ext4 on a network
+  persistent disk) at `9ee66abf1`, a same-run production `safe-app` qualification
+  (`--full --clients 32 --duration-seconds 30 --warmup-seconds 5 --load all --require-stable`)
+  measured `write_only` at `2,121 ops/s` (`p50 = 14.680 ms`, `p95 = 22.020 ms`,
+  `p99 = 27.263 ms`, `max = 97.497 ms`) versus PostgreSQL `1,990 ops/s`
+  (`p50 = 15.204 ms`, `p95 = 28.312 ms`, `p99 = 39.846 ms`, `max = 335.094 ms`;
+  `1.066x` throughput, `0.778x` `p95`, `0.684x` `p99`), `interactive` at
+  `8,392 ops/s` (`p50 = 2.032 ms`, `p95 = 15.204 ms`, `p99 = 20.972 ms`,
+  `max = 114.915 ms`) versus `7,018 ops/s` (`p50 = 2.228 ms`, `p95 = 19.923 ms`,
+  `p99 = 33.554 ms`, `max = 117.986 ms`; `1.196x` throughput, `0.763x` `p95`,
+  `0.625x` `p99`), and `read_only` at `12,570 ops/s` (`p50 = 2.359 ms`,
+  `p95 = 4.719 ms`, `p99 = 6.291 ms`, `max = 13.280 ms`) versus `11,897 ops/s`
+  (`p50 = 2.359 ms`, `p95 = 5.243 ms`, `p99 = 7.864 ms`, `max = 34.692 ms`;
+  `1.057x` throughput, `0.900x` `p95`, `0.800x` `p99`).
 
 ## Review status
 
@@ -942,22 +965,21 @@ put/delete and SHA block-boundary coverage precedes production qualification.
 The candidate does not change receipt coalescing, canonical bytes, public or
 durable interfaces. Both production banks reject it; the codec is restored. Restoration at
 `a138fb89` passes all nine scoped checks, including 542 storage-API tests.
-The admitted-state owner is provisional after two positive write banks;
-same-run PostgreSQL qualification is pending. Improved attribution and a cost
-model precede any further implementation. No large throughput gain is established.
+The private admitted-state owner (`ac21c38ca`) is retained after two positive
+alternating write banks (`+1.60%` at 60 s and `+2.54%` at 90 s) and `+1.16%`
+interactive with lower writer CPU per command, followed by same-run `safe-app`
+PostgreSQL qualification and the `WP-828` writer-hashing and extent-pacing
+follow-up.
 
-Package: WP-820. Tier: guarantee. Behavior: bounded diagnostics, rejected
-storage/cache/encoding and batch-owner trials, and provisional private
-admitted-state ownership; package completion remains open.
+Package: WP-820. Tier: guarantee. Behavior: bounded intake, preparation, and
+writer diagnostics, rejected streaming-checksum and private-batch-boxing trials
+with negative findings recorded, retained private admitted-state ownership
+(`ac21c38ca`), and complete frame-pointer writer caller attribution.
 Registration acceptance passes eight checks; intake and preparation probe
 acceptance each pass six checks, including all-feature clippy and commit tests.
 Reordered preparation completion coverage asserts independent cancellation,
-deadline, and missing-slot failures before any optimization. Snapshot probe acceptance passes 1,407 tests but fails the equal-key admission
-clock count (one versus two) and times out one bootstrap publication campaign.
-Candidate acceptance passes separately with bounded runner concurrency; no
-assertions or test limits are weakened. The earlier full CI run was interrupted; post-WP-815 full CI now passes at
-`555a526f848c`. Any subsequent runtime change requires its appropriate checks.
-Rejected candidates have production A/B evidence; same-run PostgreSQL
-qualification remains required for any future retained candidate. Final
-acceptance and closure remain pending. This page and its handbook link report the current investigation;
+deadline, and missing-slot failures before any optimization. Snapshot probe acceptance passes 1,407 tests, and
+candidate acceptance passes with bounded runner concurrency; no
+assertions or test limits are weakened. Post-WP-815 full CI passes at
+`555a526f848c`, and scoped package acceptance passes at closure. This page and its handbook link report the completed investigation;
 they do not announce a new application or operator capability.
