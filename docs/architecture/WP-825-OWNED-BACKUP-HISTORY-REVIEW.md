@@ -579,3 +579,39 @@ resource limits and 45/60-second gates unchanged. Updated handbook:
 `docs/backup-restore.md`. Hazards and follow-ups: saved unprofiled timing gate,
 combined-source acceptance and CI, complete native crash coverage and both
 rehearsals remain required. WP-825 stays open.
+
+
+## Saved timing gate and predecessor-test correction — 2026-10-14
+
+The ordinary shipping source after the duplicate-pass correction completes the
+original-command replay and all 65,536 ticket states at 41.641105152 seconds,
+before the unchanged fixed 45-second release. The fresh successful command,
+exact replay and final full-state reconciliation finish at 47.807009346 seconds,
+inside the unchanged 60-second deadline. This is an unprofiled saved-population
+check, not a scheduled-population rehearsal or 24-hour qualification. Verified
+receipt: `47a63a9e903f487409d36f72f032c2843afdc7f9600c8b567d903eb561f6ef05`.
+
+Combined-source CI then reveals an imported offline-upgrade test that combines
+writer 1's frozen corpus with the successor registry. Native preflight correctly
+refuses this mixed marker before examining the deliberately missing backup.
+The exact isolated regression reproduces `Marker(ManifestMismatch)`; receipt:
+`db6a09893344a3b84f18bced9a0c018a549d0bfbcdd3f3977a2b0f7832a95a69`.
+The remaining CI battery was interrupted to return directly to that failure;
+its one independent test failure and cancellation remain recorded.
+
+Correct only the ephemeral test marker to the retained writer-1/2 registry.
+The original missing-backup, torn-marker restart, history census and historical
+read assertions remain; add explicit refusal of a substituted current registry
+under the frozen writer-1 corpus. The exact integration test, original frozen
+writer-1 upgrade unit guard and integration-test Clippy pass on the required
+host. Verified receipt:
+`feeb3c6f8c9eb79b838749ebcc55ae2514a9ab2cc2cc953734ee2695f713fa99`.
+
+PR note: Package WP-825; Tier internal for this test follow-up. Behavior fixes
+predecessor test metadata and makes the expected earlier refusal explicit;
+production preflight and upgrade remain unchanged. Checks: isolated fail-first
+regression, corrected exact test, original frozen writer-1 guard and Clippy.
+Compatibility: no frozen fixture bytes, durable format or runtime interface
+changed; handbook behavior is unaffected. Hazards and follow-ups: verify all
+four shipping executables are unchanged before reusing the saved restore proof,
+then complete current-source CI, crash gates and both full rehearsals.

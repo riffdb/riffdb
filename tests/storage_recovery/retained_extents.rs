@@ -1280,15 +1280,37 @@ fn pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged() {
     };
 
     let manifest = current_durable_format_manifest();
+    // Writer 1 carries the retained pre-completion registry, never the current
+    // successor registry paired with the old frozen compatibility corpus.
     let writer_1 = DurableFormatMarker::new(
         DurableFormatIdentity::new(manifest.epoch(), DurableFormatWriter::new(1)),
-        manifest.registry_digest(),
+        riffdb_types::SchemaHash::from_bytes([
+            0xa1, 0x41, 0xb7, 0x65, 0xc2, 0xd4, 0x68, 0xa7, 0xc2, 0x70, 0x46, 0x15, 0x53, 0xaa,
+            0xd6, 0xa5, 0x6f, 0x9d, 0x2a, 0xf3, 0xa0, 0xe4, 0xf6, 0x30, 0x27, 0x15, 0x12, 0x27,
+            0xed, 0x4b, 0x40, 0xa3,
+        ]),
         CompatibilityFixtureDigest::from_bytes([
             0x71, 0xf4, 0x29, 0xa8, 0x0c, 0xb6, 0x71, 0xe1, 0xd9, 0xf1, 0x7a, 0xb0, 0x96, 0x46,
             0x81, 0x9d, 0xe0, 0x27, 0xe7, 0x0f, 0x1a, 0xd5, 0x61, 0x3d, 0xf1, 0x9b, 0x42, 0x9f,
             0x88, 0x0a, 0xac, 0x36,
         ]),
     );
+    assert!(matches!(
+        riffdb_storage_api::preflight_durable_format_marker(writer_1),
+        Ok(riffdb_storage_api::DurableFormatAction::OfflineInPlace { .. })
+    ));
+    if manifest.registry_digest() != writer_1.registry_digest() {
+        let mixed_marker = DurableFormatMarker::new(
+            writer_1.identity(),
+            manifest.registry_digest(),
+            writer_1.compatibility_fixture_digest(),
+        );
+        assert_eq!(
+            riffdb_storage_api::preflight_durable_format_marker(mixed_marker),
+            Err(riffdb_storage_api::DurableFormatMarkerError::ManifestMismatch),
+            "a current registry cannot replace the frozen predecessor registry",
+        );
+    }
     let build = BackupBuildMetadataV1::new(
         "0.0.0-pre-adr-0263",
         "predecessor",
@@ -1357,10 +1379,14 @@ fn pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged() {
         let root = ScratchScope::new(&format!("pre-adr-0263-backup-{label}"));
         let backup_dir = root.path().join("verified-backup");
         let wrong_backup_dir = root.path().join("wrong-backup");
-        assert!(matches!(
-            RedbDurableFormatUpgrade::bind(&path.0, &wrong_backup_dir).run(),
-            Err(RedbDurableFormatUpgradeError::BackupInvalid(_))
-        ));
+        let wrong_backup_result = RedbDurableFormatUpgrade::bind(&path.0, &wrong_backup_dir).run();
+        assert!(
+            matches!(
+                wrong_backup_result,
+                Err(RedbDurableFormatUpgradeError::BackupInvalid(_))
+            ),
+            "invalid backup must refuse after supported predecessor preflight: {wrong_backup_result:?}",
+        );
         assert!(!durable_format_upgrade_receipt_path(&path.0).exists());
 
         create_compatible_backup_fixture(&path.0, &backup_dir, &build, predecessor_marker)
