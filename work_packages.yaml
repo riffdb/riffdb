@@ -26710,8 +26710,19 @@ work_packages:
       committed, not what an application can express.
     scale: Not applicable. Removing committed build artifacts reduced the repository
       from 204 MB to 66 MB, which is a side effect rather than the objective.
+  human_review_triggers: *id001
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: adr/0243-public-repository-disclosure-guards.md
+    decision: ADR-0243 is implemented on main (landed in 7da16037c, accepted in 32819ea76,
+      and custody-repaired in ec8bd7552). Machine addresses and absolute developer home
+      paths are absent from tracked files and reachable history, with benchmark machines
+      recorded by hardware specifications only. Unanchored ignore rules in .gitignore
+      reject target/ and build/ directories at any depth alongside secret-shaped filenames
+      and agent session state, with .cowboy/agent.yaml and .cowboy/security.yaml explicitly
+      allowed back. AGENTS.md states the public-repository disclosure rules and the ban on
+      blanket git add.
     decisions_taken:
     - Repair WP-552's two retained report digest references after the 2026-09-19
       public-history redaction. Verify the original reports against the old
@@ -26720,6 +26731,9 @@ work_packages:
       preserve every measurement, eligibility field and fail-closed verifier.
       This repairs historical evidence custody and makes no fresh qualification
       or package-completion claim.
+    - Unanchor build-artifact ignore rules so nested workspace target/ and build/
+      directories are ignored at any depth, and prohibit git add -A and git add . in
+      AGENTS.md.
 - id: WP-796
   name: Retire durable command-derived locator tables
   tier: guarantee
