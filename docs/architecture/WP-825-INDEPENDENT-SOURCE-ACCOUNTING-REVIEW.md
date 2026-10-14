@@ -30,9 +30,9 @@ The wider checks exposed an observation-owner regression: a plain retention step
 
 A focused public restore diagnostic uses the retained backup and archive roots used by the campaign controller. Shutdown, creation of the empty data/projection directories, recovery admission, native materialization and validation remain inside the recovery clock. Original acknowledged-command replay and full reconciliation of all 65,536 tickets at the 150,000-command saved prefix finish at 43.256 seconds. The diagnostic waits for the actual 45-second release point; a fresh committed write completes at 45.115 seconds. Exact replay and full state reconciliation after that write finish at 47.812 seconds, inside the unchanged 60-second deadline. No live archive database is copied. This diagnostic does not establish retention of the original campaign workers, the complete fixed fault schedule, normal service windows or long-run resource bounds.
 
-The proposed ADR remains unaccepted and this implementation remains isolated. Qualification still requires exact acceptance, the merged-source checks and bindings, the actual scheduled restore/release gates, and both complete rehearsals.
+At that diagnostic checkpoint the ADR was unaccepted and the implementation remained isolated. Exact acceptance is now recorded above. Qualification still requires the merged-source checks and bindings, the actual scheduled restore/release gates, and both complete rehearsals.
 
-Acceptance request: accept the exact ADR-0301 and its registration in WP-825. AGENTS.md requires a full guarantee record whose exact text a human accepts, and review when an accepted guarantee changes. Broad approval for necessary fixes remains in force; this request concerns the explicit accounting-validation boundary.
+The maintainer subsequently accepted the exact ADR-0301 and its registration in WP-825 on 2026-10-14. The accepted accounting-validation boundary grants no deletion authority; the broader approval for necessary native fixes remains in force.
 
 
 The requested final main refresh incorporates WP-796 and accepted ADR-0244.
@@ -63,3 +63,24 @@ re-encoding, shared overlay conversion and refusal of unknown tags. Existing
 fresh-image restore tests still require that retired tables are not recreated.
 The original saved header and whole restore gates must pass on the correction;
 the failure is retained and no rehearsal qualification is inferred from builds.
+
+
+The final workspace replay then passes 7,090 of 7,091 tests, with one seeded
+crash-corpus finding. Locator-table retirement at `9ee66abf` removes engine
+writes and moves physical crash placement. The complete unchanged corpus audit
+shows three outdated movement records: `0x51c2c067` no longer reaches its
+30-torn-decision territory, while `0x51c2c200` and `0x51c2c301` reach their
+original territories again. Every oracle completes cleanly; the existing
+terminal witnesses `0x51c2c30a`, `0x51c2c420` and `0x51c2c508` still prove
+all original predicates with their unchanged thresholds.
+
+The internal follow-up uses accepted ADR-0113's movement protocol. It preserves
+every seed, generator version, campaign configuration, expected territory and
+prior receipt, adds the exact causal commit and 2026-10-14 review date, and keeps
+the existing forward successor chains. A third displacement explicitly retains
+all three earlier restorations. The original corpus replay, complete audit, receipt-preservation test and
+seeded-campaign lint check pass on the required host. An explicit
+review test also passes twelve identical complete reports for all three affected
+coordinates and all three terminal witnesses.
+This changes no shipping behavior, persistent encoding, public interface or
+rehearsal gate. WP-825 registers these narrow test paths in a preceding commit.
