@@ -25590,6 +25590,22 @@ work_packages:
     to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    evidence: docs/performance/wp-777-demand-activated-columnar.md
+    decision: Configured columnar sources remain cold through readiness and no-demand graceful close,
+      retaining only bounded checked registrations and one server-owned activation worker. Concurrent
+      first demand coalesces onto a single Cold -> Activating transition and immediately returns the
+      existing typed Building outcome with no rows. Activation rereads current durable selection,
+      validates the complete selected artifact, and atomically installs one immutable query view;
+      corrupt, mismatched, or unavailable selected state fails closed without rows or fallback.
+      Both WP-705 lifecycle receipts (release/evidence/wp-705/rows-65536-lifecycle-v2.json and
+      release/evidence/wp-705/complete-path-ceiling-production.json) record columnar_cold_sources=1,
+      columnar_activations=0, and columnar_population_passes=0 across no-demand readiness and close.
+    decisions_taken:
+    - Restore the permanent OBL-0195-4 proof name failed_columnar_activation_never_serves_rows_or_falls_back
+      on the selected-V1 failed-activation and rebuild test in crates/riffdb-server/src/columnar_adapter.rs.
 
 - id: WP-778
   name: Fresh-process contiguous idempotency locator coverage
@@ -28125,6 +28141,25 @@ work_packages:
   exit_gate: A pre-ADR-0263 database upgrades offline with its history unchanged in
     redb, every crash window leaves the old or the upgraded database intact, and the
     upgraded database opens under WP-814's format.
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied:
+    - REC-005
+    evidence: tests/storage_recovery/retained_extents.rs (pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged), crates/riffdb-storage-redb/src/format_upgrade.rs, and fixtures/compatibility/release-pairs-v1.json
+    decision: Under ADR-0263 Amendments 1, 2 (B3), 3 (C1-C4), and 5, pre-ADR-0263
+      databases keep existing COMMITS and HISTORY rows in redb, require no new META
+      keys or sidecar history index table, and upgrade offline to writer 2 through
+      the backup-bound, receipt-fenced RedbDurableFormatUpgrade (riffdb storage upgrade).
+      Every crash window (Accepted receipt before marker, torn staging marker, and
+      Migrated receipt before Complete) leaves either the intact predecessor or reconciles
+      to the upgraded database, and the upgraded database opens under the current
+      format with bounded REC-005 startup and resolves pre-upgrade redb rows alongside
+      new standard-profile journal-extent history stubs.
+    decisions_taken:
+    - Prove populated pre-ADR-0263 writer-0 and writer-1 offline upgrades, crash-window
+      recovery, unchanged redb COMMITS/HISTORY rows, bounded REC-005 startup, and
+      mixed redb/sealed-extent history resolution in pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged.
   standing_design_tests:
     interface_safety: Migration is an explicit offline maintenance operation; no binary
       opens an unmigrated database silently.

@@ -1263,3 +1263,185 @@ fn live_prefix_refresh_preserves_the_next_native_journal_allocation() {
         AdmissionLookupResultV1::Found(_)
     ));
 }
+
+// req: REC-005
+#[test]
+fn pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged() {
+    use riffdb_storage_api::{
+        CompatibilityFixtureDigest, DurableFormatIdentity, DurableFormatMarker,
+        DurableFormatWriter, current_durable_format_manifest, encode_durable_format_marker,
+    };
+    use riffdb_storage_redb::{
+        RedbCommitProfile, RedbDurableFormatPreflight, RedbDurableFormatUpgrade,
+        RedbDurableFormatUpgradeDisposition, RedbDurableFormatUpgradeError,
+        RedbDurableFormatUpgradePhase, create_compatible_backup_fixture,
+        durable_format_marker_path, durable_format_upgrade_receipt_path,
+        preflight_durable_format_path,
+    };
+
+    let manifest = current_durable_format_manifest();
+    let writer_1 = DurableFormatMarker::new(
+        DurableFormatIdentity::new(manifest.epoch(), DurableFormatWriter::new(1)),
+        manifest.registry_digest(),
+        CompatibilityFixtureDigest::from_bytes([
+            0x71, 0xf4, 0x29, 0xa8, 0x0c, 0xb6, 0x71, 0xe1, 0xd9, 0xf1, 0x7a, 0xb0, 0x96, 0x46,
+            0x81, 0x9d, 0xe0, 0x27, 0xe7, 0x0f, 0x1a, 0xd5, 0x61, 0x3d, 0xf1, 0x9b, 0x42, 0x9f,
+            0x88, 0x0a, 0xac, 0x36,
+        ]),
+    );
+    let build = BackupBuildMetadataV1::new(
+        "0.0.0-pre-adr-0263",
+        "predecessor",
+        "rustc-1.97.0",
+        1,
+        Vec::new(),
+    )
+    .expect("build metadata");
+
+    for (label, predecessor_marker) in [("writer-0", None), ("writer-1", Some(writer_1))] {
+        let path = TestDatabasePath::new(&format!("pre-adr-0263-upgrade-{label}"));
+        prepare_command_database(&path.0);
+        let ports = open_operational(
+            RedbStore::open_with_commit_profile(&path.0, RedbCommitProfile::Hardened)
+                .expect("open hardened store"),
+        );
+        commit_command_group(&ports, &[command_fixture_at(1)]);
+        commit_command_group(&ports, &[command_fixture_at(2)]);
+        ports
+            .online_retention_lane()
+            .refresh_validated_prefix(
+                startup_inputs(),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .expect("refresh validated prefix");
+        assert_eq!(
+            ports.complete_graceful_close().lifecycle(),
+            riffdb_storage_redb::GracefulLifecycleOutcomeV1::CleanCommitted
+        );
+        drop(ports);
+
+        let before_census = history_stub_census_fixture(&path.0).expect("pre-upgrade census");
+        assert_eq!(
+            before_census.commits,
+            (0, 2),
+            "pre-ADR-0263 history stores full segment rows in redb"
+        );
+        assert_eq!(
+            before_census.history.0, 0,
+            "pre-ADR-0263 history stores full V3 receipts in redb"
+        );
+        assert!(
+            sealed_journal_extents_fixture(&path.0)
+                .expect("sealed extents")
+                .is_empty()
+        );
+
+        let marker_path = durable_format_marker_path(&path.0);
+        match predecessor_marker {
+            None => std::fs::remove_file(&marker_path).expect("remove marker for writer-0"),
+            Some(marker) => std::fs::write(&marker_path, encode_durable_format_marker(marker))
+                .expect("write writer-1 marker"),
+        }
+        let before_bytes = std::fs::read(&path.0).expect("read predecessor database bytes");
+
+        // No silent online upgrade: ordinary open refuses before mutating redb.
+        assert!(matches!(
+            RedbStore::open(&path.0),
+            Err(error) if error.kind() == StorageErrorKind::IncompatibleFormat
+        ));
+        assert_eq!(
+            std::fs::read(&path.0).expect("database unchanged after refusal"),
+            before_bytes
+        );
+
+        let root = ScratchScope::new(&format!("pre-adr-0263-backup-{label}"));
+        let backup_dir = root.path().join("verified-backup");
+        let wrong_backup_dir = root.path().join("wrong-backup");
+        assert!(matches!(
+            RedbDurableFormatUpgrade::bind(&path.0, &wrong_backup_dir).run(),
+            Err(RedbDurableFormatUpgradeError::BackupInvalid(_))
+        ));
+        assert!(!durable_format_upgrade_receipt_path(&path.0).exists());
+
+        create_compatible_backup_fixture(&path.0, &backup_dir, &build, predecessor_marker)
+            .expect("create verified predecessor backup");
+
+        // Crash window: torn target marker staging file before upgrade completes.
+        let mut staging_marker = path.0.as_os_str().to_os_string();
+        staging_marker.push(".riffdb-format-v1.staging");
+        std::fs::write(&staging_marker, b"RDBFMT01").expect("write torn staging marker");
+        assert!(matches!(
+            preflight_durable_format_path(&path.0),
+            Ok(RedbDurableFormatPreflight::OfflineUpgradeRequired { .. })
+        ));
+
+        let upgraded = RedbDurableFormatUpgrade::bind(&path.0, &backup_dir)
+            .run()
+            .expect("upgrade pre-ADR-0263 database");
+        assert_eq!(
+            upgraded.disposition(),
+            RedbDurableFormatUpgradeDisposition::Upgraded
+        );
+        assert_eq!(
+            upgraded.receipt().map(|receipt| receipt.phase()),
+            Some(RedbDurableFormatUpgradePhase::Complete)
+        );
+        assert_eq!(
+            preflight_durable_format_path(&path.0),
+            Ok(RedbDurableFormatPreflight::OpenCurrent)
+        );
+        assert_eq!(
+            history_stub_census_fixture(&path.0).expect("post-upgrade census"),
+            before_census,
+            "offline upgrade keeps existing COMMITS and HISTORY rows unchanged in redb"
+        );
+
+        // Repeat invocation is idempotent / reconciled.
+        let repeat = RedbDurableFormatUpgrade::bind(&path.0, &backup_dir)
+            .run()
+            .expect("reconcile already upgraded database");
+        assert_eq!(
+            repeat.disposition(),
+            RedbDurableFormatUpgradeDisposition::Reconciled
+        );
+
+        // Reopen under WP-814's standard format: bounded clean-close startup
+        // succeeds, redb-held history resolves, and new standard-profile
+        // journaled commands coexist in sealed extents.
+        let store = RedbStore::open(&path.0).expect("open upgraded database");
+        let session = store
+            .begin_structural_evidence(startup_inputs())
+            .expect("begin bounded startup validation");
+        assert!(
+            session.bounded_dirty_startup_path() || session.clean_close_fast_path(),
+            "upgraded database preserves bounded REC-005 startup"
+        );
+        drop(session);
+
+        let (controller, schedule) = RedbTestController::checkpoint_schedule();
+        let ports = open_operational(
+            RedbStore::open_with_test_controller(&path.0, controller).expect("open operational"),
+        );
+        let _ = command_audit_phases(&ports);
+        assert_history_readers(&ports, 1);
+        assert_history_readers(&ports, 2);
+        seal(&ports, 3).wait().expect("publish journaled command 3");
+        seal(&ports, 4).wait().expect("publish journaled command 4");
+        install_checkpoint(&ports, &schedule);
+        for ordinal in 1..=4 {
+            assert_history_readers(&ports, ordinal);
+        }
+        drop(ports);
+        drop(schedule);
+
+        let after_journal_census =
+            history_stub_census_fixture(&path.0).expect("mixed history census");
+        assert_eq!(
+            after_journal_census.commits,
+            (2, 2),
+            "pre-upgrade commands remain in redb while post-upgrade commands are journal stubs"
+        );
+        let findings = collect_structural_findings(RedbStore::open(&path.0).expect("validate"));
+        assert!(findings.is_empty(), "{label} findings: {findings:?}");
+    }
+}

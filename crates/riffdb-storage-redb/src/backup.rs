@@ -643,7 +643,7 @@ impl DatabaseFacts {
         .map_err(value_error)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     fn into_pre_format_compatibility_manifest(
         self,
         checksums: Vec<BackupArtifactChecksumV1>,
@@ -3228,7 +3228,7 @@ pub(crate) fn create_pre_format_compatibility_backup_fixture(
     create_compatible_backup_fixture(source_database, backup_directory, build, None)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) fn create_compatible_backup_fixture(
     source_database: &Path,
     backup_directory: &Path,

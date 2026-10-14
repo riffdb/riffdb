@@ -5868,7 +5868,7 @@ contract VectorBoard version 1 {
 
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, PERF-007, PERF-008
     #[test]
-    fn corrupt_selected_v1_fails_closed_then_records_failure_and_rebuilds() {
+    fn failed_columnar_activation_never_serves_rows_or_falls_back() {
         let (runtime, scope) = board_runtime("failed-activation");
         append_board_ticket_for_worker(&runtime);
         request_projection(&runtime, "ticket_board");
