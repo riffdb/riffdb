@@ -24698,6 +24698,24 @@ work_packages:
     scale: Formation is bounded by first-party ceilings and named per conflict domain, so it
       applies unchanged to a future per-domain leader and holds no state proportional to load.
   human_review_triggers: *id0183
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verification_receipts:
+    - ./scripts/check-durable-group-activation --self-test
+    - cargo test -p riffdb-commit --all-features
+    - cargo test -p riffdb-server --all-features
+    - ./scripts/check-adr-obligations
+    - ./scripts/check-requirement-coverage
+    - ./scripts/check-performance-freeze
+    - ./scripts/handbook check
+    summary: Enforced zero-wait idle-singleton sealing (idle_singleton_seals_without_group_formation_wait)
+      and 256-transition / 16 MiB prepared-prefix ceiling bounds
+      (group_formation_drains_only_prepared_prefix_within_ceilings) in riffdb-commit, added
+      fixed-cardinality commands_per_durable_flush and epoch-seal reason counters to the
+      graceful-shutdown census (shutdown_evidence_reports_commands_per_durable_flush), wired
+      scripts/check-durable-group-activation --self-test into scripts/ci-all, and recorded the
+      both-profile ADR-0183 section 4 gate verdict in docs/performance/wp-763-durable-group-lever.md.
 
 - id: WP-764
   name: Panic-lint gates, allowance ledger, and the writer fail-fast proof
@@ -25617,7 +25635,7 @@ work_packages:
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
   closure:
-    status: unblocked_pending_qualification_run
+    status: complete
     completed_at: '2026-10-14'
     evidence: docs/performance/wp-777-demand-activated-columnar.md
     decision: Configured columnar sources remain cold through readiness and no-demand graceful close,

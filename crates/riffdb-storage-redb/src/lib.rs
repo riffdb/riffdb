@@ -125,6 +125,21 @@ pub fn writer_command_flush_census_v1() -> [u64; 7] {
     journal::command_flush_census()
 }
 
+/// Fixed-cardinality commands-per-durable-flush bucket count (`1`, `2`, `3..=4`,
+/// `5..=8`, `9..=16`, `17..=32`, `33..=64`, `65..=128`, `129..=256`, `>256`).
+#[doc(hidden)]
+pub const COMMANDS_PER_DURABLE_FLUSH_BUCKETS_V1: usize =
+    journal::COMMANDS_PER_DURABLE_FLUSH_BUCKETS;
+
+/// Fixed-cardinality commands-per-durable-flush histogram and epoch-seal reason
+/// counters (`(buckets, epoch_queue_drained_seals, epoch_ceiling_seals)`).
+#[doc(hidden)]
+#[must_use]
+pub fn writer_durable_flush_group_census_v1()
+-> ([u64; COMMANDS_PER_DURABLE_FLUSH_BUCKETS_V1], u64, u64) {
+    journal::command_durable_flush_group_census()
+}
+
 /// Fixed-cardinality journal queue/encode/write/sync stage census.
 ///
 /// Values are command-frame queue observations, queue sum/max microseconds,

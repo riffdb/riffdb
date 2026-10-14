@@ -173,12 +173,134 @@ def report_lifecycle(path: Path, checkpoint: str) -> tuple[dict[str, Any], int]:
     return candidate, envelope
 
 
+def _synthetic_memory_window(label: str, envelope_bytes: int) -> dict[str, Any]:
+    before = 32 * 1024 * 1024
+    after = before + envelope_bytes
+    return {
+        "label": label,
+        "pid": 4242,
+        "process_starttime_ticks": 1000,
+        "vm_data_bytes_before": before,
+        "vm_data_bytes_after": after,
+        "heap_envelope_bytes": envelope_bytes,
+        "vm_hwm_bytes": after,
+        "heap_envelope_ceiling_bytes": HEAP_CEILING,
+        "passed": envelope_bytes <= HEAP_CEILING,
+    }
+
+
+def _synthetic_report(checkpoint: str, envelope_bytes: int) -> dict[str, Any]:
+    expected_feature = "default" if checkpoint == "production" else "test-fixtures"
+    close_stage = {
+        "final_certificate_commit_succeeded": True,
+        "columnar_activations": 0,
+        "columnar_population_passes": 0,
+    }
+    lifecycle: dict[str, Any] = {
+        "scale_checkpoint": checkpoint,
+        "clean_restart": {
+            "startup": {
+                "mode": "clean_certificate",
+                "stage_names": list(STARTUP_STAGES),
+                "stages_us": [100] * len(STARTUP_STAGES),
+                "population_table_walk": "none",
+                "transient_index_rebuilds": 0,
+                "columnar_cold_sources": 2,
+                "columnar_activations": 0,
+                "columnar_population_passes": 0,
+                "prohibited_table_rows": {table: 0 for table in PROHIBITED_TABLES},
+            },
+            "memory": _synthetic_memory_window(f"{checkpoint}_startup", envelope_bytes),
+        },
+    }
+    if checkpoint == "production":
+        lifecycle["seeded_close"] = dict(close_stage)
+        lifecycle["seeded_close_memory"] = _synthetic_memory_window("seeded_close", envelope_bytes)
+        lifecycle["final_close"] = dict(close_stage)
+        lifecycle["final_close_memory"] = _synthetic_memory_window("final_close", envelope_bytes)
+    else:
+        lifecycle["measured_clean_close"] = dict(close_stage)
+        lifecycle["measured_clean_close_memory"] = _synthetic_memory_window(
+            "measured_clean_close", envelope_bytes
+        )
+    return {
+        "qualification_candidate": {
+            "schema": "riffdb.app-baseline-qualified-candidate/v1",
+            "source_tree_clean": True,
+            "source_revision": "0" * 40,
+            "cargo_lock_sha256": "1" * 64,
+            "runner_sha256": "2" * 64,
+            "harness_sha256": "3" * 64,
+            "referee_sha256": "4" * 64,
+            "riffdbd_sha256": "5" * 64,
+            "build": {
+                "cargo": "cargo +1.98.1 build --locked --release",
+                "package": "riffdb-server",
+                "binary": "riffdbd",
+                "feature_set": expected_feature,
+            },
+        },
+        "riffdb_process_evidence": [{"production_lifecycle_evidence": lifecycle}],
+    }
+
+
+def run_self_test() -> int:
+    import copy
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-wp705-referee-") as tmpdir:
+        tmp = Path(tmpdir)
+        rows_path = tmp / "rows_65536.json"
+        prod_path = tmp / "production.json"
+        rows_report = _synthetic_report("rows_65536", 12 * 1024 * 1024)
+        prod_report = _synthetic_report("production", 16 * 1024 * 1024)
+        rows_path.write_text(json.dumps(rows_report), encoding="utf-8")
+        prod_path.write_text(json.dumps(prod_report), encoding="utf-8")
+
+        _, rows_env = report_lifecycle(rows_path, "rows_65536")
+        _, prod_env = report_lifecycle(prod_path, "production")
+        assert rows_env == 12 * 1024 * 1024
+        assert prod_env == 16 * 1024 * 1024
+
+        bad_startup_act = copy.deepcopy(prod_report)
+        bad_startup_act["riffdb_process_evidence"][0]["production_lifecycle_evidence"][
+            "clean_restart"
+        ]["startup"]["columnar_activations"] = 1
+        bad_path = tmp / "bad_startup_act.json"
+        bad_path.write_text(json.dumps(bad_startup_act), encoding="utf-8")
+        try:
+            report_lifecycle(bad_path, "production")
+            raise AssertionError("expected non-zero startup columnar_activations to fail closed")
+        except SystemExit as exc:
+            assert exc.code == 1
+
+        bad_close_pass = copy.deepcopy(prod_report)
+        bad_close_pass["riffdb_process_evidence"][0]["production_lifecycle_evidence"][
+            "final_close"
+        ]["columnar_population_passes"] = 1
+        bad_close_path = tmp / "bad_close_pass.json"
+        bad_close_path.write_text(json.dumps(bad_close_pass), encoding="utf-8")
+        try:
+            report_lifecycle(bad_close_path, "production")
+            raise AssertionError(
+                "expected non-zero close columnar_population_passes to fail closed"
+            )
+        except SystemExit as exc:
+            assert exc.code == 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rows-65536", required=True, type=Path)
-    parser.add_argument("--production", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--rows-65536", type=Path)
+    parser.add_argument("--production", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.self_test:
+        return run_self_test()
+    if args.rows_65536 is None or args.production is None or args.output is None:
+        parser.error("--rows-65536, --production, and --output are required unless --self-test")
     rows_candidate, rows_envelope = report_lifecycle(args.rows_65536, "rows_65536")
     production_candidate, production_envelope = report_lifecycle(args.production, "production")
     if rows_candidate.get("source_revision") != production_candidate.get("source_revision"):

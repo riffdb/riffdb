@@ -975,3 +975,186 @@ async fn follower_acknowledgement_fenced_and_stopped_messages_return_certain_ref
         );
     }
 }
+
+fn command_msg_with_byte_units(seed: u8, byte_units: u32) -> CoordinatorMessage {
+    let (completion, _) = oneshot::channel();
+    let preparation = command_preparation(seed).with_queued_byte_units_for_test(byte_units);
+    CoordinatorMessage::Command {
+        preparation: Box::new(preparation),
+        command_id: fixture_parts().reference.command_id(),
+        ingress: ServiceIngressKindV1::Grpc,
+        enqueued_at: Instant::now(),
+        completion,
+        _retained_byte_permit: retained_permit(),
+    }
+}
+
+// req: PERF-022
+#[test]
+fn idle_singleton_seals_without_group_formation_wait() {
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+    struct MicrosecondStepClock {
+        base: Instant,
+        micros: AtomicU64,
+    }
+    impl CoordinatorMonotonicClock for MicrosecondStepClock {
+        fn now(&self) -> Instant {
+            let step = self.micros.fetch_add(1, Ordering::Relaxed);
+            self.base + Duration::from_micros(step)
+        }
+        fn sleep_until(&self, _deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    #[derive(Default)]
+    struct DispatchElapsedTelemetry {
+        dispatches: Mutex<Vec<(CommitGroupDispatchReason, u16, u16, Duration)>>,
+    }
+    impl CommitTelemetry for DispatchElapsedTelemetry {
+        fn record(&self, event: CommitTelemetryEvent) {
+            if let CommitTelemetryEvent::CommandGroupDispatched {
+                reason,
+                selected,
+                deferred,
+                elapsed,
+            } = event
+            {
+                self.dispatches
+                    .lock()
+                    .expect("dispatches")
+                    .push((reason, selected, deferred, elapsed));
+            }
+        }
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        let (sender, receiver) = mpsc::channel(8);
+        let (feedback_tx, feedback_rx) = mpsc::channel(1);
+        let (work_tx, work_rx) = std::sync::mpsc::sync_channel(1);
+        let telemetry = Arc::new(DispatchElapsedTelemetry::default());
+        let clock = Arc::new(MicrosecondStepClock {
+            base: Instant::now(),
+            micros: AtomicU64::new(0),
+        });
+        let actor = CommandCoordinatorActor {
+            receiver,
+            telemetry: Arc::clone(&telemetry) as Arc<dyn CommitTelemetry>,
+            lifecycle: ActorLifecyclePublisher {
+                lifecycle: Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING)),
+                submission_gate: Arc::new(SubmissionGate::new(PrimaryAdmissionGate::new())),
+            },
+            feedback: feedback_rx,
+            monotonic_clock: clock,
+            completion_edge_coalescing_enabled: false,
+            post_dispatch_hooks: None,
+        };
+        let handle = tokio::spawn(actor.run(work_tx, 8));
+
+        // Let the actor park on idle `receiver.recv().await`, then send one singleton.
+        tokio::task::yield_now().await;
+        sender
+            .send(command_msg_with_id(1))
+            .await
+            .expect("send idle singleton");
+        tokio::task::yield_now().await;
+
+        let unit = work_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("idle singleton dispatched");
+        assert!(matches!(unit, WorkUnit::CommandGroup(group) if group.len() == 1));
+        feedback_tx
+            .send(UnitCompleted)
+            .await
+            .expect("complete singleton");
+
+        sender
+            .send(CoordinatorMessage::Shutdown)
+            .await
+            .expect("send shutdown");
+        if let Ok(WorkUnit::Shutdown) = work_rx.recv_timeout(Duration::from_secs(1)) {
+            let _ = feedback_tx.send(UnitCompleted).await;
+        }
+        handle.await.expect("actor joined");
+
+        let dispatches = telemetry.dispatches.lock().expect("dispatches");
+        assert_eq!(dispatches.len(), 1);
+        let (reason, selected, deferred, elapsed) = dispatches[0];
+        assert_eq!(reason, CommitGroupDispatchReason::QueueDrained);
+        assert_eq!(selected, 1);
+        assert_eq!(deferred, 0);
+        // Without a group-formation spin loop, the step clock advances only once
+        // between `formation_anchor` and `elapsed_since` (1 µs << 200 µs).
+        assert!(
+            elapsed < OLDEST_GROUPABLE_TRANSITION_MAX_AGE,
+            "idle singleton must seal without waiting for the 200 µs group deadline, got {elapsed:?}"
+        );
+        assert_eq!(elapsed, Duration::from_micros(1));
+    });
+}
+
+// req: PERF-022
+#[test]
+fn group_formation_drains_only_prepared_prefix_within_ceilings() {
+    // 1. Transition ceiling (256 commands): drain only the first 256 in admission order.
+    let mut over_transition_ceiling = (0..259_usize)
+        .map(|idx| command_msg_with_id(u8::try_from(idx % 251 + 1).expect("nonzero seed")))
+        .collect::<VecDeque<_>>();
+    assert!(!command_prefix_can_grow(&over_transition_ceiling));
+    let (first_unit, first_reason) =
+        form_next_unit(&mut over_transition_ceiling).expect("first ceiling group");
+    assert_eq!(first_reason, CommitGroupDispatchReason::Full);
+    assert!(
+        matches!(first_unit, WorkUnit::CommandGroup(group) if group.len() == riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
+    );
+    assert_eq!(over_transition_ceiling.len(), 3);
+    assert!(command_prefix_can_grow(&over_transition_ceiling));
+    let (remainder_unit, remainder_reason) =
+        form_next_unit(&mut over_transition_ceiling).expect("remaining prefix");
+    assert_eq!(remainder_reason, CommitGroupDispatchReason::QueueDrained);
+    assert!(matches!(remainder_unit, WorkUnit::CommandGroup(group) if group.len() == 3));
+    assert!(over_transition_ceiling.is_empty());
+
+    // 2. Prepared byte ceiling (16 MiB = 16_384 KiB units): two 8_192-KiB commands fill
+    // the epoch to 16 MiB, so the third prepared command remains in `pending`.
+    let half_ceiling_units =
+        u32::try_from(riffdb_storage_api::MAX_STAGED_WRITE_BYTES / QUEUED_COMMAND_BYTE_UNIT / 2)
+            .expect("half ceiling units");
+    let mut exact_byte_ceiling = VecDeque::from([
+        command_msg_with_byte_units(1, half_ceiling_units),
+        command_msg_with_byte_units(2, half_ceiling_units),
+    ]);
+    assert!(
+        !command_prefix_can_grow(&exact_byte_ceiling),
+        "prefix at 16 MiB cannot grow further"
+    );
+    exact_byte_ceiling.push_back(command_msg_with_byte_units(3, 4));
+
+    let (byte_bounded_unit, byte_bounded_reason) =
+        form_next_unit(&mut exact_byte_ceiling).expect("byte-bounded group");
+    assert_eq!(byte_bounded_reason, CommitGroupDispatchReason::Full);
+    let WorkUnit::CommandGroup(byte_group) = byte_bounded_unit else {
+        panic!("expected command group");
+    };
+    assert_eq!(byte_group.len(), 2);
+    assert_eq!(byte_group[0].0.queued_byte_units(), half_ceiling_units);
+    assert_eq!(byte_group[1].0.queued_byte_units(), half_ceiling_units);
+    assert_eq!(exact_byte_ceiling.len(), 1);
+
+    let (tail_unit, tail_reason) =
+        form_next_unit(&mut exact_byte_ceiling).expect("trailing command after byte ceiling");
+    assert_eq!(tail_reason, CommitGroupDispatchReason::QueueDrained);
+    let WorkUnit::CommandGroup(tail_group) = tail_unit else {
+        panic!("expected trailing command group");
+    };
+    assert_eq!(tail_group.len(), 1);
+    assert_eq!(tail_group[0].0.queued_byte_units(), 4);
+    assert!(exact_byte_ceiling.is_empty());
+}
