@@ -131,6 +131,7 @@ where
             .storage
             .open_owned_snapshot()
             .map_err(map_storage_error)?;
+        let mut relationship_cache = BTreeMap::new();
         let observations = crate::event_candidate_prefix::collect_admitted_prefix(
             event_ids,
             admitted_limit,
@@ -160,16 +161,18 @@ where
                     .map_err(|_| QueryExecutionError::BackendIntegrity)?;
                 let mut relationships = Vec::with_capacity(lookups.len());
                 let mut evidence = Vec::with_capacity(lookups.len());
-                for lookup in &lookups {
-                    let exists = indexed_relationship_exists(&snapshot, lookup)
-                        .map_err(map_storage_error)?;
+                for lookup in lookups {
+                    let partition = lookup.partition().clone();
+                    let index_prefix = lookup.index_prefix().to_vec();
+                    let exists = cached_indexed_relationship_exists(
+                        &snapshot,
+                        &mut relationship_cache,
+                        lookup,
+                    )
+                    .map_err(map_storage_error)?;
                     relationships.push(
-                        EventPolicyRelationshipObservationV1::new(
-                            lookup.partition().clone(),
-                            lookup.index_prefix().to_vec(),
-                            exists,
-                        )
-                        .map_err(|_| QueryExecutionError::BackendIntegrity)?,
+                        EventPolicyRelationshipObservationV1::new(partition, index_prefix, exists)
+                            .map_err(|_| QueryExecutionError::BackendIntegrity)?,
                     );
                     evidence.push(exists);
                 }
@@ -390,6 +393,7 @@ struct StorageQueryView<'a, H> {
     program: &'a QueryAccessProgramV1,
     parameters: &'a QueryParameters,
     head: u64,
+    relationship_cache: BTreeMap<RelationshipLookupCacheKey, bool>,
 }
 
 impl<'a, H> StorageQueryView<'a, H>
@@ -410,11 +414,12 @@ where
             program,
             parameters,
             head,
+            relationship_cache: BTreeMap::new(),
         })
     }
 
     fn point_with_plan(
-        &self,
+        &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         plan: &RowMaterializePlan,
@@ -446,6 +451,7 @@ where
         };
         if !allows_policy_record(
             self.snapshot,
+            &mut self.relationship_cache,
             policy,
             step.internal_entity_id(),
             record.fields(),
@@ -456,7 +462,7 @@ where
     }
 
     fn read_range_rows(
-        &self,
+        &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         limit: u64,
@@ -536,6 +542,7 @@ where
                         .ok_or_else(corrupt)?;
                     if !allows_policy_record(
                         self.snapshot,
+                        &mut self.relationship_cache,
                         policy,
                         step.internal_entity_id(),
                         record.fields(),
@@ -816,12 +823,39 @@ where
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+struct RelationshipLookupCacheKey(AuthorizedIndexedRelationshipLookupV1);
+
+impl Ord for RelationshipLookupCacheKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            self.0.target_entity(),
+            self.0.index_id(),
+            self.0.partition(),
+            self.0.index_prefix(),
+        )
+            .cmp(&(
+                other.0.target_entity(),
+                other.0.index_id(),
+                other.0.partition(),
+                other.0.index_prefix(),
+            ))
+    }
+}
+
+impl PartialOrd for RelationshipLookupCacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 fn authorize_candidates<H: OwnedSnapshotHandle>(
     snapshot: &H,
     entity: EntityTypeId,
     candidates: &[EntityKey],
     policy: &AuthorizedQueryRowPolicyContextV1,
 ) -> Result<AuthorizedProjectedRowAdmissionV1, StorageError> {
+    let mut relationship_cache = BTreeMap::new();
     let mut observations = Vec::with_capacity(candidates.len());
     for key in candidates {
         let target = EntityTarget::new(entity, key.clone()).map_err(|_| invariant())?;
@@ -833,8 +867,10 @@ fn authorize_candidates<H: OwnedSnapshotHandle>(
             .relationship_lookups(entity, record.fields())
             .map_err(|_| invariant())?;
         let evidence = lookups
-            .iter()
-            .map(|lookup| indexed_relationship_exists(snapshot, lookup))
+            .into_iter()
+            .map(|lookup| {
+                cached_indexed_relationship_exists(snapshot, &mut relationship_cache, lookup)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         observations.push(ProjectedPolicyCandidateObservationV1::current(
             key.clone(),
@@ -927,6 +963,7 @@ fn inspect_vector<H: OwnedSnapshotHandle>(
 
 fn allows_policy_record<H: OwnedSnapshotHandle>(
     snapshot: &H,
+    relationship_cache: &mut BTreeMap<RelationshipLookupCacheKey, bool>,
     policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     entity: EntityTypeId,
     row: &riffdb_types::CanonicalRecord,
@@ -941,10 +978,24 @@ fn allows_policy_record<H: OwnedSnapshotHandle>(
         .relationship_lookups(entity, row)
         .map_err(|_| invariant())?;
     let evidence = lookups
-        .iter()
-        .map(|lookup| indexed_relationship_exists(snapshot, lookup))
+        .into_iter()
+        .map(|lookup| cached_indexed_relationship_exists(snapshot, relationship_cache, lookup))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(policy.allows(entity, row, &evidence))
+}
+
+fn cached_indexed_relationship_exists<H: OwnedSnapshotHandle>(
+    snapshot: &H,
+    cache: &mut BTreeMap<RelationshipLookupCacheKey, bool>,
+    lookup: AuthorizedIndexedRelationshipLookupV1,
+) -> Result<bool, StorageError> {
+    let key = RelationshipLookupCacheKey(lookup);
+    if let Some(exists) = cache.get(&key) {
+        return Ok(*exists);
+    }
+    let exists = indexed_relationship_exists(snapshot, &key.0)?;
+    cache.insert(key, exists);
+    Ok(exists)
 }
 
 fn indexed_relationship_exists<H: OwnedSnapshotHandle>(
@@ -1165,6 +1216,7 @@ pub fn authorize_provider_projected_candidates_admitted_v1<
     // Declaration order matters on failure: observations are destroyed before
     // the construction reservation. Final settlement transfers only the proof.
     let mut work = budget.reserve(maximum).map_err(|_| unavailable())?;
+    let mut relationship_cache = BTreeMap::new();
     let mut observations = Vec::with_capacity(candidates.len());
     for key in candidates {
         let target = EntityTarget::new(entity, key.clone()).map_err(|_| invariant())?;
@@ -1181,8 +1233,16 @@ pub fn authorize_provider_projected_candidates_admitted_v1<
             .relationship_lookups(entity, record.fields())
             .map_err(|_| invariant())?;
         let evidence = lookups
-            .iter()
-            .map(|lookup| admitted_indexed_relationship_exists(snapshot, lookup, budget))
+            .into_iter()
+            .map(|lookup| {
+                let cache_key = RelationshipLookupCacheKey(lookup);
+                if let Some(exists) = relationship_cache.get(&cache_key) {
+                    return Ok(*exists);
+                }
+                let exists = admitted_indexed_relationship_exists(snapshot, &cache_key.0, budget)?;
+                relationship_cache.insert(cache_key, exists);
+                Ok(exists)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         observations.push(ProjectedPolicyCandidateObservationV1::current(
             key.clone(),
@@ -1193,6 +1253,9 @@ pub fn authorize_provider_projected_candidates_admitted_v1<
     let proof = policy
         .authorize_projected_candidates(entity, observations)
         .map_err(|_| invariant())?;
+    // Release query-local lookup scratch while its construction reservation
+    // still covers it. Settlement retains only the returned admission proof.
+    drop(relationship_cache);
     work.settle_owned_value(proof).map_err(|_| unavailable())
 }
 
@@ -1367,5 +1430,549 @@ mod provider_policy_admission_tests {
         assert!(budget.observation().unwrap().owned_bytes > 0);
         drop(alias);
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    // req: OQ-040, PRJ-004
+    #[test]
+    fn projected_candidate_admission_deduplicates_identical_relationship_lookups() {
+        use riffdb_auth::{
+            AuthenticationClock, AuthenticationClockError, AuthenticationContext,
+            CapabilityAuthenticator, CapabilityDigestKeyProvider, CapabilityReaderCurrentResolver,
+            CredentialAuthenticator, NoopAuthenticationTelemetry, OpaqueCredential,
+            RawCapabilityToken,
+        };
+        use riffdb_contract_compiler::compile_contract_source;
+        use riffdb_policy::{
+            ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
+            ApplicationExportPolicyOperationV1, AuthorizationClock, AuthorizationClockError,
+            CurrentAuthorizer, NoopAuthorizationTelemetry,
+            resolve_authorized_application_export_row_policy_context,
+        };
+        use riffdb_storage_api::{
+            CapabilityLifecycleV1, CapabilityLookupResult, CapabilityReader, EncodedContentCharge,
+            EncodedPageItem, StoredCapabilityRecordV1, StoredIndexEntryV2,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, AdministrationSequence, ApplicationExportOperationId,
+            ApplicationExportSelectionV1, ApplicationRoleHash, Audience,
+            CapabilityApplicationExportGrantV1, CapabilityApplicationExportScopeV1,
+            CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
+            CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
+            CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CapabilityTokenDigest,
+            ContractBundleHash, ContractVersion, DatabaseId, EntityVersion, Environment,
+            PartitionScopeV1, RequestId, RowPolicyName, TenantScope,
+        };
+        use std::num::{NonZeroU16, NonZeroU64};
+
+        struct FixedClock(Timestamp);
+        impl AuthenticationClock for FixedClock {
+            fn now(&self) -> Result<Timestamp, AuthenticationClockError> {
+                Ok(self.0)
+            }
+        }
+        impl AuthorizationClock for FixedClock {
+            fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
+                Ok(self.0)
+            }
+        }
+        struct SingleCapabilityReader(StoredCapabilityRecordV1);
+        impl CapabilityReader for SingleCapabilityReader {
+            fn read_capability(
+                &self,
+                capability_id: CapabilityId,
+            ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
+                Ok((self.0.capability_id() == capability_id).then(|| self.0.clone()))
+            }
+            fn resolve_capability_digests(
+                &self,
+                candidates: &[CapabilityTokenDigest],
+            ) -> Result<CapabilityLookupResult, StorageError> {
+                if candidates.contains(&self.0.token_digest()) {
+                    Ok(CapabilityLookupResult::Found(Box::new(self.0.clone())))
+                } else {
+                    Ok(CapabilityLookupResult::NotFound)
+                }
+            }
+        }
+
+        let contract_source = r#"
+contract TeamPolicy version 1 {
+  entity Organization {
+    key (organization_id: uuid)
+  }
+
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field team_id: uuid
+  }
+
+  entity TeamMember {
+    key (organization_id: uuid, team_id: uuid, subject_id: uuid)
+    index by_team_subject (organization_id, team_id, subject_id)
+  }
+
+  aggregate Organizations {
+    root Organization
+    child Document
+    child TeamMember
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+
+  row policy DocumentAccess on Document {
+    allow read when exists TeamMember.by_team_subject(
+      organization_id,
+      team_id,
+      principal.id,
+    )
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract_source).unwrap();
+        let doc_schema = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Document")
+            .unwrap();
+        let doc_entity = doc_schema.id();
+        let field_id = |name: &str| {
+            doc_schema
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .unwrap()
+                .id()
+        };
+        let doc_org_field = field_id("organization_id");
+        let doc_id_field = field_id("document_id");
+        let doc_team_field = field_id("team_id");
+        let make_doc_row = |org: [u8; 16], doc: [u8; 16], team: [u8; 16]| {
+            let mut fields = vec![
+                (doc_org_field, CanonicalValue::Uuid(org)),
+                (doc_id_field, CanonicalValue::Uuid(doc)),
+                (doc_team_field, CanonicalValue::Uuid(team)),
+            ];
+            fields.sort_by_key(|(id, _)| *id);
+            riffdb_types::CanonicalRecord::new(fields).unwrap()
+        };
+        let member_schema = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "TeamMember")
+            .unwrap();
+        let lineage = bundle.lineage().clone();
+        let role = ApplicationRoleHash::from_bytes([0x44; 32]);
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            CapabilityPermissionsV1::new(vec![CapabilityPermissionV1::ApplicationRoleIdentity(
+                role,
+            )])
+            .unwrap(),
+            Vec::new(),
+            NonZeroU16::new(64).unwrap(),
+            Vec::new(),
+        )
+        .unwrap()
+        .with_row_policy(
+            CapabilityRowPolicyGrantV1::new(
+                role,
+                CapabilityPrincipalFactsV1::empty(),
+                vec![
+                    CapabilityRowPolicyBindingV1::new(
+                        lineage.clone(),
+                        RowPolicyName::new("DocumentAccess").unwrap(),
+                        doc_entity,
+                        vec![CapabilityRowPolicyOperationV1::Read],
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .with_export(
+            CapabilityExportGrantV1::new(vec![
+                CapabilityApplicationExportGrantV1::new(
+                    lineage.clone(),
+                    CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                    true,
+                    false,
+                    false,
+                    false,
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let raw_token = b"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        let key_doc = b"riffdb-capability-digest-keys-v1\n1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
+        let keys = CapabilityDigestKeyProvider::parse_document(key_doc).unwrap();
+        let token = RawCapabilityToken::parse_canonical(raw_token).unwrap();
+        let database_id = DatabaseId::from_unix_milliseconds_and_random(1, [0x11; 10]).unwrap();
+        let environment = Environment::new("test").unwrap();
+        let audience = Audience::new("test").unwrap();
+        let record = StoredCapabilityRecordV1::from_stored_parts(
+            CapabilityId::from_unix_milliseconds_and_random(1, [0x22; 10]).unwrap(),
+            NonZeroU64::MIN,
+            keys.current_digest(&token),
+            database_id,
+            environment.clone(),
+            ActorId::new("01010101-0101-0101-0101-010101010101").unwrap(),
+            ActorKind::Human,
+            vec![audience.clone()],
+            Timestamp::new(10, 0).unwrap(),
+            Timestamp::new(1_000, 0).unwrap(),
+            AdministrationSequence::first(),
+            RequestId::from_unix_milliseconds_and_random(1, [0x33; 10]).unwrap(),
+            grant,
+            CapabilityLifecycleV1::Active,
+        )
+        .unwrap();
+        let cap_reader = SingleCapabilityReader(record);
+        let clock = FixedClock(Timestamp::new(100, 0).unwrap());
+        let auth_ctx =
+            AuthenticationContext::new(database_id, environment.clone(), audience.clone());
+        let principal =
+            CapabilityAuthenticator::new(&cap_reader, &keys, &clock, &NoopAuthenticationTelemetry)
+                .authenticate(OpaqueCredential::new(raw_token), &auth_ctx)
+                .unwrap();
+        let resolver = CapabilityReaderCurrentResolver::new(&cap_reader);
+        let authorizer = CurrentAuthorizer::new(
+            &resolver,
+            &clock,
+            &NoopAuthorizationTelemetry,
+            database_id,
+            environment,
+        );
+        let export_req = ApplicationExportAuthorizationRequestV1::new(
+            ApplicationExportOperationId::from_unix_milliseconds_and_random(1, [0x55; 10]).unwrap(),
+            ApplicationExportSelectionV1::new(
+                lineage.clone(),
+                CapabilityApplicationExportScopeV1::PrincipalFiltered,
+                true,
+                false,
+                false,
+                false,
+            )
+            .unwrap(),
+            ApplicationExportPolicyOperationV1::Page,
+        );
+        let ApplicationExportDecisionV1::Allow(export_proof) = authorizer
+            .authorize_application_export(&principal, export_req)
+            .unwrap()
+        else {
+            panic!("expected allow");
+        };
+        let policy =
+            resolve_authorized_application_export_row_policy_context(&export_proof, &bundle)
+                .unwrap()
+                .unwrap();
+
+        let org_uuid = [0xaa; 16];
+        let team_allowed = [0x10; 16];
+        let team_denied = [0x20; 16];
+        let schema_binding = riffdb_storage_api::DurableKeySchemaBindingV1::new(
+            lineage.clone(),
+            ContractVersion::new(1).unwrap(),
+            ContractBundleHash::from_bytes([7; 32]),
+        );
+        let mut records = BTreeMap::new();
+        let mut candidate_keys = Vec::new();
+        for index in 0..20_u8 {
+            let doc_uuid = [index + 1; 16];
+            let team_uuid = if index < 10 {
+                team_allowed
+            } else {
+                team_denied
+            };
+            let key = doc_schema
+                .primary_key()
+                .encode_entity(&[
+                    CanonicalValue::Uuid(org_uuid),
+                    CanonicalValue::Uuid(doc_uuid),
+                ])
+                .unwrap();
+            let row = make_doc_row(org_uuid, doc_uuid, team_uuid);
+            let stored = riffdb_storage_api::StoredEntityRecordV1::new(
+                EntityTarget::new(doc_entity, key.clone()).unwrap(),
+                EntityVersion::new(1).unwrap(),
+                ContractVersion::new(1).unwrap(),
+                schema_binding.clone(),
+                row,
+            )
+            .unwrap();
+            records.insert(
+                key.clone(),
+                riffdb_storage_api::encode_entity_record_v1(&stored)
+                    .unwrap()
+                    .as_bytes()
+                    .to_vec(),
+            );
+            candidate_keys.push((key, index < 10));
+        }
+        candidate_keys.sort_by(|left, right| left.0.cmp(&right.0));
+        let ordered_keys = candidate_keys
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+
+        // Compute the exact index prefix for team_allowed so our mock index reader can match it.
+        let allowed_probe_row = make_doc_row(org_uuid, [1; 16], team_allowed);
+        let allowed_lookup = policy
+            .relationship_lookups(doc_entity, &allowed_probe_row)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let allowed_prefix = allowed_lookup.index_prefix().to_vec();
+
+        let member_values = [
+            CanonicalValue::Uuid(org_uuid),
+            CanonicalValue::Uuid(team_allowed),
+            CanonicalValue::Uuid([0x01; 16]),
+        ];
+        let member_key = member_schema
+            .primary_key()
+            .encode_entity(&member_values)
+            .unwrap();
+        let index_entry_key = member_schema.indexes()[0]
+            .key_schema()
+            .encode_index(&member_values, member_key)
+            .unwrap();
+        let allowed_index_entry = StoredIndexEntryV2::new(
+            index_entry_key,
+            schema_binding,
+            riffdb_types::CanonicalRecord::new(Vec::new()).unwrap(),
+            allowed_lookup.partition().clone(),
+        )
+        .unwrap();
+
+        struct RelationshipCountingSource {
+            entity_reads: AtomicUsize,
+            relationship_reads: AtomicUsize,
+            records: BTreeMap<EntityKey, Vec<u8>>,
+            stored_records: BTreeMap<EntityKey, riffdb_storage_api::StoredEntityRecordV1>,
+            allowed_prefix: Vec<u8>,
+            allowed_index_entry: StoredIndexEntryV2,
+        }
+        impl ProviderPolicySourceReaderV1 for RelationshipCountingSource {
+            fn read_provider_entity_record_v1(
+                &self,
+                target: &EntityTarget,
+                budget: &ProviderBudget,
+            ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError>
+            {
+                self.entity_reads.fetch_add(1, Ordering::Relaxed);
+                let Some(encoded) = self.records.get(target.key()) else {
+                    return Ok(None);
+                };
+                riffdb_storage_api::decode_provider_entity_record_admitted_v1(encoded, budget)
+                    .map(Some)
+                    .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))
+            }
+            fn read_provider_policy_index_range_v1(
+                &self,
+                request: &SnapshotIndexRangeRequestV1,
+                budget: &ProviderBudget,
+            ) -> Result<Arc<ProviderAllocation<SnapshotIndexRangePageV1>>, StorageError>
+            {
+                self.relationship_reads.fetch_add(1, Ordering::Relaxed);
+                let entries = if request.lower() == self.allowed_prefix.as_slice() {
+                    vec![EncodedPageItem::new(
+                        self.allowed_index_entry.clone(),
+                        EncodedContentCharge::new(64).unwrap(),
+                    )]
+                } else {
+                    Vec::new()
+                };
+                let page = SnapshotIndexRangePageV1::new(request, entries, false).unwrap();
+                let reservation = budget
+                    .reserve(1024)
+                    .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
+                reservation
+                    .commit_value(page)
+                    .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))
+            }
+        }
+        impl riffdb_storage_api::AuthoritativePointReader for RelationshipCountingSource {
+            fn read_entity(
+                &self,
+                target: &EntityTarget,
+            ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError>
+            {
+                self.entity_reads.fetch_add(1, Ordering::Relaxed);
+                Ok(self.stored_records.get(target.key()).cloned())
+            }
+            fn read_stored_outcome(
+                &self,
+                _: &riffdb_storage_api::IdempotencyIdentity,
+            ) -> Result<Option<riffdb_storage_api::StoredOutcomeV1>, StorageError> {
+                unreachable!()
+            }
+            fn read_commit(
+                &self,
+                _: riffdb_types::CommitSequence,
+            ) -> Result<Option<riffdb_storage_api::StoredCommitRecordV1>, StorageError>
+            {
+                unreachable!()
+            }
+            fn read_provenance(
+                &self,
+                _: riffdb_types::ProvenanceId,
+            ) -> Result<Option<riffdb_storage_api::StoredProvenanceRecordV1>, StorageError>
+            {
+                unreachable!()
+            }
+            fn read_durable_event(
+                &self,
+                _: riffdb_types::EventId,
+            ) -> Result<Option<riffdb_storage_api::StoredDurableEventV1>, StorageError>
+            {
+                unreachable!()
+            }
+        }
+        impl riffdb_storage_api::AuthoritativeScanReader for RelationshipCountingSource {
+            fn scan_index(
+                &self,
+                _: riffdb_storage_api::AuthoritativeIndexScanRequest,
+            ) -> Result<riffdb_storage_api::AuthoritativeIndexScanPage, StorageError> {
+                unreachable!()
+            }
+            fn scan_commits(
+                &self,
+                _: riffdb_storage_api::CommitScanRequest,
+            ) -> Result<riffdb_storage_api::CommitScanPageV1, StorageError> {
+                unreachable!()
+            }
+        }
+        impl riffdb_storage_api::FilteredAuthoritativeScanReader for RelationshipCountingSource {
+            fn scan_index_filtered(
+                &self,
+                _: riffdb_storage_api::FilteredAuthoritativeIndexScanRequest,
+            ) -> Result<riffdb_storage_api::FilteredAuthoritativeIndexScanPage, StorageError>
+            {
+                unreachable!()
+            }
+        }
+        impl riffdb_storage_api::SnapshotReader for RelationshipCountingSource {
+            fn read_snapshot(
+                &self,
+                _: riffdb_storage_api::SnapshotRequest,
+            ) -> Result<riffdb_storage_api::ReadSnapshot, StorageError> {
+                unreachable!()
+            }
+        }
+        impl riffdb_storage_api::SnapshotFenceReader for RelationshipCountingSource {
+            fn application_frontier(
+                &self,
+            ) -> Result<Option<riffdb_types::CommitSequence>, StorageError> {
+                Ok(Some(riffdb_types::CommitSequence::first()))
+            }
+            fn index_epoch(
+                &self,
+                _: &riffdb_storage_api::PartitionIndexTarget,
+            ) -> Result<u64, StorageError> {
+                Ok(1)
+            }
+            fn scan_snapshot_index_range(
+                &self,
+                request: SnapshotIndexRangeRequestV1,
+            ) -> Result<SnapshotIndexRangePageV1, StorageError> {
+                self.relationship_reads.fetch_add(1, Ordering::Relaxed);
+                let entries = if request.lower() == self.allowed_prefix.as_slice() {
+                    vec![EncodedPageItem::new(
+                        self.allowed_index_entry.clone(),
+                        EncodedContentCharge::new(64).unwrap(),
+                    )]
+                } else {
+                    Vec::new()
+                };
+                Ok(SnapshotIndexRangePageV1::new(&request, entries, false).unwrap())
+            }
+        }
+        impl riffdb_storage_api::VectorObservationRepository for RelationshipCountingSource {
+            fn read_vector_observation(
+                &self,
+                _: &riffdb_storage_api::VectorObservationTargetV1,
+            ) -> Result<Option<riffdb_storage_api::VectorObservationCountsV1>, StorageError>
+            {
+                unreachable!()
+            }
+            fn read_vector_health_observation(
+                &self,
+                _: &riffdb_types::ContractLineage,
+            ) -> Result<Option<riffdb_storage_api::VectorHealthObservationV1>, StorageError>
+            {
+                unreachable!()
+            }
+        }
+        impl riffdb_storage_api::VectorEvidenceIndexRepository for RelationshipCountingSource {
+            fn scan_vector_evidence_index(
+                &self,
+                _: &riffdb_storage_api::VectorEvidenceIndexScanRequestV1,
+            ) -> Result<riffdb_storage_api::VectorEvidenceIndexPageV1, StorageError> {
+                unreachable!()
+            }
+        }
+
+        let stored_records = records
+            .iter()
+            .map(|(key, encoded)| {
+                (
+                    key.clone(),
+                    riffdb_storage_api::decode_entity_record_v1(encoded)
+                        .unwrap()
+                        .value()
+                        .clone(),
+                )
+            })
+            .collect();
+        let source = RelationshipCountingSource {
+            entity_reads: AtomicUsize::new(0),
+            relationship_reads: AtomicUsize::new(0),
+            records,
+            stored_records,
+            allowed_prefix,
+            allowed_index_entry,
+        };
+        let budget = ProviderBudget::new();
+        let proof = authorize_provider_projected_candidates_admitted_v1(
+            &source,
+            doc_entity,
+            &ordered_keys,
+            &policy,
+            &budget,
+        )
+        .unwrap();
+
+        assert_eq!(source.entity_reads.load(Ordering::Relaxed), 20);
+        assert_eq!(
+            source.relationship_reads.load(Ordering::Relaxed),
+            2,
+            "20 candidate rows sharing 2 team relationships must perform 2 index range reads, not 20"
+        );
+        for (key, expected_allowed) in &candidate_keys {
+            assert_eq!(proof.admits(key), *expected_allowed);
+        }
+
+        source.entity_reads.store(0, Ordering::Relaxed);
+        source.relationship_reads.store(0, Ordering::Relaxed);
+        let direct_proof =
+            authorize_candidates(&source, doc_entity, &ordered_keys, &policy).unwrap();
+        assert_eq!(source.entity_reads.load(Ordering::Relaxed), 20);
+        assert_eq!(
+            source.relationship_reads.load(Ordering::Relaxed),
+            2,
+            "authorize_candidates over OwnedSnapshotHandle must also deduplicate identical relationship lookups"
+        );
+        for (key, expected_allowed) in &candidate_keys {
+            assert_eq!(direct_proof.admits(key), *expected_allowed);
+        }
     }
 }
