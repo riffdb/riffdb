@@ -30525,7 +30525,7 @@ work_packages:
     and support single-step SDK regeneration during riffdb push.
   requirements: [DX-014, DX-016, DX-017]
   required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
-  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-query-module/**]
+  allowed_paths: [work_packages.yaml, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - Offline local lock compilation and refresh in riffdb generate when riffdb.application.lock.json is absent or stale
   - Single-step SDK regeneration support (--generate and configured project generators) on riffdb push
@@ -30558,7 +30558,7 @@ work_packages:
     role in riffdb.application.json.
   requirements: [DX-004, DX-005, DX-016]
   required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
-  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**]
+  allowed_paths: [work_packages.yaml, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - Role coverage check comparing compiled contract commands and RiffQL queries against declared role grants in riffdb.application.json
   - Structured diagnostic with operation name, manifest path, and fix hint surfaced in check, generate, dev, and lsp
@@ -30592,7 +30592,7 @@ work_packages:
     repositories.
   requirements: [DX-004, DX-046]
   required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
-  allowed_paths: [crates/riffdb-cli/**]
+  allowed_paths: [work_packages.yaml, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - Workspace-confined --reset flag on riffdb dev with symlink and path-confinement validation
   - Multi-surface SDK regeneration in riffdb dev bootstrap and watch loops
@@ -30626,7 +30626,7 @@ work_packages:
     hints for common agent syntax errors.
   requirements: [DX-012, DX-021, DX-025]
   required_adrs: [ADR-0304, ADR-0122, ADR-0303]
-  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-contract-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-compiler/**]
+  allowed_paths: [work_packages.yaml, crates/riffdb-cli/**, crates/riffdb-diagnostics/**, crates/riffdb-contract-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-compiler/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - Expanded crates/riffdb-cli/assets/agent/SKILL.md covering .riff, .riffql, riffdb.application.json, and ergonomic SDK usage
   - Actionable compiler fix hints on common .riff and .riffql syntax/lowering diagnostics
