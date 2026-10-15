@@ -361,6 +361,21 @@ def main() -> int:
     if not isinstance(riffdb_path, str):
         fail("endurance CLI identity is absent")
     frontier = health_frontier(environment, riffdb_path)
+    flight_log = environment / "metrics" / "telemetry-flight.ndjson"
+    if flight_log.is_file() and not flight_log.is_symlink() and flight_log.stat().st_size > 0:
+        summary_result = subprocess.run(
+            [riffdb_path, "telemetry", "summarize", str(flight_log), "--output", "json"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if summary_result.returncode == 0 and 0 < len(summary_result.stdout.encode()) <= MAX_JSON_BYTES:
+            summary_next = environment / "metrics" / "telemetry-summary.json.next"
+            summary_next.write_text(summary_result.stdout, encoding="utf-8")
+            os.chmod(summary_next, 0o600)
+            summary_next.replace(environment / "metrics" / "telemetry-summary.json")
     latency_counts = [
         sum(integer(worker["latency_counts"][index], "latency count") for worker in workers)
         for index in range(len(LATENCY_BOUNDS_US))

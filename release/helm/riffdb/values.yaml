@@ -82,6 +82,18 @@ server:
       storageClassName: ""
       accessModes: ["ReadWriteOnce"]
 
+  # Optional pod-local loopback metrics exposition and persistent soak flight
+  # recording (ADR-0306). Metrics bind exclusively to 127.0.0.1 for pod-local
+  # sidecar or exec scraping; the flight recorder writes inside the persistent
+  # data volume so readOnlyRootFilesystem remains intact.
+  telemetry:
+    metrics:
+      enabled: false
+      port: 9464
+    flightRecorder:
+      enabled: false
+      intervalMilliseconds: 10000
+
 proxy:
   enabled: true
   image:

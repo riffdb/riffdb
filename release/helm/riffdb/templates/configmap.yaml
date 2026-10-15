@@ -13,6 +13,13 @@ data:
     audience = {{ .Values.server.audience | quote }}
     capability_keys = "/run/riffdb-protected/capability.keys"
     idempotency_keys = "/run/riffdb-protected/idempotency.keys"
+    {{- if .Values.server.telemetry.metrics.enabled }}
+    metrics_listen = "127.0.0.1:{{ .Values.server.telemetry.metrics.port }}"
+    {{- end }}
+    {{- if .Values.server.telemetry.flightRecorder.enabled }}
+    telemetry_flight_recorder = "/var/lib/riffdb/data/telemetry-flight.ndjson"
+    telemetry_flight_interval_ms = {{ .Values.server.telemetry.flightRecorder.intervalMilliseconds }}
+    {{- end }}
 
     [server.application_listener]
     mode = "direct_tls"

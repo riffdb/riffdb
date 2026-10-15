@@ -7,6 +7,9 @@
 {{- if has .Values.server.tlsTrustRootFile (list "server-chain.pem" "server-key.pem" "capability.keys" "idempotency.keys" "readiness.credential") -}}
 {{- fail "server.tlsTrustRootFile must not overlap another protected server input" -}}
 {{- end -}}
+{{- if and .Values.server.telemetry.metrics.enabled (eq (int .Values.server.telemetry.metrics.port) (int .Values.server.listener.port)) -}}
+{{- fail "server.telemetry.metrics.port must not equal server.listener.port" -}}
+{{- end -}}
 {{- if .Values.acceptanceJobs.enabled -}}
 {{- if eq .Values.acceptanceJobs.applicationSecretName .Values.acceptanceJobs.operatorSecretName -}}
 {{- fail "acceptance Job Secret names must be distinct" -}}

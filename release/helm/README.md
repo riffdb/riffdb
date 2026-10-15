@@ -19,9 +19,10 @@ exposed as values, and makes the proof Jobs opt-in
 ## What is deliberately not configurable
 
 `docs/known-limitations.md` records that `riffdbd` exposes only the documented
-POC configuration fields, with no network metrics listener, storage-engine
-selector, general tuning surface, or secret value in TOML. The chart adds no
-knob beyond that surface. In particular:
+POC configuration fields, with no external network metrics listener (only an
+optional loopback-only metrics listener and persistent soak flight recorder),
+storage-engine selector, general tuning surface, or secret value in TOML. The
+chart adds no knob beyond that surface. In particular:
 
 - **No secret values are templated.** Certificate chain, private key,
   capability keys, idempotency keys, readiness credential, and probe trust
