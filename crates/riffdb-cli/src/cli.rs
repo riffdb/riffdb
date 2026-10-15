@@ -47,6 +47,9 @@ pub(crate) enum TopLevel {
         /// Accepts one exact compiler-owned successor lock identity.
         #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
         accept_lock: Option<String>,
+        /// Regenerates configured SDK targets in the same invocation.
+        #[arg(long)]
+        generate: bool,
     },
     /// Regenerates configured SDK targets from the exact project lock.
     Generate,
@@ -106,6 +109,9 @@ pub(crate) enum TopLevel {
         seed_dir: Option<OsString>,
         #[arg(long, default_value = "8", value_name = "1..8")]
         seed_concurrency: String,
+        /// Resets disposable local development state under `.riffdb/dev` before starting.
+        #[arg(long)]
+        reset: bool,
         #[arg(long, hide = true)]
         acceptance: bool,
     },
@@ -2026,10 +2032,23 @@ mod tests {
 
         let accepted = "ab".repeat(32);
         assert!(matches!(
-            Cli::try_parse_from(["riffdb", "push", "--accept-lock", &accepted])
+            Cli::try_parse_from(["riffdb", "push", "--accept-lock", &accepted, "--generate"])
                 .expect("accepted push")
                 .command,
-            TopLevel::Push { accept_lock: Some(hash) } if hash == accepted
+            TopLevel::Push {
+                accept_lock: Some(hash),
+                generate: true,
+            } if hash == accepted
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "dev", "--reset", "--watch"])
+                .expect("dev reset")
+                .command,
+            TopLevel::Dev {
+                reset: true,
+                watch: true,
+                ..
+            }
         ));
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "generate"])

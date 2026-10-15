@@ -201,25 +201,80 @@ pub(crate) fn generate_application(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn generate_project_application(
     source_path: &Path,
     selected: &[GeneratedApplicationArtifactKind],
 ) -> Result<(), ScaffoldError> {
     let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, None)?;
-    let lock = ApplicationLock::decode_canonical(&read_bounded(
-        &lock_path,
-        riffdb_query_module::MAX_APPLICATION_LOCK_BYTES,
-    )?)
-    .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
-    let compiled = compile_for_existing_lock(source_path, root, &lock_path, &lock)?;
-    check_project_compilation(root, &lock, &compiled, selected, true)?;
-    for (path, bytes) in &compiled.outputs {
-        if compiled_output_kind(&compiled, path).is_some_and(|kind| selected.contains(&kind)) {
-            atomic_write_workspace(root, path, bytes)?;
+    let existing = match read_bounded(&lock_path, riffdb_query_module::MAX_APPLICATION_LOCK_BYTES) {
+        Ok(bytes) => Some(bytes),
+        Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(existing_bytes) = existing {
+        let lock = ApplicationLock::decode_canonical(&existing_bytes)
+            .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+        let compiled = compile_for_existing_lock(source_path, root, &lock_path, &lock)?;
+        check_project_compilation(root, &lock, &compiled, selected, true)?;
+        for (path, bytes) in &compiled.outputs {
+            if compiled_output_kind(&compiled, path).is_some_and(|kind| selected.contains(&kind)) {
+                atomic_write_workspace(root, path, bytes)?;
+            }
         }
+        return Ok(());
     }
-    Ok(())
+    if application_contract_version(source_path)? != 1 {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    let compiled = compile_symbolic_application(source_path)?;
+    publish_compiled_project_lock(source_path, &compiled, selected)
+}
+
+/// Compiles and materializes `riffdb.application.lock.json` and the selected
+/// SDK surfaces offline when the lock is absent or stale.
+pub(crate) fn generate_project_application_offline(
+    source_path: &Path,
+    selected: &[GeneratedApplicationArtifactKind],
+) -> Result<RoleCoverageReport, ScaffoldError> {
+    let root = source_parent(source_path);
+    let lock_path = workspace_lock_path(root, None)?;
+    if let Ok(existing_bytes) =
+        read_bounded(&lock_path, riffdb_query_module::MAX_APPLICATION_LOCK_BYTES)
+        && let Ok(lock) = ApplicationLock::decode_canonical(&existing_bytes)
+        && let Ok(compiled) = compile_for_existing_lock(source_path, root, &lock_path, &lock)
+        && check_project_compilation(root, &lock, &compiled, selected, true).is_ok()
+    {
+        for (path, bytes) in &compiled.outputs {
+            if compiled_output_kind(&compiled, path).is_some_and(|kind| selected.contains(&kind)) {
+                atomic_write_workspace(root, path, bytes)?;
+            }
+        }
+        return Ok(compiled.role_coverage);
+    }
+    if let Ok(PinnedLockRefresh::Refreshed) =
+        refresh_application_lock_from_pinned_bundle(source_path, None)
+    {
+        let existing_bytes =
+            read_bounded(&lock_path, riffdb_query_module::MAX_APPLICATION_LOCK_BYTES)?;
+        let lock = ApplicationLock::decode_canonical(&existing_bytes)
+            .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+        let compiled = compile_for_existing_lock(source_path, root, &lock_path, &lock)?;
+        require_selected_declared(&compiled, selected)?;
+        for (path, bytes) in &compiled.outputs {
+            if compiled_output_kind(&compiled, path).is_some_and(|kind| selected.contains(&kind)) {
+                atomic_write_workspace(root, path, bytes)?;
+            }
+        }
+        return Ok(compiled.role_coverage);
+    }
+    if application_contract_version(source_path)? != 1 {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    let compiled = compile_symbolic_application(source_path)?;
+    publish_compiled_project_lock(source_path, &compiled, selected)?;
+    Ok(compiled.role_coverage)
 }
 
 fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError> {
@@ -312,6 +367,7 @@ struct CompiledSymbolicApplication {
     outputs: Vec<(String, Vec<u8>)>,
     runtime_operation_catalog: Option<Vec<u8>>,
     queries: Vec<QueryCostReport>,
+    role_coverage: RoleCoverageReport,
 }
 
 pub(crate) struct LockedApplication {
@@ -409,15 +465,159 @@ fn survey_queries(module: &QueryModule) -> Vec<QueryCostReport> {
         .collect()
 }
 
+/// Reports compiled contract commands and named queries that are not granted
+/// to any role in `riffdb.application.json`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RoleCoverageReport {
+    pub(crate) manifest_path: String,
+    pub(crate) unreferenced_commands: Vec<String>,
+    pub(crate) unreferenced_queries: Vec<String>,
+}
+
+impl RoleCoverageReport {
+    pub(crate) fn is_complete(&self) -> bool {
+        self.unreferenced_commands.is_empty() && self.unreferenced_queries.is_empty()
+    }
+
+    pub(crate) fn diagnostics(&self) -> Option<AuthoringDiagnostics> {
+        if self.is_complete() {
+            return None;
+        }
+        let path = AuthoringSourcePath::new(self.manifest_path.as_str()).ok()?;
+        AuthoringDiagnostics::unreferenced_role_operations(
+            path,
+            &self.unreferenced_commands,
+            &self.unreferenced_queries,
+        )
+        .ok()
+    }
+}
+
+fn survey_role_coverage(
+    source_path: &Path,
+    source: &ApplicationSourceManifest,
+    contract: &ContractBundle,
+    module: &QueryModule,
+) -> RoleCoverageReport {
+    let manifest_path = diagnostic_path(source_path)
+        .map(|path| path.as_str().to_owned())
+        .unwrap_or_else(|| "riffdb.application.json".to_owned());
+    if source.roles().is_empty() {
+        return RoleCoverageReport {
+            manifest_path,
+            unreferenced_commands: Vec::new(),
+            unreferenced_queries: Vec::new(),
+        };
+    }
+    let granted_commands = source
+        .roles()
+        .iter()
+        .flat_map(|role| role.commands().iter().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    let granted_queries = source
+        .roles()
+        .iter()
+        .flat_map(|role| role.queries().iter().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    let unreferenced_commands = contract
+        .commands()
+        .iter()
+        .map(|command| command.name().to_owned())
+        .filter(|name| !granted_commands.contains(name.as_str()))
+        .collect();
+    let unreferenced_queries = module
+        .queries()
+        .iter()
+        .map(|query| query.name().to_owned())
+        .filter(|name| !granted_queries.contains(name.as_str()))
+        .collect();
+    RoleCoverageReport {
+        manifest_path,
+        unreferenced_commands,
+        unreferenced_queries,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn check_role_coverage(source_path: &Path) -> Result<RoleCoverageReport, ScaffoldError> {
+    Ok(compile_symbolic_application(source_path)?.role_coverage)
+}
+
+/// Resets ephemeral local development state strictly confined to `<workspace_root>/.riffdb/dev`.
+pub(crate) fn reset_dev_workspace_state(workspace_root: &Path) -> Result<bool, ScaffoldError> {
+    let canonical_root = fs::canonicalize(workspace_root)?;
+    let riffdb_dir = canonical_root.join(".riffdb");
+    match fs::symlink_metadata(&riffdb_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    let dev_dir = riffdb_dir.join("dev");
+    match fs::symlink_metadata(&dev_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    ensure_no_symlinks_in_dev_tree(&dev_dir, 0)?;
+    fs::remove_dir_all(&dev_dir)?;
+    Ok(true)
+}
+
+fn ensure_no_symlinks_in_dev_tree(dir: &Path, depth: usize) -> Result<(), ScaffoldError> {
+    if depth > 32 {
+        return Err(ScaffoldError::SourceLimit);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        if metadata.is_dir() {
+            ensure_no_symlinks_in_dev_tree(&path, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+/// Materializes all SDK surfaces declared in `riffdb.application.json` for polyglot local development.
+#[cfg(test)]
+pub(crate) fn generate_polyglot_dev_surfaces(
+    source_path: &Path,
+) -> Result<Vec<GeneratedApplicationArtifactKind>, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let source = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
+    let selected = source
+        .generation()
+        .declared()
+        .map(|(surface, _)| surface.artifact_kind())
+        .filter(|kind| selectable_artifact(*kind))
+        .collect::<Vec<_>>();
+    generate_project_application_offline(source_path, &selected)?;
+    Ok(selected)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ApplicationCheckStatus {
     SourceOnly {
         seed_input_count: usize,
         queries: Vec<QueryCostReport>,
+        role_coverage: RoleCoverageReport,
     },
     ExactLock {
         seed_input_count: usize,
         queries: Vec<QueryCostReport>,
+        role_coverage: RoleCoverageReport,
     },
 }
 
@@ -438,6 +638,14 @@ impl ApplicationCheckStatus {
             Self::SourceOnly { queries, .. } | Self::ExactLock { queries, .. } => queries,
         }
     }
+
+    pub(crate) fn role_coverage(&self) -> &RoleCoverageReport {
+        match self {
+            Self::SourceOnly { role_coverage, .. } | Self::ExactLock { role_coverage, .. } => {
+                role_coverage
+            }
+        }
+    }
 }
 
 fn application_seed_input_count(source_path: &Path) -> Result<usize, ScaffoldError> {
@@ -454,16 +662,18 @@ pub(crate) fn check_application(
 ) -> Result<ApplicationCheckStatus, ScaffoldError> {
     let root = source_parent(source_path);
     if root.join(DEFAULT_LOCK_PATH).exists() {
-        let queries = check_application_lock(source_path, None)?;
+        let (queries, role_coverage) = check_application_lock_and_roles(source_path, None)?;
         Ok(ApplicationCheckStatus::ExactLock {
             seed_input_count: application_seed_input_count(source_path)?,
             queries,
+            role_coverage,
         })
     } else {
         let compiled = compile_symbolic_application(source_path)?;
         Ok(ApplicationCheckStatus::SourceOnly {
             seed_input_count: application_seed_input_count(source_path)?,
             queries: compiled.queries,
+            role_coverage: compiled.role_coverage,
         })
     }
 }
@@ -479,6 +689,7 @@ pub(crate) fn check_application_sources(
     Ok(ApplicationCheckStatus::SourceOnly {
         seed_input_count: application_seed_input_count(source_path)?,
         queries: compiled.queries,
+        role_coverage: compiled.role_coverage,
     })
 }
 
@@ -753,6 +964,13 @@ pub(crate) fn check_application_lock(
     source_path: &Path,
     lock_path: Option<&Path>,
 ) -> Result<Vec<QueryCostReport>, ScaffoldError> {
+    check_application_lock_and_roles(source_path, lock_path).map(|(queries, _)| queries)
+}
+
+fn check_application_lock_and_roles(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+) -> Result<(Vec<QueryCostReport>, RoleCoverageReport), ScaffoldError> {
     let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, lock_path)?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
@@ -774,7 +992,7 @@ pub(crate) fn check_application_lock(
             ));
         }
     }
-    Ok(compiled.queries)
+    Ok((compiled.queries, compiled.role_coverage))
 }
 
 pub(crate) fn check_project_application_lock(
@@ -1574,6 +1792,7 @@ fn compile_symbolic_application_source_mode(
         return Err(ScaffoldError::Manifest);
     };
     let query_report = survey_queries(module);
+    let role_coverage = survey_role_coverage(source_path, &source, &contract, module);
     let mut outputs = vec![(
         EXACT_MANIFEST_PATH.to_owned(),
         exact.canonical_bytes().to_vec(),
@@ -1715,6 +1934,7 @@ fn compile_symbolic_application_source_mode(
         outputs,
         runtime_operation_catalog,
         queries: query_report,
+        role_coverage,
     })
 }
 
@@ -4907,5 +5127,149 @@ mod tests {
                 .is_symlink(),
             "the rejected output parent must still be a symlink"
         );
+    }
+
+    // req: DX-014, DX-016, DX-017
+    #[test]
+    fn offline_init_and_generate_project_application_materializes_and_refreshes_lock() {
+        let parent = tempfile::TempDir::with_prefix("riffdb-offline-generate-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        fs::create_dir_all(&base).expect("create project directory");
+        fs::write(
+            base.join("package.json"),
+            br#"{"name": "safe-app", "version": "0.1.0", "type": "module"}"#,
+        )
+        .expect("write package.json");
+        crate::project::initialize(
+            &base,
+            Path::new(crate::project::DEFAULT_PROJECT_FILE),
+            Some("safe-app"),
+            None,
+            None,
+            &[crate::cli::ApplicationGenerator::Typescript],
+        )
+        .expect("init existing project");
+        let source_path = base.join("riffdb.application.json");
+        assert!(!base.join(DEFAULT_LOCK_PATH).exists());
+
+        generate_project_application(
+            &source_path,
+            &[GeneratedApplicationArtifactKind::TypeScript],
+        )
+        .expect("offline generate materializes lock and TypeScript client");
+        assert!(base.join(DEFAULT_LOCK_PATH).is_file());
+        assert!(base.join("generated/typescript/client.ts").is_file());
+
+        let contract_path = base.join("riffdb/contract.riff");
+        let updated_contract = include_str!("../assets/scaffold/application/contract.riff")
+            .replace("{{CONTRACT_NAME}}", "SafeApp");
+        fs::write(&contract_path, updated_contract).expect("update contract");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("read manifest"))
+                .expect("parse manifest");
+        manifest["roles"] = json!([{
+            "agent_subscriptions": [],
+            "commands": ["CreateItem"],
+            "environment": "development",
+            "event_streams": [],
+            "name": "safe-app-client",
+            "queries": [],
+            "row_policies": [],
+            "tenant_scope": "global",
+            "watch_queries": [],
+        }]);
+        fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&manifest).expect("encode manifest"),
+        )
+        .expect("write manifest with role");
+
+        let coverage = generate_project_application_offline(
+            &source_path,
+            &[GeneratedApplicationArtifactKind::TypeScript],
+        )
+        .expect("offline generate refreshes stale lock after contract change");
+        assert!(coverage.is_complete());
+        let client_source =
+            fs::read_to_string(base.join("generated/typescript/client.ts")).expect("read client");
+        assert!(client_source.contains("SafeAppClient"));
+        assert!(client_source.contains("createItem"));
+    }
+
+    // req: DX-004, DX-005, DX-016
+    #[test]
+    fn role_coverage_report_surfaces_unreferenced_commands_and_queries_with_repair_hint() {
+        let parent = tempfile::TempDir::with_prefix("riffdb-role-coverage-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+
+        let contract_path = base.join("riffdb/contract.riff");
+        let mut contract_text = fs::read_to_string(&contract_path).expect("read contract");
+        contract_text = contract_text.replace(
+            "\n}\n",
+            r#"
+  command ArchiveItem {
+    input idempotency_key: string<128>
+    input item_id: uuid
+    idempotency_key idempotency_key
+    create Item(item_id) as item
+      else ItemExists { item_id: item_id }
+    set item.title = "archived"
+    set item.created_at = tx.time
+    return Archived { item_id: item_id }
+  }
+}
+"#,
+        );
+        fs::write(&contract_path, contract_text).expect("update contract with ArchiveItem");
+
+        let report = check_role_coverage(&source_path).expect("survey role coverage");
+        assert!(!report.is_complete());
+        assert_eq!(report.unreferenced_commands, vec!["ArchiveItem".to_owned()]);
+        assert!(report.unreferenced_queries.is_empty());
+        let diagnostics = report
+            .diagnostics()
+            .expect("unreferenced operation produces authoring diagnostic");
+        let rendered = diagnostics.render_human().expect("render human");
+        assert!(rendered.contains("RDB-AR011"));
+        assert!(rendered.contains("ArchiveItem"));
+        assert!(rendered.contains("roles[0].commands"));
+    }
+
+    // req: DX-004, DX-046
+    #[test]
+    fn reset_dev_workspace_state_and_polyglot_dev_surfaces_stay_workspace_confined() {
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-dev-reset-test-").expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        create_application("safe-app", ScaffoldLanguage::Typescript, &base).expect("scaffold");
+        let dev_dir = base.join(".riffdb/dev");
+        fs::create_dir_all(dev_dir.join("data")).expect("create dev state");
+        fs::write(dev_dir.join("data/commit.log"), b"state").expect("write state");
+
+        assert!(reset_dev_workspace_state(&base).expect("reset dev state"));
+        assert!(!dev_dir.exists());
+        assert!(!reset_dev_workspace_state(&base).expect("idempotent second reset"));
+
+        let source_path = base.join("riffdb.application.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("read manifest"))
+                .expect("parse manifest");
+        manifest["generation"]["rust"] = json!("generated/rust/client.rs");
+        fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&manifest).expect("encode manifest"),
+        )
+        .expect("write polyglot manifest");
+
+        let surfaces =
+            generate_polyglot_dev_surfaces(&source_path).expect("generate polyglot dev surfaces");
+        assert!(surfaces.contains(&GeneratedApplicationArtifactKind::TypeScript));
+        assert!(surfaces.contains(&GeneratedApplicationArtifactKind::Rust));
+        assert!(base.join("generated/typescript/client.ts").is_file());
+        assert!(base.join("generated/rust/client.rs").is_file());
     }
 }

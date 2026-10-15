@@ -299,7 +299,7 @@ impl Server {
             return publish_diagnostics(uri, None, Vec::new());
         };
         let diagnostics = match document.kind {
-            DocumentKind::Contract => contract_primary_diagnostics(uri, &document.text),
+            DocumentKind::Contract => self.contract_diagnostics(uri, &document.text),
             DocumentKind::Query => self.query_diagnostics(uri, &document.text),
             DocumentKind::Unsupported => Vec::new(),
         };
@@ -311,6 +311,58 @@ impl Server {
                 .map(|diagnostic| diagnostic_json(&document.text, diagnostic))
                 .collect(),
         )
+    }
+
+    fn contract_diagnostics(&self, uri: &str, source: &str) -> Vec<PrimaryDiagnostic> {
+        let primary = contract_primary_diagnostics(uri, source);
+        if !primary.is_empty() {
+            return primary;
+        }
+        let Some((root, manifest)) = self.workspace_manifest() else {
+            return Vec::new();
+        };
+        if manifest.roles().is_empty() {
+            return Vec::new();
+        }
+        let Some(contract_path) = checked_workspace_path(&root, manifest.contract().source())
+        else {
+            return Vec::new();
+        };
+        if file_uri_path(uri)
+            .and_then(|path| path.canonicalize().ok())
+            .as_ref()
+            != Some(&contract_path)
+        {
+            return Vec::new();
+        }
+        let Ok(document) = parse_contract(source) else {
+            return Vec::new();
+        };
+        let granted = manifest
+            .roles()
+            .iter()
+            .flat_map(|role| role.commands().iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        document
+            .contract
+            .value
+            .declarations
+            .iter()
+            .filter_map(|declaration| match &declaration.value {
+                Declaration::Command(command)
+                    if !granted.contains(command.name.value.as_str()) =>
+                {
+                    Some(PrimaryDiagnostic {
+                        code: "RDB-AR011".to_owned(),
+                        message: "compiled command or query is not granted to any application role in riffdb.application.json".to_owned(),
+                        span: command.name.span.into(),
+                        stage: "application_role".to_owned(),
+                    })
+                }
+                _ => None,
+            })
+            .take(32)
+            .collect()
     }
 
     fn query_diagnostics(&self, uri: &str, source: &str) -> Vec<PrimaryDiagnostic> {
@@ -335,9 +387,10 @@ impl Server {
         let Some(contract) = self.local_contract(uri) else {
             return Vec::new();
         };
-        let Some(name) = document.name.as_ref().map(|name| name.value.as_str()) else {
+        let Some(name_node) = document.name.as_ref() else {
             return Vec::new();
         };
+        let name = name_node.value.as_str();
         let Ok(query) = NamedQuerySource::new(name, source) else {
             return Vec::new();
         };
@@ -351,7 +404,26 @@ impl Server {
             return Vec::new();
         };
         match QueryModule::compile(candidate, &contract) {
-            Ok(_) => Vec::new(),
+            Ok(_) => {
+                if let Some((_, manifest)) = self.workspace_manifest()
+                    && !manifest.roles().is_empty()
+                    && !manifest
+                        .roles()
+                        .iter()
+                        .any(|role| role.queries().iter().any(|granted| granted == name))
+                {
+                    return vec![PrimaryDiagnostic {
+                        code: "RDB-AR011".to_owned(),
+                        message: "compiled command or query is not granted to any application role in riffdb.application.json".to_owned(),
+                        span: ByteSpan {
+                            start: name_node.span.start as usize,
+                            end: name_node.span.end as usize,
+                        },
+                        stage: "application_role".to_owned(),
+                    }];
+                }
+                Vec::new()
+            }
             Err(error) => {
                 let Ok(path) = AuthoringSourcePath::new(diagnostic_path(uri)) else {
                     return Vec::new();
@@ -1494,5 +1566,50 @@ query Broken($organization_id: Ticket.organization_id) {
             assert!(example["bytes"].as_u64().expect("bytes") <= MAX_FRAME_BYTES as u64);
             assert!(example["captures"].as_array().expect("captures").len() <= 131_072);
         }
+    }
+
+    // req: DX-005
+    #[test]
+    fn lsp_reports_unreferenced_role_operations_in_workspace() {
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-lsp-role-coverage-").expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        crate::scaffold::create_application(
+            "safe-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &base,
+        )
+        .expect("scaffold");
+        let contract_path = base
+            .join("riffdb/contract.riff")
+            .canonicalize()
+            .expect("contract path");
+        let mut contract_text = std::fs::read_to_string(&contract_path).expect("read contract");
+        contract_text = contract_text.replace(
+            "\n}\n",
+            r#"
+  command ArchiveItem {
+    input idempotency_key: string<128>
+    input item_id: uuid
+    idempotency_key idempotency_key
+    create Item(item_id) as item
+      else ItemExists { item_id: item_id }
+    set item.title = "archived"
+    set item.created_at = tx.time
+    return Archived { item_id: item_id }
+  }
+}
+"#,
+        );
+        std::fs::write(&contract_path, &contract_text).expect("update contract");
+        let server = Server {
+            root: Some(base.canonicalize().expect("canonical root")),
+            ..Server::default()
+        };
+        let uri = path_to_file_uri(&contract_path);
+        let diagnostics = server.contract_diagnostics(&uri, &contract_text);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "RDB-AR011");
+        assert_eq!(diagnostics[0].stage, "application_role");
     }
 }

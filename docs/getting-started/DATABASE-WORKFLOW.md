@@ -82,9 +82,12 @@ publication, and the existing resumable application deployment path.
 
 ```bash
 riffdb push --accept-lock <proposed-lock-hash>
+riffdb push --generate
 ```
 
-A different or malformed value fails closed. Contract changes classified as
+A different or malformed value fails closed. Passing `--generate` refreshes the
+configured generated SDK bindings in the same step after deployment. Contract
+changes classified as
 requiring migration or incompatible are never deployed by `push`; after the
 same exact acceptance boundary, the command retains the candidate artifacts and
 points to `riffdb migrate plan`.
@@ -94,6 +97,13 @@ points to `riffdb migrate plan`.
 ```bash
 riffdb generate
 ```
+
+`riffdb generate` works completely offline after `riffdb init` or local
+`.riff`/`.riffq` edits: when `riffdb.application.lock.json` is absent or stale,
+`riffdb generate` compiles and refreshes the local lock and materializes the
+configured SDK bindings without requiring a running server. During local
+prototyping, `riffdb dev --reset` safely wipes `<project_root>/.riffdb/dev` and
+regenerates all declared SDK surfaces in a polyglot repository.
 
 For Application Source V7, the exact lock binds deterministic artifacts for
 exactly the declared SDK and MCP surfaces. `riffdb.toml` selects which of those

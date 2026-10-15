@@ -718,6 +718,58 @@ impl AuthoringDiagnostics {
         )?])
     }
 
+    /// Reports compiled commands or queries that are not granted to any role in
+    /// a non-empty `riffdb.application.json` manifest.
+    pub fn unreferenced_role_operations(
+        path: AuthoringSourcePath,
+        unreferenced_commands: &[String],
+        unreferenced_queries: &[String],
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let mut diagnostics = Vec::new();
+        let manifest_path = path.as_str().to_owned();
+        for command in unreferenced_commands {
+            if diagnostics.len() >= MAX_AUTHORING_DIAGNOSTICS {
+                break;
+            }
+            diagnostics.push(
+                diagnostic_value(
+                    AuthoringStage::Role,
+                    AuthoringDiagnosticCode("RDB-AR011"),
+                    path.clone(),
+                    None,
+                    vec![command.clone()],
+                    format!("compiled command `{command}` is not granted to any role in `{manifest_path}`"),
+                    AuthoringCause::UnsafeRole,
+                    vec![AuthoringFix::CorrectSymbol],
+                )?
+                .with_help_owned(Some(format!(
+                    "add `{command}` to a role's `commands` array in `{manifest_path}` (such as `roles[0].commands`) so generated SDK clients include it"
+                ))),
+            );
+        }
+        for query in unreferenced_queries {
+            if diagnostics.len() >= MAX_AUTHORING_DIAGNOSTICS {
+                break;
+            }
+            diagnostics.push(
+                diagnostic_value(
+                    AuthoringStage::Role,
+                    AuthoringDiagnosticCode("RDB-AR011"),
+                    path.clone(),
+                    None,
+                    vec![query.clone()],
+                    format!("compiled query `{query}` is not granted to any role in `{manifest_path}`"),
+                    AuthoringCause::UnsafeRole,
+                    vec![AuthoringFix::CorrectSymbol],
+                )?
+                .with_help_owned(Some(format!(
+                    "add `{query}` to a role's `queries` array in `{manifest_path}` (such as `roles[0].queries`) so generated SDK clients include it"
+                ))),
+            );
+        }
+        Self::new(diagnostics)
+    }
+
     /// Reports one source symbol rejected by a deterministic binding generator.
     pub fn python_name_collision(
         path: AuthoringSourcePath,
@@ -1010,14 +1062,33 @@ fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiag
 fn contract_syntax_help(diagnostic: &riffdb_contract_syntax::SyntaxDiagnostic) -> Option<String> {
     use riffdb_contract_syntax::SyntaxDiagnosticCode as Code;
 
-    if diagnostic.code() == Code::UnexpectedToken
-        && !diagnostic.expected().is_empty()
-        && diagnostic.expected().contains(&",")
-    {
-        return Some(
-            "insert `,` between adjacent fields or payload members at this span; see docs/contracts/LANGUAGE.md"
-                .to_owned(),
-        );
+    if diagnostic.code() == Code::UnexpectedToken && !diagnostic.expected().is_empty() {
+        if diagnostic.expected().contains(&",") {
+            return Some(
+                "insert `,` between adjacent fields or payload members at this span; see docs/contracts/LANGUAGE.md"
+                    .to_owned(),
+            );
+        }
+        if diagnostic.expected().contains(&"\"version\"")
+            || diagnostic.expected().contains(&"version")
+        {
+            return Some(
+                "declare `contract <Name> version <N> { ... }` with an explicit positive integer version; see docs/contracts/LANGUAGE.md"
+                    .to_owned(),
+            );
+        }
+        if diagnostic.expected().contains(&"\"else\"") || diagnostic.expected().contains(&"else") {
+            return Some(
+                "add an explicit failure outcome clause such as `else NotFound {}` or `else AlreadyExists {}`; see docs/contracts/LANGUAGE.md"
+                    .to_owned(),
+            );
+        }
+        if diagnostic.expected() == ["\"<\""] || diagnostic.expected() == ["<"] {
+            return Some(
+                "specify an explicit positive bound on variable-width types, such as `string<120>`, `bytes<256>`, or `decimal<12, 2>`; see docs/contracts/LANGUAGE.md"
+                    .to_owned(),
+            );
+        }
     }
 
     diagnostic.code().help().map(str::to_owned)
@@ -2073,5 +2144,56 @@ contract Blog version 1 {
             assert!(!human.contains(forbidden));
             assert!(!json.contains(forbidden));
         }
+    }
+
+    // req: DX-004, DX-005, DX-012, DX-021
+    #[test]
+    fn unreferenced_role_operations_and_syntax_hints_name_actionable_repairs() {
+        let diagnostics = AuthoringDiagnostics::unreferenced_role_operations(
+            AuthoringSourcePath::new("riffdb.application.json").expect("path"),
+            &["CreateItem".to_owned()],
+            &["ListItems".to_owned()],
+        )
+        .expect("unreferenced role diagnostics");
+        let slice = diagnostics.as_slice();
+        assert_eq!(slice.len(), 2);
+        assert_eq!(slice[0].code().as_str(), "RDB-AR011");
+        assert!(slice[0].summary().contains("CreateItem"));
+        assert!(slice[0].help().is_some_and(
+            |help| help.contains("commands") && help.contains("riffdb.application.json")
+        ));
+        assert_eq!(slice[1].code().as_str(), "RDB-AR011");
+        assert!(slice[1].summary().contains("ListItems"));
+        assert!(slice[1].help().is_some_and(
+            |help| help.contains("queries") && help.contains("riffdb.application.json")
+        ));
+
+        let missing_version =
+            compile_contract_source("contract MissingVersion { }\n").expect_err("missing version");
+        let version_diag = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &missing_version,
+        )
+        .expect("diagnostics");
+        assert!(
+            version_diag.as_slice()[0]
+                .help()
+                .is_some_and(|help| help.contains("version <N>"))
+        );
+
+        let missing_bound = compile_contract_source(
+            "contract MissingBound version 1 { entity Item { key (id: uuid) field title: string } }\n",
+        )
+        .expect_err("unbounded string");
+        let bound_diag = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &missing_bound,
+        )
+        .expect("diagnostics");
+        assert!(
+            bound_diag.as_slice()[0]
+                .help()
+                .is_some_and(|help| help.contains("string<120>"))
+        );
     }
 }

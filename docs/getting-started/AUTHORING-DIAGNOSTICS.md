@@ -106,6 +106,11 @@ instead produces a new role definition hash and requires
 `--replace-role-credential`; replacement diagnostics include the retained and
 locked role hashes in JSON when both are known.
 
+`RDB-AR011` reports a compiled command or named query that is not granted to any
+role in a non-empty `riffdb.application.json` manifest, together with a fix hint
+showing how to add the operation to `roles[].commands` or `roles[].queries` so
+generated SDK role clients and MCP roles can call it.
+
 Use JSON when an agent or editor needs deterministic fields:
 
 ```bash

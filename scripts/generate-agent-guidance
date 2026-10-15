@@ -26,6 +26,10 @@ def outputs(source: dict[str, object]) -> dict[Path, str]:
     principles = list(source["principles"])
     loop = list(source["loop"])
     commands = list(source["commands"])
+    contract_reference = str(source["contract_reference"])
+    query_reference = str(source["query_reference"])
+    manifest_reference = str(source["manifest_reference"])
+    sdk_reference = list(source["sdk_reference"])
     limitations = str(source["limitations"])
     skill = f"""---
 name: riffdb
@@ -47,6 +51,26 @@ description: Safely author and operate the RiffDB project in this repository.
 ```text
 {chr(10).join(commands)}
 ```
+
+## Contract syntax (`.riff`)
+
+```riff
+{contract_reference}
+```
+
+## Bounded query syntax (`.riffq`)
+
+```riffq
+{query_reference}
+```
+
+## Role grants (`riffdb.application.json`)
+
+{manifest_reference}
+
+## Safe-by-default generated SDKs
+
+{bullets(sdk_reference)}
 
 {limitations}
 """

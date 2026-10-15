@@ -17,6 +17,7 @@ debug_profile=0
 seed_dir=
 seed_builtin=0
 seed_concurrency=8
+reset_dev=0
 while (($#)); do
     case "$1" in
         --role)
@@ -45,8 +46,9 @@ while (($#)); do
             seed_concurrency="${2:-}"
             shift 2
             ;;
+        --reset) reset_dev=1; shift ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance] [--debug]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--reset] [--acceptance] [--debug]" >&2
             exit 2
             ;;
     esac
@@ -68,6 +70,9 @@ if [[ -n "$application_root" ]]; then
         echo "application root has no riffdb.application.json" >&2
         exit 2
     }
+    if ((reset_dev)) && [[ -d "$application_root/.riffdb/dev" && ! -L "$application_root/.riffdb" && ! -L "$application_root/.riffdb/dev" ]]; then
+        rm -rf "$application_root/.riffdb/dev"
+    fi
     generic_application=1
 else
     case "$role" in

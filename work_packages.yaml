@@ -30541,11 +30541,11 @@ work_packages:
   human_review_triggers:
   - Server deployment accepts an incompatible successor without parent verification.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DX-014, DX-016, DX-017]
+    evidence: crates/riffdb-cli/src/scaffold.rs
+    decision: Enabled offline lock compilation and refresh in generate_project_application and generate_project_application_offline when riffdb.application.lock.json is absent or stale, and added --generate to riffdb push to regenerate configured SDK bindings in a single step after deployment.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30574,11 +30574,11 @@ work_packages:
   human_review_triggers:
   - An ungranted operation is silently added to a role without an explicit manifest edit.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DX-004, DX-005, DX-016]
+    evidence: crates/riffdb-diagnostics/src/authoring.rs
+    decision: Added RoleCoverageReport and RDB-AR011 structured authoring diagnostics with actionable fix hints when compiled commands or named queries are not granted to any role in a non-empty riffdb.application.json manifest, surfaced across application check, generate, and LSP diagnostics.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30608,11 +30608,11 @@ work_packages:
   human_review_triggers:
   - --reset can delete paths outside <project_root>/.riffdb/dev or follow symlinks.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DX-004, DX-046]
+    evidence: crates/riffdb-cli/src/scaffold.rs
+    decision: Added workspace-confined reset_dev_workspace_state, generate_polyglot_dev_surfaces, and the --reset flag on riffdb dev and scripts/riffdb-dev with symlink refusal and multi-surface SDK materialization.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30642,11 +30642,11 @@ work_packages:
   human_review_triggers:
   - Teaching assets recommend bypassing idempotency, partition scoping, or generated bindings.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DX-012, DX-021, DX-025]
+    evidence: crates/riffdb-cli/src/agent.rs
+    decision: Expanded fixtures/agent-guidance/v1.json and crates/riffdb-cli/assets/agent/SKILL.md with .riff contract syntax, .riffq bounded query syntax, riffdb.application.json role grant rules, and 4-language safe-by-default SDK references, and added actionable syntax fix hints for missing contract version, missing else outcomes, and unbounded variable-width types.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

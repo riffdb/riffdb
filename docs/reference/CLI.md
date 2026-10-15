@@ -134,6 +134,8 @@ Options:
 
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
+      --generate
+          Regenerates configured SDK targets in the same invocation
       --database <DATABASE>
 
       --output <human|json>
@@ -357,6 +359,8 @@ Options:
 
       --seed-concurrency <1..8>
           [default: 8]
+      --reset
+          Resets disposable local development state under `.riffdb/dev` before starting
   -h, --help
           Print help
 ```

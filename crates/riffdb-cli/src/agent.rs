@@ -281,4 +281,18 @@ mod tests {
         assert!(!scratch.path().join("AGENTS.md").exists());
         assert!(!scratch.path().join(".agents").exists());
     }
+
+    // req: DX-012, DX-021, DX-025
+    #[test]
+    fn agent_skill_includes_contract_query_role_and_safe_sdk_reference() {
+        let skill_text = std::str::from_utf8(SKILL).expect("utf8 skill");
+        assert!(skill_text.contains("## Contract syntax (`.riff`)"));
+        assert!(skill_text.contains("## Bounded query syntax (`.riffq`)"));
+        assert!(skill_text.contains("## Role grants (`riffdb.application.json`)"));
+        assert!(skill_text.contains("## Safe-by-default generated SDKs"));
+        assert!(skill_text.contains("SafeAppClient.connect"));
+        assert!(skill_text.contains("SafeAppClient::connect"));
+        assert!(skill_text.contains("ConnectSafeApp"));
+        assert!(skill_text.contains("read_after_commit"));
+    }
 }

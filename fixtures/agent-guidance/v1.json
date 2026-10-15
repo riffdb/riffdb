@@ -22,5 +22,15 @@
     "riffdb status",
     "riffdb diff"
   ],
+  "contract_reference": "contract SafeApp version 1 {\n  entity Item {\n    key (tenant_id: uuid, item_id: uuid)\n    field title: string<120>\n    field created_at: timestamp\n    index by_tenant (tenant_id, item_id)\n  }\n  aggregate ItemRoot {\n    root Item\n    partition_by tenant_id\n    conflict_key (tenant_id, item_id)\n  }\n  command CreateItem {\n    input idempotency_key: string<128>\n    input tenant_id: uuid\n    input item_id: uuid\n    input title: string<120>\n    idempotency_key idempotency_key\n    create Item(tenant_id, item_id) as item\n      else ItemExists { item_id: item_id }\n    set item.title = title\n    set item.created_at = tx.time\n    return Created { item: item }\n  }\n}",
+  "query_reference": "query ItemPage(\n  $tenant_id: Item.tenant_id,\n  $after: Cursor?,\n  $limit: Limit<100> = 25,\n) {\n  many items from Item\n    where tenant_id == $tenant_id\n    order by item_id asc\n    after $after\n    take $limit\n  return Found { items: items { item_id title created_at } }\n  outcomes Found\n}",
+  "manifest_reference": "Every compiled command and named query that an application or MCP client calls MUST be listed in `roles[].commands` or `roles[].queries` inside `riffdb.application.json` (`RDB-AR011` reports any unreferenced operation).",
+  "sdk_reference": [
+    "TypeScript: `const client = SafeAppClient.connect(transport); await client.createItem({ tenantId, itemId, title }); for await (const page of client.itemPagePages({ tenantId })) { ... }`",
+    "Python: `client = SafeAppClient.connect(endpoint, credential_token=token); client.create_item(tenant_id=..., item_id=..., title=...); list(client.item_page_pages(tenant_id=...))`",
+    "Rust: `let mut client = SafeAppClient::connect(&config).await?; client.create_item(&mut session, &input).await?;`",
+    "Go: `client, err := ConnectSafeApp(ctx, config); res, err := client.CreateItem(ctx, session, input)`",
+    "Safety owned by RiffDB by default: omitted `idempotencyKey` / `idempotency_key` is auto-generated and held stable across retries; `read_after_commit` causal watermarks are tracked automatically on every client handle; pagination iterators enforce a bounded `max_pages` ceiling (`64` by default, capped at `1024`)."
+  ],
   "limitations": "The POC requires an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential."
 }

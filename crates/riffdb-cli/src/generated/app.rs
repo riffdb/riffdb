@@ -342,6 +342,14 @@ fn print_query_survey(queries: &[QueryCostReport]) {
     }
 }
 
+fn print_role_coverage_survey(report: &RoleCoverageReport) {
+    if let Some(diagnostics) = report.diagnostics()
+        && let Ok(rendered) = diagnostics.render_human()
+    {
+        print!("{rendered}");
+    }
+}
+
 fn application_seed_guidance(seed_input_count: usize) -> String {
     if seed_input_count == 0 {
         "application seed plan: none; run `riffdb dev --run`, or add ordered `seed_inputs` before requesting `--seed`"
@@ -355,16 +363,17 @@ fn application_seed_guidance(seed_input_count: usize) -> String {
 
 use crate::scaffold::{
     ApplicationCheckStatus, ApplicationLockPreview, LockedApplication, PinnedLockPreview,
-    PinnedLockRefresh, QueryCostReport, ScaffoldLanguage, application_contract_source,
-    application_contract_version, application_lock_identity, check_application,
-    check_application_lock, check_application_sources, check_project_application_lock,
-    create_application, generate_application, generate_project_application,
-    load_locked_application, load_locked_migration_submission, load_locked_project_application,
+    PinnedLockRefresh, QueryCostReport, RoleCoverageReport, ScaffoldLanguage,
+    application_contract_source, application_contract_version, application_lock_identity,
+    check_application, check_application_lock, check_application_sources,
+    check_project_application_lock, create_application, generate_application,
+    generate_project_application_offline, load_locked_application,
+    load_locked_migration_submission, load_locked_project_application,
     load_locked_project_migration_submission, migrate_application_source_v2,
     plan_application_migrations, plan_project_application_migrations, preview_application_lock,
     preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
     preview_genesis_application_lock, refresh_application_lock_from_pinned_bundle,
-    write_application_lock, write_application_lock_with_bundle,
+    reset_dev_workspace_state, write_application_lock, write_application_lock_with_bundle,
     write_project_application_lock_with_bundle, write_runtime_operation_catalog,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
@@ -532,23 +541,31 @@ pub async fn run() -> ExitCode {
     if matches!(cli.command, TopLevel::Generate) {
         let path = project_config_path(&cli);
         return match crate::project::load(&path).and_then(|project| {
-            generate_project_application(project.schema(), &project_artifact_selection(&project))
-                .map_err(ProjectError::Scaffold)?;
-            Ok(project)
-        }) {
-            Ok(project) => success(
-                CommandIdentity::ProjectGenerate,
-                "generated",
-                &serde_json::json!({
-                    "status": "generated",
-                    "generators": project.generators().iter().map(|target| target.as_str()).collect::<Vec<_>>(),
-                }),
+            let coverage = generate_project_application_offline(
+                project.schema(),
+                &project_artifact_selection(&project),
             )
-            .emit(
-                cli.output.unwrap_or(OutputMode::Human),
-                &mut io::stdout().lock(),
-                &mut io::stderr().lock(),
-            ),
+            .map_err(ProjectError::Scaffold)?;
+            Ok((project, coverage))
+        }) {
+            Ok((project, coverage)) => {
+                if cli.output.unwrap_or(OutputMode::Human) == OutputMode::Human {
+                    print_role_coverage_survey(&coverage);
+                }
+                success(
+                    CommandIdentity::ProjectGenerate,
+                    "generated",
+                    &serde_json::json!({
+                        "status": "generated",
+                        "generators": project.generators().iter().map(|target| target.as_str()).collect::<Vec<_>>(),
+                    }),
+                )
+                .emit(
+                    cli.output.unwrap_or(OutputMode::Human),
+                    &mut io::stdout().lock(),
+                    &mut io::stderr().lock(),
+                )
+            }
             Err(error) => project_error(CommandIdentity::ProjectGenerate, &error).emit(
                 cli.output.unwrap_or(OutputMode::Human),
                 &mut io::stdout().lock(),
@@ -850,6 +867,7 @@ pub async fn run() -> ExitCode {
                     }
                     println!("application sources, exact lock, and generated bindings are exact");
                     print_query_survey(status.queries());
+                    print_role_coverage_survey(status.role_coverage());
                     println!("{}", application_seed_guidance(status.seed_input_count()));
                     ExitCode::SUCCESS
                 }
@@ -862,6 +880,7 @@ pub async fn run() -> ExitCode {
                         "application sources compile; no lock or generated artifacts were checked"
                     );
                     print_query_survey(status.queries());
+                    print_role_coverage_survey(status.role_coverage());
                     println!("{}", application_seed_guidance(status.seed_input_count()));
                     ExitCode::SUCCESS
                 }
@@ -929,6 +948,7 @@ pub async fn run() -> ExitCode {
         seed,
         seed_dir,
         seed_concurrency,
+        reset,
         acceptance,
     } = &cli.command
     {
@@ -940,6 +960,7 @@ pub async fn run() -> ExitCode {
             seed: *seed,
             seed_dir: seed_dir.as_deref(),
             seed_concurrency,
+            reset: *reset,
             acceptance: *acceptance,
         });
     }
@@ -1066,6 +1087,7 @@ fn project_push_credential_terminal(error: CredentialError) -> Terminal {
 
 async fn project_push(
     accepted_lock: Option<&str>,
+    generate: bool,
     config: &EffectiveConfig,
     environment: &dyn Environment,
     stdin: &mut dyn Read,
@@ -1185,6 +1207,11 @@ async fn project_push(
                 "the accepted successor requires an explicit contract version before push",
             );
         }
+    }
+    if generate
+        && let Err(error) = generate_project_application_offline(source, &selected)
+    {
+        return project_error(identity, &ProjectError::Scaffold(error));
     }
 
     application_command(
@@ -1442,6 +1469,7 @@ struct DevInvocation<'a> {
     seed: bool,
     seed_dir: Option<&'a std::ffi::OsStr>,
     seed_concurrency: &'a str,
+    reset: bool,
     acceptance: bool,
 }
 
@@ -1453,6 +1481,12 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if invocation.reset
+        && let Err(error) = reset_dev_workspace_state(&application_root)
+    {
+        eprintln!("riffdb dev --reset failed: {error}");
+        return ExitCode::FAILURE;
+    }
     let current_executable = std::env::current_exe().ok();
     let Some(script) = resolve_dev_script(
         &application_root,
@@ -1513,6 +1547,9 @@ fn append_dev_script_arguments(
             application_root.join(seed_dir)
         });
     }
+    if invocation.reset {
+        command.arg("--reset");
+    }
     if invocation.acceptance {
         command.arg("--acceptance");
     }
@@ -1554,8 +1591,18 @@ async fn dispatch(
             "lsp_dispatch_invalid",
             "the local LSP service reached network dispatch",
         ),
-        TopLevel::Push { accept_lock } => {
-            project_push(accept_lock.as_deref(), config, environment, stdin).await
+        TopLevel::Push {
+            accept_lock,
+            generate,
+        } => {
+            project_push(
+                accept_lock.as_deref(),
+                generate,
+                config,
+                environment,
+                stdin,
+            )
+            .await
         }
         TopLevel::Status => project_observation(false, config, environment).await,
         TopLevel::Diff => project_observation(true, config, environment).await,
@@ -13663,6 +13710,7 @@ mod tests {
                 seed: false,
                 seed_dir: None,
                 seed_concurrency: "8",
+                reset: false,
                 acceptance: false,
             };
             let mut command = ProcessCommand::new("riffdb-dev");
