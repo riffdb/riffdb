@@ -31488,6 +31488,15 @@ work_packages:
     scale: Decision-arm workflow and lease checks are bounded by the command's static instruction count and fuel budget.
   human_review_triggers:
   - Decision-arm workflow transitions or leases bypass revision fencing, state preconditions, or commit-time validation.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [CMP-001, CMP-013, WF-001, WF-002, WF-007, TXN-001]
+    evidence: cargo test -p riffdb-commit decision_arm_workflow_transition_and_lease_instructions_compile_execute_and_commit
+    decision: Enabled workflow transition and lease instructions inside compiler-sealed decide arms across HIR validation, command analysis, lowering, deterministic runtime execution, and commit-time zero-mutation rejection validation.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-864
   name: Offline storage compaction CLI (riffdb storage compact) and known-limitations removal
   tier: surface

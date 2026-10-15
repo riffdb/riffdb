@@ -386,6 +386,39 @@ fn lower_command(
             _ => {}
         }
     }
+    for decision in &decision_plans {
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            for instruction in action.instructions() {
+                match instruction {
+                    Instruction::WorkflowTransition {
+                        binding,
+                        state_field,
+                        ..
+                    } => {
+                        accessed_fields[binding.get() as usize].insert(*state_field);
+                    }
+                    Instruction::WorkflowLease {
+                        binding, fields, ..
+                    } => {
+                        accessed_fields[binding.get() as usize].extend([
+                            fields.owner_field,
+                            fields.expiry_field,
+                            fields.fencing_token_field,
+                        ]);
+                        if let Some(field) = fields.attempt_field {
+                            accessed_fields[binding.get() as usize].insert(field);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
     let binding_plans = command
         .bindings
         .iter()

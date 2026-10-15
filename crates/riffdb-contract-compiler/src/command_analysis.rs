@@ -410,8 +410,12 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if !matches!(state.mode, BindingMode::Mutate | BindingMode::InitOrMutate)
-                    || state.key_fields.contains(state_field)
+                if !matches!(
+                    state.mode,
+                    BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                ) || state.key_fields.contains(state_field)
                     || !written.insert((*binding, *state_field))
                 {
                     diagnostics.push(CompilerDiagnostic::new(
@@ -428,6 +432,11 @@ fn validate_command(
                 influential_roots.extend(illegal.fields.iter().map(|field| &field.value));
                 outcomes.push(stale);
                 outcomes.push(illegal);
+                states
+                    .get_mut(binding)
+                    .expect("binding state exists")
+                    .initialized_fields
+                    .insert(*state_field);
             }
             HirEffect::WorkflowLease {
                 lease_span,
@@ -462,11 +471,14 @@ fn validate_command(
                     }
                     HirWorkflowLeaseOperation::Fence { .. } => [None, None, None, None],
                 };
-                if !matches!(state.mode, BindingMode::Mutate | BindingMode::InitOrMutate)
-                    || written_fields.into_iter().flatten().any(|field| {
-                        state.key_fields.contains(&field) || !written.insert((*binding, field))
-                    })
-                {
+                if !matches!(
+                    state.mode,
+                    BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                ) || written_fields.into_iter().flatten().any(|field| {
+                    state.key_fields.contains(&field) || !written.insert((*binding, field))
+                }) {
                     diagnostics.push(CompilerDiagnostic::new(
                         CompilerDiagnosticCode::InvalidWorkflowLease,
                         *lease_span,
@@ -482,6 +494,11 @@ fn validate_command(
                     influential_roots.extend(outcome.fields.iter().map(|field| &field.value));
                     outcomes.push(outcome);
                 }
+                states
+                    .get_mut(binding)
+                    .expect("binding state exists")
+                    .initialized_fields
+                    .extend(written_fields.into_iter().flatten());
             }
         }
     }
@@ -743,18 +760,121 @@ fn analyze_decision_action<'a>(
                         influential_roots.extend(fields.iter().map(|field| &field.value));
                     }
                     HirEffect::WorkflowTransition {
-                        transition_span, ..
+                        transition_span,
+                        binding,
+                        state_field,
+                        expected_revision,
+                        stale,
+                        illegal,
+                        ..
                     } => {
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::InvalidWorkflowTransition,
-                            *transition_span,
-                        ));
+                        let Some(state) = states.get(binding) else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                *transition_span,
+                            ));
+                            continue;
+                        };
+                        if !matches!(
+                            state.mode,
+                            BindingMode::Mutate
+                                | BindingMode::InitOrMutate
+                                | BindingMode::ObserveOrInitialize
+                        ) || state.key_fields.contains(state_field)
+                            || !written.insert((*binding, *state_field))
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidWorkflowTransition,
+                                *transition_span,
+                            ));
+                            continue;
+                        }
+                        validate_create_reads(command, &states, expected_revision, diagnostics);
+                        validate_create_object_reads(command, &states, &stale.fields, diagnostics);
+                        validate_create_object_reads(
+                            command,
+                            &states,
+                            &illegal.fields,
+                            diagnostics,
+                        );
+                        influential_roots.push(expected_revision);
+                        influential_roots.extend(stale.fields.iter().map(|field| &field.value));
+                        influential_roots.extend(illegal.fields.iter().map(|field| &field.value));
+                        outcomes.push(stale);
+                        outcomes.push(illegal);
+                        states
+                            .get_mut(binding)
+                            .expect("decision binding state exists")
+                            .initialized_fields
+                            .insert(*state_field);
                     }
-                    HirEffect::WorkflowLease { lease_span, .. } => {
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::InvalidWorkflowLease,
-                            *lease_span,
-                        ));
+                    HirEffect::WorkflowLease {
+                        lease_span,
+                        binding,
+                        owner_field,
+                        expiry_field,
+                        fencing_token_field,
+                        attempt_field,
+                        operation,
+                        ..
+                    } => {
+                        let Some(state) = states.get(binding) else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                *lease_span,
+                            ));
+                            continue;
+                        };
+                        let written_fields = match operation.as_ref() {
+                            HirWorkflowLeaseOperation::Claim { .. } => [
+                                Some(*owner_field),
+                                Some(*expiry_field),
+                                Some(*fencing_token_field),
+                                *attempt_field,
+                            ],
+                            HirWorkflowLeaseOperation::Renew { .. } => {
+                                [Some(*expiry_field), None, None, None]
+                            }
+                            HirWorkflowLeaseOperation::Release { .. }
+                            | HirWorkflowLeaseOperation::Expire { .. } => {
+                                [Some(*owner_field), Some(*expiry_field), None, None]
+                            }
+                            HirWorkflowLeaseOperation::Fence { .. } => [None, None, None, None],
+                        };
+                        if !matches!(
+                            state.mode,
+                            BindingMode::Mutate
+                                | BindingMode::InitOrMutate
+                                | BindingMode::ObserveOrInitialize
+                        ) || written_fields.into_iter().flatten().any(|field| {
+                            state.key_fields.contains(&field) || !written.insert((*binding, field))
+                        }) {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidWorkflowLease,
+                                *lease_span,
+                            ));
+                            continue;
+                        }
+                        for root in lease_roots(operation) {
+                            validate_create_reads(command, &states, root, diagnostics);
+                            influential_roots.push(root);
+                        }
+                        for outcome in lease_outcomes(operation) {
+                            validate_create_object_reads(
+                                command,
+                                &states,
+                                &outcome.fields,
+                                diagnostics,
+                            );
+                            influential_roots
+                                .extend(outcome.fields.iter().map(|field| &field.value));
+                            outcomes.push(outcome);
+                        }
+                        states
+                            .get_mut(binding)
+                            .expect("decision binding state exists")
+                            .initialized_fields
+                            .extend(written_fields.into_iter().flatten());
                     }
                 }
             }
