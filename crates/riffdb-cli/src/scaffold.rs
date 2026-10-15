@@ -607,6 +607,413 @@ pub(crate) fn generate_polyglot_dev_surfaces(
     Ok(selected)
 }
 
+pub(crate) const DEV_SESSION_SCHEMA_V1: &str = "riffdb.dev-session/v1";
+pub(crate) const MAX_DEV_SESSION_BYTES: usize = 4_096;
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DevSessionMetadata {
+    pub(crate) schema: String,
+    pub(crate) endpoint: String,
+    pub(crate) database: String,
+    pub(crate) credential_file: String,
+    pub(crate) role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tenant: Option<String>,
+    pub(crate) contract_lineage: String,
+    pub(crate) contract_version: u64,
+}
+
+impl DevSessionMetadata {
+    fn validate(&self) -> Result<(), ScaffoldError> {
+        if self.schema != DEV_SESSION_SCHEMA_V1
+            || self.endpoint.trim().is_empty()
+            || self.database.trim().is_empty()
+            || self.credential_file.trim().is_empty()
+            || self.role.trim().is_empty()
+            || self.contract_lineage.trim().is_empty()
+            || self.contract_version == 0
+            || self
+                .tenant
+                .as_ref()
+                .is_some_and(|tenant| tenant.trim().is_empty())
+        {
+            return Err(ScaffoldError::Manifest);
+        }
+        Ok(())
+    }
+}
+
+fn validate_dev_session_path(workspace_root: &Path) -> Result<PathBuf, ScaffoldError> {
+    let canonical_root = fs::canonicalize(workspace_root)?;
+    let riffdb_dir = canonical_root.join(".riffdb");
+    if let Ok(metadata) = fs::symlink_metadata(&riffdb_dir)
+        && (metadata.file_type().is_symlink() || !metadata.is_dir())
+    {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    let dev_dir = riffdb_dir.join("dev");
+    if let Ok(metadata) = fs::symlink_metadata(&dev_dir)
+        && (metadata.file_type().is_symlink() || !metadata.is_dir())
+    {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    let session_path = dev_dir.join("session.json");
+    if let Ok(metadata) = fs::symlink_metadata(&session_path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    Ok(session_path)
+}
+
+#[cfg(test)]
+pub(crate) fn write_dev_session_metadata(
+    workspace_root: &Path,
+    session: &DevSessionMetadata,
+) -> Result<PathBuf, ScaffoldError> {
+    session.validate()?;
+    let canonical_root = fs::canonicalize(workspace_root)?;
+    let cred_path = Path::new(&session.credential_file);
+    if cred_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    if cred_path.is_absolute() && !cred_path.starts_with(&canonical_root) {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    let session_path = validate_dev_session_path(workspace_root)?;
+    let mut rendered = serde_json::to_vec_pretty(session).map_err(|_| ScaffoldError::Manifest)?;
+    rendered.push(b'\n');
+    if rendered.len() > MAX_DEV_SESSION_BYTES {
+        return Err(ScaffoldError::SourceLimit);
+    }
+    atomic_write_workspace(workspace_root, ".riffdb/dev/session.json", &rendered)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Some(dev_dir) = session_path.parent() {
+            let _ = fs::set_permissions(dev_dir, fs::Permissions::from_mode(0o700));
+            if let Some(riffdb_dir) = dev_dir.parent() {
+                let _ = fs::set_permissions(riffdb_dir, fs::Permissions::from_mode(0o700));
+            }
+        }
+        fs::set_permissions(&session_path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(session_path)
+}
+
+pub(crate) fn read_dev_session_metadata(
+    workspace_root: &Path,
+) -> Result<Option<DevSessionMetadata>, ScaffoldError> {
+    let canonical_root = fs::canonicalize(workspace_root)?;
+    let session_path = validate_dev_session_path(workspace_root)?;
+    let bytes = match read_bounded(&session_path, MAX_DEV_SESSION_BYTES) {
+        Ok(bytes) => bytes,
+        Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut session: DevSessionMetadata =
+        serde_json::from_slice(&bytes).map_err(|_| ScaffoldError::Manifest)?;
+    session.validate()?;
+    let raw_cred_path = Path::new(&session.credential_file);
+    if raw_cred_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(ScaffoldError::UnsafePath);
+    }
+    let resolved_cred = if raw_cred_path.is_absolute() {
+        raw_cred_path.to_path_buf()
+    } else {
+        canonical_root.join(raw_cred_path)
+    };
+    match fs::symlink_metadata(&resolved_cred) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(ScaffoldError::UnsafePath),
+        Ok(metadata) if metadata.is_file() => {
+            let canonical_cred = fs::canonicalize(&resolved_cred)?;
+            if !canonical_cred.starts_with(&canonical_root) {
+                return Err(ScaffoldError::UnsafePath);
+            }
+            session.credential_file = canonical_cred.to_string_lossy().into_owned();
+            Ok(Some(session))
+        }
+        Ok(_) => Err(ScaffoldError::Manifest),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ScaffoldError::Io(error)),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn remove_dev_session_metadata(workspace_root: &Path) -> Result<bool, ScaffoldError> {
+    let session_path = validate_dev_session_path(workspace_root)?;
+    match fs::remove_file(&session_path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ScaffoldError::Io(error)),
+    }
+}
+
+pub(crate) fn resolve_workspace_contract_defaults(
+    workspace_root: &Path,
+) -> Result<Option<(String, u64)>, ScaffoldError> {
+    if let Some(session) = read_dev_session_metadata(workspace_root)? {
+        return Ok(Some((session.contract_lineage, session.contract_version)));
+    }
+    let manifest_path = workspace_root.join("riffdb.application.json");
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => return Err(ScaffoldError::UnsafePath),
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    let bytes = read_bounded(&manifest_path, 1_048_576)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let source = ApplicationSourceManifest::parse(text)
+        .map_err(|error| application_source_diagnostic(&manifest_path, error))?;
+    Ok(Some((
+        source.contract().lineage().to_owned(),
+        source.contract().version(),
+    )))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManifestSyncReport {
+    pub(crate) role: String,
+    pub(crate) added_query_paths: Vec<String>,
+    pub(crate) added_commands: Vec<String>,
+    pub(crate) added_queries: Vec<String>,
+    pub(crate) updated: bool,
+}
+
+/// Discovers `riffdb/queries/*.riffq` files and grants newly compiled commands
+/// and queries to the sole role (or `--sync-role <ROLE>`) in canonical order.
+pub(crate) fn sync_application_manifest(
+    source_path: &Path,
+    sync_role: Option<&str>,
+) -> Result<ManifestSyncReport, ScaffoldError> {
+    let source_bytes = read_bounded(source_path, 1_048_576)?;
+    let source_text =
+        std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let parsed = ApplicationSourceManifest::parse(source_text)
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
+    let declared_roles = parsed
+        .roles()
+        .iter()
+        .map(|role| role.name().to_owned())
+        .collect::<Vec<_>>();
+    let manifest_diag_path = diagnostic_path(source_path).unwrap_or_else(|| {
+        AuthoringSourcePath::new("riffdb.application.json").expect("static manifest path")
+    });
+    let target_role = if let Some(requested_role) = sync_role {
+        if !declared_roles.iter().any(|name| name == requested_role) {
+            let diagnostics = AuthoringDiagnostics::unknown_manifest_sync_role(
+                manifest_diag_path,
+                requested_role,
+                &declared_roles,
+            )
+            .map_err(|_| ScaffoldError::ApplicationSource)?;
+            return Err(ScaffoldError::Authoring(diagnostics));
+        }
+        requested_role.to_owned()
+    } else if declared_roles.len() == 1 {
+        declared_roles[0].clone()
+    } else {
+        let diagnostics =
+            AuthoringDiagnostics::ambiguous_manifest_sync_role(manifest_diag_path, &declared_roles)
+                .map_err(|_| ScaffoldError::ApplicationSource)?;
+        return Err(ScaffoldError::Authoring(diagnostics));
+    };
+
+    let root = source_parent(source_path);
+    let contract_source = read_workspace_text(root, parsed.contract().source(), 1_048_576)?;
+    let contract = compile_contract_source(&contract_source)
+        .map_err(|error| contract_diagnostic(parsed.contract().source(), &error))?;
+
+    let existing_query_sources = parsed
+        .query_modules()
+        .iter()
+        .flat_map(|module| module.queries().iter().map(|q| q.source().to_owned()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut discovered_queries = Vec::new();
+    let riffdb_dir = root.join("riffdb");
+    if let Ok(meta) = fs::symlink_metadata(&riffdb_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        let queries_dir = riffdb_dir.join("queries");
+        if let Ok(qmeta) = fs::symlink_metadata(&queries_dir) {
+            if qmeta.file_type().is_symlink() {
+                return Err(ScaffoldError::UnsafePath);
+            }
+            if qmeta.is_dir() {
+                let mut rel_paths = Vec::new();
+                for entry in fs::read_dir(&queries_dir)? {
+                    let entry = entry?;
+                    let emeta = fs::symlink_metadata(entry.path())?;
+                    if emeta.file_type().is_symlink() {
+                        return Err(ScaffoldError::UnsafePath);
+                    }
+                    if !emeta.is_file() {
+                        continue;
+                    }
+                    let file_name = entry.file_name();
+                    let Some(name_str) = file_name.to_str() else {
+                        continue;
+                    };
+                    if name_str.ends_with(".riffq") {
+                        rel_paths.push(format!("riffdb/queries/{name_str}"));
+                    }
+                }
+                rel_paths.sort();
+                for rel_path in rel_paths {
+                    if !existing_query_sources.contains(&rel_path) {
+                        let query_text = read_workspace_text(root, &rel_path, 1_048_576)?;
+                        let query_name =
+                            riffdb_query_module::extract_declared_query_name(&query_text)
+                                .map_err(|error| query_diagnostic(&rel_path, &error))?;
+                        discovered_queries.push((query_name, rel_path));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut value: serde_json::Value = serde_json::from_slice(parsed.canonical_bytes())
+        .map_err(|_| ScaffoldError::ApplicationSource)?;
+    let added_query_paths = discovered_queries
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    if !discovered_queries.is_empty()
+        && let Some(first_module) = value
+            .get_mut("query_modules")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|modules| modules.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+        && let Some(queries_array) = first_module
+            .get_mut("queries")
+            .and_then(serde_json::Value::as_array_mut)
+    {
+        for (name, rel_path) in &discovered_queries {
+            queries_array.push(json!({
+                "name": name,
+                "source": rel_path,
+            }));
+        }
+        queries_array.sort_by(|left, right| {
+            let left_name = left
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let right_name = right
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            left_name.cmp(right_name)
+        });
+    }
+
+    let target_role_def = parsed
+        .roles()
+        .iter()
+        .find(|role| role.name() == target_role.as_str());
+    let granted_commands_target = target_role_def
+        .into_iter()
+        .flat_map(|role| role.commands().iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let granted_queries_target = target_role_def
+        .into_iter()
+        .flat_map(|role| role.queries().iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let all_query_names = parsed
+        .query_modules()
+        .iter()
+        .flat_map(|module| module.queries().iter().map(|q| q.name().to_owned()))
+        .chain(discovered_queries.iter().map(|(name, _)| name.clone()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut added_commands = contract
+        .commands()
+        .iter()
+        .map(|command| command.name().to_owned())
+        .filter(|name| !granted_commands_target.contains(name))
+        .collect::<Vec<_>>();
+    added_commands.sort();
+    let added_queries = all_query_names
+        .iter()
+        .filter(|name| !granted_queries_target.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if let Some(roles_array) = value
+        .get_mut("roles")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for role_obj in roles_array {
+            if role_obj.get("name").and_then(serde_json::Value::as_str)
+                == Some(target_role.as_str())
+                && let Some(obj) = role_obj.as_object_mut()
+            {
+                let mut commands = obj
+                    .get("commands")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .chain(added_commands.iter().cloned())
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut queries = obj
+                    .get("queries")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .chain(added_queries.iter().cloned())
+                    .collect::<std::collections::BTreeSet<_>>();
+                obj.insert(
+                    "commands".to_owned(),
+                    json!(
+                        std::mem::take(&mut commands)
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    ),
+                );
+                obj.insert(
+                    "queries".to_owned(),
+                    json!(std::mem::take(&mut queries).into_iter().collect::<Vec<_>>()),
+                );
+            }
+        }
+    }
+
+    let proposed = serde_json::to_string(&value).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let synced = ApplicationSourceManifest::parse(&proposed)
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
+    let updated = synced.canonical_bytes() != parsed.canonical_bytes();
+    if updated {
+        let canonical_val: serde_json::Value = serde_json::from_slice(synced.canonical_bytes())
+            .map_err(|_| ScaffoldError::ApplicationSource)?;
+        let mut pretty = serde_json::to_vec_pretty(&canonical_val)
+            .map_err(|_| ScaffoldError::ApplicationSource)?;
+        pretty.push(b'\n');
+        atomic_write_absolute(source_path, &pretty)?;
+    }
+    Ok(ManifestSyncReport {
+        role: target_role,
+        added_query_paths,
+        added_commands,
+        added_queries,
+        updated,
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ApplicationCheckStatus {
     SourceOnly {
@@ -4462,7 +4869,7 @@ mod tests {
         assert!(cargo_lock.contains("name = \"order-desk\""));
         assert!(!cargo_lock.contains("{{APPLICATION_NAME}}"));
         assert!(cargo_lock.contains(
-            "checksum = \"d67f98a1f24828592f3103819ffc5572b77fd4996c493886e9877cb6d21ead92\""
+            "checksum = \"ddce645311cbaa9cac7af93a5a8ac7e14b7c4475e94b1ebea5bd2d3b73da9207\""
         ));
         let authoring = fs::read_to_string(first.join("AUTHORING.md")).expect("authoring guide");
         assert!(authoring.contains("exactMoney(\"USD\", \"25.00\")"));
@@ -5271,5 +5678,188 @@ mod tests {
         assert!(surfaces.contains(&GeneratedApplicationArtifactKind::Rust));
         assert!(base.join("generated/typescript/client.ts").is_file());
         assert!(base.join("generated/rust/client.rs").is_file());
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-046
+    #[test]
+    fn dev_session_metadata_round_trips_and_rejects_traversal_credential_paths() {
+        let parent =
+            tempfile::TempDir::with_prefix("riffdb-dev-session-test-").expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let cred_dir = base.join(".riffdb/dev");
+        fs::create_dir_all(&cred_dir).expect("create dev dir");
+        let cred_path = cred_dir.join("profile.credential");
+        fs::write(&cred_path, "secret-token\n").expect("write credential file");
+
+        let metadata = DevSessionMetadata {
+            schema: DEV_SESSION_SCHEMA_V1.to_owned(),
+            endpoint: "http://127.0.0.1:7443".to_owned(),
+            database: "default".to_owned(),
+            credential_file: ".riffdb/dev/profile.credential".to_owned(),
+            contract_lineage: "SafeApp".to_owned(),
+            contract_version: 1,
+            role: "SafeAppApplication".to_owned(),
+            tenant: Some("dev-tenant".to_owned()),
+        };
+        let path = write_dev_session_metadata(&base, &metadata).expect("write session metadata");
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("session metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let decoded = read_dev_session_metadata(&base)
+            .expect("read session metadata")
+            .expect("session metadata exists");
+        assert_eq!(decoded.endpoint, metadata.endpoint);
+        assert_eq!(decoded.database, metadata.database);
+        assert_eq!(decoded.contract_lineage, metadata.contract_lineage);
+        assert_eq!(decoded.contract_version, metadata.contract_version);
+        assert_eq!(decoded.role, metadata.role);
+        assert_eq!(decoded.tenant, metadata.tenant);
+        assert_eq!(
+            PathBuf::from(&decoded.credential_file),
+            fs::canonicalize(&cred_path).expect("canonical cred path")
+        );
+
+        let mut escaped = metadata.clone();
+        escaped.credential_file = "../escaped.credential".to_owned();
+        assert!(matches!(
+            write_dev_session_metadata(&base, &escaped),
+            Err(ScaffoldError::Manifest | ScaffoldError::UnsafePath)
+        ));
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&escaped).expect("encode escaped session"),
+        )
+        .expect("write escaped session");
+        assert!(matches!(
+            read_dev_session_metadata(&base),
+            Err(ScaffoldError::Manifest | ScaffoldError::UnsafePath)
+        ));
+
+        assert!(remove_dev_session_metadata(&base).expect("remove session metadata"));
+        assert!(!remove_dev_session_metadata(&base).expect("idempotent second remove"));
+        assert_eq!(
+            resolve_workspace_contract_defaults(&base).expect("resolve contract defaults"),
+            Some(("SafeApp".to_owned(), 1))
+        );
+    }
+
+    // req: DX-004, DX-005, DX-016, DX-017
+    #[test]
+    fn sync_application_manifest_discovers_queries_and_grants_single_or_explicit_role_in_canonical_order()
+     {
+        let parent = tempfile::TempDir::with_prefix("riffdb-manifest-sync-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("safe-app");
+        create_application("safe-app", ScaffoldLanguage::Rust, &base).expect("scaffold");
+        let source_path = base.join("riffdb.application.json");
+
+        // Add a new command in contract.riff and a new .riffq file in riffdb/queries/.
+        let contract_path = base.join("riffdb/contract.riff");
+        let contract_text = fs::read_to_string(&contract_path).expect("read contract");
+        let updated_contract = contract_text.replace(
+            "\n}\n",
+            r#"
+  command ArchiveItem {
+    input idempotency_key: string<128>
+    input item_id: uuid
+    idempotency_key idempotency_key
+    create Item(item_id) as item
+      else ItemExists { item_id: item_id }
+    set item.title = "archived"
+    set item.created_at = tx.time
+    return Archived { item_id: item_id }
+  }
+}
+"#,
+        );
+        fs::write(&contract_path, updated_contract).expect("write updated contract");
+        fs::write(
+            base.join("riffdb/queries/item_title.riffq"),
+            r#"query ItemTitle($item_id: Item.item_id) {
+  one item from Item
+    where item_id == $item_id
+    else ItemMissing
+  return Found {
+    item: item {
+      item_id
+      title
+    }
+  }
+  outcomes Found | ItemMissing
+}
+"#,
+        )
+        .expect("write new query file");
+
+        let report = sync_application_manifest(&source_path, None)
+            .expect("single-role manifest sync succeeds");
+        assert_eq!(report.role, "SafeAppApplication");
+        assert_eq!(
+            report.added_query_paths,
+            vec!["riffdb/queries/item_title.riffq".to_owned()]
+        );
+        assert_eq!(report.added_commands, vec!["ArchiveItem".to_owned()]);
+        assert_eq!(report.added_queries, vec!["ItemTitle".to_owned()]);
+        assert!(report.updated);
+
+        let coverage = generate_project_application_offline(
+            &source_path,
+            &[GeneratedApplicationArtifactKind::Rust],
+        )
+        .expect("regenerate locked application after manifest sync");
+        assert!(coverage.is_complete());
+        let rust_client =
+            fs::read_to_string(base.join("generated/rust/client.rs")).expect("read rust client");
+        assert!(rust_client.contains("archive_item"));
+        assert!(rust_client.contains("item_title"));
+
+        // Add a second role and verify that --sync-manifest without --sync-role fails closed with RDB-AR012.
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("read manifest"))
+                .expect("parse manifest");
+        let roles = manifest["roles"].as_array_mut().expect("roles array");
+        let mut second_role = roles[0].clone();
+        second_role["name"] = json!("SafeAppAuditor");
+        second_role["commands"] = json!([]);
+        roles.push(second_role);
+        fs::write(
+            &source_path,
+            serde_json::to_vec_pretty(&manifest).expect("encode multi-role manifest"),
+        )
+        .expect("write multi-role manifest");
+
+        let ambiguous = sync_application_manifest(&source_path, None)
+            .expect_err("multi-role sync without --sync-role must fail closed");
+        let ScaffoldError::Authoring(diagnostics) = ambiguous else {
+            panic!("expected authoring diagnostic");
+        };
+        assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-AR012");
+
+        let unknown = sync_application_manifest(&source_path, Some("MissingRole"))
+            .expect_err("unknown --sync-role must fail closed");
+        let ScaffoldError::Authoring(diagnostics) = unknown else {
+            panic!("expected authoring diagnostic");
+        };
+        assert_eq!(diagnostics.as_slice()[0].code().as_str(), "RDB-AR001");
+
+        let explicit = sync_application_manifest(&source_path, Some("SafeAppAuditor"))
+            .expect("explicit --sync-role succeeds on multi-role manifest");
+        assert_eq!(explicit.role, "SafeAppAuditor");
+        assert_eq!(
+            explicit.added_commands,
+            vec!["ArchiveItem".to_owned(), "CreateItem".to_owned()]
+        );
     }
 }

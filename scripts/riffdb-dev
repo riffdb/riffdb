@@ -8,6 +8,10 @@ application_root=
 cd "$repo_root"
 
 role=application
+tenant=
+tenant_set=0
+sync_manifest=0
+sync_role=
 watch=0
 run=0
 go_runner_package=.
@@ -22,6 +26,20 @@ while (($#)); do
     case "$1" in
         --role)
             role="${2:-}"
+            shift 2
+            ;;
+        --tenant)
+            tenant="${2:-}"
+            tenant_set=1
+            shift 2
+            ;;
+        --sync-manifest)
+            sync_manifest=1
+            shift
+            ;;
+        --sync-role)
+            sync_role="${2:-}"
+            sync_manifest=1
             shift 2
             ;;
         --application-root)
@@ -48,7 +66,7 @@ while (($#)); do
             ;;
         --reset) reset_dev=1; shift ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--reset] [--acceptance] [--debug]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--tenant TENANT_ID] [--sync-manifest] [--sync-role ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--reset] [--acceptance] [--debug]" >&2
             exit 2
             ;;
     esac
@@ -241,9 +259,17 @@ riffdb="$cargo_target_dir/$profile/riffdb"
 driverd="$cargo_target_dir/$profile/riffdb-driverd"
 dev_tls_root="$repo_root/crates/riffdb-server/tests/fixtures"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
+effective_tenant=
+lock_sync_args=()
+if ((sync_manifest)); then
+    lock_sync_args+=(--sync-manifest)
+    if [[ -n "$sync_role" ]]; then
+        lock_sync_args+=(--sync-role "$sync_role")
+    fi
+fi
 if ((generic_application)); then
     application_source="$application_root/riffdb.application.json"
-    "$riffdb" application lock "$application_source" --write
+    "$riffdb" application lock "$application_source" --write "${lock_sync_args[@]}"
     "$riffdb" application generate "$application_source" --locked
     application_manifest="$application_root/generated/riffdb.application.exact.json"
     "$repo_root/scripts/check-application-boundary" "$application_root"
@@ -265,11 +291,37 @@ if ((generic_application)); then
     role_scope="$(jq -er --arg role "$role_symbol" \
         '.roles[] | select(.name == $role) | .tenant_scope' \
         "$application_manifest")"
-    [[ "$role_scope" == global ]] || {
-        echo "application role $role_symbol is tenant-scoped, but current application plans have no reviewed tenant mapping; riffdb dev requires an explicit global development role" >&2
-        exit 2
-    }
+    case "$role_scope" in
+        global)
+            if ((tenant_set)); then
+                echo "application role $role_symbol has global tenant_scope; remove --tenant" >&2
+                exit 2
+            fi
+            ;;
+        tenant)
+            if ((tenant_set)); then
+                effective_tenant="$tenant"
+            elif [[ -n "${RIFFDB_TENANT:-}" ]]; then
+                effective_tenant="$RIFFDB_TENANT"
+            else
+                effective_tenant="dev-tenant"
+            fi
+            [[ -n "$effective_tenant" && ${#effective_tenant} -le 128 ]] || {
+                echo "tenant identifier must be 1..128 bytes" >&2
+                exit 2
+            }
+            export RIFFDB_TENANT="$effective_tenant"
+            ;;
+        *)
+            echo "application role $role_symbol has unsupported tenant_scope: $role_scope" >&2
+            exit 2
+            ;;
+    esac
 else
+    if ((tenant_set)); then
+        echo "preset development roles have global tenant_scope; remove --tenant" >&2
+        exit 2
+    fi
     application_root="$repo_root"
     benchmark="$cargo_target_dir/$profile/benchmark"
     contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
@@ -343,6 +395,9 @@ cleanup() {
             kill -KILL "$server_pid" 2>/dev/null || true
         }
         wait "$server_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$application_root" && ! -L "$application_root/.riffdb" && ! -L "$application_root/.riffdb/dev" ]]; then
+        rm -f "$application_root/.riffdb/dev/session.json" "$application_root/.riffdb/dev/profile.credential"
     fi
     rm -rf "$work_root"
 }
@@ -483,8 +538,13 @@ if ((generic_application)) && jq -e '(.reactive_modules | length) > 0' "$applica
 fi
 
 if ((generic_application)); then
+    role_bind_tenant_args=()
+    if [[ -n "$effective_tenant" ]]; then
+        role_bind_tenant_args=(--tenant "$effective_tenant")
+    fi
     "${operator[@]}" role bind "$application_manifest" \
         --role "$role_symbol" \
+        "${role_bind_tenant_args[@]}" \
         --principal "app:$(jq -er '.application' "$application_manifest")" \
         --actor-kind service \
         --lifetime-seconds 86400 \
@@ -816,6 +876,7 @@ if ((acceptance)) && ((generic_application)); then
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
+            RIFFDB_TENANT="$effective_tenant" \
             CARGO_TARGET_DIR="$cargo_target_dir/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
@@ -835,6 +896,7 @@ if ((acceptance)) && ((generic_application)); then
             RIFFDB_ENDPOINT="$endpoint" \
                 RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
                 RIFFDB_DATABASE=default \
+                RIFFDB_TENANT="$effective_tenant" \
                 PYTHONPATH=src uv run --locked --with "$source_python_wheel" \
                 python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
@@ -864,6 +926,32 @@ reported_role="$role"
 if ((generic_application)); then
     reported_role="$role_symbol"
 fi
+if [[ -n "$application_root" && ! -L "$application_root/.riffdb" && ! -L "$application_root/.riffdb/dev" ]]; then
+    mkdir -p "$application_root/.riffdb/dev"
+    chmod 0700 "$application_root/.riffdb" "$application_root/.riffdb/dev"
+    cp "$work_root/profile.credential" "$application_root/.riffdb/dev/profile.credential"
+    chmod 0600 "$application_root/.riffdb/dev/profile.credential"
+    jq -n \
+        --arg schema "riffdb.dev-session/v1" \
+        --arg endpoint "$endpoint" \
+        --arg database "default" \
+        --arg credential_file ".riffdb/dev/profile.credential" \
+        --arg contract_lineage "$contract_lineage" \
+        --argjson contract_version "$contract_version" \
+        --arg role "$reported_role" \
+        --arg tenant "$effective_tenant" \
+        '{
+            schema: $schema,
+            endpoint: $endpoint,
+            database: $database,
+            credential_file: $credential_file,
+            contract_lineage: $contract_lineage,
+            contract_version: $contract_version,
+            role: $role
+        } + (if ($tenant | length) > 0 then {tenant: $tenant} else {} end)' \
+        >"$application_root/.riffdb/dev/session.json"
+    chmod 0600 "$application_root/.riffdb/dev/session.json"
+fi
 printf 'riffdb-dev-context-v1\tdatabase=%s\trole=%s\n' \
     "default" "$reported_role"
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
@@ -887,6 +975,7 @@ if ((run)); then
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
+            RIFFDB_TENANT="$effective_tenant" \
             CARGO_TARGET_DIR="$cargo_target_dir/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
@@ -896,7 +985,8 @@ if ((run)); then
         printf 'riffdb-dev-runner-v1\tlanguage=go\tpackage=%s\n' "$go_runner_package"
         (
             cd "$application_root"
-            GOTOOLCHAIN=local go run "$go_runner_argument" "${driver_arguments[@]}"
+            RIFFDB_TENANT="$effective_tenant" \
+                GOTOOLCHAIN=local go run "$go_runner_argument" "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/package.json" ]]; then
         for tool in node npm; do
@@ -909,7 +999,8 @@ if ((run)); then
             cd "$application_root"
             unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
             npm run --silent build
-            npm run --silent start -- "${driver_arguments[@]}"
+            RIFFDB_TENANT="$effective_tenant" \
+                npm run --silent start -- "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/pyproject.toml" ]]; then
         prepare_source_python_wheel
@@ -920,6 +1011,7 @@ if ((run)); then
             RIFFDB_ENDPOINT="$endpoint" \
                 RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
                 RIFFDB_DATABASE=default \
+                RIFFDB_TENANT="$effective_tenant" \
                 PYTHONPATH=src uv run --locked --with "$source_python_wheel" \
                 python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
@@ -957,7 +1049,7 @@ while kill -0 "$server_pid" 2>/dev/null; do
     fi
     if [[ "$next_contract_stamp" != "$contract_stamp" ]]; then
         if ((generic_application)); then
-            "$riffdb" application lock "$application_source" --write
+            "$riffdb" application lock "$application_source" --write "${lock_sync_args[@]}"
             "$riffdb" application generate "$application_source" --locked
             "$repo_root/scripts/check-application-boundary" "$application_root"
             stage_application_queries
@@ -968,7 +1060,7 @@ while kill -0 "$server_pid" 2>/dev/null; do
     if [[ "$next_query_stamp" != "$query_stamp" ]]; then
         ((module_version += 1))
         if ((generic_application)); then
-            "$riffdb" application lock "$application_source" --write
+            "$riffdb" application lock "$application_source" --write "${lock_sync_args[@]}"
             "$riffdb" application generate "$application_source" --locked
             "$repo_root/scripts/check-application-boundary" "$application_root"
             stage_application_queries

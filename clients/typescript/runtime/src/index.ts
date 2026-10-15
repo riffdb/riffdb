@@ -720,6 +720,11 @@ export class CliApplicationTransport {
 export class DriverGeneratedApplicationTransport {
   public constructor(private readonly driver: DriverApplicationTransport) {}
 
+  /** Returns the bound tenant identifier when this session is tenant-scoped. */
+  public get tenant(): string | undefined {
+    return this.driver.tenant;
+  }
+
   public async executeNamedQuery<P, R>(
     request: NamedQueryRequest<P, R>,
     options: QueryOptions = {},

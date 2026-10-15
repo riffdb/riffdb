@@ -100,11 +100,13 @@ export interface DriverApplicationIdentity {
   readonly role: string;
   readonly roleDefinitionHash: string;
   readonly remoteIdentityHash: string;
+  readonly tenant?: string;
 }
 
 export interface DriverApplicationTransportOptions {
   readonly socketPath: string;
   readonly identity: DriverApplicationIdentity;
+  readonly tenant?: string;
 }
 
 export interface DriverOperation {
@@ -212,15 +214,21 @@ interface PendingRequest {
 export class DriverApplicationTransport {
   readonly #socket: Socket;
   readonly #identity: DriverApplicationIdentity;
+  readonly #tenant: string | undefined;
   readonly #requestPrefix: string;
   readonly #pending = new Map<string, PendingRequest>();
   #input = Buffer.alloc(0);
   #nextRequest = 1;
   #closed = false;
 
-  private constructor(socket: Socket, identity: DriverApplicationIdentity) {
+  private constructor(
+    socket: Socket,
+    identity: DriverApplicationIdentity,
+    tenant: string | undefined,
+  ) {
     this.#socket = socket;
     this.#identity = identity;
+    this.#tenant = tenant;
     nextSession = nextSession === Number.MAX_SAFE_INTEGER ? 1 : nextSession + 1;
     this.#requestPrefix = `ts.${process.pid}.${nextSession}`;
     socket.on("data", (chunk: Buffer) => this.#receive(chunk));
@@ -228,7 +236,13 @@ export class DriverApplicationTransport {
     socket.on("close", () => this.#fail(new Error("RiffDB driver session closed")));
   }
 
+  /** Returns the bound tenant identifier when this session is tenant-scoped. */
+  public get tenant(): string | undefined {
+    return this.#tenant;
+  }
+
   public static async connect(options: DriverApplicationTransportOptions): Promise<DriverApplicationTransport> {
+    const tenant = resolveTransportTenant(options);
     validateTransportOptions(options);
     const socket = createConnection({ path: options.socketPath });
     await new Promise<void>((resolve, reject) => {
@@ -236,7 +250,7 @@ export class DriverApplicationTransport {
       socket.once("connect", () => { socket.off("error", onError); resolve(); });
       socket.once("error", onError);
     });
-    const transport = new DriverApplicationTransport(socket, options.identity);
+    const transport = new DriverApplicationTransport(socket, options.identity, tenant);
     try {
       await transport.#handshake();
       return transport;
@@ -840,6 +854,16 @@ function decodeError(response: DriverResponse): DriverApplicationError {
     ...(traceId === undefined ? {} : { traceId }),
     ...(incidentId === undefined ? {} : { incidentId }),
   });
+}
+
+function resolveTransportTenant(options: DriverApplicationTransportOptions): string | undefined {
+  const envTenant = process.env.RIFFDB_TENANT;
+  const candidate = options.tenant ?? options.identity.tenant ?? (envTenant && envTenant.length > 0 ? envTenant : undefined);
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 128 || !/^[\x21-\x7e]+$/.test(candidate)) {
+    throw new Error("invalid RiffDB tenant identifier");
+  }
+  return candidate;
 }
 
 function validateTransportOptions(options: DriverApplicationTransportOptions): void {

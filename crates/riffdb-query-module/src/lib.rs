@@ -795,6 +795,23 @@ pub struct QueryModule {
     identity: QueryModuleHash,
 }
 
+/// Extracts the declared `query <Name>` identifier from a RiffQL source document.
+pub fn extract_declared_query_name(source: &str) -> Result<String, QueryModuleError> {
+    let document = parse_query(source).map_err(|diagnostics| {
+        QueryModuleError::query(
+            "<anonymous>".to_owned(),
+            QueryCompilationDiagnostics::Syntax(diagnostics),
+        )
+    })?;
+    let name = document
+        .name
+        .as_ref()
+        .map(|name| name.value.as_str())
+        .filter(|name| valid_name(name))
+        .ok_or_else(|| QueryModuleError::new(QueryModuleErrorKind::InvalidQuery))?;
+    Ok(name.to_owned())
+}
+
 impl QueryModule {
     /// Parses, resolves, type checks, plans, and canonically encodes one module.
     pub fn compile(

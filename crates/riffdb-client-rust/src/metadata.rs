@@ -9,7 +9,7 @@ use tonic::metadata::{Ascii, Binary, MetadataValue};
 use zeroize::Zeroizing;
 
 use riffdb_proto::DATABASE_METADATA_KEY;
-use riffdb_types::DatabaseAlias;
+use riffdb_types::{DatabaseAlias, TenantId};
 
 const CAPABILITY_TOKEN_BYTES: usize = 43;
 const MAX_TRACE_PARENT_BYTES: usize = 512;
@@ -22,6 +22,8 @@ pub enum MetadataError {
     InvalidCapabilityToken,
     /// Trace propagation metadata is empty, oversized, or not valid ASCII metadata.
     InvalidTraceParent,
+    /// The tenant identifier is empty or exceeds the bounded tenant-scope limit.
+    InvalidTenant,
 }
 
 impl fmt::Display for MetadataError {
@@ -29,6 +31,7 @@ impl fmt::Display for MetadataError {
         formatter.write_str(match self {
             Self::InvalidCapabilityToken => "capability credential is invalid",
             Self::InvalidTraceParent => "trace propagation metadata is invalid",
+            Self::InvalidTenant => "tenant identifier is invalid",
         })
     }
 }
@@ -132,6 +135,7 @@ pub struct CallMetadata {
     credential: Option<BearerCredential>,
     trace_parent: Option<TraceParent>,
     database: Option<DatabaseAlias>,
+    tenant: Option<TenantId>,
 }
 
 impl CallMetadata {
@@ -142,6 +146,10 @@ impl CallMetadata {
             credential: Some(credential),
             trace_parent: None,
             database: None,
+            tenant: std::env::var("RIFFDB_TENANT")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .and_then(|value| TenantId::new(value).ok()),
         }
     }
 
@@ -157,6 +165,35 @@ impl CallMetadata {
     pub fn with_database(mut self, database: DatabaseAlias) -> Self {
         self.database = Some(database);
         self
+    }
+
+    /// Binds the local client metadata to one explicit tenant identifier so
+    /// application code can pass it into tenant-keyed command and query inputs
+    /// without duplicating the string literal.
+    #[must_use]
+    pub fn with_tenant(mut self, tenant: TenantId) -> Self {
+        self.tenant = Some(tenant);
+        self
+    }
+
+    /// Resolves `RIFFDB_TENANT` from the process environment when present and
+    /// non-empty, failing closed if the value violates [`TenantId`] bounds.
+    pub fn with_tenant_from_env(mut self) -> Result<Self, MetadataError> {
+        match std::env::var("RIFFDB_TENANT") {
+            Ok(raw) if !raw.is_empty() => {
+                let tenant = TenantId::new(raw).map_err(|_| MetadataError::InvalidTenant)?;
+                self.tenant = Some(tenant);
+                Ok(self)
+            }
+            Ok(_) | Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => Err(MetadataError::InvalidTenant),
+        }
+    }
+
+    /// Returns the bound tenant identifier when this session is tenant-scoped.
+    #[must_use]
+    pub const fn tenant(&self) -> Option<&TenantId> {
+        self.tenant.as_ref()
     }
 
     pub(crate) fn apply<T>(&self, request: &mut Request<T>) {
@@ -188,7 +225,10 @@ impl CallMetadata {
             (None, None) => true,
             (Some(_), None) | (None, Some(_)) => false,
         };
-        credentials_match && traces_match && self.database == other.database
+        credentials_match
+            && traces_match
+            && self.database == other.database
+            && self.tenant == other.tenant
     }
 }
 
@@ -300,6 +340,24 @@ mod tests {
             "ea_local"
         );
         assert_eq!(request.metadata().len(), 3);
+    }
+
+    // req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
+    #[test]
+    fn call_metadata_resolves_bound_tenant_and_validates_bounds() {
+        let tenant = TenantId::new("tenant-acme").expect("bounded tenant");
+        let metadata = CallMetadata::authenticated(BearerCredential::new(TOKEN).expect("token"))
+            .with_tenant(tenant.clone());
+        assert_eq!(metadata.tenant().map(TenantId::as_str), Some("tenant-acme"));
+        let other = CallMetadata::authenticated(BearerCredential::new(TOKEN).expect("token"))
+            .with_tenant(TenantId::new("tenant-other").expect("other tenant"));
+        assert!(!metadata.has_same_session_scope(&other));
+        assert!(
+            metadata.has_same_session_scope(
+                &CallMetadata::authenticated(BearerCredential::new(TOKEN).expect("token"))
+                    .with_tenant(tenant)
+            )
+        );
     }
 
     #[test]

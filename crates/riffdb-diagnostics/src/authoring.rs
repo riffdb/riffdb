@@ -770,6 +770,58 @@ impl AuthoringDiagnostics {
         Self::new(diagnostics)
     }
 
+    /// Reports a multi-role manifest where `--sync-manifest` was requested
+    /// without an explicit `--sync-role <ROLE>` target.
+    pub fn ambiguous_manifest_sync_role(
+        path: AuthoringSourcePath,
+        declared_roles: &[String],
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let manifest_path = path.as_str().to_owned();
+        let roles_list = declared_roles.join(", ");
+        Self::new(vec![
+            diagnostic_value(
+                AuthoringStage::Role,
+                AuthoringDiagnosticCode("RDB-AR012"),
+                path,
+                None,
+                declared_roles.to_vec(),
+                format!(
+                    "manifest `{manifest_path}` declares multiple roles ({roles_list}); `--sync-manifest` requires `--sync-role <ROLE>`"
+                ),
+                AuthoringCause::UnsafeRole,
+                vec![AuthoringFix::NarrowRole],
+            )?
+            .with_help_owned(Some(format!(
+                "pass `--sync-role <ROLE>` naming one of the declared roles in `{manifest_path}`: {roles_list}"
+            ))),
+        ])
+    }
+
+    /// Reports an unknown `--sync-role <ROLE>` target not declared in `riffdb.application.json`.
+    pub fn unknown_manifest_sync_role(
+        path: AuthoringSourcePath,
+        role: &str,
+        declared_roles: &[String],
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let manifest_path = path.as_str().to_owned();
+        let roles_list = declared_roles.join(", ");
+        Self::new(vec![
+            diagnostic_value(
+                AuthoringStage::Role,
+                AuthoringDiagnosticCode("RDB-AR001"),
+                path,
+                None,
+                vec![role.to_owned()],
+                format!("application role `{role}` is not declared in `{manifest_path}`"),
+                AuthoringCause::UnknownSymbol,
+                vec![AuthoringFix::CorrectSymbol],
+            )?
+            .with_help_owned(Some(format!(
+                "pass `--sync-role <ROLE>` naming one of the declared roles in `{manifest_path}`: {roles_list}"
+            ))),
+        ])
+    }
+
     /// Reports one source symbol rejected by a deterministic binding generator.
     pub fn python_name_collision(
         path: AuthoringSourcePath,
@@ -2165,7 +2217,7 @@ contract Blog version 1 {
         }
     }
 
-    // req: DX-004, DX-005, DX-012, DX-021
+    // req: DX-004, DX-005, DX-012, DX-016, DX-017, DX-021
     #[test]
     fn unreferenced_role_operations_and_syntax_hints_name_actionable_repairs() {
         let diagnostics = AuthoringDiagnostics::unreferenced_role_operations(
@@ -2186,6 +2238,13 @@ contract Blog version 1 {
         assert!(slice[1].help().is_some_and(
             |help| help.contains("queries") && help.contains("riffdb.application.json")
         ));
+        let ambiguous = AuthoringDiagnostics::ambiguous_manifest_sync_role(
+            AuthoringSourcePath::new("riffdb.application.json").expect("path"),
+            &["admin".to_owned(), "member".to_owned()],
+        )
+        .expect("ambiguous sync role diagnostics");
+        assert_eq!(ambiguous.as_slice()[0].code().as_str(), "RDB-AR012");
+        assert!(ambiguous.as_slice()[0].summary().contains("--sync-role"));
 
         let missing_version =
             compile_contract_source("contract MissingVersion { }\n").expect_err("missing version");

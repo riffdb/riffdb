@@ -157,12 +157,23 @@ Usage: riffdb generate [OPTIONS]
 
 Options:
       --config <PATH>
+
+      --sync-manifest
+          Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before locking
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --sync-role <ROLE>
+          Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --database <DATABASE>
-      --output <human|json>                [possible values: human, json]
+
+      --output <human|json>
+          [possible values: human, json]
       --max-attempts <1..10>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 ### `riffdb agent`
@@ -339,21 +350,23 @@ Options:
           [default: application]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
-      --watch
-
+      --tenant <TENANT_ID>
+          Explicit tenant identifier when binding a tenant-scoped role in local development
       --database <DATABASE>
 
+      --watch
+
+      --output <human|json>
+          [possible values: human, json]
       --run
           Runs the repository's generated application against the local server
       --go-runner-package <PATH>
           Repository-relative Go main-package directory used by `--run`
-      --output <human|json>
-          [possible values: human, json]
       --max-attempts <1..10>
 
-      --seed
-
       --credential-file <PATH>
+
+      --seed
 
       --seed-dir <DIRECTORY>
 
@@ -361,6 +374,10 @@ Options:
           [default: 8]
       --reset
           Resets disposable local development state under `.riffdb/dev` before starting
+      --sync-manifest
+          Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before starting
+      --sync-role <ROLE>
+          Explicit role name in `riffdb.application.json` to receive newly discovered operations
   -h, --help
           Print help
 ```
@@ -980,8 +997,12 @@ Options:
           Reports only anonymized operational refusal classes
       --database <DATABASE>
 
+      --sync-manifest
+          Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before checking
       --output <human|json>
           [possible values: human, json]
+      --sync-role <ROLE>
+          Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -1022,15 +1043,29 @@ Arguments:
 
 Options:
       --config <PATH>
+
       --write
+
       --check
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --database <DATABASE>
-      --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
-      --output <human|json>                [possible values: human, json]
+
+      --lock <APPLICATION_LOCK>
+          [default: riffdb.application.lock.json]
+      --output <human|json>
+          [possible values: human, json]
+      --sync-manifest
+          Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before locking
       --max-attempts <1..10>
+
+      --sync-role <ROLE>
+          Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --credential-file <PATH>
-  -h, --help                               Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb application generate`
@@ -1855,25 +1890,44 @@ Options:
 #### `riffdb query run`
 
 ```text
-Usage: riffdb query run [OPTIONS] <RIFFQL_SOURCE>
+Usage: riffdb query run [OPTIONS] [RIFFQL_SOURCE]
 
 Arguments:
-  <RIFFQL_SOURCE>
+  [RIFFQL_SOURCE]
 
 Options:
       --config <PATH>
-      --parameters <JSON_PARAMETERS>
-      --cursor <CURSOR>
+
+      --inline <RIFFQL>
+          Executes an inline read-only RiffQL query string
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --parameters <JSON_PARAMETERS>
+
       --database <DATABASE>
-      --read-after-commit <COMMIT_SEQUENCE>
-      --consistency <CONSISTENCY>            [possible values: admission-head]
-      --output <human|json>                  [possible values: human, json]
-      --contract-lineage <LINEAGE>
+
+      --param <KEY=VALUE>
+          Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable)
+      --output <human|json>
+          [possible values: human, json]
+      --params-json <JSON_OBJECT>
+          Inline query parameters as a JSON object string
+      --cursor <CURSOR>
+
       --max-attempts <1..10>
-      --contract-version <VERSION>
+
       --credential-file <PATH>
-  -h, --help                                 Print help
+
+      --read-after-commit <COMMIT_SEQUENCE>
+
+      --consistency <CONSISTENCY>
+          [possible values: admission-head]
+      --contract-lineage <LINEAGE>
+
+      --contract-version <VERSION>
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb query run-named`
@@ -1886,19 +1940,37 @@ Arguments:
 
 Options:
       --config <PATH>
+
       --module-hash <MODULE_HASH_HEX>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
       --parameters <JSON_PARAMETERS>
-      --cursor <CURSOR>
+
       --database <DATABASE>
-      --output <human|json>                  [possible values: human, json]
-      --read-after-commit <COMMIT_SEQUENCE>
-      --consistency <CONSISTENCY>            [possible values: admission-head]
+
+      --param <KEY=VALUE>
+          Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable)
+      --output <human|json>
+          [possible values: human, json]
+      --params-json <JSON_OBJECT>
+          Inline query parameters as a JSON object string
+      --cursor <CURSOR>
+
       --max-attempts <1..10>
-      --contract-lineage <LINEAGE>
+
       --credential-file <PATH>
+
+      --read-after-commit <COMMIT_SEQUENCE>
+
+      --consistency <CONSISTENCY>
+          [possible values: admission-head]
+      --contract-lineage <LINEAGE>
+
       --contract-version <VERSION>
-  -h, --help                                 Print help
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb query watch`

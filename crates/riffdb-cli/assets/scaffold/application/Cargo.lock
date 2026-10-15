@@ -655,7 +655,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "riffdb-client-rust"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "185a6baecd6c110d800336d95fa939f84b6d0de842207ba36975c98f776a0e6f"
+checksum = "ddce645311cbaa9cac7af93a5a8ac7e14b7c4475e94b1ebea5bd2d3b73da9207"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",

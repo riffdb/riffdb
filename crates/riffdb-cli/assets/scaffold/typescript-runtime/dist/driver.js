@@ -63,21 +63,28 @@ export class DriverApplicationError extends Error {
 export class DriverApplicationTransport {
     #socket;
     #identity;
+    #tenant;
     #requestPrefix;
     #pending = new Map();
     #input = Buffer.alloc(0);
     #nextRequest = 1;
     #closed = false;
-    constructor(socket, identity) {
+    constructor(socket, identity, tenant) {
         this.#socket = socket;
         this.#identity = identity;
+        this.#tenant = tenant;
         nextSession = nextSession === Number.MAX_SAFE_INTEGER ? 1 : nextSession + 1;
         this.#requestPrefix = `ts.${process.pid}.${nextSession}`;
         socket.on("data", (chunk) => this.#receive(chunk));
         socket.on("error", () => this.#fail(new Error("RiffDB driver session failed")));
         socket.on("close", () => this.#fail(new Error("RiffDB driver session closed")));
     }
+    /** Returns the bound tenant identifier when this session is tenant-scoped. */
+    get tenant() {
+        return this.#tenant;
+    }
     static async connect(options) {
+        const tenant = resolveTransportTenant(options);
         validateTransportOptions(options);
         const socket = createConnection({ path: options.socketPath });
         await new Promise((resolve, reject) => {
@@ -85,7 +92,7 @@ export class DriverApplicationTransport {
             socket.once("connect", () => { socket.off("error", onError); resolve(); });
             socket.once("error", onError);
         });
-        const transport = new DriverApplicationTransport(socket, options.identity);
+        const transport = new DriverApplicationTransport(socket, options.identity, tenant);
         try {
             await transport.#handshake();
             return transport;
@@ -732,6 +739,16 @@ function decodeError(response) {
         ...(traceId === undefined ? {} : { traceId }),
         ...(incidentId === undefined ? {} : { incidentId }),
     });
+}
+function resolveTransportTenant(options) {
+    const envTenant = process.env.RIFFDB_TENANT;
+    const candidate = options.tenant ?? options.identity.tenant ?? (envTenant && envTenant.length > 0 ? envTenant : undefined);
+    if (candidate === undefined)
+        return undefined;
+    if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 128 || !/^[\x21-\x7e]+$/.test(candidate)) {
+        throw new Error("invalid RiffDB tenant identifier");
+    }
+    return candidate;
 }
 function validateTransportOptions(options) {
     if (!options.socketPath.startsWith("/") || options.socketPath.length > 4_096) {

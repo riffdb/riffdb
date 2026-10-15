@@ -294,6 +294,8 @@ export declare class CliApplicationTransport {
 export declare class DriverGeneratedApplicationTransport {
     private readonly driver;
     constructor(driver: DriverApplicationTransport);
+    /** Returns the bound tenant identifier when this session is tenant-scoped. */
+    get tenant(): string | undefined;
     executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
     executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
     executeVectorInspection<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
