@@ -89,6 +89,7 @@ The explicit authoring operations are:
 
 ```text
 riffdb application check --source-only
+riffdb application check --write
 riffdb application lock --write
 riffdb application check
 riffdb application generate --locked
@@ -98,8 +99,9 @@ riffdb application generate --locked
 application and roles without comparing an intentionally stale lock during an
 edit cycle. Exact `check` performs no writes and verifies source, lock, and
 every generated artifact; it cannot report a false green over drift.
-`lock --write` is the only operation that accepts
-new derived identities. It stages generated files and publishes the lock last.
+`check --write` and `lock --write` are the only operations that accept
+new derived identities; both compile symbolic sources, stage generated files,
+and publish the lock last in one offline step without starting a server.
 `generate --locked` reproduces bindings only when the current symbolic sources
 compile to the exact reviewed lock. A stale, substituted, interrupted, or
 partially generated application therefore fails before role binding,
@@ -108,7 +110,8 @@ authorization, deployment, or application execution.
 Every successful check also prints the configured seed-input count and the
 exact development command. Use `riffdb dev --seed --run` only with one or more
 ordered `seed_inputs`; use `riffdb dev --run` for an intentionally seedless
-application. The seeded form fails before startup when the list is empty and
+application. After a breaking local contract edit, pass `riffdb dev --reset`
+to discard local development state before redeploying. The seeded form fails before startup when the list is empty and
 names up to eight unreferenced JSONL files as an actionable correction.
 
 The source-tree development runner uses Cargo's effective target directory for
@@ -174,20 +177,21 @@ development run must not collapse that diagnostic into a silent non-zero exit.
 With `--run`, the same product-owned workflow starts the repository's generated
 application after readiness. A repository must contain exactly one supported
 runner: `Cargo.toml` for Rust, `go.mod` for Go, `package.json` for TypeScript, or
-`pyproject.toml` for Python. Rust and Python receive the protected application
+`pyproject.toml` for Python. Every generated SDK exposes a zero-ceremony
+environment connection and a causal read-after-write handle (`GeneratedApplicationClient::from_env().await?` and `client.causal(&write_result)` in Rust, `connectGeneratedApplicationFromEnv()` and `client.causal(writeResult)` in TypeScript, `GeneratedApplicationClient.from_env()` / `AsyncGeneratedApplicationClient.from_env()` and `client.causal(write_result)` in Python, and `generated.ConnectFromEnv(ctx)` and `client.Causal(writeResult)` in Go) alongside the explicit constructors. Rust and Python receive the protected application
 endpoint, credential path, and database alias owned by their first-party
 runtime. They receive the values both as the existing three positional
 arguments and as `RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and
 `RIFFDB_DATABASE`; observing both forms with different values is an error. Go
 and TypeScript receive only a private driver-host socket plus
-compiler-owned handshake identity. The Go and TypeScript positional ABI is
+compiler-owned handshake identity (`RIFFDB_DRIVER_SOCKET` and `RIFFDB_DRIVER_HANDSHAKE` or the positional arguments). The Go and TypeScript positional ABI is
 exactly:
 
 ```text
 SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH
 ```
 
-Application code must copy the closed decoding in the generated starter rather
+Application code must use `ConnectFromEnv` / `connectGeneratedApplicationFromEnv` or copy the closed decoding in the generated starter rather
 than infer another ordering. The
 application does not need to parse the database-readiness line or keep a
 separate bootstrap process alive. Rust, Go, and Python one-shot runners exit
