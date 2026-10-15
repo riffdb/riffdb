@@ -1254,10 +1254,10 @@ const fn query_plan_help(code: riffdb_query_compiler::PlannerDiagnosticCode) -> 
             "do not change source or retry blindly; report this code and the exact source/tool identities to the operator"
         }
         Code::Cardinality => {
-            "use one bindings only as scalars and many bindings only through bounded collection operations; see docs/contracts/AUTHORING.md#composing-two-indexed-predicates"
+            "use one bindings only as scalars and many bindings only through bounded collection operations (`in binding.field` or `in distinct(binding.field)`); see docs/contracts/AUTHORING.md#composing-two-indexed-predicates"
         }
         Code::OperationalFamilyRequired => {
-            "express optional predicates as top-level when guards or declare one complete finite order family, then compile the whole family; see docs/riffql/PLANNING.md#finite-operational-plan-families"
+            "express optional filter parameters as top-level `when $param { field == $param }` conjuncts in `where` (every present/absent combination must match a declared index), or declare one complete finite `order by $order { ... }` family; see docs/riffql/PLANNING.md#finite-operational-plan-families"
         }
         Code::ExactTextProvider => {
             "declare a compatible text_key index and use the exact supported comparison profile and bound; see docs/contracts/AUTHORING.md#operational-query-indexes"
@@ -1323,11 +1323,14 @@ fn query_plan_class(
         // The author already declared a bound; it is too large. Telling them to
         // "add a bound" sends them looking for something that is already there.
         Code::CostCeilingExceeded => (AuthoringCause::LimitExceeded, AuthoringFix::ReduceInput),
-        Code::ExactTextProvider | Code::CandidateInvalid | Code::LongPatternInvalid => (
+        Code::ExactTextProvider
+        | Code::CandidateInvalid
+        | Code::LongPatternInvalid
+        | Code::OperationalFamilyRequired => (
             AuthoringCause::InvalidSyntax,
             AuthoringFix::UseLanguageReference,
         ),
-        Code::InternalInvariant | Code::OperationalFamilyRequired => (
+        Code::InternalInvariant => (
             AuthoringCause::InternalInvariant,
             AuthoringFix::ContactOperator,
         ),
@@ -2301,5 +2304,59 @@ contract Blog version 1 {
             help.contains("set binding.field checked_by <RequirementName> = <expr>;")
                 && help.contains("overwrite binding.field = <expr>;")
         }));
+    }
+
+    #[test]
+    fn operational_family_and_cardinality_diagnostics_name_authoring_repairs() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let query = r#"
+query Mixed(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus?,
+    $order: TicketStatus
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && project_id == $project_id
+          && when $status { status == $status }
+        order by $order {
+            Open: ticket_id asc;
+            InProgress: ticket_id asc;
+            Closed: ticket_id asc;
+        }
+        take 25
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+        let error = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("diagnostic").expect("name"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("Mixed", query).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect_err("presence guard and order family cannot mix in one query");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/mixed.riffq").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-QP008");
+        assert_eq!(diagnostic.cause(), AuthoringCause::InvalidSyntax);
+        assert_eq!(diagnostic.fixes(), &[AuthoringFix::UseLanguageReference]);
+        assert!(diagnostic.help().is_some_and(|help| {
+            help.contains("when $param { field == $param }")
+                && help.contains("order by $order { ... }")
+        }));
+        assert!(
+            query_plan_help(PlannerDiagnosticCode::Cardinality)
+                .contains("in distinct(binding.field)")
+        );
     }
 }

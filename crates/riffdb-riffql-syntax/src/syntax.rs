@@ -257,6 +257,8 @@ pub struct AggregateBinding {
     pub source: Spanned<Identifier>,
     /// Declared grouping fields, empty for one whole-set result.
     pub group_by: Vec<Spanned<Path>>,
+    /// Optional explicit upper bound on distinct group combinations.
+    pub group_limit: Option<Spanned<u64>>,
     /// Closed exact measures.
     pub measures: Vec<AggregateMeasure>,
 }

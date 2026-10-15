@@ -564,6 +564,7 @@ pub struct QueryAccessStep {
     index_key_schema: Option<KeySchema>,
     operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
     covered_result_layout: Option<CoveredResultLayoutV1>,
+    distinct_dependent_keys: bool,
 }
 
 impl std::fmt::Debug for QueryAccessStep {
@@ -722,6 +723,13 @@ impl QueryAccessStep {
         &self.dependencies
     }
 
+    /// Whether dependent point-batch keys are deduplicated and canonically sorted
+    /// (`in distinct(binding.field)`), skipping `null` values.
+    #[must_use]
+    pub const fn distinct_dependent_keys(&self) -> bool {
+        self.distinct_dependent_keys
+    }
+
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn checked(
@@ -745,6 +753,56 @@ impl QueryAccessStep {
         index_key_schema: Option<KeySchema>,
         operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
         covered_result_layout: Option<CoveredResultLayoutV1>,
+    ) -> Option<Self> {
+        Self::checked_with_distinct(
+            binding,
+            entity,
+            cardinality,
+            maximum_rows,
+            row_limit,
+            access,
+            predicates,
+            predicate_fields,
+            selected_fields,
+            result_names,
+            absence_outcome,
+            cursor_parameter,
+            dependencies,
+            entity_id,
+            index_id,
+            partition_key_schema,
+            entity_key_schema,
+            index_key_schema,
+            operational_index_descriptor,
+            covered_result_layout,
+            false,
+        )
+    }
+
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn checked_with_distinct(
+        binding: String,
+        entity: String,
+        cardinality: Cardinality,
+        maximum_rows: u64,
+        row_limit: QueryRowLimit,
+        access: QueryAccessKind,
+        predicates: Vec<QueryPredicate>,
+        predicate_fields: Vec<String>,
+        selected_fields: Vec<String>,
+        result_names: Vec<String>,
+        absence_outcome: Option<String>,
+        cursor_parameter: Option<String>,
+        dependencies: Vec<String>,
+        entity_id: EntityTypeId,
+        index_id: Option<IndexId>,
+        partition_key_schema: KeySchema,
+        entity_key_schema: KeySchema,
+        index_key_schema: Option<KeySchema>,
+        operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
+        covered_result_layout: Option<CoveredResultLayoutV1>,
+        distinct_dependent_keys: bool,
     ) -> Option<Self> {
         let row_limit_is_valid = match &row_limit {
             QueryRowLimit::Literal(value) => {
@@ -876,7 +934,7 @@ impl QueryAccessStep {
                     && !source_binding.is_empty()
                     && !source_field.is_empty()
                     && cardinality == Cardinality::Many
-                    && absence_outcome.is_some()
+                    && (absence_outcome.is_some() || distinct_dependent_keys)
                     && cursor_parameter.is_none()
                     && dependencies.binary_search(source_binding).is_ok()
                     && matching_sets == 1
@@ -1045,6 +1103,8 @@ impl QueryAccessStep {
             || !access_is_valid
             || !covered_layout_is_valid
             || !descriptor_is_valid
+            || (distinct_dependent_keys
+                && !matches!(access, QueryAccessKind::DependentPointBatch { .. }))
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || result_names.windows(2).any(|pair| pair[0] >= pair[1])
@@ -1073,6 +1133,7 @@ impl QueryAccessStep {
             index_key_schema,
             operational_index_descriptor,
             covered_result_layout,
+            distinct_dependent_keys,
         })
     }
 }
@@ -1995,7 +2056,7 @@ fn encode_program(
                 source_binding,
                 source_field,
             } => {
-                out.push(3);
+                out.push(if step.distinct_dependent_keys { 9 } else { 3 });
                 write_strings(&mut out, key_fields)?;
                 write_text(&mut out, source_binding)?;
                 write_text(&mut out, source_field)?;
@@ -2394,7 +2455,13 @@ riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessStep {
         operational_index_descriptor,
         covered_result_layout
     ],
-    inline: [cardinality, maximum_rows, entity_id, index_id]
+    inline: [
+        cardinality,
+        maximum_rows,
+        entity_id,
+        index_id,
+        distinct_dependent_keys
+    ]
 });
 
 impl riffdb_types::InspectOwnedCapacityV1 for QueryRowLimit {

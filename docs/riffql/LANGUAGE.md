@@ -14,16 +14,17 @@ the compiler must prove a reviewed maximum. `MAX` may be as large as 65,534;
 the compiler still refuses a query whose independently bounded result bytes,
 cost, authority, provider work, or transport envelope cannot support it.
 
-`one` and `maybe` are primary-key point reads: their predicates must constrain
-the target entity's complete primary key. A secondary index does not satisfy a
-singular binding. For a singular lookup by an external identifier such as a
-slug, declare a small route entity keyed by that identifier, point-read the
-route, and then point-read the target entity through its stored key. This
-makes the cardinality proof explicit and prevents data-dependent scans.
+`one` and `maybe` are partition-local point or unique-key reads: their
+predicates must constrain either the target entity's complete primary key or
+every field of a declared same-partition `unique` key index with `==` (and no
+`order by`). When a covering index on those same fields is also declared, the
+compiler prefers it automatically. For a singular lookup across partitions,
+declare a small route entity keyed by that identifier, point-read the route,
+and then point-read the target entity through its stored key.
 
-One deliberately narrow collection dependency is available for operational
-junction reads. An earlier bounded `many` field may be consumed by `in` only to
-supply one component of a later `many` binding's complete primary key:
+Two bounded collection dependencies are available for operational reads. First,
+an earlier bounded `many` field in canonical ascending key order may be consumed
+directly by `in` for junction reads:
 
 ```riffql
 many ticket_labels from TicketLabel
@@ -40,20 +41,32 @@ many labels from Label
     else IntegrityFailure
 ```
 
-The target bound cannot exceed the source bound. Both accesses must remain in
-one partition, source and target keys must be in canonical ascending order, and
-every target must exist. An empty source produces an empty list; a missing
-target selects the declared `else` outcome. Collection-as-scalar use, non-key
-fan-out, nested per-row collections, and Cartesian products are rejected.
+Second, when hydrating parent or foreign-key records from an earlier bounded
+`many` binding whose `order by` is chosen for display (such as `updated_at desc`)
+or whose foreign-key field may contain duplicates or `null` values, wrap the
+source path in `distinct(...)`:
 
-The source collection must be a complete ordered set of target keys: its
-`order by` is exactly the consumed field, ascending. If the source model allows
-the same target key more than once and therefore needs a tie-breaker such as
-`line_id`, it is not a dependent-key set and is rejected with `RDB-QP007`.
-Model one line per product when that is the domain invariant, denormalize the
-small immutable display field onto the line, or use a separately justified
-projection. RiffDB does not silently deduplicate, reorder, or issue per-row
-reads because each would change declared cardinality or hide work.
+```riffql
+many tickets from Ticket
+    where organization_id == $organization_id
+    order by updated_at desc, ticket_id desc
+    take 50
+
+many assignees from User
+    where organization_id == $organization_id
+      && user_id in distinct(tickets.assignee_id)
+    take 50
+```
+
+In both forms, the target bound cannot exceed the source bound and both accesses
+must remain in one partition. Direct `in binding.field` requires the source
+collection to be ordered by the consumed field ascending and requires every
+target to exist (selecting the declared `else` outcome if missing).
+`in distinct(binding.field)` skips `null` values on optional foreign keys,
+sorts and deduplicates present keys in canonical ascending target-key order
+before executing the bounded point batch, and makes `else` and target `order by`
+optional. Collection-as-scalar use, non-key fan-out, nested per-row
+collections, and Cartesian products are rejected.
 
 ```riffql
 query OpenTickets($tenant: TenantId, $limit: Limit<499> = 25) {
@@ -95,8 +108,8 @@ compiler-sealed `matching` shapes and the optional fixed `riff_bm25_v1` order;
 see [Tokenized Text Search](TOKENIZED-TEXT.md). Candidate language V11 adds
 complete-before-order set sources, including declared long-value exact pattern
 providers; see [Long-Value Pattern Search](LONG-PATTERN.md). RiffQL has no
-mutation, SQL escape, function call, recursion,
-loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
+mutation, SQL escape, arbitrary function call, recursion,
+loop, callback, clock, randomness, network, filesystem, unrestricted
 scan, or arbitrary join.
 
 The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
@@ -786,7 +799,12 @@ zero; empty `mean` is `{ total: 0, count: 0 }`; empty `any` is `false`; and
 empty `all` is `true`. A bound or arithmetic failure refuses the whole query.
 
 Grouped rows are ordered by the canonical encoded group key and their count is
-clamped by the source `take` value, including a submitted `Limit`. Version 1
+clamped by the source `take` value (including a submitted `Limit`), by the
+product of the grouping keys' finite `enum`/`bool`/`optional` domains when the
+source `take` exceeds 256, or by an explicit `group by field1, field2 take <N>`
+cap when grouping over higher-cardinality fields on a large source bound.
+Exceeding an explicit `group by ... take <N>` cap at runtime withholds the
+complete aggregate result rather than silently truncating groups. Version 1
 requires aggregate result names and selected aggregate field names to remain
 the declaration names; renaming either is rejected at compile time rather than
 accepted without a sealed projection mapping. Aggregate live watches remain a

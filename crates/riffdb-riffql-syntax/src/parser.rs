@@ -946,6 +946,7 @@ impl Parser {
         self.enter_nesting()?;
         self.expect(TokenKind::LeftBrace)?;
         let mut group_by = Vec::new();
+        let mut group_limit = None;
         if self.take_word("group").is_some() {
             self.expect_word("by")?;
             loop {
@@ -960,6 +961,34 @@ impl Parser {
                 if self.take(TokenKind::Comma).is_none() {
                     break;
                 }
+            }
+            if self.take_word("take").is_some() {
+                let limit_lit = self.literal()?;
+                let limit_span = limit_lit.span;
+                let Literal::Unsigned(raw) = limit_lit.value else {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnexpectedToken,
+                        limit_span,
+                        "group by take requires a positive integer literal",
+                        Some("use a positive integer literal such as `group by status take 16`"),
+                    )));
+                };
+                let value = raw
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|&value| value >= 1)
+                    .ok_or_else(|| {
+                        ParseDiagnostics::one(ParseDiagnostic::new(
+                            DiagnosticCode::InvalidToken,
+                            limit_span,
+                            "group by take must be a positive 64-bit integer literal",
+                            Some("use a positive integer literal between 1 and 256"),
+                        ))
+                    })?;
+                group_limit = Some(Spanned {
+                    value,
+                    span: limit_span,
+                });
             }
         }
         let mut measures = Vec::new();
@@ -988,6 +1017,7 @@ impl Parser {
             name,
             source,
             group_by,
+            group_limit,
             measures,
         })
     }
@@ -1254,6 +1284,40 @@ impl Parser {
             }
             Some(TokenKind::Ident(word)) if word == "true" || word == "false" || word == "null" => {
                 Expression::Literal(self.literal()?.value)
+            }
+            Some(TokenKind::Ident(word))
+                if word == "distinct"
+                    && matches!(
+                        self.tokens.get(self.index + 1).map(|token| &token.kind),
+                        Some(TokenKind::LeftParen)
+                    ) =>
+            {
+                let distinct_token = self.next()?.clone();
+                let Some(distinct_ident) = Identifier::new("distinct") else {
+                    unreachable!("literal identifier is valid");
+                };
+                self.enter_nesting()?;
+                self.expect(TokenKind::LeftParen)?;
+                let inner_path = self.path()?;
+                self.expect(TokenKind::RightParen)?;
+                self.leave_nesting();
+                if inner_path.0.len() != 2 {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnsupportedForm,
+                        self.span_from(start),
+                        "distinct(...) requires a bound `binding.field` path",
+                        Some(
+                            "use `field in distinct(binding.field)` to deduplicate a prior many binding's field",
+                        ),
+                    )));
+                }
+                let mut segments = Vec::with_capacity(3);
+                segments.push(Spanned {
+                    value: distinct_ident,
+                    span: distinct_token.span,
+                });
+                segments.extend(inner_path.0);
+                Expression::Path(Path(segments))
             }
             Some(TokenKind::Ident(_))
                 if matches!(

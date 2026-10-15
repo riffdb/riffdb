@@ -272,6 +272,9 @@ pub fn format_query(document: &Document) -> String {
                 }
                 output.push_str(&format_path(&field.value));
             }
+            if let Some(limit) = &aggregate.group_limit {
+                write!(output, " take {}", limit.value).expect("String writes cannot fail");
+            }
             output.push('\n');
         }
         for measure in &aggregate.measures {
@@ -492,6 +495,15 @@ fn escape_string(value: &str) -> String {
 }
 
 fn format_path(path: &Path) -> String {
+    if let [modifier, binding, field] = path.0.as_slice()
+        && modifier.value.as_str() == "distinct"
+    {
+        return format!(
+            "distinct({}.{})",
+            binding.value.as_str(),
+            field.value.as_str()
+        );
+    }
     path.0
         .iter()
         .map(|segment| segment.value.as_str())

@@ -1830,7 +1830,7 @@ fn compile_order_query_family_inner(
         .body
         .bindings
         .iter()
-        .any(|binding| first_operational_expression_span(&binding.predicate.value).is_some())
+        .any(|binding| first_presence_guard_span(&binding.predicate.value).is_some())
     {
         return Err(one(
             PlannerDiagnosticCode::OperationalFamilyRequired,
@@ -2978,7 +2978,15 @@ impl<'a> Planner<'a> {
                 self.catalog
                     .internal_operational_index_descriptor(entity.internal_id(), index_id)
             });
-            let step = QueryAccessStep::checked(
+            let has_distinct_collection_dependency = comparisons.iter().any(|comparison| {
+                comparison.operator.is_binary(BinaryOperator::In)
+                    && matches!(
+                        comparison.value,
+                        Some(Expression::Path(path))
+                            if matches!(binding_field_path(path), Some((_, _, true)))
+                    )
+            });
+            let step = QueryAccessStep::checked_with_distinct(
                 binding.name.value.as_str().to_owned(),
                 entity.name().to_owned(),
                 binding.cardinality.value,
@@ -3006,6 +3014,7 @@ impl<'a> Planner<'a> {
                 index_key_schema,
                 operational_index_descriptor,
                 covered_result_layout,
+                has_distinct_collection_dependency,
             )
             .ok_or_else(internal)?;
             cost.add_step(entity, &step)?;
@@ -3205,16 +3214,21 @@ impl<'a> Planner<'a> {
                     ));
                 }
             } else if let Some(Expression::Path(path)) = comparison.value
-                && path.0.len() == 2
+                && let Some((first_seg, second_seg, distinct)) = binding_field_path(path)
                 && let Some((source_binding, source_entity, expansion_driver)) =
-                    self.predicate_source(binding, path.0[0].value.as_str())
+                    self.predicate_source(binding, first_seg.value.as_str())
             {
                 let source_cardinality = self
                     .binding_cardinalities
                     .get(source_binding.as_str())
                     .copied()
                     .ok_or_else(internal)?;
-                let cardinality_is_valid = if expansion_driver {
+                let cardinality_is_valid = if distinct {
+                    !expansion_driver
+                        && comparison.operator.is_binary(BinaryOperator::In)
+                        && source_cardinality == Cardinality::Many
+                        && binding.cardinality.value == Cardinality::Many
+                } else if expansion_driver {
                     comparison.operator.is_binary(BinaryOperator::Equal)
                         && source_cardinality == Cardinality::Many
                         && binding.cardinality.value == Cardinality::Many
@@ -3230,14 +3244,14 @@ impl<'a> Planner<'a> {
                 if !cardinality_is_valid {
                     return Err(one(
                         PlannerDiagnosticCode::Cardinality,
-                        path.0[1].span,
-                        vec![source_binding.clone(), path.0[1].value.as_str().to_owned()],
+                        second_seg.span,
+                        vec![source_binding.clone(), second_seg.value.as_str().to_owned()],
                         "predicate consumes a binding field with incompatible cardinality",
                         None,
                     ));
                 }
                 let source = source_entity
-                    .field(path.0[1].value.as_str())
+                    .field(second_seg.value.as_str())
                     .ok_or_else(internal)?
                     .value_type();
                 let compatible = field.value_type() == source
@@ -3247,7 +3261,7 @@ impl<'a> Planner<'a> {
                 if !compatible {
                     return Err(one(
                         PlannerDiagnosticCode::TypeMismatch,
-                        path.0[1].span,
+                        second_seg.span,
                         vec![entity.name().to_owned(), comparison.field.to_owned()],
                         "dependent field type does not match the contract field",
                         None,
@@ -3362,6 +3376,17 @@ impl<'a> Planner<'a> {
                 let value = match comparison.value {
                     Some(Expression::Parameter(parameter)) => {
                         QueryPredicateValue::Parameter(parameter.value.as_str().to_owned())
+                    }
+                    Some(Expression::Path(path))
+                        if matches!(binding_field_path(path), Some((_, _, true))) =>
+                    {
+                        let Some((first, second, _)) = binding_field_path(path) else {
+                            return Err(internal());
+                        };
+                        QueryPredicateValue::BindingFieldSet {
+                            binding: first.value.as_str().to_owned(),
+                            field: second.value.as_str().to_owned(),
+                        }
                     }
                     Some(Expression::Path(path)) if path.0.len() == 2 => {
                         let first = path.0[0].value.as_str();
@@ -4366,11 +4391,9 @@ fn choose_access(
             let Some(Expression::Path(path)) = comparison.value else {
                 return None;
             };
-            let [source_binding, source_field] = path.0.as_slice() else {
-                return None;
-            };
+            let (source_binding, source_field, distinct) = binding_field_path(path)?;
             (binding_cardinalities.get(source_binding.value.as_str()) == Some(&Cardinality::Many))
-                .then_some((comparison, source_binding, source_field))
+                .then_some((comparison, source_binding, source_field, distinct))
         })
         .collect::<Vec<_>>();
     if !collection_dependencies.is_empty() {
@@ -4383,7 +4406,7 @@ fn choose_access(
                 None,
             ));
         }
-        let (collection, source_binding, source_field) = collection_dependencies[0];
+        let (collection, source_binding, source_field, distinct) = collection_dependencies[0];
         let key_fields = entity.primary_key();
         let complete_key = key_fields.iter().all(|field| {
             comparisons.iter().any(|comparison| {
@@ -4433,10 +4456,10 @@ fn choose_access(
         //
         // Ordered most-structural first, so the message names the earliest
         // thing that has to change rather than an incidental later one.
-        let failure = if collection.field != source_field.value.as_str() {
+        let failure = if !distinct && collection.field != source_field.value.as_str() {
             Some(
                 "dependent key batch must join on the same field it selects from the source \
-                 binding",
+                 binding (or use `in distinct(binding.field)` to hydrate a foreign key)",
             )
         } else if binding.cardinality.value != Cardinality::Many {
             Some("dependent key batch must bind `many`, because a driver key may match no row")
@@ -4451,7 +4474,7 @@ fn choose_access(
                  non-key field is a residual filter. Move the value into the key, or compare a \
                  fixed-size digest of it that is part of the key",
             )
-        } else if binding.absence_outcome.is_none() {
+        } else if !distinct && binding.absence_outcome.is_none() {
             Some(
                 "dependent key batch must declare an absence outcome with `else`; for a `many` \
                  binding it never fires, because an empty match is zero rows rather than an \
@@ -4471,12 +4494,17 @@ fn choose_access(
                 "dependent key batch `take` must be no larger than the source binding's, so the \
                  batch cannot exceed the keys driving it",
             )
-        } else if source_order != [source_field.value.as_str()] || !source_order_is_forward {
+        } else if !distinct
+            && (source_order != [source_field.value.as_str()] || !source_order_is_forward)
+        {
             Some(
                 "the source binding must order ascending by exactly the joining field, so its \
-                 keys arrive in traversal order",
+                 keys arrive in traversal order (or use `in distinct(binding.field)` to sort \
+                 and deduplicate foreign keys automatically)",
             )
-        } else if target_order != [collection.field] || !forward_order {
+        } else if !(distinct && target_order.is_empty())
+            && (target_order != [collection.field] || !forward_order)
+        {
             Some(
                 "dependent key batch must order ascending by exactly the joining field, matching \
                  the source binding's order",
@@ -4521,6 +4549,44 @@ fn choose_access(
     }
 
     if binding.cardinality.value != Cardinality::Many {
+        if !context.finite_partition_route && binding.order.is_empty() {
+            let mut first_unique = None;
+            for index in entity.indexes().filter(|index| index.is_unique()) {
+                let Some(shape) = operational_access_shape(entity, index, comparisons, binding)
+                else {
+                    continue;
+                };
+                if shape.order_start != index.fields().len() {
+                    continue;
+                }
+                if !index
+                    .fields()
+                    .iter()
+                    .any(|field| field == entity.partition_field())
+                {
+                    continue;
+                }
+                let candidate = (
+                    QueryAccessKind::Index {
+                        index: index.name().to_owned(),
+                        fields: index.fields().to_vec(),
+                        direction: AccessDirection::Forward,
+                    },
+                    Some(index.internal_id()),
+                );
+                if !index.cover_fields().is_empty()
+                    && index_covers_fields(entity, index, context.cover_required_fields)
+                {
+                    return Ok(candidate);
+                }
+                if first_unique.is_none() {
+                    first_unique = Some(candidate);
+                }
+            }
+            if let Some(candidate) = first_unique {
+                return Ok(candidate);
+            }
+        }
         return Err(one(
             PlannerDiagnosticCode::Unindexed,
             binding.predicate.span,
@@ -5037,15 +5103,17 @@ fn collect_dependency_fields(
     output: &mut BTreeMap<String, BTreeSet<String>>,
 ) {
     match expression {
-        Expression::Path(path) if path.0.len() == 2 => {
-            let source = path.0[0].value.as_str();
-            let source = expansion
-                .filter(|(item, _)| *item == source)
-                .map_or(source, |(_, driver)| driver);
-            output
-                .entry(source.to_owned())
-                .or_default()
-                .insert(path.0[1].value.as_str().to_owned());
+        Expression::Path(path) => {
+            if let Some((source_seg, field_seg, _)) = binding_field_path(path) {
+                let source = source_seg.value.as_str();
+                let source = expansion
+                    .filter(|(item, _)| *item == source)
+                    .map_or(source, |(_, driver)| driver);
+                output
+                    .entry(source.to_owned())
+                    .or_default()
+                    .insert(field_seg.value.as_str().to_owned());
+            }
         }
         Expression::Binary { left, right, .. } => {
             collect_dependency_fields(&left.value, expansion, output);
@@ -5057,7 +5125,7 @@ fn collect_dependency_fields(
         Expression::Unary { operand, .. } => {
             collect_dependency_fields(&operand.value, expansion, output);
         }
-        Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
+        Expression::Parameter(_) | Expression::Literal(_) => {}
     }
 }
 
@@ -5146,8 +5214,8 @@ fn collect_expression_dependencies<'a>(
 ) {
     match expression {
         Expression::Path(path) => {
-            if path.0.len() == 2 {
-                let name = path.0[0].value.as_str();
+            if let Some((source_seg, _, _)) = binding_field_path(path) {
+                let name = source_seg.value.as_str();
                 if known.contains_key(name) {
                     output.insert(name);
                 }
@@ -5164,6 +5232,32 @@ fn collect_expression_dependencies<'a>(
             collect_expression_dependencies(&operand.value, known, output);
         }
         Expression::Parameter(_) | Expression::Literal(_) => {}
+    }
+}
+
+fn binding_field_path(
+    path: &Path,
+) -> Option<(
+    &riffdb_riffql_syntax::Spanned<riffdb_riffql_syntax::Identifier>,
+    &riffdb_riffql_syntax::Spanned<riffdb_riffql_syntax::Identifier>,
+    bool,
+)> {
+    match path.0.as_slice() {
+        [binding, field] => Some((binding, field, false)),
+        [modifier, binding, field] if modifier.value.as_str() == "distinct" => {
+            Some((binding, field, true))
+        }
+        _ => None,
+    }
+}
+
+fn first_presence_guard_span(expression: &Expression) -> Option<Span> {
+    match expression {
+        Expression::PresenceGuard { parameter, .. } => Some(parameter.span),
+        Expression::Unary { operand, .. } => first_presence_guard_span(&operand.value),
+        Expression::Binary { left, right, .. } => first_presence_guard_span(&left.value)
+            .or_else(|| first_presence_guard_span(&right.value)),
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => None,
     }
 }
 

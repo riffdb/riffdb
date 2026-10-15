@@ -2496,28 +2496,30 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
                 )?;
                 if observations.iter().any(Option::is_none) {
-                    let outcome = step
-                        .absence_outcome()
-                        .ok_or(QueryExecutionError::InvalidProgram)?
-                        .to_owned();
-                    return finish_snapshot(
-                        &mut fuel,
-                        QueryOwnedSnapshot {
-                            application_head: view.application_head(),
-                            index_epochs,
-                            outcome,
-                            fields: BTreeMap::new(),
-                            covered_result: None,
-                            continuation_binding: None,
-                            continuation: None,
-                        },
-                    );
+                    if let Some(outcome) = step.absence_outcome() {
+                        let outcome = outcome.to_owned();
+                        return finish_snapshot(
+                            &mut fuel,
+                            QueryOwnedSnapshot {
+                                application_head: view.application_head(),
+                                index_epochs,
+                                outcome,
+                                fields: BTreeMap::new(),
+                                covered_result: None,
+                                continuation_binding: None,
+                                continuation: None,
+                            },
+                        );
+                    }
+                    if !step.distinct_dependent_keys() {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
                 }
                 let rows = observations
                     .into_iter()
                     .zip(&predicates)
+                    .filter_map(|(row, predicates)| row.map(|row| (row, predicates)))
                     .map(|(row, predicates)| {
-                        let row = row.ok_or(QueryExecutionError::InvalidProgram)?;
                         if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
                             return Err(QueryExecutionError::InvalidProgram);
                         }
@@ -2651,6 +2653,11 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 if complete_candidate_source && page.continuation.is_some() {
                     return Err(QueryExecutionError::BoundExceeded);
+                }
+                if step.cardinality() != Cardinality::Many && page.continuation.is_some() {
+                    return Err(QueryExecutionError::UnexpectedCardinality {
+                        binding: step.binding().to_owned(),
+                    });
                 }
                 fuel.scans(page.scanned_rows)?;
                 fuel.points(page.point_reads)?;
@@ -5648,43 +5655,75 @@ fn bind_dependent_point_batch(
     let source_rows = bindings
         .get(source_binding)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    if source_rows.len() as u64 > limit || source_rows.len() as u64 > step.maximum_rows() {
-        return Err(QueryExecutionError::BoundExceeded);
-    }
-    let values = source_rows
-        .iter()
-        .map(|row| {
-            row.field(source_field)
-                .cloned()
-                .ok_or_else(|| QueryExecutionError::MissingField {
+    let values = if step.distinct_dependent_keys() {
+        let mut keyed = Vec::with_capacity(source_rows.len());
+        for row in source_rows {
+            let value = row.field(source_field).cloned().ok_or_else(|| {
+                QueryExecutionError::MissingField {
                     entity: row.entity().to_owned(),
                     field: source_field.to_owned(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if values
-        .iter()
-        .any(|value| matches!(value, CanonicalValue::Null))
-    {
-        return Err(QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        });
-    }
-    let encoded = values
-        .iter()
-        .map(encode_canonical_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        })?;
-    if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        });
-    }
+                }
+            })?;
+            if matches!(value, CanonicalValue::Null) {
+                continue;
+            }
+            let encoded = encode_canonical_value(&value).map_err(|_| {
+                QueryExecutionError::InvalidDependentKey {
+                    binding: source_binding.to_owned(),
+                    field: source_field.to_owned(),
+                }
+            })?;
+            keyed.push((encoded, value));
+        }
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        keyed.dedup_by(|left, right| left.0 == right.0);
+        if keyed.len() as u64 > limit || keyed.len() as u64 > step.maximum_rows() {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        keyed
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+    } else {
+        if source_rows.len() as u64 > limit || source_rows.len() as u64 > step.maximum_rows() {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let values = source_rows
+            .iter()
+            .map(|row| {
+                row.field(source_field)
+                    .cloned()
+                    .ok_or_else(|| QueryExecutionError::MissingField {
+                        entity: row.entity().to_owned(),
+                        field: source_field.to_owned(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values
+            .iter()
+            .any(|value| matches!(value, CanonicalValue::Null))
+        {
+            return Err(QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            });
+        }
+        let encoded = values
+            .iter()
+            .map(encode_canonical_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            })?;
+        if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            });
+        }
+        values
+    };
 
     values
         .into_iter()
@@ -7749,6 +7788,543 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
 
     #[cfg(not(feature = "test-fixtures"))]
     fn capture_error(_name: &str, _error: &QueryExecutionError) {}
+
+    #[test]
+    fn unique_same_partition_index_satisfies_one_and_maybe_bindings() {
+        let contract = r#"
+contract Directory version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<120>
+    field handle: string<64>
+    unique by_email (organization_id, email)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query LookupByEmail(
+    $organization_id: User.organization_id,
+    $email: User.email,
+    $secondary_email: User.email
+) {
+    one primary_user from User
+        where organization_id == $organization_id && email == $email
+        else UserMissing
+    maybe secondary_user from User
+        where organization_id == $organization_id && email == $secondary_email
+    return Found {
+        primary_user: primary_user { user_id email handle }
+        secondary_user: secondary_user { user_id handle }
+    }
+    outcomes Found | UserMissing
+}
+"#;
+        let program = compile_query(&parse_query(query_source).expect("parse"), &catalog)
+            .expect("unique same-partition index satisfies one and maybe");
+        assert!(matches!(
+            program.steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::Index { index, .. } if index == "by_email"
+        ));
+
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "email".to_owned(),
+                CanonicalValue::string("alice@example.com").expect("email"),
+            ),
+            (
+                "secondary_email".to_owned(),
+                CanonicalValue::string("nobody@example.com").expect("email"),
+            ),
+        ]))
+        .expect("parameters");
+
+        let alice = row(
+            "User",
+            &[
+                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                ("user_id", CanonicalValue::Uuid([9; 16])),
+                (
+                    "email",
+                    CanonicalValue::string("alice@example.com").expect("email"),
+                ),
+                ("handle", CanonicalValue::string("alice").expect("handle")),
+            ],
+        );
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), vec![alice.clone()]),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        let found =
+            execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("found");
+        assert_eq!(found.outcome(), "Found");
+        assert!(matches!(
+            found.fields().get("primary_user"),
+            Some(QueryResultValue::One(row))
+                if row.field("handle") == Some(&CanonicalValue::string("alice").unwrap())
+        ));
+        assert_eq!(
+            found.fields().get("secondary_user"),
+            Some(&QueryResultValue::Maybe(None))
+        );
+
+        let mut missing_view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), Vec::new()),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        let missing = execute_page_in_snapshot(&program, &parameters, None, &mut missing_view)
+            .expect("missing");
+        assert_eq!(missing.outcome(), "UserMissing");
+
+        let mut corrupt_view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), vec![alice.clone(), alice]),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        assert_eq!(
+            execute_page_in_snapshot(&program, &parameters, None, &mut corrupt_view),
+            Err(QueryExecutionError::UnexpectedCardinality {
+                binding: "primary_user".to_owned(),
+            }),
+            "singular unique-index execution fails closed if storage returns continuation"
+        );
+    }
+
+    #[test]
+    fn distinct_dependent_key_batch_hydrates_foreign_keys_across_unordered_and_nullable_drivers() {
+        let contract = r#"
+contract Helpdesk version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field display_name: string<80>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field updated_at: timestamp
+    field assignee_id: optional<uuid>
+    field title: string<120>
+    index by_updated (organization_id, updated_at, ticket_id)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query RecentTicketsWithAssignees($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by updated_at desc, ticket_id desc
+        take 25
+
+    many assignees from User
+        where organization_id == $organization_id
+          && user_id in distinct(tickets.assignee_id)
+        take 25
+
+    return Found {
+        tickets: tickets { ticket_id assignee_id title }
+        assignees: assignees { user_id display_name }
+    }
+
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(query_source).expect("parse");
+        let formatted = riffdb_riffql_syntax::format_query(&parsed);
+        assert!(
+            formatted.contains("user_id in distinct(tickets.assignee_id)"),
+            "formatter preserves distinct(binding.field): {formatted}"
+        );
+        let reparsed = parse_query(&formatted).expect("reparse formatted query");
+        let program = compile_query(&reparsed, &catalog).expect("compile distinct hydration");
+        assert!(program.steps()[1].distinct_dependent_keys());
+
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+
+        let ticket_rows = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(3000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([5; 16])),
+                    ("title", CanonicalValue::string("First").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([9; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(2000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Null),
+                    ("title", CanonicalValue::string("Unassigned").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([8; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(1000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([2; 16])),
+                    ("title", CanonicalValue::string("Second").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([7; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(500, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([5; 16])),
+                    (
+                        "title",
+                        CanonicalValue::string("Duplicate assignee").unwrap(),
+                    ),
+                ],
+            ),
+        ];
+
+        struct RecordingPointBatchView {
+            tickets: Vec<QueryRow>,
+            users: BTreeMap<[u8; 16], QueryRow>,
+            requested_user_ids: Vec<[u8; 16]>,
+        }
+
+        impl QueryReadView for RecordingPointBatchView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+                QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                1
+            }
+
+            fn point(
+                &mut self,
+                _step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Option<QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                step: &QueryAccessStep,
+                predicates: &[Vec<BoundPredicate>],
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+                assert_eq!(step.binding(), "assignees");
+                let mut out = Vec::with_capacity(predicates.len());
+                for key in predicates {
+                    let Some(CanonicalValue::Uuid(user_id)) = key
+                        .iter()
+                        .find_map(|pred| (pred.field() == "user_id").then_some(pred.value()))
+                    else {
+                        panic!("missing user_id in key: {key:?}");
+                    };
+                    self.requested_user_ids.push(*user_id);
+                    out.push(self.users.get(user_id).cloned());
+                }
+                Ok(out)
+            }
+
+            fn scan(
+                &mut self,
+                step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+                _after_inclusive: bool,
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<QueryScanPage, Self::Error> {
+                assert_eq!(step.binding(), "tickets");
+                Ok(QueryScanPage::exact_end(self.tickets.clone(), 1))
+            }
+
+            fn nearest(
+                &mut self,
+                _step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _k: u32,
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<QueryNearestPage, Self::Error> {
+                Ok(QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
+            }
+        }
+
+        let mut view = RecordingPointBatchView {
+            tickets: ticket_rows,
+            users: BTreeMap::from([
+                (
+                    [2; 16],
+                    row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([2; 16])),
+                            ("display_name", CanonicalValue::string("Bob").unwrap()),
+                        ],
+                    ),
+                ),
+                (
+                    [5; 16],
+                    row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([5; 16])),
+                            ("display_name", CanonicalValue::string("Eva").unwrap()),
+                        ],
+                    ),
+                ),
+            ]),
+            requested_user_ids: Vec::new(),
+        };
+
+        let result =
+            execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("execute");
+        assert_eq!(
+            view.requested_user_ids,
+            vec![[2; 16], [5; 16]],
+            "nulls are skipped and duplicate foreign keys are sorted and deduplicated"
+        );
+        let Some(QueryResultValue::Many(assignees)) = result.fields().get("assignees") else {
+            panic!("assignees missing")
+        };
+        assert_eq!(assignees.len(), 2);
+    }
+
+    #[test]
+    fn order_family_composes_with_operational_null_and_prefix_predicates() {
+        let contract = r#"
+contract Catalog version 1 {
+  enum ItemOrder { BySlugAsc, BySlugDesc }
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field slug: string<64>
+    field archived_at: optional<timestamp>
+    field updated_at: timestamp
+    index by_slug (organization_id, archived_at, slug, item_id) presence(archived_at) text_key(slug, binary_utf8_v1)
+  }
+  aggregate Items {
+    root Item
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query ActiveItemsByPrefix(
+    $organization_id: Item.organization_id,
+    $slug_prefix: Item.slug,
+    $order: ItemOrder
+) {
+    many items from Item
+        where organization_id == $organization_id
+          && archived_at is null
+          && slug prefix $slug_prefix
+        order by $order {
+            BySlugAsc: slug asc, item_id asc;
+            BySlugDesc: slug desc, item_id desc;
+        }
+        take 25
+
+    return Found {
+        items: items { item_id slug updated_at }
+    }
+    outcomes Found
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(query_source).expect("parse"),
+            &catalog,
+        )
+        .expect("order family composes with operational predicates");
+        assert_eq!(family.members().len(), 2);
+    }
+
+    #[test]
+    fn finite_domain_group_by_and_explicit_group_take_bound_large_aggregate_rollups() {
+        let contract = r#"
+contract Rollup version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field urgent: bool
+    field category: string<64>
+    field story_points: i64
+    index by_org (organization_id, ticket_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+
+        // 1. Finite enum + bool domain (3 * 2 = 6 groups) over 4,000 input rows
+        // caps maximum_groups to 6 rather than 4,000.
+        let finite_domain_query = r#"
+query StatusBreakdown($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 4000
+
+    aggregate by_status from tickets {
+        group by status, urgent
+        count() as ticket_count
+        sum(story_points) as total_points
+    }
+
+    return Found {
+        by_status: by_status {
+            status
+            urgent
+            ticket_count
+            total_points
+        }
+    }
+    outcomes Found
+}
+"#;
+        let finite_family = compile_operational_query_family(
+            &parse_query(finite_domain_query).expect("parse"),
+            &catalog,
+        )
+        .expect("finite enum/bool domain caps maximum_groups to 6");
+        assert_eq!(
+            finite_family.aggregates()[0].maximum_groups(),
+            &PageBound::Literal(6)
+        );
+
+        // 2. Explicit `group by category take 2` bounds a high-cardinality string
+        // grouping over 5,000 input rows and fails closed at runtime if exceeded.
+        let explicit_cap_query = r#"
+query CategoryBreakdown($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 5000
+
+    aggregate by_category from tickets {
+        group by category take 2
+        count() as ticket_count
+    }
+
+    return Found {
+        by_category: by_category {
+            category
+            ticket_count
+        }
+    }
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(explicit_cap_query).expect("parse");
+        let formatted = riffdb_riffql_syntax::format_query(&parsed);
+        assert!(
+            formatted.contains("group by category take 2"),
+            "formatter preserves group by ... take N: {formatted}"
+        );
+        let explicit_family =
+            compile_operational_query_family(&parse_query(&formatted).expect("reparse"), &catalog)
+                .expect("explicit group take caps maximum_groups");
+        assert_eq!(
+            explicit_family.aggregates()[0].maximum_groups(),
+            &PageBound::Literal(2)
+        );
+
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+        let three_categories = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, category)| {
+                row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([idx as u8 + 1; 16])),
+                        ("status", CanonicalValue::string("Open").unwrap()),
+                        ("urgent", CanonicalValue::Bool(false)),
+                        ("category", CanonicalValue::string(category).unwrap()),
+                        ("story_points", CanonicalValue::I64(1)),
+                    ],
+                )
+            })
+            .collect();
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), three_categories)]),
+        };
+        assert_eq!(
+            execute_operational_page_in_snapshot(
+                explicit_family.select(&[]).expect("sole member").program(),
+                explicit_family.aggregates(),
+                &parameters,
+                None,
+                &mut view,
+            ),
+            Err(QueryExecutionError::BoundExceeded),
+            "exceeding explicit group by take N fails closed rather than truncating"
+        );
+    }
 }
 
 #[cfg(test)]

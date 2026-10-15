@@ -79,6 +79,7 @@ pub struct IndexSymbol {
     cover_fields: Vec<String>,
     encodings: Vec<IndexFieldEncodingV1>,
     key_schema: KeySchema,
+    unique: bool,
 }
 
 /// One compiler-sealed logical-to-physical component mapping.
@@ -258,6 +259,12 @@ impl IndexSymbol {
     #[must_use]
     pub fn cover_fields(&self) -> &[String] {
         &self.cover_fields
+    }
+
+    /// Whether this index backs a declared contract `unique` key.
+    #[must_use]
+    pub const fn is_unique(&self) -> bool {
+        self.unique
     }
 
     /// Compiler-owned encoding for each logical field.
@@ -728,6 +735,9 @@ impl SymbolicCatalog {
                     cover_fields: cover_names,
                     encodings: index.encodings().to_vec(),
                     key_schema: index.key_schema().clone(),
+                    unique: bundle.schema().unique_keys().iter().any(|key| {
+                        key.source_entity() == entity.id() && key.index_id() == index.id()
+                    }),
                 };
                 if indexes.insert(symbol.name.clone(), symbol).is_some() {
                     return Err(invariant("duplicate exact-contract index"));
@@ -1113,6 +1123,7 @@ impl SymbolicCatalog {
             fields,
             cover_fields: Vec::new(),
             key_schema: entity.primary_key_schema.clone(),
+            unique: false,
         };
         entity.indexes.insert(index_name.to_owned(), symbol);
         Some(catalog)

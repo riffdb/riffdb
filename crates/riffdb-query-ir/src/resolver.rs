@@ -927,6 +927,7 @@ impl<'a> Resolver<'a> {
             let mut result_names = BTreeSet::new();
             let mut result_fields = BTreeMap::new();
             let mut group_keys = Vec::with_capacity(aggregate.group_by.len());
+            let mut domain_groups: Option<u64> = (!aggregate.group_by.is_empty()).then_some(1_u64);
             for group in &aggregate.group_by {
                 let (field_name, field_type) =
                     self.resolve_aggregate_field(&source, source_name, &group.value, group.span)?;
@@ -938,6 +939,9 @@ impl<'a> Resolver<'a> {
                         "duplicate aggregate result field",
                     ));
                 }
+                domain_groups = domain_groups
+                    .zip(self.group_key_domain_cardinality(&field_type))
+                    .and_then(|(acc, card)| acc.checked_mul(card));
                 let named = self.named_type(&field_type, group.span)?;
                 result_fields.insert(field_name.clone(), named.clone());
                 group_keys.push(
@@ -1126,7 +1130,7 @@ impl<'a> Resolver<'a> {
                 );
             }
 
-            let maximum_groups = if group_keys.is_empty() {
+            let source_take = if group_keys.is_empty() {
                 PageBound::Literal(1)
             } else {
                 source.take.clone().ok_or_else(|| {
@@ -1143,6 +1147,29 @@ impl<'a> Resolver<'a> {
                 Some(PageBound::Parameter(_)) => crate::max_query_page_take(),
                 Some(PageBound::BoundedParameter { maximum, .. }) => *maximum,
                 None => return Err(self.aggregate_invariant(aggregate.source.span)),
+            };
+            let maximum_groups = if let Some(limit) = &aggregate.group_limit {
+                if limit.value == 0
+                    || limit.value > u64::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+                    || limit.value > maximum_input_rows
+                {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::ArtifactLimit,
+                        limit.span,
+                        vec![name.to_owned()],
+                        "aggregate group by take bound must be between 1 and the lesser of 256 and the source row bound",
+                    ));
+                }
+                PageBound::Literal(limit.value)
+            } else if !group_keys.is_empty()
+                && maximum_input_rows > u64::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+                && let Some(domain_max) = domain_groups
+                && domain_max < maximum_input_rows
+                && domain_max <= u64::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+            {
+                PageBound::Literal(domain_max)
+            } else {
+                source_take
             };
             let maximum_arithmetic_operations = maximum_input_rows
                 .checked_mul(
@@ -2263,12 +2290,52 @@ impl<'a> Resolver<'a> {
                     )),
                 }
             }
+            [modifier, first, second] if modifier == "distinct" => {
+                let binding = self.bindings.get(first).cloned().ok_or_else(|| {
+                    self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        span,
+                        vec![first.clone(), second.clone()],
+                        "unknown symbolic path",
+                    )
+                })?;
+                let field = binding.entity.field(second).ok_or_else(|| {
+                    self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        span,
+                        vec![binding.symbol.entity_name.clone(), second.clone()],
+                        "unknown bound-entity field",
+                    )
+                })?;
+                let symbolic = vec![binding.symbol.entity_name.clone(), second.clone()];
+                self.push_map(span, SourceSymbolKind::Field, symbolic)?;
+                Ok(field.value_type().clone())
+            }
             _ => Err(self.diagnostic(
                 QueryDiagnosticCode::InvalidPath,
                 span,
                 segments,
                 "symbol path has unsupported depth",
             )),
+        }
+    }
+
+    fn group_key_domain_cardinality(&self, value_type: &ValueType) -> Option<u64> {
+        match value_type.tag() {
+            ValueTypeTag::Bool => Some(2),
+            ValueTypeTag::Enum => {
+                let enum_id = value_type.enum_type_id()?;
+                let name = self.catalog.enum_name(enum_id)?;
+                let symbol = self.catalog.enumeration(name)?;
+                u64::try_from(symbol.variants().len())
+                    .ok()
+                    .filter(|&count| count > 0)
+            }
+            ValueTypeTag::Optional => {
+                let inner = value_type.optional_inner()?;
+                self.group_key_domain_cardinality(inner)?.checked_add(1)
+            }
+            _ => None,
         }
     }
 
