@@ -24506,7 +24506,8 @@ work_packages:
     targets.
   requirements: [GOV-006, HBK-002, HBK-005, HBK-011]
   required_adrs: [ADR-0056, ADR-0122, ADR-0181]
-  allowed_paths: [SPEC.md, work_packages.yaml, docs/**, scripts/handbook,
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, docs/**, scripts/handbook,
     scripts/check-handbook-audience, scripts/check-handbook-source, scripts/ci-all,
     scripts/agent-application-alpha-package, scripts/agent-application-alpha-package-first,
     scripts/prepare-rust-package-mirror, scripts/agent-package-campaign-receipt,
