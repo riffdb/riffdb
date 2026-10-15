@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -180,6 +181,20 @@ export interface GetSessionMissing {
 
 export type GetSessionResult = GetSessionFound | GetSessionMissing;
 
+export function isGetSessionFound(value: GetSessionResult): value is GetSessionFound {
+  return value.outcome === "Found";
+}
+
+export function isGetSessionMissing(value: GetSessionResult): value is GetSessionMissing {
+  return value.outcome === "Missing";
+}
+
+export function unwrapGetSessionFound(value: GetSessionResult | TypedQueryResult<GetSessionResult>): GetSessionFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetSessionResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetSession outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function redactGetSessionResult(value: GetSessionResult): { readonly outcome: string; readonly redactedSecretOutputs: typeof GET_SESSION_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: GET_SESSION_SECRET_OUTPUTS };
 }
@@ -205,6 +220,20 @@ export interface GetUserMissing {
 
 export type GetUserResult = GetUserFound | GetUserMissing;
 
+export function isGetUserFound(value: GetUserResult): value is GetUserFound {
+  return value.outcome === "Found";
+}
+
+export function isGetUserMissing(value: GetUserResult): value is GetUserMissing {
+  return value.outcome === "Missing";
+}
+
+export function unwrapGetUserFound(value: GetUserResult | TypedQueryResult<GetUserResult>): GetUserFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetUserResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetUser outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function getUser(parameters: GetUserParams): NamedQueryRequest<GetUserParams, GetUserResult> {
   return { driverOperation: { name: "better_auth_acceptance_get_user", inputSchemaHash: "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", planHash: GET_USER_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"user","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"email","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"Missing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -218,9 +247,27 @@ export interface ConsumeVerificationTokenInput {
 
 export type ConsumeVerificationTokenOutcome = { readonly outcome: "VerificationTokenExpired" } | { readonly outcome: "VerificationTokenMissing" } | { readonly outcome: "VerificationTokenConsumed"; readonly user_id: string; readonly verification_token_id: string } | { readonly outcome: "VerificationTokenAlreadyConsumed" };
 
+export function isConsumeVerificationTokenVerificationTokenExpired(value: ConsumeVerificationTokenOutcome): value is Extract<ConsumeVerificationTokenOutcome, { readonly outcome: "VerificationTokenExpired" }> {
+  return value.outcome === "VerificationTokenExpired";
+}
+
+export function isConsumeVerificationTokenVerificationTokenMissing(value: ConsumeVerificationTokenOutcome): value is Extract<ConsumeVerificationTokenOutcome, { readonly outcome: "VerificationTokenMissing" }> {
+  return value.outcome === "VerificationTokenMissing";
+}
+
+export function isConsumeVerificationTokenVerificationTokenConsumed(value: ConsumeVerificationTokenOutcome): value is Extract<ConsumeVerificationTokenOutcome, { readonly outcome: "VerificationTokenConsumed" }> {
+  return value.outcome === "VerificationTokenConsumed";
+}
+
+export function isConsumeVerificationTokenVerificationTokenAlreadyConsumed(value: ConsumeVerificationTokenOutcome): value is Extract<ConsumeVerificationTokenOutcome, { readonly outcome: "VerificationTokenAlreadyConsumed" }> {
+  return value.outcome === "VerificationTokenAlreadyConsumed";
+}
+
 export const CONSUME_VERIFICATION_TOKEN_PLAN_HASH = "d3eb6e22e8c5b85778d5480c8ace53b88807c0c8abf1942c17e1844fdc74ea24" as const;
 export function consumeVerificationToken(input: ConsumeVerificationTokenInput): CommandRequest<ConsumeVerificationTokenInput, ConsumeVerificationTokenOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_consume_verification_token", inputSchemaHash: "99592bb05172d3a751ee82da7570c23ee9b5ab1da254c5b9cd57dc8132995eb0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeVerificationToken", planHash: CONSUME_VERIFICATION_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"verification_token_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"VerificationTokenAlreadyConsumed":{"fields":[],"kind":"record"},"VerificationTokenConsumed":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1},{"name":"verification_token_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"VerificationTokenExpired":{"fields":[],"kind":"record"},"VerificationTokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: ConsumeVerificationTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_consume_verification_token", inputSchemaHash: "99592bb05172d3a751ee82da7570c23ee9b5ab1da254c5b9cd57dc8132995eb0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeVerificationToken", planHash: CONSUME_VERIFICATION_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"verification_token_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"VerificationTokenAlreadyConsumed":{"fields":[],"kind":"record"},"VerificationTokenConsumed":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1},{"name":"verification_token_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"VerificationTokenExpired":{"fields":[],"kind":"record"},"VerificationTokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateUserAccountSessionsInput {
@@ -230,9 +277,27 @@ export interface CreateUserAccountSessionsInput {
 
 export type CreateUserAccountSessionsOutcome = { readonly outcome: "SignupUserExists" } | { readonly outcome: "SignupAccountExists" } | { readonly outcome: "SignupSessionExists" } | { readonly outcome: "UserAccountSessionsCreated" };
 
+export function isCreateUserAccountSessionsSignupUserExists(value: CreateUserAccountSessionsOutcome): value is Extract<CreateUserAccountSessionsOutcome, { readonly outcome: "SignupUserExists" }> {
+  return value.outcome === "SignupUserExists";
+}
+
+export function isCreateUserAccountSessionsSignupAccountExists(value: CreateUserAccountSessionsOutcome): value is Extract<CreateUserAccountSessionsOutcome, { readonly outcome: "SignupAccountExists" }> {
+  return value.outcome === "SignupAccountExists";
+}
+
+export function isCreateUserAccountSessionsSignupSessionExists(value: CreateUserAccountSessionsOutcome): value is Extract<CreateUserAccountSessionsOutcome, { readonly outcome: "SignupSessionExists" }> {
+  return value.outcome === "SignupSessionExists";
+}
+
+export function isCreateUserAccountSessionsUserAccountSessionsCreated(value: CreateUserAccountSessionsOutcome): value is Extract<CreateUserAccountSessionsOutcome, { readonly outcome: "UserAccountSessionsCreated" }> {
+  return value.outcome === "UserAccountSessionsCreated";
+}
+
 export const CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH = "17a6684beab818b87785af41090f036b3b18d01dbcdeb2e46b7daec9eb7e04c0" as const;
 export function createUserAccountSessions(input: CreateUserAccountSessionsInput): CommandRequest<CreateUserAccountSessionsInput, CreateUserAccountSessionsOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_create_user_account_sessions", inputSchemaHash: "ecc40870ced695867932de59871071b71532bd48403707a83c097c4516cb41c7" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUserAccountSessions", planHash: CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"signups","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"email","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"provider","schema":{"kind":"string"},"wireId":3},{"name":"account_id","schema":{"kind":"uuid"},"wireId":4},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"session_id","schema":{"kind":"uuid"},"wireId":6},{"name":"token_digest","schema":{"kind":"string"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8},{"name":"provider_account_id","schema":{"kind":"string"},"wireId":9}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"SignupAccountExists":{"fields":[],"kind":"record"},"SignupSessionExists":{"fields":[],"kind":"record"},"SignupUserExists":{"fields":[],"kind":"record"},"UserAccountSessionsCreated":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateUserAccountSessionsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_create_user_account_sessions", inputSchemaHash: "ecc40870ced695867932de59871071b71532bd48403707a83c097c4516cb41c7" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUserAccountSessions", planHash: CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"signups","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"email","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"provider","schema":{"kind":"string"},"wireId":3},{"name":"account_id","schema":{"kind":"uuid"},"wireId":4},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"session_id","schema":{"kind":"uuid"},"wireId":6},{"name":"token_digest","schema":{"kind":"string"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8},{"name":"provider_account_id","schema":{"kind":"string"},"wireId":9}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"SignupAccountExists":{"fields":[],"kind":"record"},"SignupSessionExists":{"fields":[],"kind":"record"},"SignupUserExists":{"fields":[],"kind":"record"},"UserAccountSessionsCreated":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface DeleteUsersInput {
@@ -243,9 +308,23 @@ export interface DeleteUsersInput {
 
 export type DeleteUsersOutcome = { readonly outcome: "DeleteUserMissing" } | { readonly outcome: "UserAccountsDeleted" } | { readonly outcome: "CascadeLimitExceeded" };
 
+export function isDeleteUsersDeleteUserMissing(value: DeleteUsersOutcome): value is Extract<DeleteUsersOutcome, { readonly outcome: "DeleteUserMissing" }> {
+  return value.outcome === "DeleteUserMissing";
+}
+
+export function isDeleteUsersUserAccountsDeleted(value: DeleteUsersOutcome): value is Extract<DeleteUsersOutcome, { readonly outcome: "UserAccountsDeleted" }> {
+  return value.outcome === "UserAccountsDeleted";
+}
+
+export function isDeleteUsersCascadeLimitExceeded(value: DeleteUsersOutcome): value is Extract<DeleteUsersOutcome, { readonly outcome: "CascadeLimitExceeded" }> {
+  return value.outcome === "CascadeLimitExceeded";
+}
+
 export const DELETE_USERS_PLAN_HASH = "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307" as const;
 export function deleteUsers(input: DeleteUsersInput): CommandRequest<DeleteUsersInput, DeleteUsersOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_delete_users", inputSchemaHash: "d205fb3d81b9876ce1f6447639440fec6aa78fcb7cb5165bd963e01301b90030" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "DeleteUsers", planHash: DELETE_USERS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"user_ids","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"CascadeLimitExceeded":{"fields":[],"kind":"record"},"DeleteUserMissing":{"fields":[],"kind":"record"},"UserAccountsDeleted":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: DeleteUsersInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_delete_users", inputSchemaHash: "d205fb3d81b9876ce1f6447639440fec6aa78fcb7cb5165bd963e01301b90030" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "DeleteUsers", planHash: DELETE_USERS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"user_ids","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"CascadeLimitExceeded":{"fields":[],"kind":"record"},"DeleteUserMissing":{"fields":[],"kind":"record"},"UserAccountsDeleted":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface IssueVerificationTokenInput {
@@ -259,9 +338,23 @@ export interface IssueVerificationTokenInput {
 
 export type IssueVerificationTokenOutcome = { readonly outcome: "VerificationTokenExists" } | { readonly outcome: "VerificationTokenIssued"; readonly issued_at: { readonly seconds: bigint; readonly nanos: number }; readonly issuance_id: string; readonly verification_token_id: string } | { readonly outcome: "VerificationTokenUserMissing" };
 
+export function isIssueVerificationTokenVerificationTokenExists(value: IssueVerificationTokenOutcome): value is Extract<IssueVerificationTokenOutcome, { readonly outcome: "VerificationTokenExists" }> {
+  return value.outcome === "VerificationTokenExists";
+}
+
+export function isIssueVerificationTokenVerificationTokenIssued(value: IssueVerificationTokenOutcome): value is Extract<IssueVerificationTokenOutcome, { readonly outcome: "VerificationTokenIssued" }> {
+  return value.outcome === "VerificationTokenIssued";
+}
+
+export function isIssueVerificationTokenVerificationTokenUserMissing(value: IssueVerificationTokenOutcome): value is Extract<IssueVerificationTokenOutcome, { readonly outcome: "VerificationTokenUserMissing" }> {
+  return value.outcome === "VerificationTokenUserMissing";
+}
+
 export const ISSUE_VERIFICATION_TOKEN_PLAN_HASH = "de7410e8a99c62a397b99b7d13c6c46616084f924281e0ab2623921541c37d43" as const;
 export function issueVerificationToken(input: IssueVerificationTokenInput): CommandRequest<IssueVerificationTokenInput, IssueVerificationTokenOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_issue_verification_token", inputSchemaHash: "0d89455f768b4c1f6b66451afe240efdb35ff336a75a099d00164fafd4980235" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueVerificationToken", planHash: ISSUE_VERIFICATION_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"token_digest","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"verification_token_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"VerificationTokenExists":{"fields":[],"kind":"record"},"VerificationTokenIssued":{"fields":[{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":1},{"name":"issuance_id","schema":{"kind":"uuid"},"wireId":2},{"name":"verification_token_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"VerificationTokenUserMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: IssueVerificationTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_issue_verification_token", inputSchemaHash: "0d89455f768b4c1f6b66451afe240efdb35ff336a75a099d00164fafd4980235" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueVerificationToken", planHash: ISSUE_VERIFICATION_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"token_digest","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"verification_token_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"VerificationTokenExists":{"fields":[],"kind":"record"},"VerificationTokenIssued":{"fields":[{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":1},{"name":"issuance_id","schema":{"kind":"uuid"},"wireId":2},{"name":"verification_token_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"VerificationTokenUserMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface RefreshSessionInput {
@@ -279,13 +372,35 @@ export const REFRESH_SESSION_SECRET_OUTPUTS = [
 
 export type RefreshSessionOutcome = { readonly outcome: "SessionRefreshed"; readonly session: { readonly state: string; readonly user_id: string; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly session_id: string; readonly token_digest: string; readonly organization_id: string } } | { readonly outcome: "RefreshSessionStale" } | { readonly outcome: "RefreshSessionExpired" } | { readonly outcome: "RefreshSessionMissing" } | { readonly outcome: "RefreshSessionRevoked" };
 
+export function isRefreshSessionSessionRefreshed(value: RefreshSessionOutcome): value is Extract<RefreshSessionOutcome, { readonly outcome: "SessionRefreshed" }> {
+  return value.outcome === "SessionRefreshed";
+}
+
+export function isRefreshSessionRefreshSessionStale(value: RefreshSessionOutcome): value is Extract<RefreshSessionOutcome, { readonly outcome: "RefreshSessionStale" }> {
+  return value.outcome === "RefreshSessionStale";
+}
+
+export function isRefreshSessionRefreshSessionExpired(value: RefreshSessionOutcome): value is Extract<RefreshSessionOutcome, { readonly outcome: "RefreshSessionExpired" }> {
+  return value.outcome === "RefreshSessionExpired";
+}
+
+export function isRefreshSessionRefreshSessionMissing(value: RefreshSessionOutcome): value is Extract<RefreshSessionOutcome, { readonly outcome: "RefreshSessionMissing" }> {
+  return value.outcome === "RefreshSessionMissing";
+}
+
+export function isRefreshSessionRefreshSessionRevoked(value: RefreshSessionOutcome): value is Extract<RefreshSessionOutcome, { readonly outcome: "RefreshSessionRevoked" }> {
+  return value.outcome === "RefreshSessionRevoked";
+}
+
 export function redactRefreshSessionOutcome(value: RefreshSessionOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof REFRESH_SESSION_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: REFRESH_SESSION_SECRET_OUTPUTS };
 }
 
 export const REFRESH_SESSION_PLAN_HASH = "507c4765d254e284d1ac6bf4ff043a1e4a99363ffac85581984045878f0db613" as const;
 export function refreshSession(input: RefreshSessionInput): CommandRequest<RefreshSessionInput, RefreshSessionOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_refresh_session", inputSchemaHash: "5acde7d9aa31c3336d9977db360cbf28e1edb1d1eb2b1a29cdc2044e50df0efe" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "RefreshSession", planHash: REFRESH_SESSION_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"session_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}},{"name":"successor_token_digest","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"RefreshSessionExpired":{"fields":[],"kind":"record"},"RefreshSessionMissing":{"fields":[],"kind":"record"},"RefreshSessionRevoked":{"fields":[],"kind":"record"},"RefreshSessionStale":{"fields":[],"kind":"record"},"SessionRefreshed":{"fields":[{"name":"session","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"session_id","schema":{"kind":"uuid"},"wireId":4},{"name":"token_digest","schema":{"kind":"string"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: RefreshSessionInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_refresh_session", inputSchemaHash: "5acde7d9aa31c3336d9977db360cbf28e1edb1d1eb2b1a29cdc2044e50df0efe" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "RefreshSession", planHash: REFRESH_SESSION_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"session_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}},{"name":"successor_token_digest","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"RefreshSessionExpired":{"fields":[],"kind":"record"},"RefreshSessionMissing":{"fields":[],"kind":"record"},"RefreshSessionRevoked":{"fields":[],"kind":"record"},"RefreshSessionStale":{"fields":[],"kind":"record"},"SessionRefreshed":{"fields":[{"name":"session","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"session_id","schema":{"kind":"uuid"},"wireId":4},{"name":"token_digest","schema":{"kind":"string"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface RevokeSessionInput {
@@ -302,40 +417,93 @@ export const REVOKE_SESSION_SECRET_OUTPUTS = [
 
 export type RevokeSessionOutcome = { readonly outcome: "SessionRevoked"; readonly session: { readonly state: string; readonly user_id: string; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly session_id: string; readonly token_digest: string; readonly organization_id: string } } | { readonly outcome: "RevokeSessionStale" } | { readonly outcome: "RevokeSessionMissing" } | { readonly outcome: "SessionAlreadyRevoked" };
 
+export function isRevokeSessionSessionRevoked(value: RevokeSessionOutcome): value is Extract<RevokeSessionOutcome, { readonly outcome: "SessionRevoked" }> {
+  return value.outcome === "SessionRevoked";
+}
+
+export function isRevokeSessionRevokeSessionStale(value: RevokeSessionOutcome): value is Extract<RevokeSessionOutcome, { readonly outcome: "RevokeSessionStale" }> {
+  return value.outcome === "RevokeSessionStale";
+}
+
+export function isRevokeSessionRevokeSessionMissing(value: RevokeSessionOutcome): value is Extract<RevokeSessionOutcome, { readonly outcome: "RevokeSessionMissing" }> {
+  return value.outcome === "RevokeSessionMissing";
+}
+
+export function isRevokeSessionSessionAlreadyRevoked(value: RevokeSessionOutcome): value is Extract<RevokeSessionOutcome, { readonly outcome: "SessionAlreadyRevoked" }> {
+  return value.outcome === "SessionAlreadyRevoked";
+}
+
 export function redactRevokeSessionOutcome(value: RevokeSessionOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof REVOKE_SESSION_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: REVOKE_SESSION_SECRET_OUTPUTS };
 }
 
 export const REVOKE_SESSION_PLAN_HASH = "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813" as const;
 export function revokeSession(input: RevokeSessionInput): CommandRequest<RevokeSessionInput, RevokeSessionOutcome> {
-  return { driverOperation: { name: "better_auth_acceptance_revoke_session", inputSchemaHash: "cbb8361967884077966a49854a9ff1aacc546494a87b782ce6914c97ac02156b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "RevokeSession", planHash: REVOKE_SESSION_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"session_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"RevokeSessionMissing":{"fields":[],"kind":"record"},"RevokeSessionStale":{"fields":[],"kind":"record"},"SessionAlreadyRevoked":{"fields":[],"kind":"record"},"SessionRevoked":{"fields":[{"name":"session","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"session_id","schema":{"kind":"uuid"},"wireId":4},{"name":"token_digest","schema":{"kind":"string"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: RevokeSessionInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "better_auth_acceptance_revoke_session", inputSchemaHash: "cbb8361967884077966a49854a9ff1aacc546494a87b782ce6914c97ac02156b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "RevokeSession", planHash: REVOKE_SESSION_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"session_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"RevokeSessionMissing":{"fields":[],"kind":"record"},"RevokeSessionStale":{"fields":[],"kind":"record"},"SessionAlreadyRevoked":{"fields":[],"kind":"record"},"SessionRevoked":{"fields":[{"name":"session","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"session_id","schema":{"kind":"uuid"},"wireId":4},{"name":"token_digest","schema":{"kind":"string"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class BetterAuthAcceptanceClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): BetterAuthAcceptanceClient {
+    return new BetterAuthAcceptanceClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): BetterAuthAcceptanceClient {
+    return new BetterAuthAcceptanceClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): BetterAuthAcceptanceClient {
+    return new BetterAuthAcceptanceClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async getSession(parameters: GetSessionParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetSessionResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getSession(parameters);
-    const result = await this.transport.executeNamedQuery<GetSessionParams, GetSessionResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetSessionParams, GetSessionResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async getSessionAfterCommit(parameters: GetSessionParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetSessionResult>> {
+    return this.getSession(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async getUser(parameters: GetUserParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetUserResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getUser(parameters);
-    const result = await this.transport.executeNamedQuery<GetUserParams, GetUserResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetUserParams, GetUserResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getUserAfterCommit(parameters: GetUserParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetUserResult>> {
+    return this.getUser(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async consumeVerificationToken(input: ConsumeVerificationTokenInput): Promise<TypedCommandResult<ConsumeVerificationTokenOutcome>> {
     const result = await this.transport.executeCommand<ConsumeVerificationTokenInput, ConsumeVerificationTokenOutcome>(consumeVerificationToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CONSUME_VERIFICATION_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -359,6 +527,9 @@ export class BetterAuthAcceptanceClient {
   public async createUserAccountSessions(input: CreateUserAccountSessionsInput): Promise<TypedCommandResult<CreateUserAccountSessionsOutcome>> {
     const result = await this.transport.executeCommand<CreateUserAccountSessionsInput, CreateUserAccountSessionsOutcome>(createUserAccountSessions(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -382,6 +553,9 @@ export class BetterAuthAcceptanceClient {
   public async deleteUsers(input: DeleteUsersInput): Promise<TypedCommandResult<DeleteUsersOutcome>> {
     const result = await this.transport.executeCommand<DeleteUsersInput, DeleteUsersOutcome>(deleteUsers(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== DELETE_USERS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -405,6 +579,9 @@ export class BetterAuthAcceptanceClient {
   public async issueVerificationToken(input: IssueVerificationTokenInput): Promise<TypedCommandResult<IssueVerificationTokenOutcome>> {
     const result = await this.transport.executeCommand<IssueVerificationTokenInput, IssueVerificationTokenOutcome>(issueVerificationToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ISSUE_VERIFICATION_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -428,6 +605,9 @@ export class BetterAuthAcceptanceClient {
   public async refreshSession(input: RefreshSessionInput): Promise<TypedCommandResult<RefreshSessionOutcome>> {
     const result = await this.transport.executeCommand<RefreshSessionInput, RefreshSessionOutcome>(refreshSession(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== REFRESH_SESSION_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "SessionRefreshed") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [
@@ -455,6 +635,9 @@ export class BetterAuthAcceptanceClient {
   public async revokeSession(input: RevokeSessionInput): Promise<TypedCommandResult<RevokeSessionOutcome>> {
     const result = await this.transport.executeCommand<RevokeSessionInput, RevokeSessionOutcome>(revokeSession(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== REVOKE_SESSION_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "SessionRevoked") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [

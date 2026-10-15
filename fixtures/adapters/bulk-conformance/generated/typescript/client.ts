@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -176,6 +177,14 @@ export interface GetFgaTupleTupleNotFound {
 
 export type GetFgaTupleResult = GetFgaTupleTupleFound | GetFgaTupleTupleNotFound;
 
+export function isGetFgaTupleTupleFound(value: GetFgaTupleResult): value is GetFgaTupleTupleFound {
+  return value.outcome === "TupleFound";
+}
+
+export function isGetFgaTupleTupleNotFound(value: GetFgaTupleResult): value is GetFgaTupleTupleNotFound {
+  return value.outcome === "TupleNotFound";
+}
+
 export function getFgaTuple(parameters: GetFgaTupleParams): NamedQueryRequest<GetFgaTupleParams, GetFgaTupleResult> {
   return { driverOperation: { name: "adapter_bulk_conformance_get_fga_tuple", inputSchemaHash: "d1ed12683e4b201d0275a92df8f2ca3800bf0d7659a2f7b87b092134d69555d2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetFgaTuple", planHash: GET_FGA_TUPLE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"tuple_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"TupleFound":{"fields":[{"name":"tuple","schema":{"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"tuple_id","schema":{"kind":"uuid"}},{"name":"object","schema":{"kind":"string"}},{"name":"relation","schema":{"kind":"string"}},{"name":"subject","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"TupleNotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -187,9 +196,23 @@ export interface CreateDocumentGraphsInput {
 
 export type CreateDocumentGraphsOutcome = { readonly outcome: "DocumentAlreadyExists" } | { readonly outcome: "DocumentGraphsCreated" } | { readonly outcome: "RevisionAlreadyExists" };
 
+export function isCreateDocumentGraphsDocumentAlreadyExists(value: CreateDocumentGraphsOutcome): value is Extract<CreateDocumentGraphsOutcome, { readonly outcome: "DocumentAlreadyExists" }> {
+  return value.outcome === "DocumentAlreadyExists";
+}
+
+export function isCreateDocumentGraphsDocumentGraphsCreated(value: CreateDocumentGraphsOutcome): value is Extract<CreateDocumentGraphsOutcome, { readonly outcome: "DocumentGraphsCreated" }> {
+  return value.outcome === "DocumentGraphsCreated";
+}
+
+export function isCreateDocumentGraphsRevisionAlreadyExists(value: CreateDocumentGraphsOutcome): value is Extract<CreateDocumentGraphsOutcome, { readonly outcome: "RevisionAlreadyExists" }> {
+  return value.outcome === "RevisionAlreadyExists";
+}
+
 export const CREATE_DOCUMENT_GRAPHS_PLAN_HASH = "fc646a4f5db5bd9683af3a1aa90e0c1a423a9a1c1d71562cbb5853a194ffe4b9" as const;
 export function createDocumentGraphs(input: CreateDocumentGraphsInput): CommandRequest<CreateDocumentGraphsInput, CreateDocumentGraphsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_create_document_graphs", inputSchemaHash: "052a7e3925121730604597dd5c2ed19afc02f0d7716fe42a86d005a29dfd46d5" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateDocumentGraphs", planHash: CREATE_DOCUMENT_GRAPHS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"documents","schema":{"kind":"list","maximum":64,"minimum":1,"value":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"title","schema":{"kind":"string"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"document_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentAlreadyExists":{"fields":[],"kind":"record"},"DocumentGraphsCreated":{"fields":[],"kind":"record"},"RevisionAlreadyExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateDocumentGraphsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_create_document_graphs", inputSchemaHash: "052a7e3925121730604597dd5c2ed19afc02f0d7716fe42a86d005a29dfd46d5" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateDocumentGraphs", planHash: CREATE_DOCUMENT_GRAPHS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"documents","schema":{"kind":"list","maximum":64,"minimum":1,"value":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"title","schema":{"kind":"string"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"document_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentAlreadyExists":{"fields":[],"kind":"record"},"DocumentGraphsCreated":{"fields":[],"kind":"record"},"RevisionAlreadyExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreatePipelinesWithStepsInput {
@@ -199,9 +222,23 @@ export interface CreatePipelinesWithStepsInput {
 
 export type CreatePipelinesWithStepsOutcome = { readonly outcome: "PipelinesCreated" } | { readonly outcome: "StepAlreadyExists" } | { readonly outcome: "PipelineAlreadyExists" };
 
+export function isCreatePipelinesWithStepsPipelinesCreated(value: CreatePipelinesWithStepsOutcome): value is Extract<CreatePipelinesWithStepsOutcome, { readonly outcome: "PipelinesCreated" }> {
+  return value.outcome === "PipelinesCreated";
+}
+
+export function isCreatePipelinesWithStepsStepAlreadyExists(value: CreatePipelinesWithStepsOutcome): value is Extract<CreatePipelinesWithStepsOutcome, { readonly outcome: "StepAlreadyExists" }> {
+  return value.outcome === "StepAlreadyExists";
+}
+
+export function isCreatePipelinesWithStepsPipelineAlreadyExists(value: CreatePipelinesWithStepsOutcome): value is Extract<CreatePipelinesWithStepsOutcome, { readonly outcome: "PipelineAlreadyExists" }> {
+  return value.outcome === "PipelineAlreadyExists";
+}
+
 export const CREATE_PIPELINES_WITH_STEPS_PLAN_HASH = "05393691334d1968513e5153f2a47d28ed564f51ae270d91986fe1bc6aa387ae" as const;
 export function createPipelinesWithSteps(input: CreatePipelinesWithStepsInput): CommandRequest<CreatePipelinesWithStepsInput, CreatePipelinesWithStepsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_create_pipelines_with_steps", inputSchemaHash: "8b0c9a105a674fef6d037d3d8b0174ea86d74fd5fb24b875bddc5c69e9ce6281" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePipelinesWithSteps", planHash: CREATE_PIPELINES_WITH_STEPS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"pipelines","schema":{"kind":"list","maximum":64,"minimum":1,"value":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"step_id","schema":{"kind":"uuid"},"wireId":2},{"name":"run_text","schema":{"kind":"string"},"wireId":3},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"PipelineAlreadyExists":{"fields":[],"kind":"record"},"PipelinesCreated":{"fields":[],"kind":"record"},"StepAlreadyExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreatePipelinesWithStepsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_create_pipelines_with_steps", inputSchemaHash: "8b0c9a105a674fef6d037d3d8b0174ea86d74fd5fb24b875bddc5c69e9ce6281" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePipelinesWithSteps", planHash: CREATE_PIPELINES_WITH_STEPS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"pipelines","schema":{"kind":"list","maximum":64,"minimum":1,"value":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"step_id","schema":{"kind":"uuid"},"wireId":2},{"name":"run_text","schema":{"kind":"string"},"wireId":3},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"PipelineAlreadyExists":{"fields":[],"kind":"record"},"PipelinesCreated":{"fields":[],"kind":"record"},"StepAlreadyExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateRestrictChildrenInput {
@@ -211,9 +248,23 @@ export interface CreateRestrictChildrenInput {
 
 export type CreateRestrictChildrenOutcome = { readonly outcome: "ChildAlreadyExists" } | { readonly outcome: "RestrictParentRequired" } | { readonly outcome: "RestrictChildrenCreated" };
 
+export function isCreateRestrictChildrenChildAlreadyExists(value: CreateRestrictChildrenOutcome): value is Extract<CreateRestrictChildrenOutcome, { readonly outcome: "ChildAlreadyExists" }> {
+  return value.outcome === "ChildAlreadyExists";
+}
+
+export function isCreateRestrictChildrenRestrictParentRequired(value: CreateRestrictChildrenOutcome): value is Extract<CreateRestrictChildrenOutcome, { readonly outcome: "RestrictParentRequired" }> {
+  return value.outcome === "RestrictParentRequired";
+}
+
+export function isCreateRestrictChildrenRestrictChildrenCreated(value: CreateRestrictChildrenOutcome): value is Extract<CreateRestrictChildrenOutcome, { readonly outcome: "RestrictChildrenCreated" }> {
+  return value.outcome === "RestrictChildrenCreated";
+}
+
 export const CREATE_RESTRICT_CHILDREN_PLAN_HASH = "01a982e5aaa6127009c8191dbe6420f5ab42557a672cd6c05f3bd0fabc0271d7" as const;
 export function createRestrictChildren(input: CreateRestrictChildrenInput): CommandRequest<CreateRestrictChildrenInput, CreateRestrictChildrenOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_create_restrict_children", inputSchemaHash: "68585052edd08ca0d4be2a6b57b5a6ebda2aa48020f6ef7c3aaeadae545f7398" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRestrictChildren", planHash: CREATE_RESTRICT_CHILDREN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"children","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"child_id","schema":{"kind":"uuid"},"wireId":1},{"name":"parent_id","schema":{"kind":"uuid"},"wireId":2},{"name":"tenant_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ChildAlreadyExists":{"fields":[],"kind":"record"},"RestrictChildrenCreated":{"fields":[],"kind":"record"},"RestrictParentRequired":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateRestrictChildrenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_create_restrict_children", inputSchemaHash: "68585052edd08ca0d4be2a6b57b5a6ebda2aa48020f6ef7c3aaeadae545f7398" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRestrictChildren", planHash: CREATE_RESTRICT_CHILDREN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"children","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"child_id","schema":{"kind":"uuid"},"wireId":1},{"name":"parent_id","schema":{"kind":"uuid"},"wireId":2},{"name":"tenant_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ChildAlreadyExists":{"fields":[],"kind":"record"},"RestrictChildrenCreated":{"fields":[],"kind":"record"},"RestrictParentRequired":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateRestrictParentsInput {
@@ -223,9 +274,19 @@ export interface CreateRestrictParentsInput {
 
 export type CreateRestrictParentsOutcome = { readonly outcome: "ParentAlreadyExists" } | { readonly outcome: "RestrictParentsCreated" };
 
+export function isCreateRestrictParentsParentAlreadyExists(value: CreateRestrictParentsOutcome): value is Extract<CreateRestrictParentsOutcome, { readonly outcome: "ParentAlreadyExists" }> {
+  return value.outcome === "ParentAlreadyExists";
+}
+
+export function isCreateRestrictParentsRestrictParentsCreated(value: CreateRestrictParentsOutcome): value is Extract<CreateRestrictParentsOutcome, { readonly outcome: "RestrictParentsCreated" }> {
+  return value.outcome === "RestrictParentsCreated";
+}
+
 export const CREATE_RESTRICT_PARENTS_PLAN_HASH = "a52db4ec80b4442fa410e0f561567bcc74c21b63b9d48d312392a9c1d8f84569" as const;
 export function createRestrictParents(input: CreateRestrictParentsInput): CommandRequest<CreateRestrictParentsInput, CreateRestrictParentsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_create_restrict_parents", inputSchemaHash: "eac1672e816cb6e468d102bcd57de1a896abe5eedce7bfaac93ea696c9869f1c" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRestrictParents", planHash: CREATE_RESTRICT_PARENTS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"parents","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"parent_id","schema":{"kind":"uuid"},"wireId":1},{"name":"tenant_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ParentAlreadyExists":{"fields":[],"kind":"record"},"RestrictParentsCreated":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateRestrictParentsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_create_restrict_parents", inputSchemaHash: "eac1672e816cb6e468d102bcd57de1a896abe5eedce7bfaac93ea696c9869f1c" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRestrictParents", planHash: CREATE_RESTRICT_PARENTS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"parents","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"fields":[{"name":"parent_id","schema":{"kind":"uuid"},"wireId":1},{"name":"tenant_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ParentAlreadyExists":{"fields":[],"kind":"record"},"RestrictParentsCreated":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface DeleteRestrictParentsInput {
@@ -236,9 +297,23 @@ export interface DeleteRestrictParentsInput {
 
 export type DeleteRestrictParentsOutcome = { readonly outcome: "ParentMissing" } | { readonly outcome: "ParentReferenced" } | { readonly outcome: "RestrictParentsDeleted" };
 
+export function isDeleteRestrictParentsParentMissing(value: DeleteRestrictParentsOutcome): value is Extract<DeleteRestrictParentsOutcome, { readonly outcome: "ParentMissing" }> {
+  return value.outcome === "ParentMissing";
+}
+
+export function isDeleteRestrictParentsParentReferenced(value: DeleteRestrictParentsOutcome): value is Extract<DeleteRestrictParentsOutcome, { readonly outcome: "ParentReferenced" }> {
+  return value.outcome === "ParentReferenced";
+}
+
+export function isDeleteRestrictParentsRestrictParentsDeleted(value: DeleteRestrictParentsOutcome): value is Extract<DeleteRestrictParentsOutcome, { readonly outcome: "RestrictParentsDeleted" }> {
+  return value.outcome === "RestrictParentsDeleted";
+}
+
 export const DELETE_RESTRICT_PARENTS_PLAN_HASH = "eb1c87ff834b675b1d248ca145913e209080fc3b4d69724205ce2b04366d2a2c" as const;
 export function deleteRestrictParents(input: DeleteRestrictParentsInput): CommandRequest<DeleteRestrictParentsInput, DeleteRestrictParentsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_delete_restrict_parents", inputSchemaHash: "a40c9880c2e15cec0633a016e2a969dbddcd53c8bd56c49d284eac9ea866f213" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "DeleteRestrictParents", planHash: DELETE_RESTRICT_PARENTS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"tenant_id","schema":{"kind":"uuid"}},{"name":"parent_ids","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ParentMissing":{"fields":[],"kind":"record"},"ParentReferenced":{"fields":[],"kind":"record"},"RestrictParentsDeleted":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: DeleteRestrictParentsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_delete_restrict_parents", inputSchemaHash: "a40c9880c2e15cec0633a016e2a969dbddcd53c8bd56c49d284eac9ea866f213" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "DeleteRestrictParents", planHash: DELETE_RESTRICT_PARENTS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"tenant_id","schema":{"kind":"uuid"}},{"name":"parent_ids","schema":{"kind":"list","maximum":8,"minimum":1,"value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ParentMissing":{"fields":[],"kind":"record"},"ParentReferenced":{"fields":[],"kind":"record"},"RestrictParentsDeleted":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface LogMetricsInput {
@@ -249,9 +324,19 @@ export interface LogMetricsInput {
 
 export type LogMetricsOutcome = { readonly outcome: "MetricsLogged"; readonly revision: bigint } | { readonly outcome: "MetricAlreadyExists" };
 
+export function isLogMetricsMetricsLogged(value: LogMetricsOutcome): value is Extract<LogMetricsOutcome, { readonly outcome: "MetricsLogged" }> {
+  return value.outcome === "MetricsLogged";
+}
+
+export function isLogMetricsMetricAlreadyExists(value: LogMetricsOutcome): value is Extract<LogMetricsOutcome, { readonly outcome: "MetricAlreadyExists" }> {
+  return value.outcome === "MetricAlreadyExists";
+}
+
 export const LOG_METRICS_PLAN_HASH = "bcda9b60dca5d73af3e42b5d0c5309406f4ff0165044957c57433930f5b94684" as const;
 export function logMetrics(input: LogMetricsInput): CommandRequest<LogMetricsInput, LogMetricsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_log_metrics", inputSchemaHash: "9207e4fadddd765165c98994d90a96a63070bbb865a6dff5230698c7019fd78a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "LogMetrics", planHash: LOG_METRICS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"metrics","schema":{"aggregateCanonicalElementBytes":1048576,"kind":"list","maximum":1000,"minimum":1,"value":{"fields":[{"name":"name","schema":{"kind":"string","maximumBytes":128},"wireId":1},{"name":"step","schema":{"kind":"i64"},"wireId":2},{"name":"metric_id","schema":{"kind":"uuid"},"wireId":3},{"name":"value_micros","schema":{"kind":"i64"},"wireId":4},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MetricAlreadyExists":{"fields":[],"kind":"record"},"MetricsLogged":{"fields":[{"name":"revision","schema":{"kind":"u64"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: LogMetricsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_log_metrics", inputSchemaHash: "9207e4fadddd765165c98994d90a96a63070bbb865a6dff5230698c7019fd78a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "LogMetrics", planHash: LOG_METRICS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"metrics","schema":{"aggregateCanonicalElementBytes":1048576,"kind":"list","maximum":1000,"minimum":1,"value":{"fields":[{"name":"name","schema":{"kind":"string","maximumBytes":128},"wireId":1},{"name":"step","schema":{"kind":"i64"},"wireId":2},{"name":"metric_id","schema":{"kind":"uuid"},"wireId":3},{"name":"value_micros","schema":{"kind":"i64"},"wireId":4},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MetricAlreadyExists":{"fields":[],"kind":"record"},"MetricsLogged":{"fields":[{"name":"revision","schema":{"kind":"u64"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface WritePolicyMutationsInput {
@@ -261,9 +346,19 @@ export interface WritePolicyMutationsInput {
 
 export type WritePolicyMutationsOutcome = { readonly outcome: "PolicyMutationExists" } | { readonly outcome: "PolicyMutationsWritten" };
 
+export function isWritePolicyMutationsPolicyMutationExists(value: WritePolicyMutationsOutcome): value is Extract<WritePolicyMutationsOutcome, { readonly outcome: "PolicyMutationExists" }> {
+  return value.outcome === "PolicyMutationExists";
+}
+
+export function isWritePolicyMutationsPolicyMutationsWritten(value: WritePolicyMutationsOutcome): value is Extract<WritePolicyMutationsOutcome, { readonly outcome: "PolicyMutationsWritten" }> {
+  return value.outcome === "PolicyMutationsWritten";
+}
+
 export const WRITE_POLICY_MUTATIONS_PLAN_HASH = "b1e8abbd14d897069fdcb322f3ad39c2fcb57c0ac8e1fe7fd182cb3a9eec2cf9" as const;
 export function writePolicyMutations(input: WritePolicyMutationsInput): CommandRequest<WritePolicyMutationsInput, WritePolicyMutationsOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_write_policy_mutations", inputSchemaHash: "ba2997d742db78a7dabca330fce3c282480b6c02b32397b658868aba87fb1e53" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "WritePolicyMutations", planHash: WRITE_POLICY_MUTATIONS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"mutations","schema":{"aggregateCanonicalElementBytes":900000,"kind":"list","maximum":100,"minimum":1,"value":{"fields":[{"name":"context","schema":{"kind":"optional","value":{"kind":"bytes","maximumBytes":524288}},"wireId":1},{"name":"relation","schema":{"kind":"string","maximumBytes":64},"wireId":2},{"name":"mutation_id","schema":{"kind":"uuid"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"PolicyMutationExists":{"fields":[],"kind":"record"},"PolicyMutationsWritten":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: WritePolicyMutationsInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_write_policy_mutations", inputSchemaHash: "ba2997d742db78a7dabca330fce3c282480b6c02b32397b658868aba87fb1e53" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "WritePolicyMutations", planHash: WRITE_POLICY_MUTATIONS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"mutations","schema":{"aggregateCanonicalElementBytes":900000,"kind":"list","maximum":100,"minimum":1,"value":{"fields":[{"name":"context","schema":{"kind":"optional","value":{"kind":"bytes","maximumBytes":524288}},"wireId":1},{"name":"relation","schema":{"kind":"string","maximumBytes":64},"wireId":2},{"name":"mutation_id","schema":{"kind":"uuid"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"PolicyMutationExists":{"fields":[],"kind":"record"},"PolicyMutationsWritten":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface WriteTuplesInput {
@@ -273,29 +368,69 @@ export interface WriteTuplesInput {
 
 export type WriteTuplesOutcome = { readonly outcome: "TuplesWritten" } | { readonly outcome: "TupleAlreadyExists" };
 
+export function isWriteTuplesTuplesWritten(value: WriteTuplesOutcome): value is Extract<WriteTuplesOutcome, { readonly outcome: "TuplesWritten" }> {
+  return value.outcome === "TuplesWritten";
+}
+
+export function isWriteTuplesTupleAlreadyExists(value: WriteTuplesOutcome): value is Extract<WriteTuplesOutcome, { readonly outcome: "TupleAlreadyExists" }> {
+  return value.outcome === "TupleAlreadyExists";
+}
+
 export const WRITE_TUPLES_PLAN_HASH = "e78d8361f05ae0574e887e38d00efb731569f70fa236a2d57022c1bdc8bb349f" as const;
 export function writeTuples(input: WriteTuplesInput): CommandRequest<WriteTuplesInput, WriteTuplesOutcome> {
-  return { driverOperation: { name: "adapter_bulk_conformance_write_tuples", inputSchemaHash: "c4742fe683af805b75ea61b9be6c045adeba7ae9f1038ca7bb4812bac8149aa9" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "WriteTuples", planHash: WRITE_TUPLES_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"tuples","schema":{"kind":"list","maximum":128,"minimum":1,"value":{"fields":[{"name":"object","schema":{"kind":"string"},"wireId":1},{"name":"subject","schema":{"kind":"string"},"wireId":2},{"name":"relation","schema":{"kind":"string"},"wireId":3},{"name":"store_id","schema":{"kind":"uuid"},"wireId":4},{"name":"tuple_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TupleAlreadyExists":{"fields":[],"kind":"record"},"TuplesWritten":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: WriteTuplesInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_bulk_conformance_write_tuples", inputSchemaHash: "c4742fe683af805b75ea61b9be6c045adeba7ae9f1038ca7bb4812bac8149aa9" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "WriteTuples", planHash: WRITE_TUPLES_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"tuples","schema":{"kind":"list","maximum":128,"minimum":1,"value":{"fields":[{"name":"object","schema":{"kind":"string"},"wireId":1},{"name":"subject","schema":{"kind":"string"},"wireId":2},{"name":"relation","schema":{"kind":"string"},"wireId":3},{"name":"store_id","schema":{"kind":"uuid"},"wireId":4},{"name":"tuple_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"}}},{"name":"request_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TupleAlreadyExists":{"fields":[],"kind":"record"},"TuplesWritten":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AdapterBulkConformanceClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AdapterBulkConformanceClient {
+    return new AdapterBulkConformanceClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): AdapterBulkConformanceClient {
+    return new AdapterBulkConformanceClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): AdapterBulkConformanceClient {
+    return new AdapterBulkConformanceClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async getFgaTuple(parameters: GetFgaTupleParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetFgaTupleResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getFgaTuple(parameters);
-    const result = await this.transport.executeNamedQuery<GetFgaTupleParams, GetFgaTupleResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetFgaTupleParams, GetFgaTupleResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getFgaTupleAfterCommit(parameters: GetFgaTupleParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetFgaTupleResult>> {
+    return this.getFgaTuple(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async createDocumentGraphs(input: CreateDocumentGraphsInput): Promise<TypedCommandResult<CreateDocumentGraphsOutcome>> {
     const result = await this.transport.executeCommand<CreateDocumentGraphsInput, CreateDocumentGraphsOutcome>(createDocumentGraphs(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_DOCUMENT_GRAPHS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -319,6 +454,9 @@ export class AdapterBulkConformanceClient {
   public async createPipelinesWithSteps(input: CreatePipelinesWithStepsInput): Promise<TypedCommandResult<CreatePipelinesWithStepsOutcome>> {
     const result = await this.transport.executeCommand<CreatePipelinesWithStepsInput, CreatePipelinesWithStepsOutcome>(createPipelinesWithSteps(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_PIPELINES_WITH_STEPS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -342,6 +480,9 @@ export class AdapterBulkConformanceClient {
   public async createRestrictChildren(input: CreateRestrictChildrenInput): Promise<TypedCommandResult<CreateRestrictChildrenOutcome>> {
     const result = await this.transport.executeCommand<CreateRestrictChildrenInput, CreateRestrictChildrenOutcome>(createRestrictChildren(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_RESTRICT_CHILDREN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -365,6 +506,9 @@ export class AdapterBulkConformanceClient {
   public async createRestrictParents(input: CreateRestrictParentsInput): Promise<TypedCommandResult<CreateRestrictParentsOutcome>> {
     const result = await this.transport.executeCommand<CreateRestrictParentsInput, CreateRestrictParentsOutcome>(createRestrictParents(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_RESTRICT_PARENTS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -388,6 +532,9 @@ export class AdapterBulkConformanceClient {
   public async deleteRestrictParents(input: DeleteRestrictParentsInput): Promise<TypedCommandResult<DeleteRestrictParentsOutcome>> {
     const result = await this.transport.executeCommand<DeleteRestrictParentsInput, DeleteRestrictParentsOutcome>(deleteRestrictParents(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== DELETE_RESTRICT_PARENTS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -411,6 +558,9 @@ export class AdapterBulkConformanceClient {
   public async logMetrics(input: LogMetricsInput): Promise<TypedCommandResult<LogMetricsOutcome>> {
     const result = await this.transport.executeCommand<LogMetricsInput, LogMetricsOutcome>(logMetrics(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== LOG_METRICS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -434,6 +584,9 @@ export class AdapterBulkConformanceClient {
   public async writePolicyMutations(input: WritePolicyMutationsInput): Promise<TypedCommandResult<WritePolicyMutationsOutcome>> {
     const result = await this.transport.executeCommand<WritePolicyMutationsInput, WritePolicyMutationsOutcome>(writePolicyMutations(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== WRITE_POLICY_MUTATIONS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -457,6 +610,9 @@ export class AdapterBulkConformanceClient {
   public async writeTuples(input: WriteTuplesInput): Promise<TypedCommandResult<WriteTuplesOutcome>> {
     const result = await this.transport.executeCommand<WriteTuplesInput, WriteTuplesOutcome>(writeTuples(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== WRITE_TUPLES_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

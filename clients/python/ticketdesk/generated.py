@@ -116,6 +116,12 @@ class BoardPage200Found:
     tickets: tuple[BoardPage200FoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> BoardPage200Found:
+        return self
+
 BoardPage200Result: TypeAlias = BoardPage200Found
 
 def _decode_board_page200_compact(value: object) -> BoardPage200Result:
@@ -160,6 +166,12 @@ class BoardPage450FoundTickets:
 class BoardPage450Found:
     tickets: tuple[BoardPage450FoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> BoardPage450Found:
+        return self
 
 BoardPage450Result: TypeAlias = BoardPage450Found
 
@@ -206,6 +218,12 @@ class BoardPage50Found:
     tickets: tuple[BoardPage50FoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> BoardPage50Found:
+        return self
+
 BoardPage50Result: TypeAlias = BoardPage50Found
 
 def _decode_board_page50_compact(value: object) -> BoardPage50Result:
@@ -250,9 +268,27 @@ class GetTicketFound:
     ticket: GetTicketFoundTicket
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetTicketFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTicketNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetTicketFound:
+        raise ValueError("expected GetTicket outcome found")
 
 GetTicketResult: TypeAlias = GetTicketFound | GetTicketNotFound
 
@@ -274,9 +310,27 @@ class GetUserFound:
     user: GetUserFoundUser
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetUserFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetUserFound:
+        raise ValueError("expected GetUser outcome found")
 
 GetUserResult: TypeAlias = GetUserFound | GetUserNotFound
 
@@ -300,6 +354,12 @@ class ListCommentsFoundComments:
 class ListCommentsFound:
     comments: tuple[ListCommentsFoundComments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListCommentsFound:
+        return self
 
 ListCommentsResult: TypeAlias = ListCommentsFound
 
@@ -328,6 +388,12 @@ class ListTicketsFound:
     tickets: tuple[ListTicketsFoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListTicketsFound:
+        return self
+
 ListTicketsResult: TypeAlias = ListTicketsFound
 
 LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "f4b6ab2de9ae63b720f94de2f2683ac129d2c23ded3e2d8885b133c9aa77523c"
@@ -355,6 +421,12 @@ class ListTicketsByAssigneeFound:
     tickets: tuple[ListTicketsByAssigneeFoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListTicketsByAssigneeFound:
+        return self
+
 ListTicketsByAssigneeResult: TypeAlias = ListTicketsByAssigneeFound
 
 PROJECT_MEMBERS_QUERY_PLAN_HASH: Final[str] = "d815e682a4d5c6430a3058ce49f1a31f9e68a513d589b0d1268c1a5003006050"
@@ -374,6 +446,12 @@ class ProjectMembersFoundMembers:
 class ProjectMembersFound:
     members: tuple[ProjectMembersFoundMembers, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ProjectMembersFound:
+        return self
 
 ProjectMembersResult: TypeAlias = ProjectMembersFound
 
@@ -403,9 +481,27 @@ class ProjectSummaryFound:
     recent_tickets: tuple[ProjectSummaryFoundRecentTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> ProjectSummaryFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectSummaryNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ProjectSummaryFound:
+        raise ValueError("expected ProjectSummary outcome found")
 
 ProjectSummaryResult: TypeAlias = ProjectSummaryFound | ProjectSummaryNotFound
 
@@ -468,13 +564,49 @@ class TicketPageFound:
     labels: tuple[TicketPageFoundLabels, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def is_integrity_failure(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> TicketPageFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
 
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def is_integrity_failure(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> TicketPageFound:
+        raise ValueError("expected TicketPage outcome found")
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageIntegrityFailure:
     outcome: Literal["IntegrityFailure"] = field(default="IntegrityFailure", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def is_integrity_failure(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> TicketPageFound:
+        raise ValueError("expected TicketPage outcome found")
 
 TicketPageResult: TypeAlias = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure
 
@@ -538,13 +670,49 @@ class TicketPagePagedFound:
     labels: tuple[TicketPagePagedFoundLabels, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def is_integrity_failure(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> TicketPagePagedFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPagePagedNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
 
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def is_integrity_failure(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> TicketPagePagedFound:
+        raise ValueError("expected TicketPagePaged outcome found")
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPagePagedIntegrityFailure:
     outcome: Literal["IntegrityFailure"] = field(default="IntegrityFailure", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def is_integrity_failure(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> TicketPagePagedFound:
+        raise ValueError("expected TicketPagePaged outcome found")
 
 TicketPagePagedResult: TypeAlias = TicketPagePagedFound | TicketPagePagedNotFound | TicketPagePagedIntegrityFailure
 
@@ -571,6 +739,12 @@ class TicketQueueFound:
     tickets: tuple[TicketQueueFoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> TicketQueueFound:
+        return self
+
 TicketQueueResult: TypeAlias = TicketQueueFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -578,7 +752,7 @@ class AddProjectMemberInput:
     role: str
     user_id: UUID
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 ADD_PROJECT_MEMBER_PLAN_HASH: Final[str] = "b5580aa5ee2e33ca210d57241e5b8e070bf7d15c8049ec142bd9e879896a3923"
@@ -587,10 +761,34 @@ class AddProjectMemberCreated:
     member: ProjectMember
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberUserMissing:
     user_id: UUID
     outcome: Literal["UserMissing"] = field(default="UserMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return True
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberMemberExists:
@@ -598,10 +796,34 @@ class AddProjectMemberMemberExists:
     project_id: UUID
     outcome: Literal["MemberExists"] = field(default="MemberExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
 
 AddProjectMemberOutcome: TypeAlias = AddProjectMemberCreated | AddProjectMemberUserMissing | AddProjectMemberMemberExists | AddProjectMemberProjectMissing
 
@@ -609,7 +831,7 @@ AddProjectMemberOutcome: TypeAlias = AddProjectMemberCreated | AddProjectMemberU
 class AttachLabelInput:
     label_id: UUID
     ticket_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 ATTACH_LABEL_PLAN_HASH: Final[str] = "840405fa27f06c0d2193464e5f72f775bb51478ecf7e5e1dfc0dded4cdd3b040"
@@ -618,21 +840,69 @@ class AttachLabelCreated:
     link: TicketLabel
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelLinkExists:
     label_id: UUID
     ticket_id: UUID
     outcome: Literal["LinkExists"] = field(default="LinkExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return True
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelLabelMissing:
     label_id: UUID
     outcome: Literal["LabelMissing"] = field(default="LabelMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 AttachLabelOutcome: TypeAlias = AttachLabelCreated | AttachLabelLinkExists | AttachLabelLabelMissing | AttachLabelTicketMissing
 
@@ -642,7 +912,7 @@ class CloseTicketWithCommentInput:
     author_id: UUID
     ticket_id: UUID
     comment_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CLOSE_TICKET_WITH_COMMENT_PLAN_HASH: Final[str] = "9f1621a70ade76a7403f1003ac742af47f1f2af431b779e118e5466dbd2b11ee"
@@ -652,25 +922,100 @@ class CloseTicketWithCommentClosed:
     comment: Comment
     outcome: Literal["Closed"] = field(default="Closed", init=False)
 
+    def is_closed(self) -> bool:
+        return True
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentTicketGone:
     ticket_id: UUID
     outcome: Literal["TicketGone"] = field(default="TicketGone", init=False)
+
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return True
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentAuthorMissing:
     user_id: UUID
     outcome: Literal["AuthorMissing"] = field(default="AuthorMissing", init=False)
 
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return True
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentCommentExists:
     comment_id: UUID
     outcome: Literal["CommentExists"] = field(default="CommentExists", init=False)
 
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 CloseTicketWithCommentOutcome: TypeAlias = CloseTicketWithCommentClosed | CloseTicketWithCommentTicketGone | CloseTicketWithCommentAuthorMissing | CloseTicketWithCommentCommentExists | CloseTicketWithCommentTicketMissing
 
@@ -680,7 +1025,7 @@ class CreateCommentInput:
     author_id: UUID
     ticket_id: UUID
     comment_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_COMMENT_PLAN_HASH: Final[str] = "8405d272b6acafdeeb83fb146fa23da93cf6e9d51f8c0de83ddc8f2c914af190"
@@ -689,20 +1034,68 @@ class CreateCommentCreated:
     comment: Comment
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentAuthorMissing:
     user_id: UUID
     outcome: Literal["AuthorMissing"] = field(default="AuthorMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return True
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentCommentExists:
     comment_id: UUID
     outcome: Literal["CommentExists"] = field(default="CommentExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 CreateCommentOutcome: TypeAlias = CreateCommentCreated | CreateCommentAuthorMissing | CreateCommentCommentExists | CreateCommentTicketMissing
 
@@ -710,7 +1103,7 @@ CreateCommentOutcome: TypeAlias = CreateCommentCreated | CreateCommentAuthorMiss
 class CreateLabelInput:
     name: str
     label_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_LABEL_PLAN_HASH: Final[str] = "892dab3cb229074f5ebcd0723ccfae3eeaa2a011145b45cedaaae36418ac1c39"
@@ -719,22 +1112,49 @@ class CreateLabelCreated:
     label: Label
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_label_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateLabelLabelExists:
     label_id: UUID
     outcome: Literal["LabelExists"] = field(default="LabelExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_label_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateLabelOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_label_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
+
 CreateLabelOutcome: TypeAlias = CreateLabelCreated | CreateLabelLabelExists | CreateLabelOrganizationMissing
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateOrganizationInput:
     name: str
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_ORGANIZATION_PLAN_HASH: Final[str] = "5a09375e213c58bf4fa696ce35ea457f0015a713a3ec3881c125f845eb0d00de"
@@ -743,10 +1163,22 @@ class CreateOrganizationCreated:
     organization: Organization
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_organization_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateOrganizationOrganizationExists:
     organization_id: UUID
     outcome: Literal["OrganizationExists"] = field(default="OrganizationExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_organization_exists(self) -> bool:
+        return True
 
 CreateOrganizationOutcome: TypeAlias = CreateOrganizationCreated | CreateOrganizationOrganizationExists
 
@@ -754,7 +1186,7 @@ CreateOrganizationOutcome: TypeAlias = CreateOrganizationCreated | CreateOrganiz
 class CreateProjectInput:
     name: str
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_PROJECT_PLAN_HASH: Final[str] = "370937f4ce5964832f548473cc9064eae04d49ddd973a14570285699d4cfd1ca"
@@ -763,15 +1195,42 @@ class CreateProjectCreated:
     project: Project
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_project_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateProjectProjectExists:
     project_id: UUID
     outcome: Literal["ProjectExists"] = field(default="ProjectExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_project_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateProjectOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_project_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
 
 CreateProjectOutcome: TypeAlias = CreateProjectCreated | CreateProjectProjectExists | CreateProjectOrganizationMissing
 
@@ -783,7 +1242,7 @@ class CreateTicketInput:
     project_id: UUID
     assignee_id: UUID
     reporter_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_TICKET_PLAN_HASH: Final[str] = "70afcc152fb137e09800f388522834346678cc56b535f0599322a54b3839bf0a"
@@ -792,25 +1251,100 @@ class CreateTicketCreated:
     ticket: Ticket
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketTicketExists:
     ticket_id: UUID
     outcome: Literal["TicketExists"] = field(default="TicketExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketAssigneeMissing:
     user_id: UUID
     outcome: Literal["AssigneeMissing"] = field(default="AssigneeMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return True
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketReporterMissing:
     user_id: UUID
     outcome: Literal["ReporterMissing"] = field(default="ReporterMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return True
 
 CreateTicketOutcome: TypeAlias = CreateTicketCreated | CreateTicketTicketExists | CreateTicketProjectMissing | CreateTicketAssigneeMissing | CreateTicketReporterMissing
 
@@ -819,7 +1353,7 @@ class CreateUserInput:
     email: str
     user_id: UUID
     display_name: str
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_USER_PLAN_HASH: Final[str] = "747283ef27e6acb8c461b98f99c43921aa664519a226d78012f0583fdeb04cad"
@@ -828,15 +1362,42 @@ class CreateUserCreated:
     user: AppUser
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_user_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserUserExists:
     user_id: UUID
     outcome: Literal["UserExists"] = field(default="UserExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
 
 CreateUserOutcome: TypeAlias = CreateUserCreated | CreateUserUserExists | CreateUserOrganizationMissing
 
@@ -849,7 +1410,7 @@ class OpenTicketWithLabelsInput:
     project_id: UUID
     assignee_id: UUID
     reporter_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 OPEN_TICKET_WITH_LABELS_PLAN_HASH: Final[str] = "7d3897e751406ac440f2a8b4a0b58c1c91a8d2c490a3513c0f2107716d4c81d2"
@@ -860,36 +1421,183 @@ class OpenTicketWithLabelsCreated:
     second_link: TicketLabel
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsLinkExists:
     label_id: UUID
     ticket_id: UUID
     outcome: Literal["LinkExists"] = field(default="LinkExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return True
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsLabelMissing:
     label_id: UUID
     outcome: Literal["LabelMissing"] = field(default="LabelMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return True
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsTicketExists:
     ticket_id: UUID
     outcome: Literal["TicketExists"] = field(default="TicketExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsAssigneeMissing:
     user_id: UUID
     outcome: Literal["AssigneeMissing"] = field(default="AssigneeMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return True
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsReporterMissing:
     user_id: UUID
     outcome: Literal["ReporterMissing"] = field(default="ReporterMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return True
 
 OpenTicketWithLabelsOutcome: TypeAlias = OpenTicketWithLabelsCreated | OpenTicketWithLabelsLinkExists | OpenTicketWithLabelsLabelMissing | OpenTicketWithLabelsTicketExists | OpenTicketWithLabelsProjectMissing | OpenTicketWithLabelsAssigneeMissing | OpenTicketWithLabelsReporterMissing
 
@@ -900,7 +1608,7 @@ class SwapMemberRolesInput:
     user_a: UUID
     user_b: UUID
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 SWAP_MEMBER_ROLES_PLAN_HASH: Final[str] = "e7cdb24b1e827a4771bd4dba403b4a81691e562a52b0a2cc2430e1ddbe224a20"
@@ -910,24 +1618,69 @@ class SwapMemberRolesSwapped:
     member_b: ProjectMember
     outcome: Literal["Swapped"] = field(default="Swapped", init=False)
 
+    def is_swapped(self) -> bool:
+        return True
+
+    def is_member_amissing(self) -> bool:
+        return False
+
+    def is_member_bmissing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SwapMemberRolesMemberAMissing:
     user_id: UUID
     outcome: Literal["MemberAMissing"] = field(default="MemberAMissing", init=False)
+
+    def is_swapped(self) -> bool:
+        return False
+
+    def is_member_amissing(self) -> bool:
+        return True
+
+    def is_member_bmissing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SwapMemberRolesMemberBMissing:
     user_id: UUID
     outcome: Literal["MemberBMissing"] = field(default="MemberBMissing", init=False)
 
+    def is_swapped(self) -> bool:
+        return False
+
+    def is_member_amissing(self) -> bool:
+        return False
+
+    def is_member_bmissing(self) -> bool:
+        return True
+
 SwapMemberRolesOutcome: TypeAlias = SwapMemberRolesSwapped | SwapMemberRolesMemberAMissing | SwapMemberRolesMemberBMissing
 
 class TicketDeskClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> TicketDeskClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> TicketDeskClient:
+        return TicketDeskClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> TicketDeskClient:
+        return TicketDeskClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def board_page200(self, parameters: BoardPage200Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -940,7 +1693,12 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page200_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    def board_page200_after_commit(self, parameters: BoardPage200Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
+        return self.board_page200(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def board_page450(self, parameters: BoardPage450Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -953,7 +1711,12 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page450_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    def board_page450_after_commit(self, parameters: BoardPage450Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
+        return self.board_page450(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -966,7 +1729,12 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page50_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    def board_page50_after_commit(self, parameters: BoardPage50Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        return self.board_page50(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -979,7 +1747,12 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_ticket_after_commit(self, parameters: GetTicketParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        return self.get_ticket(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -992,6 +1765,9 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_user_after_commit(self, parameters: GetUserParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        return self.get_user(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1002,6 +1778,8 @@ class TicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1013,6 +1791,25 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_comments_after_commit(self, parameters: ListCommentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        return self.list_comments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def list_comments_pages(self, parameters: ListCommentsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListCommentsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListCommentsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListCommentsParams(organization_id=parameters.organization_id, ticket_id=parameters.ticket_id, after=None, limit=parameters.limit)
+            page = self.list_comments(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1023,6 +1820,8 @@ class TicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1034,6 +1833,25 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_tickets_after_commit(self, parameters: ListTicketsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        return self.list_tickets(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def list_tickets_pages(self, parameters: ListTicketsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListTicketsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListTicketsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListTicketsParams(organization_id=parameters.organization_id, project_id=parameters.project_id, statuses=parameters.statuses, after=None, limit=parameters.limit)
+            page = self.list_tickets(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1044,6 +1862,8 @@ class TicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1055,6 +1875,25 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_tickets_by_assignee_after_commit(self, parameters: ListTicketsByAssigneeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        return self.list_tickets_by_assignee(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def list_tickets_by_assignee_pages(self, parameters: ListTicketsByAssigneeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListTicketsByAssigneeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListTicketsByAssigneeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListTicketsByAssigneeParams(organization_id=parameters.organization_id, assignee_id=parameters.assignee_id, statuses=parameters.statuses, after=None, limit=parameters.limit)
+            page = self.list_tickets_by_assignee(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def project_members(self, parameters: ProjectMembersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1063,6 +1902,8 @@ class TicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1074,7 +1915,28 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def project_members_after_commit(self, parameters: ProjectMembersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
+        return self.project_members(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def project_members_pages(self, parameters: ProjectMembersParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ProjectMembersResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ProjectMembersResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ProjectMembersParams(organization_id=parameters.organization_id, project_id=parameters.project_id, after=None)
+            page = self.project_members(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def project_summary(self, parameters: ProjectSummaryParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectSummaryResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1087,7 +1949,12 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def project_summary_after_commit(self, parameters: ProjectSummaryParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectSummaryResult]:
+        return self.project_summary(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def ticket_page(self, parameters: TicketPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1101,6 +1968,9 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def ticket_page_after_commit(self, parameters: TicketPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageResult]:
+        return self.ticket_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.comments_after
@@ -1109,6 +1979,8 @@ class TicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("comments_after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1122,7 +1994,28 @@ class TicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def ticket_page_paged_after_commit(self, parameters: TicketPagePagedParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        return self.ticket_page_paged(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def ticket_page_paged_pages(self, parameters: TicketPagePagedParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[TicketPagePagedResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.comments_after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.comments_after
+        pages: list[TypedQueryResult[TicketPagePagedResult]] = []
+        for _ in range(max_pages):
+            page_parameters = TicketPagePagedParams(organization_id=parameters.organization_id, ticket_id=parameters.ticket_id, comments_after=None)
+            page = self.ticket_page_paged(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1133,6 +2026,9 @@ class TicketDeskClient:
             "Found": TicketQueueFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def ticket_queue_after_commit(self, parameters: TicketQueueParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        return self.ticket_queue(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def add_project_member(self, input: AddProjectMemberInput) -> TypedCommandResult[AddProjectMemberOutcome]:
         raw = self._transport._execute_command(
@@ -1146,7 +2042,10 @@ class TicketDeskClient:
             "MemberExists": AddProjectMemberMemberExists,
             "ProjectMissing": AddProjectMemberProjectMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AddProjectMemberOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def add_project_member_batch(
         self, inputs: Sequence[AddProjectMemberInput], options: CommandBatchOptions,
@@ -1166,7 +2065,10 @@ class TicketDeskClient:
             "LabelMissing": AttachLabelLabelMissing,
             "TicketMissing": AttachLabelTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttachLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def attach_label_batch(
         self, inputs: Sequence[AttachLabelInput], options: CommandBatchOptions,
@@ -1187,7 +2089,10 @@ class TicketDeskClient:
             "CommentExists": CloseTicketWithCommentCommentExists,
             "TicketMissing": CloseTicketWithCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CloseTicketWithCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def close_ticket_with_comment_batch(
         self, inputs: Sequence[CloseTicketWithCommentInput], options: CommandBatchOptions,
@@ -1207,7 +2112,10 @@ class TicketDeskClient:
             "CommentExists": CreateCommentCommentExists,
             "TicketMissing": CreateCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_comment_batch(
         self, inputs: Sequence[CreateCommentInput], options: CommandBatchOptions,
@@ -1226,7 +2134,10 @@ class TicketDeskClient:
             "LabelExists": CreateLabelLabelExists,
             "OrganizationMissing": CreateLabelOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_label_batch(
         self, inputs: Sequence[CreateLabelInput], options: CommandBatchOptions,
@@ -1244,7 +2155,10 @@ class TicketDeskClient:
             "Created": CreateOrganizationCreated,
             "OrganizationExists": CreateOrganizationOrganizationExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateOrganizationOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_organization_batch(
         self, inputs: Sequence[CreateOrganizationInput], options: CommandBatchOptions,
@@ -1263,7 +2177,10 @@ class TicketDeskClient:
             "ProjectExists": CreateProjectProjectExists,
             "OrganizationMissing": CreateProjectOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateProjectOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_project_batch(
         self, inputs: Sequence[CreateProjectInput], options: CommandBatchOptions,
@@ -1284,7 +2201,10 @@ class TicketDeskClient:
             "AssigneeMissing": CreateTicketAssigneeMissing,
             "ReporterMissing": CreateTicketReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_ticket_batch(
         self, inputs: Sequence[CreateTicketInput], options: CommandBatchOptions,
@@ -1303,7 +2223,10 @@ class TicketDeskClient:
             "UserExists": CreateUserUserExists,
             "OrganizationMissing": CreateUserOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_user_batch(
         self, inputs: Sequence[CreateUserInput], options: CommandBatchOptions,
@@ -1326,7 +2249,10 @@ class TicketDeskClient:
             "AssigneeMissing": OpenTicketWithLabelsAssigneeMissing,
             "ReporterMissing": OpenTicketWithLabelsReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[OpenTicketWithLabelsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def open_ticket_with_labels_batch(
         self, inputs: Sequence[OpenTicketWithLabelsInput], options: CommandBatchOptions,
@@ -1345,7 +2271,10 @@ class TicketDeskClient:
             "MemberAMissing": SwapMemberRolesMemberAMissing,
             "MemberBMissing": SwapMemberRolesMemberBMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SwapMemberRolesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def swap_member_roles_batch(
         self, inputs: Sequence[SwapMemberRolesInput], options: CommandBatchOptions,
@@ -1354,11 +2283,29 @@ class TicketDeskClient:
         return self._transport._command_batch(inputs, options, self.swap_member_roles, progress)
 
 class AsyncTicketDeskClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncTicketDeskClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncTicketDeskClient:
+        return AsyncTicketDeskClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncTicketDeskClient:
+        return AsyncTicketDeskClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def board_page200(self, parameters: BoardPage200Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1371,7 +2318,12 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page200_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    async def board_page200_after_commit(self, parameters: BoardPage200Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage200Result]:
+        return await self.board_page200(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def board_page450(self, parameters: BoardPage450Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1384,7 +2336,12 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page450_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    async def board_page450_after_commit(self, parameters: BoardPage450Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
+        return await self.board_page450(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1397,7 +2354,12 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: _decode_board_page50_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
+    async def board_page50_after_commit(self, parameters: BoardPage50Params, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
+        return await self.board_page50(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1410,7 +2372,12 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_ticket_after_commit(self, parameters: GetTicketParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        return await self.get_ticket(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1423,6 +2390,9 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_user_after_commit(self, parameters: GetUserParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        return await self.get_user(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1433,6 +2403,8 @@ class AsyncTicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1444,6 +2416,25 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_comments_after_commit(self, parameters: ListCommentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        return await self.list_comments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def list_comments_pages(self, parameters: ListCommentsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListCommentsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListCommentsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListCommentsParams(organization_id=parameters.organization_id, ticket_id=parameters.ticket_id, after=None, limit=parameters.limit)
+            page = await self.list_comments(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1454,6 +2445,8 @@ class AsyncTicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1465,6 +2458,25 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_tickets_after_commit(self, parameters: ListTicketsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        return await self.list_tickets(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def list_tickets_pages(self, parameters: ListTicketsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListTicketsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListTicketsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListTicketsParams(organization_id=parameters.organization_id, project_id=parameters.project_id, statuses=parameters.statuses, after=None, limit=parameters.limit)
+            page = await self.list_tickets(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1475,6 +2487,8 @@ class AsyncTicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1486,6 +2500,25 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_tickets_by_assignee_after_commit(self, parameters: ListTicketsByAssigneeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        return await self.list_tickets_by_assignee(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def list_tickets_by_assignee_pages(self, parameters: ListTicketsByAssigneeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListTicketsByAssigneeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListTicketsByAssigneeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListTicketsByAssigneeParams(organization_id=parameters.organization_id, assignee_id=parameters.assignee_id, statuses=parameters.statuses, after=None, limit=parameters.limit)
+            page = await self.list_tickets_by_assignee(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def project_members(self, parameters: ProjectMembersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1494,6 +2527,8 @@ class AsyncTicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1505,7 +2540,28 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def project_members_after_commit(self, parameters: ProjectMembersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
+        return await self.project_members(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def project_members_pages(self, parameters: ProjectMembersParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ProjectMembersResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ProjectMembersResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ProjectMembersParams(organization_id=parameters.organization_id, project_id=parameters.project_id, after=None)
+            page = await self.project_members(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def project_summary(self, parameters: ProjectSummaryParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectSummaryResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1518,7 +2574,12 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def project_summary_after_commit(self, parameters: ProjectSummaryParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectSummaryResult]:
+        return await self.project_summary(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def ticket_page(self, parameters: TicketPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1532,6 +2593,9 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def ticket_page_after_commit(self, parameters: TicketPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageResult]:
+        return await self.ticket_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.comments_after
@@ -1540,6 +2604,8 @@ class AsyncTicketDeskClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("comments_after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1553,7 +2619,28 @@ class AsyncTicketDeskClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def ticket_page_paged_after_commit(self, parameters: TicketPagePagedParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        return await self.ticket_page_paged(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def ticket_page_paged_pages(self, parameters: TicketPagePagedParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[TicketPagePagedResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.comments_after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.comments_after
+        pages: list[TypedQueryResult[TicketPagePagedResult]] = []
+        for _ in range(max_pages):
+            page_parameters = TicketPagePagedParams(organization_id=parameters.organization_id, ticket_id=parameters.ticket_id, comments_after=None)
+            page = await self.ticket_page_paged(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1564,6 +2651,9 @@ class AsyncTicketDeskClient:
             "Found": TicketQueueFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def ticket_queue_after_commit(self, parameters: TicketQueueParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        return await self.ticket_queue(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def add_project_member(self, input: AddProjectMemberInput) -> TypedCommandResult[AddProjectMemberOutcome]:
         raw = await self._transport._execute_command(
@@ -1577,7 +2667,10 @@ class AsyncTicketDeskClient:
             "MemberExists": AddProjectMemberMemberExists,
             "ProjectMissing": AddProjectMemberProjectMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AddProjectMemberOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def add_project_member_batch(
         self, inputs: Sequence[AddProjectMemberInput], options: CommandBatchOptions,
@@ -1597,7 +2690,10 @@ class AsyncTicketDeskClient:
             "LabelMissing": AttachLabelLabelMissing,
             "TicketMissing": AttachLabelTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttachLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def attach_label_batch(
         self, inputs: Sequence[AttachLabelInput], options: CommandBatchOptions,
@@ -1618,7 +2714,10 @@ class AsyncTicketDeskClient:
             "CommentExists": CloseTicketWithCommentCommentExists,
             "TicketMissing": CloseTicketWithCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CloseTicketWithCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def close_ticket_with_comment_batch(
         self, inputs: Sequence[CloseTicketWithCommentInput], options: CommandBatchOptions,
@@ -1638,7 +2737,10 @@ class AsyncTicketDeskClient:
             "CommentExists": CreateCommentCommentExists,
             "TicketMissing": CreateCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_comment_batch(
         self, inputs: Sequence[CreateCommentInput], options: CommandBatchOptions,
@@ -1657,7 +2759,10 @@ class AsyncTicketDeskClient:
             "LabelExists": CreateLabelLabelExists,
             "OrganizationMissing": CreateLabelOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_label_batch(
         self, inputs: Sequence[CreateLabelInput], options: CommandBatchOptions,
@@ -1675,7 +2780,10 @@ class AsyncTicketDeskClient:
             "Created": CreateOrganizationCreated,
             "OrganizationExists": CreateOrganizationOrganizationExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateOrganizationOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_organization_batch(
         self, inputs: Sequence[CreateOrganizationInput], options: CommandBatchOptions,
@@ -1694,7 +2802,10 @@ class AsyncTicketDeskClient:
             "ProjectExists": CreateProjectProjectExists,
             "OrganizationMissing": CreateProjectOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateProjectOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_project_batch(
         self, inputs: Sequence[CreateProjectInput], options: CommandBatchOptions,
@@ -1715,7 +2826,10 @@ class AsyncTicketDeskClient:
             "AssigneeMissing": CreateTicketAssigneeMissing,
             "ReporterMissing": CreateTicketReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_ticket_batch(
         self, inputs: Sequence[CreateTicketInput], options: CommandBatchOptions,
@@ -1734,7 +2848,10 @@ class AsyncTicketDeskClient:
             "UserExists": CreateUserUserExists,
             "OrganizationMissing": CreateUserOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_user_batch(
         self, inputs: Sequence[CreateUserInput], options: CommandBatchOptions,
@@ -1757,7 +2874,10 @@ class AsyncTicketDeskClient:
             "AssigneeMissing": OpenTicketWithLabelsAssigneeMissing,
             "ReporterMissing": OpenTicketWithLabelsReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[OpenTicketWithLabelsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def open_ticket_with_labels_batch(
         self, inputs: Sequence[OpenTicketWithLabelsInput], options: CommandBatchOptions,
@@ -1776,7 +2896,10 @@ class AsyncTicketDeskClient:
             "MemberAMissing": SwapMemberRolesMemberAMissing,
             "MemberBMissing": SwapMemberRolesMemberBMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SwapMemberRolesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def swap_member_roles_batch(
         self, inputs: Sequence[SwapMemberRolesInput], options: CommandBatchOptions,

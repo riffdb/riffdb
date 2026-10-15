@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -174,6 +175,16 @@ export interface ModerationQueueFound {
 
 export type ModerationQueueResult = ModerationQueueFound;
 
+export function isModerationQueueFound(value: ModerationQueueResult): value is ModerationQueueFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapModerationQueueFound(value: ModerationQueueResult | TypedQueryResult<ModerationQueueResult>): ModerationQueueFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ModerationQueueResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ModerationQueue outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function moderationQueue(parameters: ModerationQueueParams): NamedQueryRequest<ModerationQueueParams, ModerationQueueResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "agent_blog_moderation_queue", inputSchemaHash: "cc1162d6493ac4b006869930d0d74faa8eebe36826097017273b03d2acb8504a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ModerationQueue", planHash: MODERATION_QUEUE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"comments","schema":{"kind":"list","value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -199,6 +210,24 @@ export interface PostBySlugIntegrityFailure {
 }
 
 export type PostBySlugResult = PostBySlugFound | PostBySlugNotFound | PostBySlugIntegrityFailure;
+
+export function isPostBySlugFound(value: PostBySlugResult): value is PostBySlugFound {
+  return value.outcome === "Found";
+}
+
+export function isPostBySlugNotFound(value: PostBySlugResult): value is PostBySlugNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function isPostBySlugIntegrityFailure(value: PostBySlugResult): value is PostBySlugIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapPostBySlugFound(value: PostBySlugResult | TypedQueryResult<PostBySlugResult>): PostBySlugFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as PostBySlugResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected PostBySlug outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function postBySlug(parameters: PostBySlugParams): NamedQueryRequest<PostBySlugParams, PostBySlugResult> {
   return { driverOperation: { name: "agent_blog_post_by_slug", inputSchemaHash: "a919445f8435991f8edbb8ce275de46efba02fe6a476deadf42a5c81c4d1d09d" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "PostBySlug", planHash: POST_BY_SLUG_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"slug","schema":{"kind":"string"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"post","schema":{"fields":[{"name":"post_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"slug","schema":{"kind":"string"}},{"name":"title","schema":{"kind":"string"}},{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"published_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -229,6 +258,24 @@ export interface PostPageIntegrityFailure {
 
 export type PostPageResult = PostPageFound | PostPageNotFound | PostPageIntegrityFailure;
 
+export function isPostPageFound(value: PostPageResult): value is PostPageFound {
+  return value.outcome === "Found";
+}
+
+export function isPostPageNotFound(value: PostPageResult): value is PostPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function isPostPageIntegrityFailure(value: PostPageResult): value is PostPageIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapPostPageFound(value: PostPageResult | TypedQueryResult<PostPageResult>): PostPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as PostPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected PostPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function postPage(parameters: PostPageParams): NamedQueryRequest<PostPageParams, PostPageResult> {
   return { driverOperation: { name: "agent_blog_post_page", inputSchemaHash: "bbf9a1fff370ce87f8bd09d5a03c7961316fc6712b1d30db473040c81d70a657" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "PostPage", planHash: POST_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"comments_after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"post","schema":{"fields":[{"name":"post_id","schema":{"kind":"uuid"}},{"name":"slug","schema":{"kind":"string"}},{"name":"title","schema":{"kind":"string"}},{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"published_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"author","schema":{"fields":[{"name":"author_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"tags","schema":{"kind":"list","maximum":32,"value":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -248,6 +295,16 @@ export interface PublicFeedFound {
 
 export type PublicFeedResult = PublicFeedFound;
 
+export function isPublicFeedFound(value: PublicFeedResult): value is PublicFeedFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapPublicFeedFound(value: PublicFeedResult | TypedQueryResult<PublicFeedResult>): PublicFeedFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as PublicFeedResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected PublicFeed outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function publicFeed(parameters: PublicFeedParams): NamedQueryRequest<PublicFeedParams, PublicFeedResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "agent_blog_public_feed", inputSchemaHash: "cc1162d6493ac4b006869930d0d74faa8eebe36826097017273b03d2acb8504a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "PublicFeed", planHash: PUBLIC_FEED_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"posts","schema":{"kind":"list","value":{"fields":[{"name":"post_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"slug","schema":{"kind":"string"}},{"name":"title","schema":{"kind":"string"}},{"name":"published_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -257,28 +314,60 @@ export interface AttachTagInput {
   readonly tag_id: string;
   readonly post_id: string;
   readonly site_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type AttachTagOutcome = { readonly outcome: "Created"; readonly link: { readonly tag_id: string; readonly post_id: string; readonly site_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "TagMissing"; readonly tag_id: string } | { readonly outcome: "PostMissing"; readonly post_id: string } | { readonly outcome: "TagAlreadyAttached"; readonly tag_id: string; readonly post_id: string };
 
+export function isAttachTagCreated(value: AttachTagOutcome): value is Extract<AttachTagOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isAttachTagTagMissing(value: AttachTagOutcome): value is Extract<AttachTagOutcome, { readonly outcome: "TagMissing" }> {
+  return value.outcome === "TagMissing";
+}
+
+export function isAttachTagPostMissing(value: AttachTagOutcome): value is Extract<AttachTagOutcome, { readonly outcome: "PostMissing" }> {
+  return value.outcome === "PostMissing";
+}
+
+export function isAttachTagTagAlreadyAttached(value: AttachTagOutcome): value is Extract<AttachTagOutcome, { readonly outcome: "TagAlreadyAttached" }> {
+  return value.outcome === "TagAlreadyAttached";
+}
+
 export const ATTACH_TAG_PLAN_HASH = "227d0a3472af5f6aa327018d6ddc9f73a0b7fbda896e6972730fe56b45b5f32b" as const;
 export function attachTag(input: AttachTagInput): CommandRequest<AttachTagInput, AttachTagOutcome> {
-  return { driverOperation: { name: "agent_blog_attach_tag", inputSchemaHash: "4b615ca32fa648392ecd2c6fa1e64959a152c624ddb6907248fd32bbee8f6a8b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachTag", planHash: ATTACH_TAG_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"tag_id","schema":{"kind":"uuid"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"link","schema":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TagAlreadyAttached":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"TagMissing":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: AttachTagInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_attach_tag", inputSchemaHash: "4b615ca32fa648392ecd2c6fa1e64959a152c624ddb6907248fd32bbee8f6a8b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachTag", planHash: ATTACH_TAG_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"tag_id","schema":{"kind":"uuid"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"link","schema":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TagAlreadyAttached":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"TagMissing":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateAuthorInput {
   readonly site_id: string;
   readonly author_id: string;
   readonly display_name: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateAuthorOutcome = { readonly outcome: "Created"; readonly author: { readonly site_id: string; readonly author_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly display_name: string } } | { readonly outcome: "SiteMissing"; readonly site_id: string } | { readonly outcome: "AuthorExists"; readonly author_id: string };
 
+export function isCreateAuthorCreated(value: CreateAuthorOutcome): value is Extract<CreateAuthorOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateAuthorSiteMissing(value: CreateAuthorOutcome): value is Extract<CreateAuthorOutcome, { readonly outcome: "SiteMissing" }> {
+  return value.outcome === "SiteMissing";
+}
+
+export function isCreateAuthorAuthorExists(value: CreateAuthorOutcome): value is Extract<CreateAuthorOutcome, { readonly outcome: "AuthorExists" }> {
+  return value.outcome === "AuthorExists";
+}
+
 export const CREATE_AUTHOR_PLAN_HASH = "94aa2a0cb6d5694de0888d8ae5d7390b7bad8df554fe059a5a46ac9dea584bf3" as const;
 export function createAuthor(input: CreateAuthorInput): CommandRequest<CreateAuthorInput, CreateAuthorOutcome> {
-  return { driverOperation: { name: "agent_blog_create_author", inputSchemaHash: "ac2e05ebf6166fc41c60f1b8d7ed2c21193f4a733b92ee520862bab0d4b993be" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateAuthor", planHash: CREATE_AUTHOR_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorExists":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"author","schema":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateAuthorInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_author", inputSchemaHash: "ac2e05ebf6166fc41c60f1b8d7ed2c21193f4a733b92ee520862bab0d4b993be" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateAuthor", planHash: CREATE_AUTHOR_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorExists":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"author","schema":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateCommentInput {
@@ -288,14 +377,32 @@ export interface CreateCommentInput {
   readonly site_id: string;
   readonly author_id: string;
   readonly comment_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateCommentOutcome = { readonly outcome: "Created"; readonly comment: { readonly body: string; readonly status: string; readonly post_id: string; readonly site_id: string; readonly author_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "PostMissing"; readonly post_id: string } | { readonly outcome: "AuthorMissing"; readonly author_id: string } | { readonly outcome: "CommentExists"; readonly comment_id: string };
 
+export function isCreateCommentCreated(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateCommentPostMissing(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "PostMissing" }> {
+  return value.outcome === "PostMissing";
+}
+
+export function isCreateCommentAuthorMissing(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "AuthorMissing" }> {
+  return value.outcome === "AuthorMissing";
+}
+
+export function isCreateCommentCommentExists(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "CommentExists" }> {
+  return value.outcome === "CommentExists";
+}
+
 export const CREATE_COMMENT_PLAN_HASH = "ef78c1505ebaf4da9bc0a6923fab3c70d7696ad572e42891acafc36423751d1c" as const;
 export function createComment(input: CreateCommentInput): CommandRequest<CreateCommentInput, CreateCommentOutcome> {
-  return { driverOperation: { name: "agent_blog_create_comment", inputSchemaHash: "4d3bc45bbc5d06be44c4ef6a3748d88eb94275d6c96dde657202c3b546827fcb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"post_id","schema":{"kind":"uuid"},"wireId":3},{"name":"site_id","schema":{"kind":"uuid"},"wireId":4},{"name":"author_id","schema":{"kind":"uuid"},"wireId":5},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":6},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":7}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateCommentInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_comment", inputSchemaHash: "4d3bc45bbc5d06be44c4ef6a3748d88eb94275d6c96dde657202c3b546827fcb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"post_id","schema":{"kind":"uuid"},"wireId":3},{"name":"site_id","schema":{"kind":"uuid"},"wireId":4},{"name":"author_id","schema":{"kind":"uuid"},"wireId":5},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":6},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":7}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreatePostInput {
@@ -306,105 +413,252 @@ export interface CreatePostInput {
   readonly post_id: string;
   readonly site_id: string;
   readonly author_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreatePostOutcome = { readonly outcome: "Created"; readonly post: { readonly body: string; readonly slug: string; readonly title: string; readonly status: string; readonly post_id: string; readonly site_id: string; readonly author_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly published_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "PostExists"; readonly post_id: string } | { readonly outcome: "SiteMissing"; readonly site_id: string } | { readonly outcome: "AuthorMissing"; readonly author_id: string };
 
+export function isCreatePostCreated(value: CreatePostOutcome): value is Extract<CreatePostOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreatePostPostExists(value: CreatePostOutcome): value is Extract<CreatePostOutcome, { readonly outcome: "PostExists" }> {
+  return value.outcome === "PostExists";
+}
+
+export function isCreatePostSiteMissing(value: CreatePostOutcome): value is Extract<CreatePostOutcome, { readonly outcome: "SiteMissing" }> {
+  return value.outcome === "SiteMissing";
+}
+
+export function isCreatePostAuthorMissing(value: CreatePostOutcome): value is Extract<CreatePostOutcome, { readonly outcome: "AuthorMissing" }> {
+  return value.outcome === "AuthorMissing";
+}
+
 export const CREATE_POST_PLAN_HASH = "df73870d939e815fd4661c45055183133f30e44f564bf49fff3ea2a0957f178a" as const;
 export function createPost(input: CreatePostInput): CommandRequest<CreatePostInput, CreatePostOutcome> {
-  return { driverOperation: { name: "agent_blog_create_post", inputSchemaHash: "c5e62037b61053497c58e5875e8a6f516e20910ea4986a33d2caf9db2d1cbecd" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePost", planHash: CREATE_POST_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"slug","schema":{"kind":"string"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"post","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"slug","schema":{"kind":"string"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"status","schema":{"kind":"enum"},"wireId":4},{"name":"post_id","schema":{"kind":"uuid"},"wireId":5},{"name":"site_id","schema":{"kind":"uuid"},"wireId":6},{"name":"author_id","schema":{"kind":"uuid"},"wireId":7},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":8},{"name":"published_at","schema":{"kind":"timestamp"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"},"PostExists":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreatePostInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_post", inputSchemaHash: "c5e62037b61053497c58e5875e8a6f516e20910ea4986a33d2caf9db2d1cbecd" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePost", planHash: CREATE_POST_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"slug","schema":{"kind":"string"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"author_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"post","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"slug","schema":{"kind":"string"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"status","schema":{"kind":"enum"},"wireId":4},{"name":"post_id","schema":{"kind":"uuid"},"wireId":5},{"name":"site_id","schema":{"kind":"uuid"},"wireId":6},{"name":"author_id","schema":{"kind":"uuid"},"wireId":7},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":8},{"name":"published_at","schema":{"kind":"timestamp"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"},"PostExists":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreatePostRouteInput {
   readonly slug: string;
   readonly post_id: string;
   readonly site_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreatePostRouteOutcome = { readonly outcome: "Created"; readonly route: { readonly slug: string; readonly post_id: string; readonly site_id: string } } | { readonly outcome: "SlugExists"; readonly slug: string } | { readonly outcome: "PostMissing"; readonly post_id: string } | { readonly outcome: "SiteMissing"; readonly site_id: string };
 
+export function isCreatePostRouteCreated(value: CreatePostRouteOutcome): value is Extract<CreatePostRouteOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreatePostRouteSlugExists(value: CreatePostRouteOutcome): value is Extract<CreatePostRouteOutcome, { readonly outcome: "SlugExists" }> {
+  return value.outcome === "SlugExists";
+}
+
+export function isCreatePostRoutePostMissing(value: CreatePostRouteOutcome): value is Extract<CreatePostRouteOutcome, { readonly outcome: "PostMissing" }> {
+  return value.outcome === "PostMissing";
+}
+
+export function isCreatePostRouteSiteMissing(value: CreatePostRouteOutcome): value is Extract<CreatePostRouteOutcome, { readonly outcome: "SiteMissing" }> {
+  return value.outcome === "SiteMissing";
+}
+
 export const CREATE_POST_ROUTE_PLAN_HASH = "7516cc276309223f364648600d390bd835401f62ca0da29c6877c7414ab696e1" as const;
 export function createPostRoute(input: CreatePostRouteInput): CommandRequest<CreatePostRouteInput, CreatePostRouteOutcome> {
-  return { driverOperation: { name: "agent_blog_create_post_route", inputSchemaHash: "31dc3afb89a3d36a4b4f69b6b068828746e652dec6eceb5d6d2ed94ffc9856e2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePostRoute", planHash: CREATE_POST_ROUTE_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"slug","schema":{"kind":"string"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"route","schema":{"fields":[{"name":"slug","schema":{"kind":"string"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SlugExists":{"fields":[{"name":"slug","schema":{"kind":"string"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreatePostRouteInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_post_route", inputSchemaHash: "31dc3afb89a3d36a4b4f69b6b068828746e652dec6eceb5d6d2ed94ffc9856e2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreatePostRoute", planHash: CREATE_POST_ROUTE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"slug","schema":{"kind":"string"}},{"name":"post_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"route","schema":{"fields":[{"name":"slug","schema":{"kind":"string"},"wireId":1},{"name":"post_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"PostMissing":{"fields":[{"name":"post_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"SlugExists":{"fields":[{"name":"slug","schema":{"kind":"string"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateSiteInput {
   readonly name: string;
   readonly site_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateSiteOutcome = { readonly outcome: "Created"; readonly site: { readonly name: string; readonly site_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "SiteExists"; readonly site_id: string };
 
+export function isCreateSiteCreated(value: CreateSiteOutcome): value is Extract<CreateSiteOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateSiteSiteExists(value: CreateSiteOutcome): value is Extract<CreateSiteOutcome, { readonly outcome: "SiteExists" }> {
+  return value.outcome === "SiteExists";
+}
+
 export const CREATE_SITE_PLAN_HASH = "f333d52d22e7c776d545cb1e1353bf4a682595c4c0b43180f620d25e497fffb4" as const;
 export function createSite(input: CreateSiteInput): CommandRequest<CreateSiteInput, CreateSiteOutcome> {
-  return { driverOperation: { name: "agent_blog_create_site", inputSchemaHash: "00958e8247cfef9a71dd86c0c16e887f347a53601465bbdc52a3e9d61c4c9afb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateSite", planHash: CREATE_SITE_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"site","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"site_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteExists":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateSiteInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_site", inputSchemaHash: "00958e8247cfef9a71dd86c0c16e887f347a53601465bbdc52a3e9d61c4c9afb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateSite", planHash: CREATE_SITE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"site","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"site_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteExists":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateTagInput {
   readonly name: string;
   readonly tag_id: string;
   readonly site_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateTagOutcome = { readonly outcome: "Created"; readonly tag: { readonly name: string; readonly tag_id: string; readonly site_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "TagExists"; readonly tag_id: string } | { readonly outcome: "SiteMissing"; readonly site_id: string };
 
+export function isCreateTagCreated(value: CreateTagOutcome): value is Extract<CreateTagOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateTagTagExists(value: CreateTagOutcome): value is Extract<CreateTagOutcome, { readonly outcome: "TagExists" }> {
+  return value.outcome === "TagExists";
+}
+
+export function isCreateTagSiteMissing(value: CreateTagOutcome): value is Extract<CreateTagOutcome, { readonly outcome: "SiteMissing" }> {
+  return value.outcome === "SiteMissing";
+}
+
 export const CREATE_TAG_PLAN_HASH = "116b356e73164cba96604b2707f08d1cc2a6d52145c3bdff3ab311fcf9a5f09d" as const;
 export function createTag(input: CreateTagInput): CommandRequest<CreateTagInput, CreateTagOutcome> {
-  return { driverOperation: { name: "agent_blog_create_tag", inputSchemaHash: "06c354ad744b97e2a01c60fc55d60488a9a5e246aa1fd77cf390ae16f06fe0f6" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTag", planHash: CREATE_TAG_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"tag_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"tag","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"tag_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TagExists":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateTagInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_blog_create_tag", inputSchemaHash: "06c354ad744b97e2a01c60fc55d60488a9a5e246aa1fd77cf390ae16f06fe0f6" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTag", planHash: CREATE_TAG_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"tag_id","schema":{"kind":"uuid"}},{"name":"site_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"tag","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"tag_id","schema":{"kind":"uuid"},"wireId":2},{"name":"site_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"SiteMissing":{"fields":[{"name":"site_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TagExists":{"fields":[{"name":"tag_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AgentBlogClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AgentBlogClient {
+    return new AgentBlogClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): AgentBlogClient {
+    return new AgentBlogClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): AgentBlogClient {
+    return new AgentBlogClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async moderationQueue(parameters: ModerationQueueParams, options: QueryOptions = {}): Promise<TypedQueryResult<ModerationQueueResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = moderationQueue(routedParameters as unknown as ModerationQueueParams);
     const result = await this.transport.executeNamedQuery<ModerationQueueParams, ModerationQueueResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async moderationQueueAfterCommit(parameters: ModerationQueueParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ModerationQueueResult>> {
+    return this.moderationQueue(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *moderationQueuePages(parameters: ModerationQueueParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ModerationQueueResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.moderationQueue(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ModerationQueueParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async postBySlug(parameters: PostBySlugParams, options: QueryOptions = {}): Promise<TypedQueryResult<PostBySlugResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = postBySlug(parameters);
-    const result = await this.transport.executeNamedQuery<PostBySlugParams, PostBySlugResult>(request, options);
+    const result = await this.transport.executeNamedQuery<PostBySlugParams, PostBySlugResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async postBySlugAfterCommit(parameters: PostBySlugParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<PostBySlugResult>> {
+    return this.postBySlug(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async postPage(parameters: PostPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<PostPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { comments_after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = postPage(routedParameters as unknown as PostPageParams);
     const result = await this.transport.executeNamedQuery<PostPageParams, PostPageResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async postPageAfterCommit(parameters: PostPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<PostPageResult>> {
+    return this.postPage(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *postPagePages(parameters: PostPageParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<PostPageResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.postPage(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { comments_after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as PostPageParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async publicFeed(parameters: PublicFeedParams, options: QueryOptions = {}): Promise<TypedQueryResult<PublicFeedResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = publicFeed(routedParameters as unknown as PublicFeedParams);
     const result = await this.transport.executeNamedQuery<PublicFeedParams, PublicFeedResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async publicFeedAfterCommit(parameters: PublicFeedParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<PublicFeedResult>> {
+    return this.publicFeed(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *publicFeedPages(parameters: PublicFeedParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<PublicFeedResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.publicFeed(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as PublicFeedParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async attachTag(input: AttachTagInput): Promise<TypedCommandResult<AttachTagOutcome>> {
     const result = await this.transport.executeCommand<AttachTagInput, AttachTagOutcome>(attachTag(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ATTACH_TAG_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -428,6 +682,9 @@ export class AgentBlogClient {
   public async createAuthor(input: CreateAuthorInput): Promise<TypedCommandResult<CreateAuthorOutcome>> {
     const result = await this.transport.executeCommand<CreateAuthorInput, CreateAuthorOutcome>(createAuthor(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_AUTHOR_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -451,6 +708,9 @@ export class AgentBlogClient {
   public async createComment(input: CreateCommentInput): Promise<TypedCommandResult<CreateCommentOutcome>> {
     const result = await this.transport.executeCommand<CreateCommentInput, CreateCommentOutcome>(createComment(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_COMMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -474,6 +734,9 @@ export class AgentBlogClient {
   public async createPost(input: CreatePostInput): Promise<TypedCommandResult<CreatePostOutcome>> {
     const result = await this.transport.executeCommand<CreatePostInput, CreatePostOutcome>(createPost(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_POST_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -497,6 +760,9 @@ export class AgentBlogClient {
   public async createPostRoute(input: CreatePostRouteInput): Promise<TypedCommandResult<CreatePostRouteOutcome>> {
     const result = await this.transport.executeCommand<CreatePostRouteInput, CreatePostRouteOutcome>(createPostRoute(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_POST_ROUTE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -520,6 +786,9 @@ export class AgentBlogClient {
   public async createSite(input: CreateSiteInput): Promise<TypedCommandResult<CreateSiteOutcome>> {
     const result = await this.transport.executeCommand<CreateSiteInput, CreateSiteOutcome>(createSite(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_SITE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -543,6 +812,9 @@ export class AgentBlogClient {
   public async createTag(input: CreateTagInput): Promise<TypedCommandResult<CreateTagOutcome>> {
     const result = await this.transport.executeCommand<CreateTagInput, CreateTagOutcome>(createTag(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_TAG_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

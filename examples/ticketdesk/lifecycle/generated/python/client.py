@@ -117,9 +117,27 @@ class GetTicketFound:
     ticket: GetTicketFoundTicket
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetTicketFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTicketNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetTicketFound:
+        raise ValueError("expected GetTicket outcome found")
 
 GetTicketResult: TypeAlias = GetTicketFound | GetTicketNotFound
 
@@ -146,6 +164,12 @@ class TicketQueueFound:
     tickets: tuple[TicketQueueFoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> TicketQueueFound:
+        return self
+
 TicketQueueResult: TypeAlias = TicketQueueFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -153,7 +177,7 @@ class AddProjectMemberInput:
     role: str
     user_id: UUID
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 ADD_PROJECT_MEMBER_PLAN_HASH: Final[str] = "18d69bcdeaafdd2f6a08c595f32f3970e960ec37d7b69f304f1b11ea64f14d98"
@@ -162,10 +186,34 @@ class AddProjectMemberCreated:
     member: ProjectMember
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberUserMissing:
     user_id: UUID
     outcome: Literal["UserMissing"] = field(default="UserMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return True
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberMemberExists:
@@ -173,10 +221,34 @@ class AddProjectMemberMemberExists:
     project_id: UUID
     outcome: Literal["MemberExists"] = field(default="MemberExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_missing(self) -> bool:
+        return False
+
+    def is_member_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
 
 AddProjectMemberOutcome: TypeAlias = AddProjectMemberCreated | AddProjectMemberUserMissing | AddProjectMemberMemberExists | AddProjectMemberProjectMissing
 
@@ -184,7 +256,7 @@ AddProjectMemberOutcome: TypeAlias = AddProjectMemberCreated | AddProjectMemberU
 class AttachLabelInput:
     label_id: UUID
     ticket_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 ATTACH_LABEL_PLAN_HASH: Final[str] = "8942af6586549f9b124f87ffa1b7ce6a6f9e37b206f6ef12231f6ca61214c7db"
@@ -193,21 +265,69 @@ class AttachLabelCreated:
     link: TicketLabel
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelLinkExists:
     label_id: UUID
     ticket_id: UUID
     outcome: Literal["LinkExists"] = field(default="LinkExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return True
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelLabelMissing:
     label_id: UUID
     outcome: Literal["LabelMissing"] = field(default="LabelMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 AttachLabelOutcome: TypeAlias = AttachLabelCreated | AttachLabelLinkExists | AttachLabelLabelMissing | AttachLabelTicketMissing
 
@@ -217,7 +337,7 @@ class CloseTicketWithCommentInput:
     author_id: UUID
     ticket_id: UUID
     comment_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CLOSE_TICKET_WITH_COMMENT_PLAN_HASH: Final[str] = "f2245a2c32839f4944bde61e4062baa46e51554c1e210d79b8b95799451ccdf0"
@@ -227,25 +347,100 @@ class CloseTicketWithCommentClosed:
     comment: Comment
     outcome: Literal["Closed"] = field(default="Closed", init=False)
 
+    def is_closed(self) -> bool:
+        return True
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentTicketGone:
     ticket_id: UUID
     outcome: Literal["TicketGone"] = field(default="TicketGone", init=False)
+
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return True
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentAuthorMissing:
     user_id: UUID
     outcome: Literal["AuthorMissing"] = field(default="AuthorMissing", init=False)
 
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return True
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentCommentExists:
     comment_id: UUID
     outcome: Literal["CommentExists"] = field(default="CommentExists", init=False)
 
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_closed(self) -> bool:
+        return False
+
+    def is_ticket_gone(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 CloseTicketWithCommentOutcome: TypeAlias = CloseTicketWithCommentClosed | CloseTicketWithCommentTicketGone | CloseTicketWithCommentAuthorMissing | CloseTicketWithCommentCommentExists | CloseTicketWithCommentTicketMissing
 
@@ -255,7 +450,7 @@ class CreateCommentInput:
     author_id: UUID
     ticket_id: UUID
     comment_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_COMMENT_PLAN_HASH: Final[str] = "d29bfdfb8944aefbb69d368f814a320481804a166aac367ca260429be95198c5"
@@ -264,20 +459,68 @@ class CreateCommentCreated:
     comment: Comment
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentAuthorMissing:
     user_id: UUID
     outcome: Literal["AuthorMissing"] = field(default="AuthorMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return True
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentCommentExists:
     comment_id: UUID
     outcome: Literal["CommentExists"] = field(default="CommentExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_author_missing(self) -> bool:
+        return False
+
+    def is_comment_exists(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
 
 CreateCommentOutcome: TypeAlias = CreateCommentCreated | CreateCommentAuthorMissing | CreateCommentCommentExists | CreateCommentTicketMissing
 
@@ -285,7 +528,7 @@ CreateCommentOutcome: TypeAlias = CreateCommentCreated | CreateCommentAuthorMiss
 class CreateLabelInput:
     name: str
     label_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_LABEL_PLAN_HASH: Final[str] = "9dd134ede0e16105306f168dce83be75fa5dad45704b581a641dbe235d061012"
@@ -294,22 +537,49 @@ class CreateLabelCreated:
     label: Label
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_label_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateLabelLabelExists:
     label_id: UUID
     outcome: Literal["LabelExists"] = field(default="LabelExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_label_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateLabelOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_label_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
+
 CreateLabelOutcome: TypeAlias = CreateLabelCreated | CreateLabelLabelExists | CreateLabelOrganizationMissing
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateOrganizationInput:
     name: str
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_ORGANIZATION_PLAN_HASH: Final[str] = "603a8bc900bc7e9a800decba6e11673a0a5beca3e9e3a9521b2a5f699aaa2417"
@@ -318,10 +588,22 @@ class CreateOrganizationCreated:
     organization: Organization
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_organization_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateOrganizationOrganizationExists:
     organization_id: UUID
     outcome: Literal["OrganizationExists"] = field(default="OrganizationExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_organization_exists(self) -> bool:
+        return True
 
 CreateOrganizationOutcome: TypeAlias = CreateOrganizationCreated | CreateOrganizationOrganizationExists
 
@@ -329,7 +611,7 @@ CreateOrganizationOutcome: TypeAlias = CreateOrganizationCreated | CreateOrganiz
 class CreateProjectInput:
     name: str
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_PROJECT_PLAN_HASH: Final[str] = "7a14918f80fa9e80d1367ed91c6a536aa4bb4d4b7e416206ab5061cfb191f022"
@@ -338,15 +620,42 @@ class CreateProjectCreated:
     project: Project
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_project_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateProjectProjectExists:
     project_id: UUID
     outcome: Literal["ProjectExists"] = field(default="ProjectExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_project_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateProjectOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_project_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
 
 CreateProjectOutcome: TypeAlias = CreateProjectCreated | CreateProjectProjectExists | CreateProjectOrganizationMissing
 
@@ -358,7 +667,7 @@ class CreateTicketInput:
     project_id: UUID
     assignee_id: UUID
     reporter_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_TICKET_PLAN_HASH: Final[str] = "d50adaae4a17bbf5ad82e42a63577f452e92c6cd3316b887dcc342c8dd56dd31"
@@ -367,25 +676,100 @@ class CreateTicketCreated:
     ticket: Ticket
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketTicketExists:
     ticket_id: UUID
     outcome: Literal["TicketExists"] = field(default="TicketExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketAssigneeMissing:
     user_id: UUID
     outcome: Literal["AssigneeMissing"] = field(default="AssigneeMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return True
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketReporterMissing:
     user_id: UUID
     outcome: Literal["ReporterMissing"] = field(default="ReporterMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return True
 
 CreateTicketOutcome: TypeAlias = CreateTicketCreated | CreateTicketTicketExists | CreateTicketProjectMissing | CreateTicketAssigneeMissing | CreateTicketReporterMissing
 
@@ -394,7 +778,7 @@ class CreateUserInput:
     email: str
     user_id: UUID
     display_name: str
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_USER_PLAN_HASH: Final[str] = "90117e7235098470c692eea141460d7e99d04cd4647f1b307e26f134dbc4964d"
@@ -403,15 +787,42 @@ class CreateUserCreated:
     user: AppUser
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_user_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserUserExists:
     user_id: UUID
     outcome: Literal["UserExists"] = field(default="UserExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_exists(self) -> bool:
+        return True
+
+    def is_organization_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserOrganizationMissing:
     organization_id: UUID
     outcome: Literal["OrganizationMissing"] = field(default="OrganizationMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_user_exists(self) -> bool:
+        return False
+
+    def is_organization_missing(self) -> bool:
+        return True
 
 CreateUserOutcome: TypeAlias = CreateUserCreated | CreateUserUserExists | CreateUserOrganizationMissing
 
@@ -424,7 +835,7 @@ class OpenTicketWithLabelsInput:
     project_id: UUID
     assignee_id: UUID
     reporter_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 OPEN_TICKET_WITH_LABELS_PLAN_HASH: Final[str] = "908eca05ede786e272ecbfe0124bb5a9fb470e9dbf889fc6b8b5831c453eb815"
@@ -435,36 +846,183 @@ class OpenTicketWithLabelsCreated:
     second_link: TicketLabel
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsLinkExists:
     label_id: UUID
     ticket_id: UUID
     outcome: Literal["LinkExists"] = field(default="LinkExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return True
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsLabelMissing:
     label_id: UUID
     outcome: Literal["LabelMissing"] = field(default="LabelMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return True
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsTicketExists:
     ticket_id: UUID
     outcome: Literal["TicketExists"] = field(default="TicketExists", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return True
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsProjectMissing:
     project_id: UUID
     outcome: Literal["ProjectMissing"] = field(default="ProjectMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return True
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsAssigneeMissing:
     user_id: UUID
     outcome: Literal["AssigneeMissing"] = field(default="AssigneeMissing", init=False)
 
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return True
+
+    def is_reporter_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsReporterMissing:
     user_id: UUID
     outcome: Literal["ReporterMissing"] = field(default="ReporterMissing", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_link_exists(self) -> bool:
+        return False
+
+    def is_label_missing(self) -> bool:
+        return False
+
+    def is_ticket_exists(self) -> bool:
+        return False
+
+    def is_project_missing(self) -> bool:
+        return False
+
+    def is_assignee_missing(self) -> bool:
+        return False
+
+    def is_reporter_missing(self) -> bool:
+        return True
 
 OpenTicketWithLabelsOutcome: TypeAlias = OpenTicketWithLabelsCreated | OpenTicketWithLabelsLinkExists | OpenTicketWithLabelsLabelMissing | OpenTicketWithLabelsTicketExists | OpenTicketWithLabelsProjectMissing | OpenTicketWithLabelsAssigneeMissing | OpenTicketWithLabelsReporterMissing
 
@@ -475,7 +1033,7 @@ class SwapMemberRolesInput:
     user_a: UUID
     user_b: UUID
     project_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 SWAP_MEMBER_ROLES_PLAN_HASH: Final[str] = "e2ce3cb8aaab3aeff9dd8d6165eff549440328dc5294db2a1b584e924463657b"
@@ -485,15 +1043,42 @@ class SwapMemberRolesSwapped:
     member_b: ProjectMember
     outcome: Literal["Swapped"] = field(default="Swapped", init=False)
 
+    def is_swapped(self) -> bool:
+        return True
+
+    def is_member_amissing(self) -> bool:
+        return False
+
+    def is_member_bmissing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SwapMemberRolesMemberAMissing:
     user_id: UUID
     outcome: Literal["MemberAMissing"] = field(default="MemberAMissing", init=False)
 
+    def is_swapped(self) -> bool:
+        return False
+
+    def is_member_amissing(self) -> bool:
+        return True
+
+    def is_member_bmissing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SwapMemberRolesMemberBMissing:
     user_id: UUID
     outcome: Literal["MemberBMissing"] = field(default="MemberBMissing", init=False)
+
+    def is_swapped(self) -> bool:
+        return False
+
+    def is_member_amissing(self) -> bool:
+        return False
+
+    def is_member_bmissing(self) -> bool:
+        return True
 
 SwapMemberRolesOutcome: TypeAlias = SwapMemberRolesSwapped | SwapMemberRolesMemberAMissing | SwapMemberRolesMemberBMissing
 
@@ -501,7 +1086,7 @@ SwapMemberRolesOutcome: TypeAlias = SwapMemberRolesSwapped | SwapMemberRolesMemb
 class UpdateTicketInput:
     status: TicketStatus
     ticket_id: UUID
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
@@ -510,25 +1095,70 @@ UPDATE_TICKET_PLAN_HASH: Final[str] = "554230da7a847550d4a3b91d8ba2d47d0ad514da1
 class UpdateTicketStale:
     outcome: Literal["Stale"] = field(default="Stale", init=False)
 
+    def is_stale(self) -> bool:
+        return True
+
+    def is_updated(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UpdateTicketUpdated:
     status: TicketStatus
     revision: Annotated[int, "u64"]
     outcome: Literal["Updated"] = field(default="Updated", init=False)
 
+    def is_stale(self) -> bool:
+        return False
+
+    def is_updated(self) -> bool:
+        return True
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UpdateTicketTicketMissing:
     ticket_id: UUID
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
 
+    def is_stale(self) -> bool:
+        return False
+
+    def is_updated(self) -> bool:
+        return False
+
+    def is_ticket_missing(self) -> bool:
+        return True
+
 UpdateTicketOutcome: TypeAlias = UpdateTicketStale | UpdateTicketUpdated | UpdateTicketTicketMissing
 
 class TicketDeskLifecycleClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> TicketDeskLifecycleClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> TicketDeskLifecycleClient:
+        return TicketDeskLifecycleClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> TicketDeskLifecycleClient:
+        return TicketDeskLifecycleClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -541,7 +1171,12 @@ class TicketDeskLifecycleClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_ticket_after_commit(self, parameters: GetTicketParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        return self.get_ticket(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -552,6 +1187,9 @@ class TicketDeskLifecycleClient:
             "Found": TicketQueueFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def ticket_queue_after_commit(self, parameters: TicketQueueParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        return self.ticket_queue(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def add_project_member(self, input: AddProjectMemberInput) -> TypedCommandResult[AddProjectMemberOutcome]:
         raw = self._transport._execute_command(
@@ -565,7 +1203,10 @@ class TicketDeskLifecycleClient:
             "MemberExists": AddProjectMemberMemberExists,
             "ProjectMissing": AddProjectMemberProjectMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AddProjectMemberOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def add_project_member_batch(
         self, inputs: Sequence[AddProjectMemberInput], options: CommandBatchOptions,
@@ -585,7 +1226,10 @@ class TicketDeskLifecycleClient:
             "LabelMissing": AttachLabelLabelMissing,
             "TicketMissing": AttachLabelTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttachLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def attach_label_batch(
         self, inputs: Sequence[AttachLabelInput], options: CommandBatchOptions,
@@ -606,7 +1250,10 @@ class TicketDeskLifecycleClient:
             "CommentExists": CloseTicketWithCommentCommentExists,
             "TicketMissing": CloseTicketWithCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CloseTicketWithCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def close_ticket_with_comment_batch(
         self, inputs: Sequence[CloseTicketWithCommentInput], options: CommandBatchOptions,
@@ -626,7 +1273,10 @@ class TicketDeskLifecycleClient:
             "CommentExists": CreateCommentCommentExists,
             "TicketMissing": CreateCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_comment_batch(
         self, inputs: Sequence[CreateCommentInput], options: CommandBatchOptions,
@@ -645,7 +1295,10 @@ class TicketDeskLifecycleClient:
             "LabelExists": CreateLabelLabelExists,
             "OrganizationMissing": CreateLabelOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_label_batch(
         self, inputs: Sequence[CreateLabelInput], options: CommandBatchOptions,
@@ -663,7 +1316,10 @@ class TicketDeskLifecycleClient:
             "Created": CreateOrganizationCreated,
             "OrganizationExists": CreateOrganizationOrganizationExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateOrganizationOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_organization_batch(
         self, inputs: Sequence[CreateOrganizationInput], options: CommandBatchOptions,
@@ -682,7 +1338,10 @@ class TicketDeskLifecycleClient:
             "ProjectExists": CreateProjectProjectExists,
             "OrganizationMissing": CreateProjectOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateProjectOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_project_batch(
         self, inputs: Sequence[CreateProjectInput], options: CommandBatchOptions,
@@ -703,7 +1362,10 @@ class TicketDeskLifecycleClient:
             "AssigneeMissing": CreateTicketAssigneeMissing,
             "ReporterMissing": CreateTicketReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_ticket_batch(
         self, inputs: Sequence[CreateTicketInput], options: CommandBatchOptions,
@@ -722,7 +1384,10 @@ class TicketDeskLifecycleClient:
             "UserExists": CreateUserUserExists,
             "OrganizationMissing": CreateUserOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_user_batch(
         self, inputs: Sequence[CreateUserInput], options: CommandBatchOptions,
@@ -745,7 +1410,10 @@ class TicketDeskLifecycleClient:
             "AssigneeMissing": OpenTicketWithLabelsAssigneeMissing,
             "ReporterMissing": OpenTicketWithLabelsReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[OpenTicketWithLabelsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def open_ticket_with_labels_batch(
         self, inputs: Sequence[OpenTicketWithLabelsInput], options: CommandBatchOptions,
@@ -764,7 +1432,10 @@ class TicketDeskLifecycleClient:
             "MemberAMissing": SwapMemberRolesMemberAMissing,
             "MemberBMissing": SwapMemberRolesMemberBMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SwapMemberRolesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def swap_member_roles_batch(
         self, inputs: Sequence[SwapMemberRolesInput], options: CommandBatchOptions,
@@ -783,7 +1454,10 @@ class TicketDeskLifecycleClient:
             "Updated": UpdateTicketUpdated,
             "TicketMissing": UpdateTicketTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[UpdateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def update_ticket_batch(
         self, inputs: Sequence[UpdateTicketInput], options: CommandBatchOptions,
@@ -792,11 +1466,29 @@ class TicketDeskLifecycleClient:
         return self._transport._command_batch(inputs, options, self.update_ticket, progress)
 
 class AsyncTicketDeskLifecycleClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncTicketDeskLifecycleClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncTicketDeskLifecycleClient:
+        return AsyncTicketDeskLifecycleClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncTicketDeskLifecycleClient:
+        return AsyncTicketDeskLifecycleClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -809,7 +1501,12 @@ class AsyncTicketDeskLifecycleClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_ticket_after_commit(self, parameters: GetTicketParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
+        return await self.get_ticket(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def ticket_queue(self, parameters: TicketQueueParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -820,6 +1517,9 @@ class AsyncTicketDeskLifecycleClient:
             "Found": TicketQueueFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def ticket_queue_after_commit(self, parameters: TicketQueueParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketQueueResult]:
+        return await self.ticket_queue(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def add_project_member(self, input: AddProjectMemberInput) -> TypedCommandResult[AddProjectMemberOutcome]:
         raw = await self._transport._execute_command(
@@ -833,7 +1533,10 @@ class AsyncTicketDeskLifecycleClient:
             "MemberExists": AddProjectMemberMemberExists,
             "ProjectMissing": AddProjectMemberProjectMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AddProjectMemberOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def add_project_member_batch(
         self, inputs: Sequence[AddProjectMemberInput], options: CommandBatchOptions,
@@ -853,7 +1556,10 @@ class AsyncTicketDeskLifecycleClient:
             "LabelMissing": AttachLabelLabelMissing,
             "TicketMissing": AttachLabelTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttachLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def attach_label_batch(
         self, inputs: Sequence[AttachLabelInput], options: CommandBatchOptions,
@@ -874,7 +1580,10 @@ class AsyncTicketDeskLifecycleClient:
             "CommentExists": CloseTicketWithCommentCommentExists,
             "TicketMissing": CloseTicketWithCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CloseTicketWithCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def close_ticket_with_comment_batch(
         self, inputs: Sequence[CloseTicketWithCommentInput], options: CommandBatchOptions,
@@ -894,7 +1603,10 @@ class AsyncTicketDeskLifecycleClient:
             "CommentExists": CreateCommentCommentExists,
             "TicketMissing": CreateCommentTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateCommentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_comment_batch(
         self, inputs: Sequence[CreateCommentInput], options: CommandBatchOptions,
@@ -913,7 +1625,10 @@ class AsyncTicketDeskLifecycleClient:
             "LabelExists": CreateLabelLabelExists,
             "OrganizationMissing": CreateLabelOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateLabelOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_label_batch(
         self, inputs: Sequence[CreateLabelInput], options: CommandBatchOptions,
@@ -931,7 +1646,10 @@ class AsyncTicketDeskLifecycleClient:
             "Created": CreateOrganizationCreated,
             "OrganizationExists": CreateOrganizationOrganizationExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateOrganizationOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_organization_batch(
         self, inputs: Sequence[CreateOrganizationInput], options: CommandBatchOptions,
@@ -950,7 +1668,10 @@ class AsyncTicketDeskLifecycleClient:
             "ProjectExists": CreateProjectProjectExists,
             "OrganizationMissing": CreateProjectOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateProjectOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_project_batch(
         self, inputs: Sequence[CreateProjectInput], options: CommandBatchOptions,
@@ -971,7 +1692,10 @@ class AsyncTicketDeskLifecycleClient:
             "AssigneeMissing": CreateTicketAssigneeMissing,
             "ReporterMissing": CreateTicketReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_ticket_batch(
         self, inputs: Sequence[CreateTicketInput], options: CommandBatchOptions,
@@ -990,7 +1714,10 @@ class AsyncTicketDeskLifecycleClient:
             "UserExists": CreateUserUserExists,
             "OrganizationMissing": CreateUserOrganizationMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_user_batch(
         self, inputs: Sequence[CreateUserInput], options: CommandBatchOptions,
@@ -1013,7 +1740,10 @@ class AsyncTicketDeskLifecycleClient:
             "AssigneeMissing": OpenTicketWithLabelsAssigneeMissing,
             "ReporterMissing": OpenTicketWithLabelsReporterMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[OpenTicketWithLabelsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def open_ticket_with_labels_batch(
         self, inputs: Sequence[OpenTicketWithLabelsInput], options: CommandBatchOptions,
@@ -1032,7 +1762,10 @@ class AsyncTicketDeskLifecycleClient:
             "MemberAMissing": SwapMemberRolesMemberAMissing,
             "MemberBMissing": SwapMemberRolesMemberBMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SwapMemberRolesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def swap_member_roles_batch(
         self, inputs: Sequence[SwapMemberRolesInput], options: CommandBatchOptions,
@@ -1051,7 +1784,10 @@ class AsyncTicketDeskLifecycleClient:
             "Updated": UpdateTicketUpdated,
             "TicketMissing": UpdateTicketTicketMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[UpdateTicketOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def update_ticket_batch(
         self, inputs: Sequence[UpdateTicketInput], options: CommandBatchOptions,

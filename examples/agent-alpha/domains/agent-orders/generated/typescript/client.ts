@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -179,6 +180,20 @@ export interface CustomerHistoryNotFound {
 
 export type CustomerHistoryResult = CustomerHistoryFound | CustomerHistoryNotFound;
 
+export function isCustomerHistoryFound(value: CustomerHistoryResult): value is CustomerHistoryFound {
+  return value.outcome === "Found";
+}
+
+export function isCustomerHistoryNotFound(value: CustomerHistoryResult): value is CustomerHistoryNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapCustomerHistoryFound(value: CustomerHistoryResult | TypedQueryResult<CustomerHistoryResult>): CustomerHistoryFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as CustomerHistoryResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected CustomerHistory outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function customerHistory(parameters: CustomerHistoryParams): NamedQueryRequest<CustomerHistoryParams, CustomerHistoryResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "agent_orders_customer_history", inputSchemaHash: "c0d3110045f684dbfb70589c96edcdb7928217650f880eb10935d3390f378944" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "CustomerHistory", planHash: CUSTOMER_HISTORY_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"customer","schema":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"orders","schema":{"kind":"list","value":{"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -203,6 +218,20 @@ export interface InventoryDashboardIntegrityFailure {
 
 export type InventoryDashboardResult = InventoryDashboardFound | InventoryDashboardIntegrityFailure;
 
+export function isInventoryDashboardFound(value: InventoryDashboardResult): value is InventoryDashboardFound {
+  return value.outcome === "Found";
+}
+
+export function isInventoryDashboardIntegrityFailure(value: InventoryDashboardResult): value is InventoryDashboardIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapInventoryDashboardFound(value: InventoryDashboardResult | TypedQueryResult<InventoryDashboardResult>): InventoryDashboardFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as InventoryDashboardResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected InventoryDashboard outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function inventoryDashboard(parameters: InventoryDashboardParams): NamedQueryRequest<InventoryDashboardParams, InventoryDashboardResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "agent_orders_inventory_dashboard", inputSchemaHash: "4c7cd91b217cf58223c65a400b1e135f0346cb58ebc702667ef3fbe02448c700" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "InventoryDashboard", planHash: INVENTORY_DASHBOARD_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"inventory","schema":{"kind":"list","value":{"fields":[{"name":"product_id","schema":{"kind":"uuid"}},{"name":"available","schema":{"kind":"i64"}},{"name":"reserved","schema":{"kind":"i64"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"products","schema":{"kind":"list","value":{"fields":[{"name":"product_id","schema":{"kind":"uuid"}},{"name":"sku","schema":{"kind":"string"}},{"name":"name","schema":{"kind":"string"}},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2}},{"name":"active","schema":{"kind":"bool"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -222,6 +251,16 @@ export interface OpenOrdersFound {
 }
 
 export type OpenOrdersResult = OpenOrdersFound;
+
+export function isOpenOrdersFound(value: OpenOrdersResult): value is OpenOrdersFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapOpenOrdersFound(value: OpenOrdersResult | TypedQueryResult<OpenOrdersResult>): OpenOrdersFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as OpenOrdersResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected OpenOrders outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function openOrders(parameters: OpenOrdersParams): NamedQueryRequest<OpenOrdersParams, OpenOrdersResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
@@ -252,6 +291,24 @@ export interface OrderPageIntegrityFailure {
 
 export type OrderPageResult = OrderPageFound | OrderPageNotFound | OrderPageIntegrityFailure;
 
+export function isOrderPageFound(value: OrderPageResult): value is OrderPageFound {
+  return value.outcome === "Found";
+}
+
+export function isOrderPageNotFound(value: OrderPageResult): value is OrderPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function isOrderPageIntegrityFailure(value: OrderPageResult): value is OrderPageIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapOrderPageFound(value: OrderPageResult | TypedQueryResult<OrderPageResult>): OrderPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as OrderPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected OrderPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function orderPage(parameters: OrderPageParams): NamedQueryRequest<OrderPageParams, OrderPageResult> {
   return { driverOperation: { name: "agent_orders_order_page", inputSchemaHash: "3ead31cbd6099ca7b0b4f961eb7ec17332bd4d3c3535da95797d07442b4814af" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "OrderPage", planHash: ORDER_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"order_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"purchase_order","schema":{"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"customer","schema":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"lines","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"product_id","schema":{"kind":"uuid"}},{"name":"quantity","schema":{"kind":"i64"}},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2}}],"kind":"record"}}},{"name":"products","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"product_id","schema":{"kind":"uuid"}},{"name":"sku","schema":{"kind":"string"}},{"name":"name","schema":{"kind":"string"}},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2}},{"name":"active","schema":{"kind":"bool"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -261,56 +318,124 @@ export interface AddOrderLineInput {
   readonly quantity: bigint;
   readonly store_id: string;
   readonly product_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type AddOrderLineOutcome = { readonly outcome: "Created"; readonly line: { readonly order_id: string; readonly quantity: bigint; readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly product_id: string; readonly unit_price: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } } } | { readonly outcome: "LineExists"; readonly order_id: string; readonly product_id: string } | { readonly outcome: "OrderMissing"; readonly order_id: string } | { readonly outcome: "ProductMissing"; readonly product_id: string } | { readonly outcome: "InvalidQuantity"; readonly minimum: bigint };
 
+export function isAddOrderLineCreated(value: AddOrderLineOutcome): value is Extract<AddOrderLineOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isAddOrderLineLineExists(value: AddOrderLineOutcome): value is Extract<AddOrderLineOutcome, { readonly outcome: "LineExists" }> {
+  return value.outcome === "LineExists";
+}
+
+export function isAddOrderLineOrderMissing(value: AddOrderLineOutcome): value is Extract<AddOrderLineOutcome, { readonly outcome: "OrderMissing" }> {
+  return value.outcome === "OrderMissing";
+}
+
+export function isAddOrderLineProductMissing(value: AddOrderLineOutcome): value is Extract<AddOrderLineOutcome, { readonly outcome: "ProductMissing" }> {
+  return value.outcome === "ProductMissing";
+}
+
+export function isAddOrderLineInvalidQuantity(value: AddOrderLineOutcome): value is Extract<AddOrderLineOutcome, { readonly outcome: "InvalidQuantity" }> {
+  return value.outcome === "InvalidQuantity";
+}
+
 export const ADD_ORDER_LINE_PLAN_HASH = "c1ead13c59d1bc8620bc1dcf7bc5ef72f51b28a691a58de8494d6a1fb09b9a6e" as const;
 export function addOrderLine(input: AddOrderLineInput): CommandRequest<AddOrderLineInput, AddOrderLineOutcome> {
-  return { driverOperation: { name: "agent_orders_add_order_line", inputSchemaHash: "cc2a1cf6f7adbbc32c2ca747ea4bfa2b8b493926557e906bef3c56f5646b2161" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddOrderLine", planHash: ADD_ORDER_LINE_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"quantity","schema":{"kind":"i64"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"line","schema":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"quantity","schema":{"kind":"i64"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"product_id","schema":{"kind":"uuid"},"wireId":5},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"InvalidQuantity":{"fields":[{"name":"minimum","schema":{"kind":"i64"},"wireId":1}],"kind":"record"},"LineExists":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"product_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"OrderMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProductMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: AddOrderLineInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_add_order_line", inputSchemaHash: "cc2a1cf6f7adbbc32c2ca747ea4bfa2b8b493926557e906bef3c56f5646b2161" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddOrderLine", planHash: ADD_ORDER_LINE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"quantity","schema":{"kind":"i64"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"line","schema":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"quantity","schema":{"kind":"i64"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"product_id","schema":{"kind":"uuid"},"wireId":5},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"InvalidQuantity":{"fields":[{"name":"minimum","schema":{"kind":"i64"},"wireId":1}],"kind":"record"},"LineExists":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"product_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"OrderMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProductMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateCustomerInput {
   readonly store_id: string;
   readonly customer_id: string;
   readonly display_name: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateCustomerOutcome = { readonly outcome: "Created"; readonly customer: { readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly customer_id: string; readonly display_name: string } } | { readonly outcome: "StoreMissing"; readonly store_id: string } | { readonly outcome: "CustomerExists"; readonly customer_id: string };
 
+export function isCreateCustomerCreated(value: CreateCustomerOutcome): value is Extract<CreateCustomerOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateCustomerStoreMissing(value: CreateCustomerOutcome): value is Extract<CreateCustomerOutcome, { readonly outcome: "StoreMissing" }> {
+  return value.outcome === "StoreMissing";
+}
+
+export function isCreateCustomerCustomerExists(value: CreateCustomerOutcome): value is Extract<CreateCustomerOutcome, { readonly outcome: "CustomerExists" }> {
+  return value.outcome === "CustomerExists";
+}
+
 export const CREATE_CUSTOMER_PLAN_HASH = "dab86f0ea2cb1a28791990340f2922d6dd440ddce5ac281f41c509eab1a2ee76" as const;
 export function createCustomer(input: CreateCustomerInput): CommandRequest<CreateCustomerInput, CreateCustomerOutcome> {
-  return { driverOperation: { name: "agent_orders_create_customer", inputSchemaHash: "ad53bc7577406d61d6fc0253825c9555208dd98b4fc286cfdecd9780b2728006" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateCustomer", planHash: CREATE_CUSTOMER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"customer","schema":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"CustomerExists":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"StoreMissing":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateCustomerInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_create_customer", inputSchemaHash: "ad53bc7577406d61d6fc0253825c9555208dd98b4fc286cfdecd9780b2728006" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateCustomer", planHash: CREATE_CUSTOMER_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"customer","schema":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"CustomerExists":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"StoreMissing":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateInventoryInput {
   readonly store_id: string;
   readonly available: bigint;
   readonly product_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateInventoryOutcome = { readonly outcome: "Created"; readonly inventory: { readonly reserved: bigint; readonly store_id: string; readonly available: bigint; readonly product_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "InvalidStock"; readonly minimum: bigint } | { readonly outcome: "ProductMissing"; readonly product_id: string } | { readonly outcome: "InventoryExists"; readonly product_id: string };
 
+export function isCreateInventoryCreated(value: CreateInventoryOutcome): value is Extract<CreateInventoryOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateInventoryInvalidStock(value: CreateInventoryOutcome): value is Extract<CreateInventoryOutcome, { readonly outcome: "InvalidStock" }> {
+  return value.outcome === "InvalidStock";
+}
+
+export function isCreateInventoryProductMissing(value: CreateInventoryOutcome): value is Extract<CreateInventoryOutcome, { readonly outcome: "ProductMissing" }> {
+  return value.outcome === "ProductMissing";
+}
+
+export function isCreateInventoryInventoryExists(value: CreateInventoryOutcome): value is Extract<CreateInventoryOutcome, { readonly outcome: "InventoryExists" }> {
+  return value.outcome === "InventoryExists";
+}
+
 export const CREATE_INVENTORY_PLAN_HASH = "cbee92018737ebd8ecf5d769cff7dbd50bd6e1e93232960a55442611ecbe0f63" as const;
 export function createInventory(input: CreateInventoryInput): CommandRequest<CreateInventoryInput, CreateInventoryOutcome> {
-  return { driverOperation: { name: "agent_orders_create_inventory", inputSchemaHash: "18775616cefbf32ec8e5cc14feec67ef87c8546e2a31c6e8f90ba085bcafef31" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateInventory", planHash: CREATE_INVENTORY_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"available","schema":{"kind":"i64"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"inventory","schema":{"fields":[{"name":"reserved","schema":{"kind":"i64"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"available","schema":{"kind":"i64"},"wireId":3},{"name":"product_id","schema":{"kind":"uuid"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"InvalidStock":{"fields":[{"name":"minimum","schema":{"kind":"i64"},"wireId":1}],"kind":"record"},"InventoryExists":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProductMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateInventoryInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_create_inventory", inputSchemaHash: "18775616cefbf32ec8e5cc14feec67ef87c8546e2a31c6e8f90ba085bcafef31" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateInventory", planHash: CREATE_INVENTORY_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"store_id","schema":{"kind":"uuid"}},{"name":"available","schema":{"kind":"i64"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"inventory","schema":{"fields":[{"name":"reserved","schema":{"kind":"i64"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"available","schema":{"kind":"i64"},"wireId":3},{"name":"product_id","schema":{"kind":"uuid"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"InvalidStock":{"fields":[{"name":"minimum","schema":{"kind":"i64"},"wireId":1}],"kind":"record"},"InventoryExists":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProductMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateOrderInput {
   readonly order_id: string;
   readonly store_id: string;
   readonly customer_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateOrderOutcome = { readonly outcome: "Created"; readonly order: { readonly status: string; readonly order_id: string; readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly customer_id: string } } | { readonly outcome: "OrderExists"; readonly order_id: string } | { readonly outcome: "CustomerMissing"; readonly customer_id: string };
 
+export function isCreateOrderCreated(value: CreateOrderOutcome): value is Extract<CreateOrderOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateOrderOrderExists(value: CreateOrderOutcome): value is Extract<CreateOrderOutcome, { readonly outcome: "OrderExists" }> {
+  return value.outcome === "OrderExists";
+}
+
+export function isCreateOrderCustomerMissing(value: CreateOrderOutcome): value is Extract<CreateOrderOutcome, { readonly outcome: "CustomerMissing" }> {
+  return value.outcome === "CustomerMissing";
+}
+
 export const CREATE_ORDER_PLAN_HASH = "3d91e413af4ba451dddca962f3c796d314db33c20947a23dc5d9763987002574" as const;
 export function createOrder(input: CreateOrderInput): CommandRequest<CreateOrderInput, CreateOrderOutcome> {
-  return { driverOperation: { name: "agent_orders_create_order", inputSchemaHash: "e41193765094bde18782f29d362f31d2c8228ceb4bca56a205b060312d0c4b3a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrder", planHash: CREATE_ORDER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"order","schema":{"fields":[{"name":"status","schema":{"kind":"enum"},"wireId":1},{"name":"order_id","schema":{"kind":"uuid"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"CustomerMissing":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrderExists":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateOrderInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_create_order", inputSchemaHash: "e41193765094bde18782f29d362f31d2c8228ceb4bca56a205b060312d0c4b3a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrder", planHash: CREATE_ORDER_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"customer_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"order","schema":{"fields":[{"name":"status","schema":{"kind":"enum"},"wireId":1},{"name":"order_id","schema":{"kind":"uuid"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"CustomerMissing":{"fields":[{"name":"customer_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrderExists":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateProductInput {
@@ -319,27 +444,51 @@ export interface CreateProductInput {
   readonly store_id: string;
   readonly product_id: string;
   readonly unit_price: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number };
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateProductOutcome = { readonly outcome: "Created"; readonly product: { readonly sku: string; readonly name: string; readonly active: boolean; readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly product_id: string; readonly unit_price: { readonly coefficientTwosComplement: Uint8Array; readonly scale: number; readonly precision: number } } } | { readonly outcome: "StoreMissing"; readonly store_id: string } | { readonly outcome: "ProductExists"; readonly product_id: string };
 
+export function isCreateProductCreated(value: CreateProductOutcome): value is Extract<CreateProductOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateProductStoreMissing(value: CreateProductOutcome): value is Extract<CreateProductOutcome, { readonly outcome: "StoreMissing" }> {
+  return value.outcome === "StoreMissing";
+}
+
+export function isCreateProductProductExists(value: CreateProductOutcome): value is Extract<CreateProductOutcome, { readonly outcome: "ProductExists" }> {
+  return value.outcome === "ProductExists";
+}
+
 export const CREATE_PRODUCT_PLAN_HASH = "43aca3800ea9bd6bba18c196608b9ebeaac84c1c10f77318abde917b09e22f8a" as const;
 export function createProduct(input: CreateProductInput): CommandRequest<CreateProductInput, CreateProductOutcome> {
-  return { driverOperation: { name: "agent_orders_create_product", inputSchemaHash: "e9f4ace0af53e4ffd2009358a4134ded6d8d71ae9de4c82145590e19d89c0507" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProduct", planHash: CREATE_PRODUCT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"sku","schema":{"kind":"string"}},{"name":"name","schema":{"kind":"string"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"product","schema":{"fields":[{"name":"sku","schema":{"kind":"string"},"wireId":1},{"name":"name","schema":{"kind":"string"},"wireId":2},{"name":"active","schema":{"kind":"bool"},"wireId":3},{"name":"store_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"product_id","schema":{"kind":"uuid"},"wireId":6},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2},"wireId":7}],"kind":"record"},"wireId":1}],"kind":"record"},"ProductExists":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"StoreMissing":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateProductInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_create_product", inputSchemaHash: "e9f4ace0af53e4ffd2009358a4134ded6d8d71ae9de4c82145590e19d89c0507" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProduct", planHash: CREATE_PRODUCT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"sku","schema":{"kind":"string"}},{"name":"name","schema":{"kind":"string"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"product","schema":{"fields":[{"name":"sku","schema":{"kind":"string"},"wireId":1},{"name":"name","schema":{"kind":"string"},"wireId":2},{"name":"active","schema":{"kind":"bool"},"wireId":3},{"name":"store_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"product_id","schema":{"kind":"uuid"},"wireId":6},{"name":"unit_price","schema":{"kind":"decimal","precision":18,"scale":2},"wireId":7}],"kind":"record"},"wireId":1}],"kind":"record"},"ProductExists":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"StoreMissing":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateStoreInput {
   readonly name: string;
   readonly store_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateStoreOutcome = { readonly outcome: "Created"; readonly store: { readonly name: string; readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "StoreExists"; readonly store_id: string };
 
+export function isCreateStoreCreated(value: CreateStoreOutcome): value is Extract<CreateStoreOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateStoreStoreExists(value: CreateStoreOutcome): value is Extract<CreateStoreOutcome, { readonly outcome: "StoreExists" }> {
+  return value.outcome === "StoreExists";
+}
+
 export const CREATE_STORE_PLAN_HASH = "735c59aa308bc2e65eef545caaf7c99b1e3ccb5a0d6f1c92b4a49f7c82480ee6" as const;
 export function createStore(input: CreateStoreInput): CommandRequest<CreateStoreInput, CreateStoreOutcome> {
-  return { driverOperation: { name: "agent_orders_create_store", inputSchemaHash: "fed781caf4a1a1eda681b314adfb778e76c9258a24112eb15ac90e6d51a8c7b3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateStore", planHash: CREATE_STORE_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"store","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"StoreExists":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateStoreInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_create_store", inputSchemaHash: "fed781caf4a1a1eda681b314adfb778e76c9258a24112eb15ac90e6d51a8c7b3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateStore", planHash: CREATE_STORE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"store","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"StoreExists":{"fields":[{"name":"store_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ReserveInventoryInput {
@@ -347,64 +496,181 @@ export interface ReserveInventoryInput {
   readonly quantity: bigint;
   readonly store_id: string;
   readonly product_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type ReserveInventoryOutcome = { readonly outcome: "Reserved"; readonly order: { readonly status: string; readonly order_id: string; readonly store_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly customer_id: string }; readonly inventory: { readonly reserved: bigint; readonly store_id: string; readonly available: bigint; readonly product_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "LineMissing"; readonly order_id: string; readonly product_id: string } | { readonly outcome: "OrderMissing"; readonly order_id: string } | { readonly outcome: "OrderNotOpen"; readonly order_id: string } | { readonly outcome: "InventoryMissing"; readonly product_id: string } | { readonly outcome: "QuantityMismatch"; readonly expected: bigint; readonly requested: bigint } | { readonly outcome: "InsufficientStock"; readonly available: bigint; readonly requested: bigint; readonly product_id: string };
 
+export function isReserveInventoryReserved(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "Reserved" }> {
+  return value.outcome === "Reserved";
+}
+
+export function isReserveInventoryLineMissing(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "LineMissing" }> {
+  return value.outcome === "LineMissing";
+}
+
+export function isReserveInventoryOrderMissing(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "OrderMissing" }> {
+  return value.outcome === "OrderMissing";
+}
+
+export function isReserveInventoryOrderNotOpen(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "OrderNotOpen" }> {
+  return value.outcome === "OrderNotOpen";
+}
+
+export function isReserveInventoryInventoryMissing(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "InventoryMissing" }> {
+  return value.outcome === "InventoryMissing";
+}
+
+export function isReserveInventoryQuantityMismatch(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "QuantityMismatch" }> {
+  return value.outcome === "QuantityMismatch";
+}
+
+export function isReserveInventoryInsufficientStock(value: ReserveInventoryOutcome): value is Extract<ReserveInventoryOutcome, { readonly outcome: "InsufficientStock" }> {
+  return value.outcome === "InsufficientStock";
+}
+
 export const RESERVE_INVENTORY_PLAN_HASH = "e47c7822517f1d0b5c34601cb7696c00fb5ddce14b41ac74e3310f65c48a6e45" as const;
 export function reserveInventory(input: ReserveInventoryInput): CommandRequest<ReserveInventoryInput, ReserveInventoryOutcome> {
-  return { driverOperation: { name: "agent_orders_reserve_inventory", inputSchemaHash: "cc2a1cf6f7adbbc32c2ca747ea4bfa2b8b493926557e906bef3c56f5646b2161" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReserveInventory", planHash: RESERVE_INVENTORY_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"quantity","schema":{"kind":"i64"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"InsufficientStock":{"fields":[{"name":"available","schema":{"kind":"i64"},"wireId":1},{"name":"requested","schema":{"kind":"i64"},"wireId":2},{"name":"product_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"InventoryMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LineMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"product_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"OrderMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrderNotOpen":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"QuantityMismatch":{"fields":[{"name":"expected","schema":{"kind":"i64"},"wireId":1},{"name":"requested","schema":{"kind":"i64"},"wireId":2}],"kind":"record"},"Reserved":{"fields":[{"name":"order","schema":{"fields":[{"name":"status","schema":{"kind":"enum"},"wireId":1},{"name":"order_id","schema":{"kind":"uuid"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1},{"name":"inventory","schema":{"fields":[{"name":"reserved","schema":{"kind":"i64"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"available","schema":{"kind":"i64"},"wireId":3},{"name":"product_id","schema":{"kind":"uuid"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5}],"kind":"record"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: ReserveInventoryInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_orders_reserve_inventory", inputSchemaHash: "cc2a1cf6f7adbbc32c2ca747ea4bfa2b8b493926557e906bef3c56f5646b2161" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReserveInventory", planHash: RESERVE_INVENTORY_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"order_id","schema":{"kind":"uuid"}},{"name":"quantity","schema":{"kind":"i64"}},{"name":"store_id","schema":{"kind":"uuid"}},{"name":"product_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"InsufficientStock":{"fields":[{"name":"available","schema":{"kind":"i64"},"wireId":1},{"name":"requested","schema":{"kind":"i64"},"wireId":2},{"name":"product_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"InventoryMissing":{"fields":[{"name":"product_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LineMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1},{"name":"product_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"OrderMissing":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrderNotOpen":{"fields":[{"name":"order_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"QuantityMismatch":{"fields":[{"name":"expected","schema":{"kind":"i64"},"wireId":1},{"name":"requested","schema":{"kind":"i64"},"wireId":2}],"kind":"record"},"Reserved":{"fields":[{"name":"order","schema":{"fields":[{"name":"status","schema":{"kind":"enum"},"wireId":1},{"name":"order_id","schema":{"kind":"uuid"},"wireId":2},{"name":"store_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"customer_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1},{"name":"inventory","schema":{"fields":[{"name":"reserved","schema":{"kind":"i64"},"wireId":1},{"name":"store_id","schema":{"kind":"uuid"},"wireId":2},{"name":"available","schema":{"kind":"i64"},"wireId":3},{"name":"product_id","schema":{"kind":"uuid"},"wireId":4},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":5}],"kind":"record"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AgentOrdersClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AgentOrdersClient {
+    return new AgentOrdersClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): AgentOrdersClient {
+    return new AgentOrdersClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): AgentOrdersClient {
+    return new AgentOrdersClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async customerHistory(parameters: CustomerHistoryParams, options: QueryOptions = {}): Promise<TypedQueryResult<CustomerHistoryResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = customerHistory(routedParameters as unknown as CustomerHistoryParams);
     const result = await this.transport.executeNamedQuery<CustomerHistoryParams, CustomerHistoryResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async customerHistoryAfterCommit(parameters: CustomerHistoryParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<CustomerHistoryResult>> {
+    return this.customerHistory(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *customerHistoryPages(parameters: CustomerHistoryParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<CustomerHistoryResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.customerHistory(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as CustomerHistoryParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async inventoryDashboard(parameters: InventoryDashboardParams, options: QueryOptions = {}): Promise<TypedQueryResult<InventoryDashboardResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = inventoryDashboard(routedParameters as unknown as InventoryDashboardParams);
     const result = await this.transport.executeNamedQuery<InventoryDashboardParams, InventoryDashboardResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async inventoryDashboardAfterCommit(parameters: InventoryDashboardParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<InventoryDashboardResult>> {
+    return this.inventoryDashboard(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *inventoryDashboardPages(parameters: InventoryDashboardParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<InventoryDashboardResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.inventoryDashboard(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as InventoryDashboardParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async openOrders(parameters: OpenOrdersParams, options: QueryOptions = {}): Promise<TypedQueryResult<OpenOrdersResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = openOrders(routedParameters as unknown as OpenOrdersParams);
     const result = await this.transport.executeNamedQuery<OpenOrdersParams, OpenOrdersResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async openOrdersAfterCommit(parameters: OpenOrdersParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<OpenOrdersResult>> {
+    return this.openOrders(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *openOrdersPages(parameters: OpenOrdersParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<OpenOrdersResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.openOrders(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as OpenOrdersParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async orderPage(parameters: OrderPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<OrderPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = orderPage(parameters);
-    const result = await this.transport.executeNamedQuery<OrderPageParams, OrderPageResult>(request, options);
+    const result = await this.transport.executeNamedQuery<OrderPageParams, OrderPageResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async orderPageAfterCommit(parameters: OrderPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<OrderPageResult>> {
+    return this.orderPage(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async addOrderLine(input: AddOrderLineInput): Promise<TypedCommandResult<AddOrderLineOutcome>> {
     const result = await this.transport.executeCommand<AddOrderLineInput, AddOrderLineOutcome>(addOrderLine(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ADD_ORDER_LINE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -428,6 +694,9 @@ export class AgentOrdersClient {
   public async createCustomer(input: CreateCustomerInput): Promise<TypedCommandResult<CreateCustomerOutcome>> {
     const result = await this.transport.executeCommand<CreateCustomerInput, CreateCustomerOutcome>(createCustomer(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_CUSTOMER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -451,6 +720,9 @@ export class AgentOrdersClient {
   public async createInventory(input: CreateInventoryInput): Promise<TypedCommandResult<CreateInventoryOutcome>> {
     const result = await this.transport.executeCommand<CreateInventoryInput, CreateInventoryOutcome>(createInventory(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_INVENTORY_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -474,6 +746,9 @@ export class AgentOrdersClient {
   public async createOrder(input: CreateOrderInput): Promise<TypedCommandResult<CreateOrderOutcome>> {
     const result = await this.transport.executeCommand<CreateOrderInput, CreateOrderOutcome>(createOrder(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ORDER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -497,6 +772,9 @@ export class AgentOrdersClient {
   public async createProduct(input: CreateProductInput): Promise<TypedCommandResult<CreateProductOutcome>> {
     const result = await this.transport.executeCommand<CreateProductInput, CreateProductOutcome>(createProduct(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_PRODUCT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -520,6 +798,9 @@ export class AgentOrdersClient {
   public async createStore(input: CreateStoreInput): Promise<TypedCommandResult<CreateStoreOutcome>> {
     const result = await this.transport.executeCommand<CreateStoreInput, CreateStoreOutcome>(createStore(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_STORE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -543,6 +824,9 @@ export class AgentOrdersClient {
   public async reserveInventory(input: ReserveInventoryInput): Promise<TypedCommandResult<ReserveInventoryOutcome>> {
     const result = await this.transport.executeCommand<ReserveInventoryInput, ReserveInventoryOutcome>(reserveInventory(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== RESERVE_INVENTORY_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

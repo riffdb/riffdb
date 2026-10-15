@@ -7,11 +7,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use generated::{
-    CreateItemInput, ItemPageParams, ItemPageResult, {{MODULE_CLIENT}},
-};
-use riffdb_client_rust::{
-    AttemptBudget, CallMetadata, DatabaseAlias, StableApplicationClient,
-    load_protected_bearer_credential,
+    CreateItemInput, ItemPageParams, {{MODULE_CLIENT}},
 };
 
 const ITEM_ID: &str = "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10";
@@ -37,13 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = runner_value("RIFFDB_DATABASE", 3)?
         .into_string()
         .map_err(|_| "RIFFDB_DATABASE is not UTF-8")?;
-    let credential = load_protected_bearer_credential(Path::new(&credential_path))?;
-    let client = StableApplicationClient::connect_uri(endpoint).await?;
-    let mut application = {{MODULE_CLIENT}}::new(
-        client,
-        CallMetadata::authenticated(credential).with_database(DatabaseAlias::new(database)?),
-        AttemptBudget::new(3).ok_or("invalid attempt budget")?,
-    );
+    let mut application = {{MODULE_CLIENT}}::connect_with_credential_file(
+        endpoint,
+        Path::new(&credential_path),
+        Some(&database),
+    )
+    .await?;
 
     application
         .create_item(CreateItemInput {
@@ -52,14 +47,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             title: "Generated application client".to_owned(),
         })
         .await?;
-    let result = application
+    let found = application
         .item_page(ItemPageParams {
             item_id: ITEM_ID.to_owned(),
         })
-        .await?;
-    let ItemPageResult::Found(found) = result else {
-        return Err("generated page query did not find the generated item".into());
-    };
+        .await?
+        .unwrap_found()
+        .ok_or("generated page query did not find the generated item")?;
     println!("{}", found.item.title);
     Ok(())
 }

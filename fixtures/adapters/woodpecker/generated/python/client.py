@@ -63,9 +63,27 @@ class GetPipelineFound:
     pipeline: GetPipelineFoundPipeline
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetPipelineFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetPipelineMissing:
     outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetPipelineFound:
+        raise ValueError("expected GetPipeline outcome found")
 
 GetPipelineResult: TypeAlias = GetPipelineFound | GetPipelineMissing
 
@@ -74,7 +92,7 @@ class ClaimPipelineInput:
     duration: Annotated[int, "u64"]
     owner_id: UUID
     pipeline_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
@@ -83,26 +101,134 @@ CLAIM_PIPELINE_PLAN_HASH: Final[str] = "d772226a1aa832ad4e805920412c432d80de5436
 class ClaimPipelineClaimStale:
     outcome: Literal["ClaimStale"] = field(default="ClaimStale", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return True
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_pipeline_claimed(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimPipelineClaimInvalid:
     outcome: Literal["ClaimInvalid"] = field(default="ClaimInvalid", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return True
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_pipeline_claimed(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimPipelineClaimExhausted:
     outcome: Literal["ClaimExhausted"] = field(default="ClaimExhausted", init=False)
+
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return True
+
+    def is_pipeline_claimed(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimPipelinePipelineClaimed:
     pipeline: ScheduledPipeline
     outcome: Literal["PipelineClaimed"] = field(default="PipelineClaimed", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_pipeline_claimed(self) -> bool:
+        return True
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimPipelinePipelineMissing:
     outcome: Literal["PipelineMissing"] = field(default="PipelineMissing", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_pipeline_claimed(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return True
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimPipelineClaimUnavailable:
     outcome: Literal["ClaimUnavailable"] = field(default="ClaimUnavailable", init=False)
+
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_pipeline_claimed(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return True
 
 ClaimPipelineOutcome: TypeAlias = ClaimPipelineClaimStale | ClaimPipelineClaimInvalid | ClaimPipelineClaimExhausted | ClaimPipelinePipelineClaimed | ClaimPipelinePipelineMissing | ClaimPipelineClaimUnavailable
 
@@ -110,7 +236,7 @@ ClaimPipelineOutcome: TypeAlias = ClaimPipelineClaimStale | ClaimPipelineClaimIn
 class ReleasePipelineInput:
     owner_id: UUID
     pipeline_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     fencing_token: Annotated[int, "u64"]
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
@@ -120,18 +246,66 @@ RELEASE_PIPELINE_PLAN_HASH: Final[str] = "d0b0de194872c07734a81e9cbf5c8c09372dfa
 class ReleasePipelineReleaseStale:
     outcome: Literal["ReleaseStale"] = field(default="ReleaseStale", init=False)
 
+    def is_release_stale(self) -> bool:
+        return True
+
+    def is_release_invalid(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_released(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleasePipelineReleaseInvalid:
     outcome: Literal["ReleaseInvalid"] = field(default="ReleaseInvalid", init=False)
+
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return True
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_released(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleasePipelinePipelineMissing:
     outcome: Literal["PipelineMissing"] = field(default="PipelineMissing", init=False)
 
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return True
+
+    def is_pipeline_released(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleasePipelinePipelineReleased:
     pipeline: ScheduledPipeline
     outcome: Literal["PipelineReleased"] = field(default="PipelineReleased", init=False)
+
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_released(self) -> bool:
+        return True
 
 ReleasePipelineOutcome: TypeAlias = ReleasePipelineReleaseStale | ReleasePipelineReleaseInvalid | ReleasePipelinePipelineMissing | ReleasePipelinePipelineReleased
 
@@ -139,7 +313,7 @@ ReleasePipelineOutcome: TypeAlias = ReleasePipelineReleaseStale | ReleasePipelin
 class StartPipelineInput:
     owner_id: UUID
     pipeline_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     fencing_token: Annotated[int, "u64"]
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
@@ -149,39 +323,204 @@ START_PIPELINE_PLAN_HASH: Final[str] = "c753ddcf3b99c45a069a0be94d51397ae088229e
 class StartPipelineFenceStale:
     outcome: Literal["FenceStale"] = field(default="FenceStale", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return True
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelineStartStale:
     outcome: Literal["StartStale"] = field(default="StartStale", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return True
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelineFenceExpired:
     outcome: Literal["FenceExpired"] = field(default="FenceExpired", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return True
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelineFenceInvalid:
     outcome: Literal["FenceInvalid"] = field(default="FenceInvalid", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return True
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelineStartIllegal:
     outcome: Literal["StartIllegal"] = field(default="StartIllegal", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return True
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelinePipelineMissing:
     outcome: Literal["PipelineMissing"] = field(default="PipelineMissing", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return True
+
+    def is_pipeline_started(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartPipelinePipelineStarted:
     pipeline: ScheduledPipeline
     outcome: Literal["PipelineStarted"] = field(default="PipelineStarted", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_start_stale(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_start_illegal(self) -> bool:
+        return False
+
+    def is_pipeline_missing(self) -> bool:
+        return False
+
+    def is_pipeline_started(self) -> bool:
+        return True
+
 StartPipelineOutcome: TypeAlias = StartPipelineFenceStale | StartPipelineStartStale | StartPipelineFenceExpired | StartPipelineFenceInvalid | StartPipelineStartIllegal | StartPipelinePipelineMissing | StartPipelinePipelineStarted
 
 class WoodpeckerSchedulerClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> WoodpeckerSchedulerClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> WoodpeckerSchedulerClient:
+        return WoodpeckerSchedulerClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> WoodpeckerSchedulerClient:
+        return WoodpeckerSchedulerClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def get_pipeline(self, parameters: GetPipelineParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetPipelineResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -193,6 +532,9 @@ class WoodpeckerSchedulerClient:
             "Missing": GetPipelineMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def get_pipeline_after_commit(self, parameters: GetPipelineParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetPipelineResult]:
+        return self.get_pipeline(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def claim_pipeline(self, input: ClaimPipelineInput) -> TypedCommandResult[ClaimPipelineOutcome]:
         raw = self._transport._execute_command(
@@ -209,6 +551,8 @@ class WoodpeckerSchedulerClient:
             "ClaimUnavailable": ClaimPipelineClaimUnavailable,
         }
         result: TypedCommandResult[ClaimPipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ClaimPipelinePipelineClaimed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -236,6 +580,8 @@ class WoodpeckerSchedulerClient:
             "PipelineReleased": ReleasePipelinePipelineReleased,
         }
         result: TypedCommandResult[ReleasePipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ReleasePipelinePipelineReleased):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -266,6 +612,8 @@ class WoodpeckerSchedulerClient:
             "PipelineStarted": StartPipelinePipelineStarted,
         }
         result: TypedCommandResult[StartPipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, StartPipelinePipelineStarted):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -281,11 +629,29 @@ class WoodpeckerSchedulerClient:
         return self._transport._command_batch(inputs, options, self.start_pipeline, progress)
 
 class AsyncWoodpeckerSchedulerClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncWoodpeckerSchedulerClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncWoodpeckerSchedulerClient:
+        return AsyncWoodpeckerSchedulerClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncWoodpeckerSchedulerClient:
+        return AsyncWoodpeckerSchedulerClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def get_pipeline(self, parameters: GetPipelineParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetPipelineResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -297,6 +663,9 @@ class AsyncWoodpeckerSchedulerClient:
             "Missing": GetPipelineMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def get_pipeline_after_commit(self, parameters: GetPipelineParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetPipelineResult]:
+        return await self.get_pipeline(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def claim_pipeline(self, input: ClaimPipelineInput) -> TypedCommandResult[ClaimPipelineOutcome]:
         raw = await self._transport._execute_command(
@@ -313,6 +682,8 @@ class AsyncWoodpeckerSchedulerClient:
             "ClaimUnavailable": ClaimPipelineClaimUnavailable,
         }
         result: TypedCommandResult[ClaimPipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ClaimPipelinePipelineClaimed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -340,6 +711,8 @@ class AsyncWoodpeckerSchedulerClient:
             "PipelineReleased": ReleasePipelinePipelineReleased,
         }
         result: TypedCommandResult[ReleasePipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ReleasePipelinePipelineReleased):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -370,6 +743,8 @@ class AsyncWoodpeckerSchedulerClient:
             "PipelineStarted": StartPipelinePipelineStarted,
         }
         result: TypedCommandResult[StartPipelineOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, StartPipelinePipelineStarted):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:

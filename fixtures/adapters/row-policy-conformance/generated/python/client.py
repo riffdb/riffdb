@@ -108,6 +108,12 @@ class DocumentSummaryFound:
     summary: tuple[DocumentSummaryFoundSummary, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> DocumentSummaryFound:
+        return self
+
 DocumentSummaryResult: TypeAlias = DocumentSummaryFound
 
 GET_DOCUMENT_QUERY_PLAN_HASH: Final[str] = "b4d8dc1648ba795b4c46ddc07c49c3a3bb236658c785eca382315b76ed2d6b2c"
@@ -132,9 +138,27 @@ class GetDocumentFound:
     document: GetDocumentFoundDocument
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetDocumentFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetDocumentNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetDocumentFound:
+        raise ValueError("expected GetDocument outcome found")
 
 GetDocumentResult: TypeAlias = GetDocumentFound | GetDocumentNotFound
 
@@ -159,6 +183,12 @@ class ListDocumentsFound:
     documents: tuple[ListDocumentsFoundDocuments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListDocumentsFound:
+        return self
+
 ListDocumentsResult: TypeAlias = ListDocumentsFound
 
 LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "767cfe6e09f5c7287e5598a1dfb7b3341d02cf24df53da646a59f1b6e326f3d1"
@@ -178,6 +208,12 @@ class ListDraftDocumentsFoundDocuments:
 class ListDraftDocumentsFound:
     documents: tuple[ListDraftDocumentsFoundDocuments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListDraftDocumentsFound:
+        return self
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
@@ -200,6 +236,12 @@ class ListExperimentsFound:
     experiments: tuple[ListExperimentsFoundExperiments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListExperimentsFound:
+        return self
+
 ListExperimentsResult: TypeAlias = ListExperimentsFound
 
 METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "99e0cad44a2a75d7b3b8afe63e7617ca3ed299e3acd6a741329c5415bd86f52e"
@@ -220,6 +262,12 @@ class MetricDashboardFoundSummary:
 class MetricDashboardFound:
     summary: tuple[MetricDashboardFoundSummary, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> MetricDashboardFound:
+        return self
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
@@ -257,9 +305,27 @@ class RunPageFound:
     artifacts: tuple[RunPageFoundArtifacts, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> RunPageFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunPageNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> RunPageFound:
+        raise ValueError("expected RunPage outcome found")
 
 RunPageResult: TypeAlias = RunPageFound | RunPageNotFound
 
@@ -282,6 +348,12 @@ class SearchDocumentsFound:
     documents: tuple[SearchDocumentsFoundDocuments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> SearchDocumentsFound:
+        return self
+
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -296,10 +368,22 @@ ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH: Final[str] = "577409d3917653905aab400626d38
 class AttemptDocumentTransferDocumentMissing:
     outcome: Literal["DocumentMissing"] = field(default="DocumentMissing", init=False)
 
+    def is_document_missing(self) -> bool:
+        return True
+
+    def is_document_transferred(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttemptDocumentTransferDocumentTransferred:
     document: Document
     outcome: Literal["DocumentTransferred"] = field(default="DocumentTransferred", init=False)
+
+    def is_document_missing(self) -> bool:
+        return False
+
+    def is_document_transferred(self) -> bool:
+        return True
 
 AttemptDocumentTransferOutcome: TypeAlias = AttemptDocumentTransferDocumentMissing | AttemptDocumentTransferDocumentTransferred
 
@@ -316,10 +400,22 @@ CHANGE_DOCUMENT_ACCESS_PLAN_HASH: Final[str] = "5b9c70266a29652a028256e5c72341d8
 class ChangeDocumentAccessDocumentMissing:
     outcome: Literal["DocumentMissing"] = field(default="DocumentMissing", init=False)
 
+    def is_document_missing(self) -> bool:
+        return True
+
+    def is_document_access_changed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeDocumentAccessDocumentAccessChanged:
     document: Document
     outcome: Literal["DocumentAccessChanged"] = field(default="DocumentAccessChanged", init=False)
+
+    def is_document_missing(self) -> bool:
+        return False
+
+    def is_document_access_changed(self) -> bool:
+        return True
 
 ChangeDocumentAccessOutcome: TypeAlias = ChangeDocumentAccessDocumentMissing | ChangeDocumentAccessDocumentAccessChanged
 
@@ -340,10 +436,22 @@ CREATE_ARTIFACT_PLAN_HASH: Final[str] = "fd4fb59c4f94c29a370038d73d3fe0f9803c0ce
 class CreateArtifactArtifactExists:
     outcome: Literal["ArtifactExists"] = field(default="ArtifactExists", init=False)
 
+    def is_artifact_exists(self) -> bool:
+        return True
+
+    def is_artifact_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateArtifactArtifactCreated:
     artifact: Artifact
     outcome: Literal["ArtifactCreated"] = field(default="ArtifactCreated", init=False)
+
+    def is_artifact_exists(self) -> bool:
+        return False
+
+    def is_artifact_created(self) -> bool:
+        return True
 
 CreateArtifactOutcome: TypeAlias = CreateArtifactArtifactExists | CreateArtifactArtifactCreated
 
@@ -364,10 +472,22 @@ CREATE_DOCUMENT_PLAN_HASH: Final[str] = "cb7f63c1bd0b62d9e733a8aeb9eda02e8b08b58
 class CreateDocumentDocumentExists:
     outcome: Literal["DocumentExists"] = field(default="DocumentExists", init=False)
 
+    def is_document_exists(self) -> bool:
+        return True
+
+    def is_document_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentDocumentCreated:
     document: Document
     outcome: Literal["DocumentCreated"] = field(default="DocumentCreated", init=False)
+
+    def is_document_exists(self) -> bool:
+        return False
+
+    def is_document_created(self) -> bool:
+        return True
 
 CreateDocumentOutcome: TypeAlias = CreateDocumentDocumentExists | CreateDocumentDocumentCreated
 
@@ -386,10 +506,22 @@ CREATE_EXPERIMENT_PLAN_HASH: Final[str] = "854b038da38b173799ad89e931344ac8dfc1c
 class CreateExperimentExperimentExists:
     outcome: Literal["ExperimentExists"] = field(default="ExperimentExists", init=False)
 
+    def is_experiment_exists(self) -> bool:
+        return True
+
+    def is_experiment_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateExperimentExperimentCreated:
     experiment: Experiment
     outcome: Literal["ExperimentCreated"] = field(default="ExperimentCreated", init=False)
+
+    def is_experiment_exists(self) -> bool:
+        return False
+
+    def is_experiment_created(self) -> bool:
+        return True
 
 CreateExperimentOutcome: TypeAlias = CreateExperimentExperimentExists | CreateExperimentExperimentCreated
 
@@ -409,10 +541,22 @@ CREATE_RUN_PLAN_HASH: Final[str] = "289e85b989f6da11b19b49d489e928cc18a5173d1b88
 class CreateRunRunExists:
     outcome: Literal["RunExists"] = field(default="RunExists", init=False)
 
+    def is_run_exists(self) -> bool:
+        return True
+
+    def is_run_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRunRunCreated:
     run: Run
     outcome: Literal["RunCreated"] = field(default="RunCreated", init=False)
+
+    def is_run_exists(self) -> bool:
+        return False
+
+    def is_run_created(self) -> bool:
+        return True
 
 CreateRunOutcome: TypeAlias = CreateRunRunExists | CreateRunRunCreated
 
@@ -429,18 +573,66 @@ FINISH_RUN_PLAN_HASH: Final[str] = "47867b539cbd3499ba53923f19031513f10f1211b27e
 class FinishRunRunMissing:
     outcome: Literal["RunMissing"] = field(default="RunMissing", init=False)
 
+    def is_run_missing(self) -> bool:
+        return True
+
+    def is_finish_stale(self) -> bool:
+        return False
+
+    def is_run_finished(self) -> bool:
+        return False
+
+    def is_finish_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FinishRunFinishStale:
     outcome: Literal["FinishStale"] = field(default="FinishStale", init=False)
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_finish_stale(self) -> bool:
+        return True
+
+    def is_run_finished(self) -> bool:
+        return False
+
+    def is_finish_illegal(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FinishRunRunFinished:
     run: Run
     outcome: Literal["RunFinished"] = field(default="RunFinished", init=False)
 
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_finish_stale(self) -> bool:
+        return False
+
+    def is_run_finished(self) -> bool:
+        return True
+
+    def is_finish_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FinishRunFinishIllegal:
     outcome: Literal["FinishIllegal"] = field(default="FinishIllegal", init=False)
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_finish_stale(self) -> bool:
+        return False
+
+    def is_run_finished(self) -> bool:
+        return False
+
+    def is_finish_illegal(self) -> bool:
+        return True
 
 FinishRunOutcome: TypeAlias = FinishRunRunMissing | FinishRunFinishStale | FinishRunRunFinished | FinishRunFinishIllegal
 
@@ -462,19 +654,49 @@ LOG_METRIC_PLAN_HASH: Final[str] = "023b0d923414555cce9e1db5229c9ff417232d00b4c2
 class LogMetricMetricExists:
     outcome: Literal["MetricExists"] = field(default="MetricExists", init=False)
 
+    def is_metric_exists(self) -> bool:
+        return True
+
+    def is_metric_logged(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricMetricLogged:
     metric: Metric
     outcome: Literal["MetricLogged"] = field(default="MetricLogged", init=False)
 
+    def is_metric_exists(self) -> bool:
+        return False
+
+    def is_metric_logged(self) -> bool:
+        return True
+
 LogMetricOutcome: TypeAlias = LogMetricMetricExists | LogMetricMetricLogged
 
 class AdapterRowPolicyConformanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AdapterRowPolicyConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AdapterRowPolicyConformanceClient:
+        return AdapterRowPolicyConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AdapterRowPolicyConformanceClient:
+        return AdapterRowPolicyConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def document_summary(self, parameters: DocumentSummaryParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DocumentSummaryResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -486,7 +708,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def document_summary_after_commit(self, parameters: DocumentSummaryParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DocumentSummaryResult]:
+        return self.document_summary(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def get_document(self, parameters: GetDocumentParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetDocumentResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -499,7 +726,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_document_after_commit(self, parameters: GetDocumentParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetDocumentResult]:
+        return self.get_document(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_documents(self, parameters: ListDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -511,7 +743,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_documents_after_commit(self, parameters: ListDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDocumentsResult]:
+        return self.list_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -523,7 +760,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_draft_documents_after_commit(self, parameters: ListDraftDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        return self.list_draft_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_experiments(self, parameters: ListExperimentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListExperimentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -535,7 +777,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_experiments_after_commit(self, parameters: ListExperimentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListExperimentsResult]:
+        return self.list_experiments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def metric_dashboard(self, parameters: MetricDashboardParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -547,7 +794,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def metric_dashboard_after_commit(self, parameters: MetricDashboardParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        return self.metric_dashboard(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def run_page(self, parameters: RunPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[RunPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -560,7 +812,12 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def run_page_after_commit(self, parameters: RunPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[RunPageResult]:
+        return self.run_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -572,6 +829,9 @@ class AdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def search_documents_after_commit(self, parameters: SearchDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        return self.search_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def attempt_document_transfer(self, input: AttemptDocumentTransferInput) -> TypedCommandResult[AttemptDocumentTransferOutcome]:
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -582,7 +842,10 @@ class AdapterRowPolicyConformanceClient:
             "DocumentMissing": AttemptDocumentTransferDocumentMissing,
             "DocumentTransferred": AttemptDocumentTransferDocumentTransferred,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttemptDocumentTransferOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def attempt_document_transfer_batch(
         self, inputs: Sequence[AttemptDocumentTransferInput], options: CommandBatchOptions,
@@ -600,7 +863,10 @@ class AdapterRowPolicyConformanceClient:
             "DocumentMissing": ChangeDocumentAccessDocumentMissing,
             "DocumentAccessChanged": ChangeDocumentAccessDocumentAccessChanged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ChangeDocumentAccessOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def change_document_access_batch(
         self, inputs: Sequence[ChangeDocumentAccessInput], options: CommandBatchOptions,
@@ -618,7 +884,10 @@ class AdapterRowPolicyConformanceClient:
             "ArtifactExists": CreateArtifactArtifactExists,
             "ArtifactCreated": CreateArtifactArtifactCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateArtifactOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_artifact_batch(
         self, inputs: Sequence[CreateArtifactInput], options: CommandBatchOptions,
@@ -636,7 +905,10 @@ class AdapterRowPolicyConformanceClient:
             "DocumentExists": CreateDocumentDocumentExists,
             "DocumentCreated": CreateDocumentDocumentCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_document_batch(
         self, inputs: Sequence[CreateDocumentInput], options: CommandBatchOptions,
@@ -654,7 +926,10 @@ class AdapterRowPolicyConformanceClient:
             "ExperimentExists": CreateExperimentExperimentExists,
             "ExperimentCreated": CreateExperimentExperimentCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateExperimentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_experiment_batch(
         self, inputs: Sequence[CreateExperimentInput], options: CommandBatchOptions,
@@ -672,7 +947,10 @@ class AdapterRowPolicyConformanceClient:
             "RunExists": CreateRunRunExists,
             "RunCreated": CreateRunRunCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_run_batch(
         self, inputs: Sequence[CreateRunInput], options: CommandBatchOptions,
@@ -692,7 +970,10 @@ class AdapterRowPolicyConformanceClient:
             "RunFinished": FinishRunRunFinished,
             "FinishIllegal": FinishRunFinishIllegal,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[FinishRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def finish_run_batch(
         self, inputs: Sequence[FinishRunInput], options: CommandBatchOptions,
@@ -710,7 +991,10 @@ class AdapterRowPolicyConformanceClient:
             "MetricExists": LogMetricMetricExists,
             "MetricLogged": LogMetricMetricLogged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def log_metric_batch(
         self, inputs: Sequence[LogMetricInput], options: CommandBatchOptions,
@@ -719,11 +1003,29 @@ class AdapterRowPolicyConformanceClient:
         return self._transport._command_batch(inputs, options, self.log_metric, progress)
 
 class AsyncAdapterRowPolicyConformanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncAdapterRowPolicyConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncAdapterRowPolicyConformanceClient:
+        return AsyncAdapterRowPolicyConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncAdapterRowPolicyConformanceClient:
+        return AsyncAdapterRowPolicyConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def document_summary(self, parameters: DocumentSummaryParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DocumentSummaryResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -735,7 +1037,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def document_summary_after_commit(self, parameters: DocumentSummaryParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DocumentSummaryResult]:
+        return await self.document_summary(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def get_document(self, parameters: GetDocumentParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetDocumentResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -748,7 +1055,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_document_after_commit(self, parameters: GetDocumentParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetDocumentResult]:
+        return await self.get_document(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_documents(self, parameters: ListDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -760,7 +1072,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_documents_after_commit(self, parameters: ListDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDocumentsResult]:
+        return await self.list_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -772,7 +1089,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_draft_documents_after_commit(self, parameters: ListDraftDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        return await self.list_draft_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_experiments(self, parameters: ListExperimentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListExperimentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -784,7 +1106,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_experiments_after_commit(self, parameters: ListExperimentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListExperimentsResult]:
+        return await self.list_experiments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def metric_dashboard(self, parameters: MetricDashboardParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -796,7 +1123,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def metric_dashboard_after_commit(self, parameters: MetricDashboardParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        return await self.metric_dashboard(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def run_page(self, parameters: RunPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[RunPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -809,7 +1141,12 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def run_page_after_commit(self, parameters: RunPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[RunPageResult]:
+        return await self.run_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -821,6 +1158,9 @@ class AsyncAdapterRowPolicyConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def search_documents_after_commit(self, parameters: SearchDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        return await self.search_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def attempt_document_transfer(self, input: AttemptDocumentTransferInput) -> TypedCommandResult[AttemptDocumentTransferOutcome]:
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -831,7 +1171,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "DocumentMissing": AttemptDocumentTransferDocumentMissing,
             "DocumentTransferred": AttemptDocumentTransferDocumentTransferred,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[AttemptDocumentTransferOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def attempt_document_transfer_batch(
         self, inputs: Sequence[AttemptDocumentTransferInput], options: CommandBatchOptions,
@@ -849,7 +1192,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "DocumentMissing": ChangeDocumentAccessDocumentMissing,
             "DocumentAccessChanged": ChangeDocumentAccessDocumentAccessChanged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ChangeDocumentAccessOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def change_document_access_batch(
         self, inputs: Sequence[ChangeDocumentAccessInput], options: CommandBatchOptions,
@@ -867,7 +1213,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "ArtifactExists": CreateArtifactArtifactExists,
             "ArtifactCreated": CreateArtifactArtifactCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateArtifactOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_artifact_batch(
         self, inputs: Sequence[CreateArtifactInput], options: CommandBatchOptions,
@@ -885,7 +1234,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "DocumentExists": CreateDocumentDocumentExists,
             "DocumentCreated": CreateDocumentDocumentCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_document_batch(
         self, inputs: Sequence[CreateDocumentInput], options: CommandBatchOptions,
@@ -903,7 +1255,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "ExperimentExists": CreateExperimentExperimentExists,
             "ExperimentCreated": CreateExperimentExperimentCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateExperimentOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_experiment_batch(
         self, inputs: Sequence[CreateExperimentInput], options: CommandBatchOptions,
@@ -921,7 +1276,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "RunExists": CreateRunRunExists,
             "RunCreated": CreateRunRunCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_run_batch(
         self, inputs: Sequence[CreateRunInput], options: CommandBatchOptions,
@@ -941,7 +1299,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "RunFinished": FinishRunRunFinished,
             "FinishIllegal": FinishRunFinishIllegal,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[FinishRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def finish_run_batch(
         self, inputs: Sequence[FinishRunInput], options: CommandBatchOptions,
@@ -959,7 +1320,10 @@ class AsyncAdapterRowPolicyConformanceClient:
             "MetricExists": LogMetricMetricExists,
             "MetricLogged": LogMetricMetricLogged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def log_metric_batch(
         self, inputs: Sequence[LogMetricInput], options: CommandBatchOptions,

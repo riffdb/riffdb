@@ -169,6 +169,12 @@ class ExactDocumentsContainsAscFound:
     total: ExactDocumentsContainsAscFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ExactDocumentsContainsAscFound:
+        return self
+
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
 EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "0e232b3a1b86ffc8aad5f893b9baf939959a76d91faea49bdb16c6174598abef"
@@ -196,6 +202,12 @@ class ExactDocumentsEndsWithDescFound:
     documents: tuple[ExactDocumentsEndsWithDescFoundDocuments, ...]
     total: ExactDocumentsEndsWithDescFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ExactDocumentsEndsWithDescFound:
+        return self
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
@@ -225,6 +237,12 @@ class ExactDocumentsStartsWithAscFound:
     total: ExactDocumentsStartsWithAscFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ExactDocumentsStartsWithAscFound:
+        return self
+
 ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
 FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH: Final[str] = "41a550adbfaf29eb67a22a286279d875004abe03a7fce35a2cd582d2cf6b5104"
@@ -250,6 +268,12 @@ class FgaObjectsWithRelationsFound:
     objects: tuple[FgaObjectsWithRelationsFoundObjects, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> FgaObjectsWithRelationsFound:
+        return self
+
 FgaObjectsWithRelationsResult: TypeAlias = FgaObjectsWithRelationsFound
 
 GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "efd579414bcd2c9b5876fd726db705497744accd88040125ea05083734b506ac"
@@ -273,9 +297,27 @@ class GetAuthSessionFound:
     session: GetAuthSessionFoundSession
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetAuthSessionFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetAuthSessionMissing:
     outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetAuthSessionFound:
+        raise ValueError("expected GetAuthSession outcome found")
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
@@ -305,6 +347,12 @@ class InventoryByObservedAscNullsLastFound:
     total: InventoryByObservedAscNullsLastFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> InventoryByObservedAscNullsLastFound:
+        return self
+
 InventoryByObservedAscNullsLastResult: TypeAlias = InventoryByObservedAscNullsLastFound
 
 INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "5b0284f6bbb257b13c1541591cdb78862fdc4f34cbf4b1dfd8e40af244a147af"
@@ -332,6 +380,12 @@ class InventoryByObservedDescNullsFirstFound:
     records: tuple[InventoryByObservedDescNullsFirstFoundRecords, ...]
     total: InventoryByObservedDescNullsFirstFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> InventoryByObservedDescNullsFirstFound:
+        return self
 
 InventoryByObservedDescNullsFirstResult: TypeAlias = InventoryByObservedDescNullsFirstFound
 
@@ -361,6 +415,12 @@ class InventoryBySubtitleAscNullsFirstFound:
     total: InventoryBySubtitleAscNullsFirstFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> InventoryBySubtitleAscNullsFirstFound:
+        return self
+
 InventoryBySubtitleAscNullsFirstResult: TypeAlias = InventoryBySubtitleAscNullsFirstFound
 
 INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "94f0956e18971aa230888afdc2ec5293fdbe9b92d47ddd92da7c34e8c4a71872"
@@ -389,6 +449,12 @@ class InventoryBySubtitleDescNullsLastFound:
     total: InventoryBySubtitleDescNullsLastFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> InventoryBySubtitleDescNullsLastFound:
+        return self
+
 InventoryBySubtitleDescNullsLastResult: TypeAlias = InventoryBySubtitleDescNullsLastFound
 
 LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ae4303998bde4b3d81c19b292f94ea177b7106070e2a754cb87c2d2a73fc3fb5"
@@ -407,6 +473,12 @@ class ListDraftDocumentsFoundDocuments:
 class ListDraftDocumentsFound:
     documents: tuple[ListDraftDocumentsFoundDocuments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListDraftDocumentsFound:
+        return self
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
@@ -430,6 +502,12 @@ class ListFgaTuplesFound:
     tuples: tuple[ListFgaTuplesFoundTuples, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListFgaTuplesFound:
+        return self
+
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
 LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "e9fc1dc963117c3338eb02f1f5edbf6e1adf257eae0dc1104363634f914942cf"
@@ -451,6 +529,12 @@ class ListPipelinesFound:
     pipelines: tuple[ListPipelinesFoundPipelines, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ListPipelinesFound:
+        return self
+
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
 METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "942a66e10da8fe30a9d3f7a3bf00c1bac3dc433354b3e266b4dd3eef57dfdcc1"
@@ -471,6 +555,12 @@ class MetricDashboardFoundSummary:
 class MetricDashboardFound:
     summary: tuple[MetricDashboardFoundSummary, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> MetricDashboardFound:
+        return self
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
@@ -496,6 +586,12 @@ class MlflowRunsWithTagsFoundRuns:
 class MlflowRunsWithTagsFound:
     runs: tuple[MlflowRunsWithTagsFoundRuns, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> MlflowRunsWithTagsFound:
+        return self
 
 MlflowRunsWithTagsResult: TypeAlias = MlflowRunsWithTagsFound
 
@@ -527,6 +623,12 @@ class ReviewedDirectoryUsersFound:
     users: tuple[ReviewedDirectoryUsersFoundUsers, ...]
     total: ReviewedDirectoryUsersFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ReviewedDirectoryUsersFound:
+        return self
 
 ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
 
@@ -560,6 +662,12 @@ class SearchDirectoryUsersFound:
     total: SearchDirectoryUsersFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> SearchDirectoryUsersFound:
+        return self
+
 SearchDirectoryUsersResult: TypeAlias = SearchDirectoryUsersFound
 
 SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "5b89e7ad735a10ebfe66f55e85c8d6c9eea437cf4df0772fab59fcaeb3f0b5c3"
@@ -580,6 +688,12 @@ class SearchDocumentsFoundDocuments:
 class SearchDocumentsFound:
     documents: tuple[SearchDocumentsFoundDocuments, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> SearchDocumentsFound:
+        return self
 
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
 
@@ -607,6 +721,12 @@ class TicketPageWithCommentsFound:
     tickets: tuple[TicketPageWithCommentsFoundTickets, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> TicketPageWithCommentsFound:
+        return self
+
 TicketPageWithCommentsResult: TypeAlias = TicketPageWithCommentsFound
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -623,10 +743,22 @@ CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "baf7cf55cdaed4b4c0b80e11a
 class ChangeInventoryRecordStateInventoryRecordMissing:
     outcome: Literal["InventoryRecordMissing"] = field(default="InventoryRecordMissing", init=False)
 
+    def is_inventory_record_missing(self) -> bool:
+        return True
+
+    def is_inventory_record_state_changed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeInventoryRecordStateInventoryRecordStateChanged:
     record: InventoryRecord
     outcome: Literal["InventoryRecordStateChanged"] = field(default="InventoryRecordStateChanged", init=False)
+
+    def is_inventory_record_missing(self) -> bool:
+        return False
+
+    def is_inventory_record_state_changed(self) -> bool:
+        return True
 
 ChangeInventoryRecordStateOutcome: TypeAlias = ChangeInventoryRecordStateInventoryRecordMissing | ChangeInventoryRecordStateInventoryRecordStateChanged
 
@@ -640,13 +772,40 @@ CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "b72849398192f4a37b2c42d13b41ae5acd
 class CreateAuthSessionsSessionsCreated:
     outcome: Literal["SessionsCreated"] = field(default="SessionsCreated", init=False)
 
+    def is_sessions_created(self) -> bool:
+        return True
+
+    def is_user_already_exists(self) -> bool:
+        return False
+
+    def is_session_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateAuthSessionsUserAlreadyExists:
     outcome: Literal["UserAlreadyExists"] = field(default="UserAlreadyExists", init=False)
 
+    def is_sessions_created(self) -> bool:
+        return False
+
+    def is_user_already_exists(self) -> bool:
+        return True
+
+    def is_session_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateAuthSessionsSessionAlreadyExists:
     outcome: Literal["SessionAlreadyExists"] = field(default="SessionAlreadyExists", init=False)
+
+    def is_sessions_created(self) -> bool:
+        return False
+
+    def is_user_already_exists(self) -> bool:
+        return False
+
+    def is_session_already_exists(self) -> bool:
+        return True
 
 CreateAuthSessionsOutcome: TypeAlias = CreateAuthSessionsSessionsCreated | CreateAuthSessionsUserAlreadyExists | CreateAuthSessionsSessionAlreadyExists
 
@@ -660,9 +819,21 @@ CREATE_DIRECTORY_USERS_PLAN_HASH: Final[str] = "3ee3e717d5ba93e3f31589131050e5de
 class CreateDirectoryUsersDirectoryUsersCreated:
     outcome: Literal["DirectoryUsersCreated"] = field(default="DirectoryUsersCreated", init=False)
 
+    def is_directory_users_created(self) -> bool:
+        return True
+
+    def is_directory_user_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDirectoryUsersDirectoryUserAlreadyExists:
     outcome: Literal["DirectoryUserAlreadyExists"] = field(default="DirectoryUserAlreadyExists", init=False)
+
+    def is_directory_users_created(self) -> bool:
+        return False
+
+    def is_directory_user_already_exists(self) -> bool:
+        return True
 
 CreateDirectoryUsersOutcome: TypeAlias = CreateDirectoryUsersDirectoryUsersCreated | CreateDirectoryUsersDirectoryUserAlreadyExists
 
@@ -676,9 +847,21 @@ CREATE_DOCUMENTS_PLAN_HASH: Final[str] = "e2c714aa19f9c9fc2ee7a22d096f5a9a5ccc73
 class CreateDocumentsDocumentsCreated:
     outcome: Literal["DocumentsCreated"] = field(default="DocumentsCreated", init=False)
 
+    def is_documents_created(self) -> bool:
+        return True
+
+    def is_document_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
+
+    def is_documents_created(self) -> bool:
+        return False
+
+    def is_document_already_exists(self) -> bool:
+        return True
 
 CreateDocumentsOutcome: TypeAlias = CreateDocumentsDocumentsCreated | CreateDocumentsDocumentAlreadyExists
 
@@ -694,9 +877,21 @@ CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: Final[str] = "055752a556c24254b5c475e
 class CreateInventoryRecordMissingInventoryRecordAlreadyExists:
     outcome: Literal["InventoryRecordAlreadyExists"] = field(default="InventoryRecordAlreadyExists", init=False)
 
+    def is_inventory_record_already_exists(self) -> bool:
+        return True
+
+    def is_inventory_record_missing_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateInventoryRecordMissingInventoryRecordMissingCreated:
     outcome: Literal["InventoryRecordMissingCreated"] = field(default="InventoryRecordMissingCreated", init=False)
+
+    def is_inventory_record_already_exists(self) -> bool:
+        return False
+
+    def is_inventory_record_missing_created(self) -> bool:
+        return True
 
 CreateInventoryRecordMissingOutcome: TypeAlias = CreateInventoryRecordMissingInventoryRecordAlreadyExists | CreateInventoryRecordMissingInventoryRecordMissingCreated
 
@@ -710,9 +905,21 @@ CREATE_INVENTORY_RECORDS_PLAN_HASH: Final[str] = "f71cf68ffc4cd623901ed96f2c1791
 class CreateInventoryRecordsInventoryRecordsCreated:
     outcome: Literal["InventoryRecordsCreated"] = field(default="InventoryRecordsCreated", init=False)
 
+    def is_inventory_records_created(self) -> bool:
+        return True
+
+    def is_inventory_record_batch_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateInventoryRecordsInventoryRecordBatchAlreadyExists:
     outcome: Literal["InventoryRecordBatchAlreadyExists"] = field(default="InventoryRecordBatchAlreadyExists", init=False)
+
+    def is_inventory_records_created(self) -> bool:
+        return False
+
+    def is_inventory_record_batch_already_exists(self) -> bool:
+        return True
 
 CreateInventoryRecordsOutcome: TypeAlias = CreateInventoryRecordsInventoryRecordsCreated | CreateInventoryRecordsInventoryRecordBatchAlreadyExists
 
@@ -726,9 +933,21 @@ CREATE_PIPELINES_PLAN_HASH: Final[str] = "305590f0dc5c6075fa223c5e62ad03b96823ee
 class CreatePipelinesPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
 
+    def is_pipelines_created(self) -> bool:
+        return True
+
+    def is_pipeline_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesPipelineAlreadyExists:
     outcome: Literal["PipelineAlreadyExists"] = field(default="PipelineAlreadyExists", init=False)
+
+    def is_pipelines_created(self) -> bool:
+        return False
+
+    def is_pipeline_already_exists(self) -> bool:
+        return True
 
 CreatePipelinesOutcome: TypeAlias = CreatePipelinesPipelinesCreated | CreatePipelinesPipelineAlreadyExists
 
@@ -742,9 +961,21 @@ LOG_METRICS_PLAN_HASH: Final[str] = "3978dd324d8c9d5255330f5e0a43fe951e6cc48f6d6
 class LogMetricsMetricsLogged:
     outcome: Literal["MetricsLogged"] = field(default="MetricsLogged", init=False)
 
+    def is_metrics_logged(self) -> bool:
+        return True
+
+    def is_metric_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricAlreadyExists:
     outcome: Literal["MetricAlreadyExists"] = field(default="MetricAlreadyExists", init=False)
+
+    def is_metrics_logged(self) -> bool:
+        return False
+
+    def is_metric_already_exists(self) -> bool:
+        return True
 
 LogMetricsOutcome: TypeAlias = LogMetricsMetricsLogged | LogMetricsMetricAlreadyExists
 
@@ -758,13 +989,40 @@ SEED_OBJECT_RELATIONS_PLAN_HASH: Final[str] = "72f449ba44316e6517d2192d3ba0898e9
 class SeedObjectRelationsFgaObjectMissing:
     outcome: Literal["FgaObjectMissing"] = field(default="FgaObjectMissing", init=False)
 
+    def is_fga_object_missing(self) -> bool:
+        return True
+
+    def is_object_relations_seeded(self) -> bool:
+        return False
+
+    def is_fga_relation_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedObjectRelationsObjectRelationsSeeded:
     outcome: Literal["ObjectRelationsSeeded"] = field(default="ObjectRelationsSeeded", init=False)
 
+    def is_fga_object_missing(self) -> bool:
+        return False
+
+    def is_object_relations_seeded(self) -> bool:
+        return True
+
+    def is_fga_relation_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedObjectRelationsFgaRelationAlreadyExists:
     outcome: Literal["FgaRelationAlreadyExists"] = field(default="FgaRelationAlreadyExists", init=False)
+
+    def is_fga_object_missing(self) -> bool:
+        return False
+
+    def is_object_relations_seeded(self) -> bool:
+        return False
+
+    def is_fga_relation_already_exists(self) -> bool:
+        return True
 
 SeedObjectRelationsOutcome: TypeAlias = SeedObjectRelationsFgaObjectMissing | SeedObjectRelationsObjectRelationsSeeded | SeedObjectRelationsFgaRelationAlreadyExists
 
@@ -778,9 +1036,21 @@ SEED_OBJECTS_PLAN_HASH: Final[str] = "7a5df265166ed4a9a822c4860b166bc72062a280aa
 class SeedObjectsObjectsSeeded:
     outcome: Literal["ObjectsSeeded"] = field(default="ObjectsSeeded", init=False)
 
+    def is_objects_seeded(self) -> bool:
+        return True
+
+    def is_fga_object_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedObjectsFgaObjectAlreadyExists:
     outcome: Literal["FgaObjectAlreadyExists"] = field(default="FgaObjectAlreadyExists", init=False)
+
+    def is_objects_seeded(self) -> bool:
+        return False
+
+    def is_fga_object_already_exists(self) -> bool:
+        return True
 
 SeedObjectsOutcome: TypeAlias = SeedObjectsObjectsSeeded | SeedObjectsFgaObjectAlreadyExists
 
@@ -794,13 +1064,40 @@ SEED_RUN_TAGS_PLAN_HASH: Final[str] = "718067dea6348d23edcec0d76498ec3e7053663be
 class SeedRunTagsRunTagsSeeded:
     outcome: Literal["RunTagsSeeded"] = field(default="RunTagsSeeded", init=False)
 
+    def is_run_tags_seeded(self) -> bool:
+        return True
+
+    def is_mlflow_run_missing(self) -> bool:
+        return False
+
+    def is_mlflow_run_tag_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedRunTagsMlflowRunMissing:
     outcome: Literal["MlflowRunMissing"] = field(default="MlflowRunMissing", init=False)
 
+    def is_run_tags_seeded(self) -> bool:
+        return False
+
+    def is_mlflow_run_missing(self) -> bool:
+        return True
+
+    def is_mlflow_run_tag_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedRunTagsMlflowRunTagAlreadyExists:
     outcome: Literal["MlflowRunTagAlreadyExists"] = field(default="MlflowRunTagAlreadyExists", init=False)
+
+    def is_run_tags_seeded(self) -> bool:
+        return False
+
+    def is_mlflow_run_missing(self) -> bool:
+        return False
+
+    def is_mlflow_run_tag_already_exists(self) -> bool:
+        return True
 
 SeedRunTagsOutcome: TypeAlias = SeedRunTagsRunTagsSeeded | SeedRunTagsMlflowRunMissing | SeedRunTagsMlflowRunTagAlreadyExists
 
@@ -814,9 +1111,21 @@ SEED_RUNS_PLAN_HASH: Final[str] = "daeef9d1b109db42e7c4dbb8fc4138e2e3fe785416ff5
 class SeedRunsRunsSeeded:
     outcome: Literal["RunsSeeded"] = field(default="RunsSeeded", init=False)
 
+    def is_runs_seeded(self) -> bool:
+        return True
+
+    def is_mlflow_run_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedRunsMlflowRunAlreadyExists:
     outcome: Literal["MlflowRunAlreadyExists"] = field(default="MlflowRunAlreadyExists", init=False)
+
+    def is_runs_seeded(self) -> bool:
+        return False
+
+    def is_mlflow_run_already_exists(self) -> bool:
+        return True
 
 SeedRunsOutcome: TypeAlias = SeedRunsRunsSeeded | SeedRunsMlflowRunAlreadyExists
 
@@ -830,13 +1139,40 @@ SEED_TICKET_COMMENTS_PLAN_HASH: Final[str] = "c0c3a1826766349b7d4d85be420aa42713
 class SeedTicketCommentsTicketMissing:
     outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
 
+    def is_ticket_missing(self) -> bool:
+        return True
+
+    def is_ticket_comments_seeded(self) -> bool:
+        return False
+
+    def is_ticket_comment_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedTicketCommentsTicketCommentsSeeded:
     outcome: Literal["TicketCommentsSeeded"] = field(default="TicketCommentsSeeded", init=False)
 
+    def is_ticket_missing(self) -> bool:
+        return False
+
+    def is_ticket_comments_seeded(self) -> bool:
+        return True
+
+    def is_ticket_comment_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedTicketCommentsTicketCommentAlreadyExists:
     outcome: Literal["TicketCommentAlreadyExists"] = field(default="TicketCommentAlreadyExists", init=False)
+
+    def is_ticket_missing(self) -> bool:
+        return False
+
+    def is_ticket_comments_seeded(self) -> bool:
+        return False
+
+    def is_ticket_comment_already_exists(self) -> bool:
+        return True
 
 SeedTicketCommentsOutcome: TypeAlias = SeedTicketCommentsTicketMissing | SeedTicketCommentsTicketCommentsSeeded | SeedTicketCommentsTicketCommentAlreadyExists
 
@@ -850,9 +1186,21 @@ SEED_TICKETS_PLAN_HASH: Final[str] = "91bdec78af2b24a971d81c0ef84fcabd51d038ba71
 class SeedTicketsTicketsSeeded:
     outcome: Literal["TicketsSeeded"] = field(default="TicketsSeeded", init=False)
 
+    def is_tickets_seeded(self) -> bool:
+        return True
+
+    def is_ticket_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SeedTicketsTicketAlreadyExists:
     outcome: Literal["TicketAlreadyExists"] = field(default="TicketAlreadyExists", init=False)
+
+    def is_tickets_seeded(self) -> bool:
+        return False
+
+    def is_ticket_already_exists(self) -> bool:
+        return True
 
 SeedTicketsOutcome: TypeAlias = SeedTicketsTicketsSeeded | SeedTicketsTicketAlreadyExists
 
@@ -866,20 +1214,50 @@ WRITE_TUPLES_PLAN_HASH: Final[str] = "b6c58b579ff64f6b913217f8ffaaa3640a23b6d5a6
 class WriteTuplesTuplesWritten:
     outcome: Literal["TuplesWritten"] = field(default="TuplesWritten", init=False)
 
+    def is_tuples_written(self) -> bool:
+        return True
+
+    def is_tuple_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesTupleAlreadyExists:
     outcome: Literal["TupleAlreadyExists"] = field(default="TupleAlreadyExists", init=False)
 
+    def is_tuples_written(self) -> bool:
+        return False
+
+    def is_tuple_already_exists(self) -> bool:
+        return True
+
 WriteTuplesOutcome: TypeAlias = WriteTuplesTuplesWritten | WriteTuplesTupleAlreadyExists
 
 class AdapterOperationalConformanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AdapterOperationalConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AdapterOperationalConformanceClient:
+        return AdapterOperationalConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AdapterOperationalConformanceClient:
+        return AdapterOperationalConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -891,9 +1269,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def exact_documents_contains_asc_after_commit(self, parameters: ExactDocumentsContainsAscParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        return self.exact_documents_contains_asc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -905,9 +1288,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def exact_documents_ends_with_desc_after_commit(self, parameters: ExactDocumentsEndsWithDescParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        return self.exact_documents_ends_with_desc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -919,7 +1307,12 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def exact_documents_starts_with_asc_after_commit(self, parameters: ExactDocumentsStartsWithAscParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        return self.exact_documents_starts_with_asc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def fga_objects_with_relations(self, parameters: FgaObjectsWithRelationsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -931,7 +1324,12 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def fga_objects_with_relations_after_commit(self, parameters: FgaObjectsWithRelationsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        return self.fga_objects_with_relations(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -944,9 +1342,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_auth_session_after_commit(self, parameters: GetAuthSessionParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        return self.get_auth_session(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -958,9 +1361,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def inventory_by_observed_asc_nulls_last_after_commit(self, parameters: InventoryByObservedAscNullsLastParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        return self.inventory_by_observed_asc_nulls_last(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -972,9 +1380,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def inventory_by_observed_desc_nulls_first_after_commit(self, parameters: InventoryByObservedDescNullsFirstParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        return self.inventory_by_observed_desc_nulls_first(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -986,9 +1399,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def inventory_by_subtitle_asc_nulls_first_after_commit(self, parameters: InventoryBySubtitleAscNullsFirstParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        return self.inventory_by_subtitle_asc_nulls_first(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1000,7 +1418,12 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def inventory_by_subtitle_desc_nulls_last_after_commit(self, parameters: InventoryBySubtitleDescNullsLastParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        return self.inventory_by_subtitle_desc_nulls_last(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1012,6 +1435,9 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_draft_documents_after_commit(self, parameters: ListDraftDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        return self.list_draft_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def list_fga_tuples(self, parameters: ListFgaTuplesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1020,6 +1446,8 @@ class AdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1031,6 +1459,25 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_fga_tuples_after_commit(self, parameters: ListFgaTuplesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
+        return self.list_fga_tuples(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def list_fga_tuples_pages(self, parameters: ListFgaTuplesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListFgaTuplesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListFgaTuplesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListFgaTuplesParams(store_id=parameters.store_id, relation=parameters.relation, after=None)
+            page = self.list_fga_tuples(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def list_pipelines(self, parameters: ListPipelinesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1039,6 +1486,8 @@ class AdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1050,7 +1499,28 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def list_pipelines_after_commit(self, parameters: ListPipelinesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
+        return self.list_pipelines(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def list_pipelines_pages(self, parameters: ListPipelinesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListPipelinesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListPipelinesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListPipelinesParams(organization_id=parameters.organization_id, state=parameters.state, after=None)
+            page = self.list_pipelines(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def metric_dashboard(self, parameters: MetricDashboardParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1062,7 +1532,12 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def metric_dashboard_after_commit(self, parameters: MetricDashboardParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        return self.metric_dashboard(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def mlflow_runs_with_tags(self, parameters: MlflowRunsWithTagsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1074,9 +1549,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def mlflow_runs_with_tags_after_commit(self, parameters: MlflowRunsWithTagsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        return self.mlflow_runs_with_tags(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1088,9 +1568,14 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def reviewed_directory_users_after_commit(self, parameters: ReviewedDirectoryUsersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        return self.reviewed_directory_users(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1102,6 +1587,9 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def search_directory_users_after_commit(self, parameters: SearchDirectoryUsersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        return self.search_directory_users(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1110,6 +1598,8 @@ class AdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1121,7 +1611,28 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def search_documents_after_commit(self, parameters: SearchDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        return self.search_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def search_documents_pages(self, parameters: SearchDocumentsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[SearchDocumentsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[SearchDocumentsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = SearchDocumentsParams(site_id=parameters.site_id, title_prefix=parameters.title_prefix, after=None)
+            page = self.search_documents(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def ticket_page_with_comments(self, parameters: TicketPageWithCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1133,6 +1644,9 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def ticket_page_with_comments_after_commit(self, parameters: TicketPageWithCommentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        return self.ticket_page_with_comments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def change_inventory_record_state(self, input: ChangeInventoryRecordStateInput) -> TypedCommandResult[ChangeInventoryRecordStateOutcome]:
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -1143,7 +1657,10 @@ class AdapterOperationalConformanceClient:
             "InventoryRecordMissing": ChangeInventoryRecordStateInventoryRecordMissing,
             "InventoryRecordStateChanged": ChangeInventoryRecordStateInventoryRecordStateChanged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ChangeInventoryRecordStateOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def change_inventory_record_state_batch(
         self, inputs: Sequence[ChangeInventoryRecordStateInput], options: CommandBatchOptions,
@@ -1164,7 +1681,10 @@ class AdapterOperationalConformanceClient:
             "UserAlreadyExists": CreateAuthSessionsUserAlreadyExists,
             "SessionAlreadyExists": CreateAuthSessionsSessionAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateAuthSessionsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_auth_sessions_batch(
         self, inputs: Sequence[CreateAuthSessionsInput], options: CommandBatchOptions,
@@ -1187,7 +1707,10 @@ class AdapterOperationalConformanceClient:
             "DirectoryUsersCreated": CreateDirectoryUsersDirectoryUsersCreated,
             "DirectoryUserAlreadyExists": CreateDirectoryUsersDirectoryUserAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDirectoryUsersOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_directory_users_batch(
         self, inputs: Sequence[CreateDirectoryUsersInput], options: CommandBatchOptions,
@@ -1210,7 +1733,10 @@ class AdapterOperationalConformanceClient:
             "DocumentsCreated": CreateDocumentsDocumentsCreated,
             "DocumentAlreadyExists": CreateDocumentsDocumentAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_documents_batch(
         self, inputs: Sequence[CreateDocumentsInput], options: CommandBatchOptions,
@@ -1231,7 +1757,10 @@ class AdapterOperationalConformanceClient:
             "InventoryRecordAlreadyExists": CreateInventoryRecordMissingInventoryRecordAlreadyExists,
             "InventoryRecordMissingCreated": CreateInventoryRecordMissingInventoryRecordMissingCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateInventoryRecordMissingOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_inventory_record_missing_batch(
         self, inputs: Sequence[CreateInventoryRecordMissingInput], options: CommandBatchOptions,
@@ -1251,7 +1780,10 @@ class AdapterOperationalConformanceClient:
             "InventoryRecordsCreated": CreateInventoryRecordsInventoryRecordsCreated,
             "InventoryRecordBatchAlreadyExists": CreateInventoryRecordsInventoryRecordBatchAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateInventoryRecordsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_inventory_records_batch(
         self, inputs: Sequence[CreateInventoryRecordsInput], options: CommandBatchOptions,
@@ -1274,7 +1806,10 @@ class AdapterOperationalConformanceClient:
             "PipelinesCreated": CreatePipelinesPipelinesCreated,
             "PipelineAlreadyExists": CreatePipelinesPipelineAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreatePipelinesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_pipelines_batch(
         self, inputs: Sequence[CreatePipelinesInput], options: CommandBatchOptions,
@@ -1297,7 +1832,10 @@ class AdapterOperationalConformanceClient:
             "MetricsLogged": LogMetricsMetricsLogged,
             "MetricAlreadyExists": LogMetricsMetricAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def log_metrics_batch(
         self, inputs: Sequence[LogMetricsInput], options: CommandBatchOptions,
@@ -1321,7 +1859,10 @@ class AdapterOperationalConformanceClient:
             "ObjectRelationsSeeded": SeedObjectRelationsObjectRelationsSeeded,
             "FgaRelationAlreadyExists": SeedObjectRelationsFgaRelationAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedObjectRelationsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_object_relations_batch(
         self, inputs: Sequence[SeedObjectRelationsInput], options: CommandBatchOptions,
@@ -1344,7 +1885,10 @@ class AdapterOperationalConformanceClient:
             "ObjectsSeeded": SeedObjectsObjectsSeeded,
             "FgaObjectAlreadyExists": SeedObjectsFgaObjectAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedObjectsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_objects_batch(
         self, inputs: Sequence[SeedObjectsInput], options: CommandBatchOptions,
@@ -1368,7 +1912,10 @@ class AdapterOperationalConformanceClient:
             "MlflowRunMissing": SeedRunTagsMlflowRunMissing,
             "MlflowRunTagAlreadyExists": SeedRunTagsMlflowRunTagAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedRunTagsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_run_tags_batch(
         self, inputs: Sequence[SeedRunTagsInput], options: CommandBatchOptions,
@@ -1391,7 +1938,10 @@ class AdapterOperationalConformanceClient:
             "RunsSeeded": SeedRunsRunsSeeded,
             "MlflowRunAlreadyExists": SeedRunsMlflowRunAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedRunsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_runs_batch(
         self, inputs: Sequence[SeedRunsInput], options: CommandBatchOptions,
@@ -1415,7 +1965,10 @@ class AdapterOperationalConformanceClient:
             "TicketCommentsSeeded": SeedTicketCommentsTicketCommentsSeeded,
             "TicketCommentAlreadyExists": SeedTicketCommentsTicketCommentAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedTicketCommentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_ticket_comments_batch(
         self, inputs: Sequence[SeedTicketCommentsInput], options: CommandBatchOptions,
@@ -1438,7 +1991,10 @@ class AdapterOperationalConformanceClient:
             "TicketsSeeded": SeedTicketsTicketsSeeded,
             "TicketAlreadyExists": SeedTicketsTicketAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedTicketsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def seed_tickets_batch(
         self, inputs: Sequence[SeedTicketsInput], options: CommandBatchOptions,
@@ -1461,7 +2017,10 @@ class AdapterOperationalConformanceClient:
             "TuplesWritten": WriteTuplesTuplesWritten,
             "TupleAlreadyExists": WriteTuplesTupleAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WriteTuplesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def write_tuples_batch(
         self, inputs: Sequence[WriteTuplesInput], options: CommandBatchOptions,
@@ -1473,13 +2032,31 @@ class AdapterOperationalConformanceClient:
         return self._transport._command_batch(inputs, options, self.write_tuples, progress)
 
 class AsyncAdapterOperationalConformanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncAdapterOperationalConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncAdapterOperationalConformanceClient:
+        return AsyncAdapterOperationalConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncAdapterOperationalConformanceClient:
+        return AsyncAdapterOperationalConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1491,9 +2068,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def exact_documents_contains_asc_after_commit(self, parameters: ExactDocumentsContainsAscParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        return await self.exact_documents_contains_asc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1505,9 +2087,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def exact_documents_ends_with_desc_after_commit(self, parameters: ExactDocumentsEndsWithDescParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        return await self.exact_documents_ends_with_desc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1519,7 +2106,12 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def exact_documents_starts_with_asc_after_commit(self, parameters: ExactDocumentsStartsWithAscParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        return await self.exact_documents_starts_with_asc(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def fga_objects_with_relations(self, parameters: FgaObjectsWithRelationsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1531,7 +2123,12 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def fga_objects_with_relations_after_commit(self, parameters: FgaObjectsWithRelationsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        return await self.fga_objects_with_relations(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1544,9 +2141,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_auth_session_after_commit(self, parameters: GetAuthSessionParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
+        return await self.get_auth_session(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1558,9 +2160,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def inventory_by_observed_asc_nulls_last_after_commit(self, parameters: InventoryByObservedAscNullsLastParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        return await self.inventory_by_observed_asc_nulls_last(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1572,9 +2179,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def inventory_by_observed_desc_nulls_first_after_commit(self, parameters: InventoryByObservedDescNullsFirstParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        return await self.inventory_by_observed_desc_nulls_first(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1586,9 +2198,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def inventory_by_subtitle_asc_nulls_first_after_commit(self, parameters: InventoryBySubtitleAscNullsFirstParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        return await self.inventory_by_subtitle_asc_nulls_first(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1600,7 +2217,12 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def inventory_by_subtitle_desc_nulls_last_after_commit(self, parameters: InventoryBySubtitleDescNullsLastParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        return await self.inventory_by_subtitle_desc_nulls_last(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1612,6 +2234,9 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_draft_documents_after_commit(self, parameters: ListDraftDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
+        return await self.list_draft_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def list_fga_tuples(self, parameters: ListFgaTuplesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1620,6 +2245,8 @@ class AsyncAdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1631,6 +2258,25 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_fga_tuples_after_commit(self, parameters: ListFgaTuplesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
+        return await self.list_fga_tuples(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def list_fga_tuples_pages(self, parameters: ListFgaTuplesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListFgaTuplesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListFgaTuplesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListFgaTuplesParams(store_id=parameters.store_id, relation=parameters.relation, after=None)
+            page = await self.list_fga_tuples(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def list_pipelines(self, parameters: ListPipelinesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1639,6 +2285,8 @@ class AsyncAdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1650,7 +2298,28 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def list_pipelines_after_commit(self, parameters: ListPipelinesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
+        return await self.list_pipelines(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def list_pipelines_pages(self, parameters: ListPipelinesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ListPipelinesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ListPipelinesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ListPipelinesParams(organization_id=parameters.organization_id, state=parameters.state, after=None)
+            page = await self.list_pipelines(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def metric_dashboard(self, parameters: MetricDashboardParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1662,7 +2331,12 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def metric_dashboard_after_commit(self, parameters: MetricDashboardParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MetricDashboardResult]:
+        return await self.metric_dashboard(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def mlflow_runs_with_tags(self, parameters: MlflowRunsWithTagsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1674,9 +2348,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def mlflow_runs_with_tags_after_commit(self, parameters: MlflowRunsWithTagsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        return await self.mlflow_runs_with_tags(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1688,9 +2367,14 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def reviewed_directory_users_after_commit(self, parameters: ReviewedDirectoryUsersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        return await self.reviewed_directory_users(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1702,6 +2386,9 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def search_directory_users_after_commit(self, parameters: SearchDirectoryUsersParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        return await self.search_directory_users(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -1710,6 +2397,8 @@ class AsyncAdapterOperationalConformanceClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1721,7 +2410,28 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def search_documents_after_commit(self, parameters: SearchDocumentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        return await self.search_documents(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def search_documents_pages(self, parameters: SearchDocumentsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[SearchDocumentsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[SearchDocumentsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = SearchDocumentsParams(site_id=parameters.site_id, title_prefix=parameters.title_prefix, after=None)
+            page = await self.search_documents(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def ticket_page_with_comments(self, parameters: TicketPageWithCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1733,6 +2443,9 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def ticket_page_with_comments_after_commit(self, parameters: TicketPageWithCommentsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        return await self.ticket_page_with_comments(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def change_inventory_record_state(self, input: ChangeInventoryRecordStateInput) -> TypedCommandResult[ChangeInventoryRecordStateOutcome]:
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -1743,7 +2456,10 @@ class AsyncAdapterOperationalConformanceClient:
             "InventoryRecordMissing": ChangeInventoryRecordStateInventoryRecordMissing,
             "InventoryRecordStateChanged": ChangeInventoryRecordStateInventoryRecordStateChanged,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ChangeInventoryRecordStateOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def change_inventory_record_state_batch(
         self, inputs: Sequence[ChangeInventoryRecordStateInput], options: CommandBatchOptions,
@@ -1764,7 +2480,10 @@ class AsyncAdapterOperationalConformanceClient:
             "UserAlreadyExists": CreateAuthSessionsUserAlreadyExists,
             "SessionAlreadyExists": CreateAuthSessionsSessionAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateAuthSessionsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_auth_sessions_batch(
         self, inputs: Sequence[CreateAuthSessionsInput], options: CommandBatchOptions,
@@ -1787,7 +2506,10 @@ class AsyncAdapterOperationalConformanceClient:
             "DirectoryUsersCreated": CreateDirectoryUsersDirectoryUsersCreated,
             "DirectoryUserAlreadyExists": CreateDirectoryUsersDirectoryUserAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDirectoryUsersOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_directory_users_batch(
         self, inputs: Sequence[CreateDirectoryUsersInput], options: CommandBatchOptions,
@@ -1810,7 +2532,10 @@ class AsyncAdapterOperationalConformanceClient:
             "DocumentsCreated": CreateDocumentsDocumentsCreated,
             "DocumentAlreadyExists": CreateDocumentsDocumentAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_documents_batch(
         self, inputs: Sequence[CreateDocumentsInput], options: CommandBatchOptions,
@@ -1831,7 +2556,10 @@ class AsyncAdapterOperationalConformanceClient:
             "InventoryRecordAlreadyExists": CreateInventoryRecordMissingInventoryRecordAlreadyExists,
             "InventoryRecordMissingCreated": CreateInventoryRecordMissingInventoryRecordMissingCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateInventoryRecordMissingOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_inventory_record_missing_batch(
         self, inputs: Sequence[CreateInventoryRecordMissingInput], options: CommandBatchOptions,
@@ -1851,7 +2579,10 @@ class AsyncAdapterOperationalConformanceClient:
             "InventoryRecordsCreated": CreateInventoryRecordsInventoryRecordsCreated,
             "InventoryRecordBatchAlreadyExists": CreateInventoryRecordsInventoryRecordBatchAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateInventoryRecordsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_inventory_records_batch(
         self, inputs: Sequence[CreateInventoryRecordsInput], options: CommandBatchOptions,
@@ -1874,7 +2605,10 @@ class AsyncAdapterOperationalConformanceClient:
             "PipelinesCreated": CreatePipelinesPipelinesCreated,
             "PipelineAlreadyExists": CreatePipelinesPipelineAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreatePipelinesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_pipelines_batch(
         self, inputs: Sequence[CreatePipelinesInput], options: CommandBatchOptions,
@@ -1897,7 +2631,10 @@ class AsyncAdapterOperationalConformanceClient:
             "MetricsLogged": LogMetricsMetricsLogged,
             "MetricAlreadyExists": LogMetricsMetricAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def log_metrics_batch(
         self, inputs: Sequence[LogMetricsInput], options: CommandBatchOptions,
@@ -1921,7 +2658,10 @@ class AsyncAdapterOperationalConformanceClient:
             "ObjectRelationsSeeded": SeedObjectRelationsObjectRelationsSeeded,
             "FgaRelationAlreadyExists": SeedObjectRelationsFgaRelationAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedObjectRelationsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_object_relations_batch(
         self, inputs: Sequence[SeedObjectRelationsInput], options: CommandBatchOptions,
@@ -1944,7 +2684,10 @@ class AsyncAdapterOperationalConformanceClient:
             "ObjectsSeeded": SeedObjectsObjectsSeeded,
             "FgaObjectAlreadyExists": SeedObjectsFgaObjectAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedObjectsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_objects_batch(
         self, inputs: Sequence[SeedObjectsInput], options: CommandBatchOptions,
@@ -1968,7 +2711,10 @@ class AsyncAdapterOperationalConformanceClient:
             "MlflowRunMissing": SeedRunTagsMlflowRunMissing,
             "MlflowRunTagAlreadyExists": SeedRunTagsMlflowRunTagAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedRunTagsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_run_tags_batch(
         self, inputs: Sequence[SeedRunTagsInput], options: CommandBatchOptions,
@@ -1991,7 +2737,10 @@ class AsyncAdapterOperationalConformanceClient:
             "RunsSeeded": SeedRunsRunsSeeded,
             "MlflowRunAlreadyExists": SeedRunsMlflowRunAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedRunsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_runs_batch(
         self, inputs: Sequence[SeedRunsInput], options: CommandBatchOptions,
@@ -2015,7 +2764,10 @@ class AsyncAdapterOperationalConformanceClient:
             "TicketCommentsSeeded": SeedTicketCommentsTicketCommentsSeeded,
             "TicketCommentAlreadyExists": SeedTicketCommentsTicketCommentAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedTicketCommentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_ticket_comments_batch(
         self, inputs: Sequence[SeedTicketCommentsInput], options: CommandBatchOptions,
@@ -2038,7 +2790,10 @@ class AsyncAdapterOperationalConformanceClient:
             "TicketsSeeded": SeedTicketsTicketsSeeded,
             "TicketAlreadyExists": SeedTicketsTicketAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[SeedTicketsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def seed_tickets_batch(
         self, inputs: Sequence[SeedTicketsInput], options: CommandBatchOptions,
@@ -2061,7 +2816,10 @@ class AsyncAdapterOperationalConformanceClient:
             "TuplesWritten": WriteTuplesTuplesWritten,
             "TupleAlreadyExists": WriteTuplesTupleAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WriteTuplesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def write_tuples_batch(
         self, inputs: Sequence[WriteTuplesInput], options: CommandBatchOptions,

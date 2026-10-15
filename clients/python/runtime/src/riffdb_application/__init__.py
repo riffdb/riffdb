@@ -281,6 +281,20 @@ class TypedQueryResult(Generic[T]):
     application_head: int
     next_cursor: str | None = None
 
+    @property
+    def outcome(self) -> str:
+        return str(getattr(self.value, "outcome"))
+
+    def is_outcome(self, expected: str) -> bool:
+        return self.outcome == expected
+
+    def unwrap_found(self) -> T:
+        if self.outcome.lower() == "found":
+            return self.value
+        raise ValueError(
+            f"expected query outcome 'found' for {self.identity.query_name}, got '{self.outcome}'"
+        )
+
     def _map_value(self, transform: Callable[[T], U]) -> TypedQueryResult[U]:
         return TypedQueryResult(
             self.identity, transform(self.value), self.application_head, self.next_cursor
@@ -302,6 +316,13 @@ class TypedCommandResult(Generic[T]):
     replayed: bool
     outcome_uri: str | None = None
     workflow_revisions: tuple[WorkflowSuccessorRevision, ...] = ()
+
+    @property
+    def outcome_name(self) -> str:
+        return str(getattr(self.outcome, "outcome"))
+
+    def is_outcome(self, expected: str) -> bool:
+        return self.outcome_name == expected
 
     def _map_outcome(self, transform: Callable[[T], U]) -> TypedCommandResult[U]:
         return TypedCommandResult(

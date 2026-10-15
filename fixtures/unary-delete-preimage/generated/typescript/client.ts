@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -176,6 +177,14 @@ export interface GetTokenTokenMissing {
 
 export type GetTokenResult = GetTokenTokenFound | GetTokenTokenMissing;
 
+export function isGetTokenTokenFound(value: GetTokenResult): value is GetTokenTokenFound {
+  return value.outcome === "TokenFound";
+}
+
+export function isGetTokenTokenMissing(value: GetTokenResult): value is GetTokenTokenMissing {
+  return value.outcome === "TokenMissing";
+}
+
 export function getToken(parameters: GetTokenParams): NamedQueryRequest<GetTokenParams, GetTokenResult> {
   return { driverOperation: { name: "one_time_tokens_get_token", inputSchemaHash: "d96d7ffb91f0ad68b14d6cd920672dbc0c1a6d735cacaa7f22852ec0de91c9f2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetToken", planHash: GET_TOKEN_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"token_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"TokenFound":{"fields":[{"name":"token","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"token_id","schema":{"kind":"uuid"}},{"name":"identifier","schema":{"kind":"string"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"issued_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"TokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -192,13 +201,27 @@ export const CONSUME_TOKEN_SECRET_OUTPUTS = [
 
 export type ConsumeTokenOutcome = { readonly outcome: "TokenExpired" } | { readonly outcome: "TokenMissing" } | { readonly outcome: "TokenConsumed"; readonly value: string; readonly token_id: string; readonly issued_at: { readonly seconds: bigint; readonly nanos: number }; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly identifier: string };
 
+export function isConsumeTokenTokenExpired(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenExpired" }> {
+  return value.outcome === "TokenExpired";
+}
+
+export function isConsumeTokenTokenMissing(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenMissing" }> {
+  return value.outcome === "TokenMissing";
+}
+
+export function isConsumeTokenTokenConsumed(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenConsumed" }> {
+  return value.outcome === "TokenConsumed";
+}
+
 export function redactConsumeTokenOutcome(value: ConsumeTokenOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof CONSUME_TOKEN_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: CONSUME_TOKEN_SECRET_OUTPUTS };
 }
 
 export const CONSUME_TOKEN_PLAN_HASH = "d42336ae6bbb2f75abd3616d8918f9a7628084e97be26c5e82348fddb6b0af84" as const;
 export function consumeToken(input: ConsumeTokenInput): CommandRequest<ConsumeTokenInput, ConsumeTokenOutcome> {
-  return { driverOperation: { name: "one_time_tokens_consume_token", inputSchemaHash: "6fe9e04a4e2c880062d481fb30917816a0cae314acc951479a808a61e53ecacb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeToken", planHash: CONSUME_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"token_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenConsumed":{"fields":[{"name":"value","schema":{"kind":"string"},"wireId":1},{"name":"token_id","schema":{"kind":"uuid"},"wireId":2},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"identifier","schema":{"kind":"string"},"wireId":5}],"kind":"record"},"TokenExpired":{"fields":[],"kind":"record"},"TokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: ConsumeTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "one_time_tokens_consume_token", inputSchemaHash: "6fe9e04a4e2c880062d481fb30917816a0cae314acc951479a808a61e53ecacb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeToken", planHash: CONSUME_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"token_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenConsumed":{"fields":[{"name":"value","schema":{"kind":"string"},"wireId":1},{"name":"token_id","schema":{"kind":"uuid"},"wireId":2},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"identifier","schema":{"kind":"string"},"wireId":5}],"kind":"record"},"TokenExpired":{"fields":[],"kind":"record"},"TokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface IssueTokenInput {
@@ -212,29 +235,69 @@ export interface IssueTokenInput {
 
 export type IssueTokenOutcome = { readonly outcome: "TokenIssued"; readonly token_id: string; readonly issued_at: { readonly seconds: bigint; readonly nanos: number } } | { readonly outcome: "TokenAlreadyExists" };
 
+export function isIssueTokenTokenIssued(value: IssueTokenOutcome): value is Extract<IssueTokenOutcome, { readonly outcome: "TokenIssued" }> {
+  return value.outcome === "TokenIssued";
+}
+
+export function isIssueTokenTokenAlreadyExists(value: IssueTokenOutcome): value is Extract<IssueTokenOutcome, { readonly outcome: "TokenAlreadyExists" }> {
+  return value.outcome === "TokenAlreadyExists";
+}
+
 export const ISSUE_TOKEN_PLAN_HASH = "9db88ad2da13526f606ca497d31323b02066a625ca6614c5aef06f53ed677d2d" as const;
 export function issueToken(input: IssueTokenInput): CommandRequest<IssueTokenInput, IssueTokenOutcome> {
-  return { driverOperation: { name: "one_time_tokens_issue_token", inputSchemaHash: "359d4d3ac8acb5d945adc331064c8af5dc2f5b59694ee18c2dcf74ffb5dd7288" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueToken", planHash: ISSUE_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"value","schema":{"kind":"string"}},{"name":"token_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"identifier","schema":{"kind":"string"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenAlreadyExists":{"fields":[],"kind":"record"},"TokenIssued":{"fields":[{"name":"token_id","schema":{"kind":"uuid"},"wireId":1},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: IssueTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "one_time_tokens_issue_token", inputSchemaHash: "359d4d3ac8acb5d945adc331064c8af5dc2f5b59694ee18c2dcf74ffb5dd7288" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueToken", planHash: ISSUE_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"value","schema":{"kind":"string"}},{"name":"token_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"identifier","schema":{"kind":"string"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenAlreadyExists":{"fields":[],"kind":"record"},"TokenIssued":{"fields":[{"name":"token_id","schema":{"kind":"uuid"},"wireId":1},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class OneTimeTokenAcceptanceClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): OneTimeTokenAcceptanceClient {
+    return new OneTimeTokenAcceptanceClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): OneTimeTokenAcceptanceClient {
+    return new OneTimeTokenAcceptanceClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): OneTimeTokenAcceptanceClient {
+    return new OneTimeTokenAcceptanceClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async getToken(parameters: GetTokenParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetTokenResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getToken(parameters);
-    const result = await this.transport.executeNamedQuery<GetTokenParams, GetTokenResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetTokenParams, GetTokenResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getTokenAfterCommit(parameters: GetTokenParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetTokenResult>> {
+    return this.getToken(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async consumeToken(input: ConsumeTokenInput): Promise<TypedCommandResult<ConsumeTokenOutcome>> {
     const result = await this.transport.executeCommand<ConsumeTokenInput, ConsumeTokenOutcome>(consumeToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CONSUME_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -258,6 +321,9 @@ export class OneTimeTokenAcceptanceClient {
   public async issueToken(input: IssueTokenInput): Promise<TypedCommandResult<IssueTokenOutcome>> {
     const result = await this.transport.executeCommand<IssueTokenInput, IssueTokenOutcome>(issueToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ISSUE_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

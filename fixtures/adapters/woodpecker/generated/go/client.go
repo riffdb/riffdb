@@ -56,12 +56,15 @@ type GetPipelineFound struct {
 	Pipeline struct { OrganizationId string; PipelineId string; State PipelineState; DueAt riffdb.Instant; LeaseOwner *string; LeaseExpiresAt *riffdb.Instant; LeaseFence uint64; LeaseAttempts uint64 }
 }
 func (GetPipelineFound) isGetPipelineResult() {}
+func IsGetPipelineFound(value GetPipelineResult) (GetPipelineFound, bool) { branch, ok := value.(GetPipelineFound); return branch, ok }
 
 type GetPipelineMissing struct {
 	Outcome string
 }
 func (GetPipelineMissing) isGetPipelineResult() {}
+func IsGetPipelineMissing(value GetPipelineResult) (GetPipelineMissing, bool) { branch, ok := value.(GetPipelineMissing); return branch, ok }
 
+func UnwrapGetPipelineFound(value GetPipelineResult) (GetPipelineFound, error) { if branch, ok := value.(GetPipelineFound); ok { return branch, nil }; return GetPipelineFound{}, errors.New("expected GetPipeline outcome found") }
 type ClaimPipelineInput struct {
 	Duration uint64
 	OwnerId string
@@ -75,32 +78,38 @@ type ClaimPipelineClaimStale struct {
 	Outcome string
 }
 func (ClaimPipelineClaimStale) isClaimPipelineOutcome() {}
+func IsClaimPipelineClaimStale(value ClaimPipelineOutcome) (ClaimPipelineClaimStale, bool) { branch, ok := value.(ClaimPipelineClaimStale); return branch, ok }
 
 type ClaimPipelineClaimInvalid struct {
 	Outcome string
 }
 func (ClaimPipelineClaimInvalid) isClaimPipelineOutcome() {}
+func IsClaimPipelineClaimInvalid(value ClaimPipelineOutcome) (ClaimPipelineClaimInvalid, bool) { branch, ok := value.(ClaimPipelineClaimInvalid); return branch, ok }
 
 type ClaimPipelineClaimExhausted struct {
 	Outcome string
 }
 func (ClaimPipelineClaimExhausted) isClaimPipelineOutcome() {}
+func IsClaimPipelineClaimExhausted(value ClaimPipelineOutcome) (ClaimPipelineClaimExhausted, bool) { branch, ok := value.(ClaimPipelineClaimExhausted); return branch, ok }
 
 type ClaimPipelinePipelineClaimed struct {
 	Outcome string
 	Pipeline ScheduledPipeline
 }
 func (ClaimPipelinePipelineClaimed) isClaimPipelineOutcome() {}
+func IsClaimPipelinePipelineClaimed(value ClaimPipelineOutcome) (ClaimPipelinePipelineClaimed, bool) { branch, ok := value.(ClaimPipelinePipelineClaimed); return branch, ok }
 
 type ClaimPipelinePipelineMissing struct {
 	Outcome string
 }
 func (ClaimPipelinePipelineMissing) isClaimPipelineOutcome() {}
+func IsClaimPipelinePipelineMissing(value ClaimPipelineOutcome) (ClaimPipelinePipelineMissing, bool) { branch, ok := value.(ClaimPipelinePipelineMissing); return branch, ok }
 
 type ClaimPipelineClaimUnavailable struct {
 	Outcome string
 }
 func (ClaimPipelineClaimUnavailable) isClaimPipelineOutcome() {}
+func IsClaimPipelineClaimUnavailable(value ClaimPipelineOutcome) (ClaimPipelineClaimUnavailable, bool) { branch, ok := value.(ClaimPipelineClaimUnavailable); return branch, ok }
 
 type ReleasePipelineInput struct {
 	OwnerId string
@@ -115,22 +124,26 @@ type ReleasePipelineReleaseStale struct {
 	Outcome string
 }
 func (ReleasePipelineReleaseStale) isReleasePipelineOutcome() {}
+func IsReleasePipelineReleaseStale(value ReleasePipelineOutcome) (ReleasePipelineReleaseStale, bool) { branch, ok := value.(ReleasePipelineReleaseStale); return branch, ok }
 
 type ReleasePipelineReleaseInvalid struct {
 	Outcome string
 }
 func (ReleasePipelineReleaseInvalid) isReleasePipelineOutcome() {}
+func IsReleasePipelineReleaseInvalid(value ReleasePipelineOutcome) (ReleasePipelineReleaseInvalid, bool) { branch, ok := value.(ReleasePipelineReleaseInvalid); return branch, ok }
 
 type ReleasePipelinePipelineMissing struct {
 	Outcome string
 }
 func (ReleasePipelinePipelineMissing) isReleasePipelineOutcome() {}
+func IsReleasePipelinePipelineMissing(value ReleasePipelineOutcome) (ReleasePipelinePipelineMissing, bool) { branch, ok := value.(ReleasePipelinePipelineMissing); return branch, ok }
 
 type ReleasePipelinePipelineReleased struct {
 	Outcome string
 	Pipeline ScheduledPipeline
 }
 func (ReleasePipelinePipelineReleased) isReleasePipelineOutcome() {}
+func IsReleasePipelinePipelineReleased(value ReleasePipelineOutcome) (ReleasePipelinePipelineReleased, bool) { branch, ok := value.(ReleasePipelinePipelineReleased); return branch, ok }
 
 type StartPipelineInput struct {
 	OwnerId string
@@ -145,41 +158,52 @@ type StartPipelineFenceStale struct {
 	Outcome string
 }
 func (StartPipelineFenceStale) isStartPipelineOutcome() {}
+func IsStartPipelineFenceStale(value StartPipelineOutcome) (StartPipelineFenceStale, bool) { branch, ok := value.(StartPipelineFenceStale); return branch, ok }
 
 type StartPipelineStartStale struct {
 	Outcome string
 }
 func (StartPipelineStartStale) isStartPipelineOutcome() {}
+func IsStartPipelineStartStale(value StartPipelineOutcome) (StartPipelineStartStale, bool) { branch, ok := value.(StartPipelineStartStale); return branch, ok }
 
 type StartPipelineFenceExpired struct {
 	Outcome string
 }
 func (StartPipelineFenceExpired) isStartPipelineOutcome() {}
+func IsStartPipelineFenceExpired(value StartPipelineOutcome) (StartPipelineFenceExpired, bool) { branch, ok := value.(StartPipelineFenceExpired); return branch, ok }
 
 type StartPipelineFenceInvalid struct {
 	Outcome string
 }
 func (StartPipelineFenceInvalid) isStartPipelineOutcome() {}
+func IsStartPipelineFenceInvalid(value StartPipelineOutcome) (StartPipelineFenceInvalid, bool) { branch, ok := value.(StartPipelineFenceInvalid); return branch, ok }
 
 type StartPipelineStartIllegal struct {
 	Outcome string
 }
 func (StartPipelineStartIllegal) isStartPipelineOutcome() {}
+func IsStartPipelineStartIllegal(value StartPipelineOutcome) (StartPipelineStartIllegal, bool) { branch, ok := value.(StartPipelineStartIllegal); return branch, ok }
 
 type StartPipelinePipelineMissing struct {
 	Outcome string
 }
 func (StartPipelinePipelineMissing) isStartPipelineOutcome() {}
+func IsStartPipelinePipelineMissing(value StartPipelineOutcome) (StartPipelinePipelineMissing, bool) { branch, ok := value.(StartPipelinePipelineMissing); return branch, ok }
 
 type StartPipelinePipelineStarted struct {
 	Outcome string
 	Pipeline ScheduledPipeline
 }
 func (StartPipelinePipelineStarted) isStartPipelineOutcome() {}
+func IsStartPipelinePipelineStarted(value StartPipelineOutcome) (StartPipelinePipelineStarted, bool) { branch, ok := value.(StartPipelinePipelineStarted); return branch, ok }
 
-type Client struct { session *riffdb.Session; commandAttempts uint32 }
+const DefaultCommandAttempts uint32 = 3
+type Client struct { session *riffdb.Session; commandAttempts uint32; readAfterCommit *uint64; trackCausalWrites bool }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) { if session == nil || commandAttempts < 1 || commandAttempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: commandAttempts}, nil }
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) { attempts := DefaultCommandAttempts; if len(commandAttempts) > 1 { return nil, errors.New("invalid generated RiffDB client configuration") } else if len(commandAttempts) == 1 { attempts = commandAttempts[0] }; if session == nil || attempts < 1 || attempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil }
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client { var copied *uint64; if commitSequence != nil { value := *commitSequence; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites} }
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client { var copied *uint64; if len(initialCommitSequence) > 0 { value := initialCommitSequence[0]; copied = &value } else if client.readAfterCommit != nil { value := *client.readAfterCommit; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true} }
+func (client *Client) LastCommitSequence() *uint64 { if client.readAfterCommit == nil { return nil }; value := *client.readAfterCommit; return &value }
 
 func encodeScheduledPipeline(value ScheduledPipeline) riffdb.Value { return riffdb.Record(map[string]riffdb.Value{
 	"state": riffdb.Enum(string(value.State)),
@@ -211,14 +235,15 @@ return result, nil
 case "Missing": result := GetPipelineMissing{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) GetPipeline(ctx context.Context, parameters GetPipelineParams, options QueryOptions) (QueryResult[GetPipelineResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) GetPipeline(ctx context.Context, parameters GetPipelineParams, optionsList ...QueryOptions) (QueryResult[GetPipelineResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetPipelineResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["pipeline_id"] = riffdb.UUID(parameters.PipelineId)
 response, err := client.session.Invoke(ctx, GetPipelineOperation, input, options); if err != nil { return QueryResult[GetPipelineResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[GetPipelineResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeGetPipelineResult(response.Value); if err != nil { return QueryResult[GetPipelineResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetPipeline", PlanHash: GetPipelineQueryPlanHash}; return QueryResult[GetPipelineResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) GetPipelineAfterCommit(ctx context.Context, parameters GetPipelineParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetPipelineResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetPipelineResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.GetPipeline(ctx, parameters, options) }
 
 const ClaimPipelinePlanHash = "d772226a1aa832ad4e805920412c432d80de54363cb89f30826e7d54ebaebf0a"
 var ClaimPipelineOperation = riffdb.Operation{Name: "woodpecker_scheduler_claim_pipeline", InputSchemaHash: "19b93251b73a2a51c3c4d6bffff102ffe47552637d56b04e474f7d7002c7cecc"}
-func encodeClaimPipelineInput(input ClaimPipelineInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeClaimPipelineInput(input ClaimPipelineInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"duration": riffdb.U64(input.Duration),
 	"owner_id": riffdb.UUID(input.OwnerId),
 	"pipeline_id": riffdb.UUID(input.PipelineId),
@@ -244,12 +269,12 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowClaimPipelineRevisions(input ClaimPipelineInput, outcome ClaimPipelineOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(ClaimPipelinePipelineClaimed); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "pipeline", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) ClaimPipeline(ctx context.Context, input ClaimPipelineInput) (CommandResult[ClaimPipelineOutcome], error) { response, err := client.session.Invoke(ctx, ClaimPipelineOperation, encodeClaimPipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; outcome, err := decodeClaimPipelineOutcome(response.Value); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; workflowRevisions, err := workflowClaimPipelineRevisions(input, outcome); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; return CommandResult[ClaimPipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ClaimPipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) ClaimPipeline(ctx context.Context, input ClaimPipelineInput) (CommandResult[ClaimPipelineOutcome], error) { response, err := client.session.Invoke(ctx, ClaimPipelineOperation, encodeClaimPipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; outcome, err := decodeClaimPipelineOutcome(response.Value); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowClaimPipelineRevisions(input, outcome); if err != nil { return CommandResult[ClaimPipelineOutcome]{}, err }; return CommandResult[ClaimPipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ClaimPipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) ClaimPipelineBatch(ctx context.Context, inputs []ClaimPipelineInput, concurrency, checkpoint uint32) (BatchResult[ClaimPipelineOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeClaimPipelineInput(input) }; response, err := client.session.Batch(ctx, ClaimPipelineOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ClaimPipelineOutcome]{}, err }; result := BatchResult[ClaimPipelineOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ClaimPipelineOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ClaimPipelineOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeClaimPipelineOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ClaimPipelineOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[ClaimPipelineOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowClaimPipelineRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[ClaimPipelineOutcome]{}, revisionErr }; converted.Result = &CommandResult[ClaimPipelineOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ClaimPipelinePlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const ReleasePipelinePlanHash = "d0b0de194872c07734a81e9cbf5c8c09372dfab9e19dd3307651252ff76e0892"
 var ReleasePipelineOperation = riffdb.Operation{Name: "woodpecker_scheduler_release_pipeline", InputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256"}
-func encodeReleasePipelineInput(input ReleasePipelineInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeReleasePipelineInput(input ReleasePipelineInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"owner_id": riffdb.UUID(input.OwnerId),
 	"pipeline_id": riffdb.UUID(input.PipelineId),
 	"request_key": riffdb.String(input.RequestKey),
@@ -271,12 +296,12 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowReleasePipelineRevisions(input ReleasePipelineInput, outcome ReleasePipelineOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(ReleasePipelinePipelineReleased); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "pipeline", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) ReleasePipeline(ctx context.Context, input ReleasePipelineInput) (CommandResult[ReleasePipelineOutcome], error) { response, err := client.session.Invoke(ctx, ReleasePipelineOperation, encodeReleasePipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; outcome, err := decodeReleasePipelineOutcome(response.Value); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; workflowRevisions, err := workflowReleasePipelineRevisions(input, outcome); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; return CommandResult[ReleasePipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ReleasePipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) ReleasePipeline(ctx context.Context, input ReleasePipelineInput) (CommandResult[ReleasePipelineOutcome], error) { response, err := client.session.Invoke(ctx, ReleasePipelineOperation, encodeReleasePipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; outcome, err := decodeReleasePipelineOutcome(response.Value); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowReleasePipelineRevisions(input, outcome); if err != nil { return CommandResult[ReleasePipelineOutcome]{}, err }; return CommandResult[ReleasePipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ReleasePipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) ReleasePipelineBatch(ctx context.Context, inputs []ReleasePipelineInput, concurrency, checkpoint uint32) (BatchResult[ReleasePipelineOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeReleasePipelineInput(input) }; response, err := client.session.Batch(ctx, ReleasePipelineOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ReleasePipelineOutcome]{}, err }; result := BatchResult[ReleasePipelineOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ReleasePipelineOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ReleasePipelineOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeReleasePipelineOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ReleasePipelineOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[ReleasePipelineOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowReleasePipelineRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[ReleasePipelineOutcome]{}, revisionErr }; converted.Result = &CommandResult[ReleasePipelineOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ReleasePipelinePlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const StartPipelinePlanHash = "c753ddcf3b99c45a069a0be94d51397ae088229eea334cf0d4f5f437854791f5"
 var StartPipelineOperation = riffdb.Operation{Name: "woodpecker_scheduler_start_pipeline", InputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256"}
-func encodeStartPipelineInput(input StartPipelineInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeStartPipelineInput(input StartPipelineInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"owner_id": riffdb.UUID(input.OwnerId),
 	"pipeline_id": riffdb.UUID(input.PipelineId),
 	"request_key": riffdb.String(input.RequestKey),
@@ -304,7 +329,7 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowStartPipelineRevisions(input StartPipelineInput, outcome StartPipelineOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(StartPipelinePipelineStarted); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "pipeline", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) StartPipeline(ctx context.Context, input StartPipelineInput) (CommandResult[StartPipelineOutcome], error) { response, err := client.session.Invoke(ctx, StartPipelineOperation, encodeStartPipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; outcome, err := decodeStartPipelineOutcome(response.Value); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; workflowRevisions, err := workflowStartPipelineRevisions(input, outcome); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; return CommandResult[StartPipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: StartPipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) StartPipeline(ctx context.Context, input StartPipelineInput) (CommandResult[StartPipelineOutcome], error) { response, err := client.session.Invoke(ctx, StartPipelineOperation, encodeStartPipelineInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; outcome, err := decodeStartPipelineOutcome(response.Value); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowStartPipelineRevisions(input, outcome); if err != nil { return CommandResult[StartPipelineOutcome]{}, err }; return CommandResult[StartPipelineOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: StartPipelinePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) StartPipelineBatch(ctx context.Context, inputs []StartPipelineInput, concurrency, checkpoint uint32) (BatchResult[StartPipelineOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeStartPipelineInput(input) }; response, err := client.session.Batch(ctx, StartPipelineOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[StartPipelineOutcome]{}, err }; result := BatchResult[StartPipelineOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[StartPipelineOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[StartPipelineOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeStartPipelineOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[StartPipelineOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[StartPipelineOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowStartPipelineRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[StartPipelineOutcome]{}, revisionErr }; converted.Result = &CommandResult[StartPipelineOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: StartPipelinePlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 

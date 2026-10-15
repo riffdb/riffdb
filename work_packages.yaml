@@ -30417,7 +30417,7 @@ work_packages:
     and environment variable resolution while keeping existing constructors intact.
   requirements: [DRV-005, DRV-007, DRV-008, DRV-013]
   required_adrs: [ADR-0303, ADR-0015, ADR-0106, ADR-0148, ADR-0155]
-  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, templates/**, clients/**, examples/**, fixtures/**, docs/sdks/**]
   deliverables:
   - Embedded role and lock identity constants in generated TypeScript, Python, Rust, and Go role clients
   - One-line connect / connect_env factory on generated role clients with default AttemptBudget(3) and RIFFDB_* fallback
@@ -30435,11 +30435,11 @@ work_packages:
   - Generated bindings bypass driver handshake verification or remote identity checks.
   - Existing explicit client constructors are removed.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DRV-005, DRV-007, DRV-008, DRV-013]
+    evidence: crates/riffdb-query-module/src/generation.rs
+    decision: Embedded compiled role and lock identity constants in generated TypeScript, Python, Rust, and Go role clients, added one-line connect/connect_env factories with default AttemptBudget(3) and RIFFDB_* environment resolution, enabled automatic idempotency-key generation when omitted per command invocation, updated scaffold templates, and regenerated all checked SDK fixtures.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30454,7 +30454,7 @@ work_packages:
     Python, Rust, and Go.
   requirements: [DRV-007, DRV-008, DRV-012, DRV-013]
   required_adrs: [ADR-0303, ADR-0015, ADR-0148, ADR-0155]
-  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, templates/**, clients/**, examples/**, fixtures/**, docs/sdks/**]
   deliverables:
   - Typed Rust enum fields in generated query parameter structs and row structs with ApplicationValue::Enum conversion
   - Keyword-argument invocation support alongside Input/Params dataclasses on generated Python sync and async clients
@@ -30472,11 +30472,11 @@ work_packages:
   - Enum validation is weakened or raw unvalidated strings bypass contract enum checks.
   - Existing result fields (.outcome, .value) are removed incompatibilities.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DRV-007, DRV-008, DRV-012, DRV-013]
+    evidence: crates/riffdb-query-module/src/generation.rs
+    decision: Emitted typed contract enums in generated Rust query parameter and row structs, added keyword-argument and automatic idempotency-key support on generated Python sync and async clients, and added outcomeTag/outcome_tag, unwrapFound/unwrap_found, orNull/or_none/OrNil, and items helpers across TypeScript, Python, Rust, and Go.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30490,7 +30490,7 @@ work_packages:
     across TypeScript, Python, Rust, and Go.
   requirements: [DRV-001, DRV-007, DRV-008, DRV-016]
   required_adrs: [ADR-0303, ADR-0148, ADR-0158, ADR-0159]
-  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, templates/**, clients/**, examples/**, fixtures/**, docs/sdks/**]
   deliverables:
   - readAfterOptions / read_after_options helper on command results across all four SDKs
   - Request-scoped causal() client handle tracking the highest observed commitSequence per handle
@@ -30508,11 +30508,11 @@ work_packages:
   - Causal session tracking mutates shared global state across unrelated requests.
   - Pagination iterators buffer unbounded pages in memory or bypass cursor validation.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-14'
+    requirements_satisfied: [DRV-001, DRV-007, DRV-008, DRV-016]
+    evidence: crates/riffdb-query-module/src/generation.rs
+    decision: Enabled per-client causal read-your-writes watermark tracking by default alongside explicit causal() handles and readAfterOptions/read_after_options helpers, and emitted bounded page and item pagination helpers (default max_pages = 64, capped at 1024) on cursor-eligible -> many queries across TypeScript, Python, Rust, and Go.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

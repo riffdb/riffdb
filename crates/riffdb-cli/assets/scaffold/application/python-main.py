@@ -8,11 +8,9 @@ from uuid import UUID
 
 from riffdb_application import (
     AsyncApplicationTransport,
-    AttemptBudget,
     BearerCredential,
     CallMetadata,
     DatabaseAlias,
-    QueryOptions,
     SyncApplicationTransport,
     TypedCommandResult,
     TypedQueryResult,
@@ -59,7 +57,7 @@ def run_sync(endpoint: str, credential_file: str, database: str) -> dict[str, ob
     with SyncApplicationTransport.connect_uri(
         endpoint, metadata(credential_file, database)
     ) as transport:
-        application = {{MODULE_CLIENT}}(transport, AttemptBudget(3))
+        application = {{MODULE_CLIENT}}(transport)
         command = application.create_item(
             CreateItemInput(
                 idempotency_key="{{APPLICATION_NAME}}-python-item",
@@ -67,10 +65,7 @@ def run_sync(endpoint: str, credential_file: str, database: str) -> dict[str, ob
                 title="Python generated application client",
             )
         )
-        page = application.item_page(
-            ItemPageParams(item_id=ITEM_ID),
-            QueryOptions(read_after_commit=command.commit_sequence),
-        )
+        page = application.item_page(ItemPageParams(item_id=ITEM_ID))
         return observation(command, page)
 
 
@@ -78,7 +73,7 @@ async def run_async(endpoint: str, credential_file: str, database: str) -> dict[
     async with await AsyncApplicationTransport.connect_uri(
         endpoint, metadata(credential_file, database)
     ) as transport:
-        application = Async{{MODULE_CLIENT}}(transport, AttemptBudget(3))
+        application = Async{{MODULE_CLIENT}}(transport)
         command = await application.create_item(
             CreateItemInput(
                 idempotency_key="{{APPLICATION_NAME}}-python-item",
@@ -86,10 +81,7 @@ async def run_async(endpoint: str, credential_file: str, database: str) -> dict[
                 title="Python generated application client",
             )
         )
-        page = await application.item_page(
-            ItemPageParams(item_id=ITEM_ID),
-            QueryOptions(read_after_commit=command.commit_sequence),
-        )
+        page = await application.item_page(ItemPageParams(item_id=ITEM_ID))
         return observation(command, page)
 
 

@@ -91,6 +91,12 @@ func Date(days int32) Value                { return Value{Type: "date", Value: s
 func List(values []Value) Value            { return Value{Type: "list", Value: values} }
 func Record(values map[string]Value) Value { return Value{Type: "record", Value: values} }
 func BytesFrom(value []byte) Value         { return Bytes(base64.StdEncoding.EncodeToString(value)) }
+func DefaultIdempotencyKey(value string) string {
+	if value != "" {
+		return value
+	}
+	return fmt.Sprintf("riffdb-auto-%d-%d", time.Now().UnixNano(), nextSession.Add(1))
+}
 func TimestampFrom(value Instant) Value {
 	return Value{Type: "timestamp", Value: Timestamp{Seconds: strconv.FormatInt(value.Seconds, 10), Nanos: value.Nanos}}
 }

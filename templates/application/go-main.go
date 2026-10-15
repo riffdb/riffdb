@@ -31,7 +31,7 @@ func main() {
 		panic(err)
 	}
 	defer session.Close()
-	client, err := generated.NewClient(session, 3)
+	client, err := generated.NewClient(session)
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +44,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	page, err := client.ItemPage(ctx, generated.ItemPageParams{ItemId: itemID}, riffdb.Options{ReadAfterCommit: created.CommitSequence})
+	page, err := client.ItemPage(ctx, generated.ItemPageParams{ItemId: itemID})
 	if err != nil {
 		panic(err)
 	}

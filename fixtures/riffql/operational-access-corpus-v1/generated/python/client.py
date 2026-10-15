@@ -73,6 +73,12 @@ class ItemsByCodeFound:
     items: tuple[ItemsByCodeFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByCodeFound:
+        return self
+
 ItemsByCodeResult: TypeAlias = ItemsByCodeFound
 
 ITEMS_BY_CODE_PREFIX_QUERY_PLAN_HASH: Final[str] = "bb15dd7fd9465143c4a83336af0a537a1a5da381897bf4b6ec255f815c28393a"
@@ -95,6 +101,12 @@ class ItemsByCodePrefixFoundItems:
 class ItemsByCodePrefixFound:
     items: tuple[ItemsByCodePrefixFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByCodePrefixFound:
+        return self
 
 ItemsByCodePrefixResult: TypeAlias = ItemsByCodePrefixFound
 
@@ -119,6 +131,12 @@ class ItemsByCodesFound:
     items: tuple[ItemsByCodesFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByCodesFound:
+        return self
+
 ItemsByCodesResult: TypeAlias = ItemsByCodesFound
 
 ITEMS_BY_CODES_REVERSE_QUERY_PLAN_HASH: Final[str] = "838f4ed5fbc017f8d46372ac7ba836775a7f6797a8909fc2c2d6e4a1ca47979f"
@@ -142,6 +160,12 @@ class ItemsByCodesReverseFound:
     items: tuple[ItemsByCodesReverseFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByCodesReverseFound:
+        return self
+
 ItemsByCodesReverseResult: TypeAlias = ItemsByCodesReverseFound
 
 ITEMS_BY_KINDS_QUERY_PLAN_HASH: Final[str] = "94bc02975553237d038c5fbe3aab62851e4f96dd3376f3b7598c052b07dc8aec"
@@ -164,6 +188,12 @@ class ItemsByKindsFoundItems:
 class ItemsByKindsFound:
     items: tuple[ItemsByKindsFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsByKindsFound:
+        return self
 
 ItemsByKindsResult: TypeAlias = ItemsByKindsFound
 
@@ -189,6 +219,12 @@ class ItemsInCodeWindowFound:
     items: tuple[ItemsInCodeWindowFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsInCodeWindowFound:
+        return self
+
 ItemsInCodeWindowResult: TypeAlias = ItemsInCodeWindowFound
 
 ITEMS_IN_SCORE_WINDOW_QUERY_PLAN_HASH: Final[str] = "b9fe29b0b6bcce2d4df93f1edc4df502fffe78d37ace9ce0c194c8fee1121310"
@@ -213,6 +249,12 @@ class ItemsInScoreWindowFound:
     items: tuple[ItemsInScoreWindowFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsInScoreWindowFound:
+        return self
+
 ItemsInScoreWindowResult: TypeAlias = ItemsInScoreWindowFound
 
 ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH: Final[str] = "f891f2c81f0f206c4b0cdd1a48c956a0f4f48baf0446904a170f99205357ea54"
@@ -236,6 +278,12 @@ class ItemsOutsideCodeFound:
     items: tuple[ItemsOutsideCodeFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsOutsideCodeFound:
+        return self
+
 ItemsOutsideCodeResult: TypeAlias = ItemsOutsideCodeFound
 
 ITEMS_OUTSIDE_SCORE_QUERY_PLAN_HASH: Final[str] = "c2f5048cf586b549abf48abfbc70ba922de684d3e032e2ac7f60536728bb542b"
@@ -258,6 +306,12 @@ class ItemsOutsideScoreFoundItems:
 class ItemsOutsideScoreFound:
     items: tuple[ItemsOutsideScoreFoundItems, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
+
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsOutsideScoreFound:
+        return self
 
 ItemsOutsideScoreResult: TypeAlias = ItemsOutsideScoreFound
 
@@ -283,16 +337,50 @@ class ItemsWithLabelsFound:
     labels: tuple[ItemsWithLabelsFoundLabels, ...]
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_integrity_failure(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> ItemsWithLabelsFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemsWithLabelsIntegrityFailure:
     outcome: Literal["IntegrityFailure"] = field(default="IntegrityFailure", init=False)
 
+    def is_found(self) -> bool:
+        return False
+
+    def is_integrity_failure(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemsWithLabelsFound:
+        raise ValueError("expected ItemsWithLabels outcome found")
+
 ItemsWithLabelsResult: TypeAlias = ItemsWithLabelsFound | ItemsWithLabelsIntegrityFailure
 
 class OperationalAccessCorpusClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> OperationalAccessCorpusClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> OperationalAccessCorpusClient:
+        return OperationalAccessCorpusClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> OperationalAccessCorpusClient:
+        return OperationalAccessCorpusClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def items_by_code(self, parameters: ItemsByCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodeResult]:
         encoded_parameters = encode_record(parameters)
@@ -302,6 +390,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -312,6 +402,25 @@ class OperationalAccessCorpusClient:
             "Found": ItemsByCodeFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def items_by_code_after_commit(self, parameters: ItemsByCodeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodeResult]:
+        return self.items_by_code(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_code_pages(self, parameters: ItemsByCodeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodeParams(workspace_id=parameters.workspace_id, code=parameters.code, after=None)
+            page = self.items_by_code(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
 
     def items_by_code_prefix(self, parameters: ItemsByCodePrefixParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodePrefixResult]:
         encoded_parameters = encode_record(parameters)
@@ -321,6 +430,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -332,6 +443,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_by_code_prefix_after_commit(self, parameters: ItemsByCodePrefixParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodePrefixResult]:
+        return self.items_by_code_prefix(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_code_prefix_pages(self, parameters: ItemsByCodePrefixParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodePrefixResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodePrefixResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodePrefixParams(workspace_id=parameters.workspace_id, prefix=parameters.prefix, after=None)
+            page = self.items_by_code_prefix(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_by_codes(self, parameters: ItemsByCodesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -340,6 +470,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -351,6 +483,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_by_codes_after_commit(self, parameters: ItemsByCodesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesResult]:
+        return self.items_by_codes(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_codes_pages(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodesParams(workspace_id=parameters.workspace_id, codes=parameters.codes, after=None)
+            page = self.items_by_codes(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_by_codes_reverse(self, parameters: ItemsByCodesReverseParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -359,6 +510,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -370,6 +523,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_by_codes_reverse_after_commit(self, parameters: ItemsByCodesReverseParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
+        return self.items_by_codes_reverse(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_codes_reverse_pages(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodesReverseResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodesReverseResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodesReverseParams(workspace_id=parameters.workspace_id, codes=parameters.codes, after=None)
+            page = self.items_by_codes_reverse(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_by_kinds(self, parameters: ItemsByKindsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -378,6 +550,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -389,6 +563,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_by_kinds_after_commit(self, parameters: ItemsByKindsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
+        return self.items_by_kinds(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_by_kinds_pages(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByKindsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByKindsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByKindsParams(workspace_id=parameters.workspace_id, kinds=parameters.kinds, after=None)
+            page = self.items_by_kinds(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -397,6 +590,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -408,6 +603,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_in_code_window_after_commit(self, parameters: ItemsInCodeWindowParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
+        return self.items_in_code_window(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_in_code_window_pages(self, parameters: ItemsInCodeWindowParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsInCodeWindowResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsInCodeWindowResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsInCodeWindowParams(workspace_id=parameters.workspace_id, after_code=parameters.after_code, horizon_code=parameters.horizon_code, after=None)
+            page = self.items_in_code_window(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_in_score_window(self, parameters: ItemsInScoreWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -416,6 +630,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -427,6 +643,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_in_score_window_after_commit(self, parameters: ItemsInScoreWindowParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
+        return self.items_in_score_window(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_in_score_window_pages(self, parameters: ItemsInScoreWindowParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsInScoreWindowResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsInScoreWindowResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsInScoreWindowParams(workspace_id=parameters.workspace_id, minimum=parameters.minimum, maximum=parameters.maximum, after=None)
+            page = self.items_in_score_window(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_outside_code(self, parameters: ItemsOutsideCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -435,6 +670,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -446,6 +683,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_outside_code_after_commit(self, parameters: ItemsOutsideCodeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
+        return self.items_outside_code(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_outside_code_pages(self, parameters: ItemsOutsideCodeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsOutsideCodeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsOutsideCodeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsOutsideCodeParams(workspace_id=parameters.workspace_id, excluded_code=parameters.excluded_code, after=None)
+            page = self.items_outside_code(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_outside_score(self, parameters: ItemsOutsideScoreParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideScoreResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -454,6 +710,8 @@ class OperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -465,7 +723,28 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_outside_score_after_commit(self, parameters: ItemsOutsideScoreParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideScoreResult]:
+        return self.items_outside_score(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    def items_outside_score_pages(self, parameters: ItemsOutsideScoreParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsOutsideScoreResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsOutsideScoreResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsOutsideScoreParams(workspace_id=parameters.workspace_id, excluded=parameters.excluded, after=None)
+            page = self.items_outside_score(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     def items_with_labels(self, parameters: ItemsWithLabelsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsWithLabelsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -478,10 +757,29 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_with_labels_after_commit(self, parameters: ItemsWithLabelsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsWithLabelsResult]:
+        return self.items_with_labels(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
 class AsyncOperationalAccessCorpusClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncOperationalAccessCorpusClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncOperationalAccessCorpusClient:
+        return AsyncOperationalAccessCorpusClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncOperationalAccessCorpusClient:
+        return AsyncOperationalAccessCorpusClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def items_by_code(self, parameters: ItemsByCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodeResult]:
         encoded_parameters = encode_record(parameters)
@@ -491,6 +789,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -502,6 +802,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_by_code_after_commit(self, parameters: ItemsByCodeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodeResult]:
+        return await self.items_by_code(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_code_pages(self, parameters: ItemsByCodeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodeParams(workspace_id=parameters.workspace_id, code=parameters.code, after=None)
+            page = await self.items_by_code(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_by_code_prefix(self, parameters: ItemsByCodePrefixParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodePrefixResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -510,6 +829,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -521,6 +842,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_by_code_prefix_after_commit(self, parameters: ItemsByCodePrefixParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodePrefixResult]:
+        return await self.items_by_code_prefix(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_code_prefix_pages(self, parameters: ItemsByCodePrefixParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodePrefixResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodePrefixResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodePrefixParams(workspace_id=parameters.workspace_id, prefix=parameters.prefix, after=None)
+            page = await self.items_by_code_prefix(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_by_codes(self, parameters: ItemsByCodesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -529,6 +869,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -540,6 +882,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_by_codes_after_commit(self, parameters: ItemsByCodesParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesResult]:
+        return await self.items_by_codes(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_codes_pages(self, parameters: ItemsByCodesParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodesResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodesResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodesParams(workspace_id=parameters.workspace_id, codes=parameters.codes, after=None)
+            page = await self.items_by_codes(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_by_codes_reverse(self, parameters: ItemsByCodesReverseParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -548,6 +909,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -559,6 +922,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_by_codes_reverse_after_commit(self, parameters: ItemsByCodesReverseParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByCodesReverseResult]:
+        return await self.items_by_codes_reverse(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_codes_reverse_pages(self, parameters: ItemsByCodesReverseParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByCodesReverseResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByCodesReverseResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByCodesReverseParams(workspace_id=parameters.workspace_id, codes=parameters.codes, after=None)
+            page = await self.items_by_codes_reverse(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_by_kinds(self, parameters: ItemsByKindsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -567,6 +949,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -578,6 +962,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_by_kinds_after_commit(self, parameters: ItemsByKindsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsByKindsResult]:
+        return await self.items_by_kinds(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_by_kinds_pages(self, parameters: ItemsByKindsParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsByKindsResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsByKindsResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsByKindsParams(workspace_id=parameters.workspace_id, kinds=parameters.kinds, after=None)
+            page = await self.items_by_kinds(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -586,6 +989,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -597,6 +1002,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_in_code_window_after_commit(self, parameters: ItemsInCodeWindowParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
+        return await self.items_in_code_window(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_in_code_window_pages(self, parameters: ItemsInCodeWindowParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsInCodeWindowResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsInCodeWindowResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsInCodeWindowParams(workspace_id=parameters.workspace_id, after_code=parameters.after_code, horizon_code=parameters.horizon_code, after=None)
+            page = await self.items_in_code_window(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_in_score_window(self, parameters: ItemsInScoreWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -605,6 +1029,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -616,6 +1042,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_in_score_window_after_commit(self, parameters: ItemsInScoreWindowParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
+        return await self.items_in_score_window(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_in_score_window_pages(self, parameters: ItemsInScoreWindowParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsInScoreWindowResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsInScoreWindowResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsInScoreWindowParams(workspace_id=parameters.workspace_id, minimum=parameters.minimum, maximum=parameters.maximum, after=None)
+            page = await self.items_in_score_window(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_outside_code(self, parameters: ItemsOutsideCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -624,6 +1069,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -635,6 +1082,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_outside_code_after_commit(self, parameters: ItemsOutsideCodeParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
+        return await self.items_outside_code(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_outside_code_pages(self, parameters: ItemsOutsideCodeParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsOutsideCodeResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsOutsideCodeResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsOutsideCodeParams(workspace_id=parameters.workspace_id, excluded_code=parameters.excluded_code, after=None)
+            page = await self.items_outside_code(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_outside_score(self, parameters: ItemsOutsideScoreParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideScoreResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -643,6 +1109,8 @@ class AsyncOperationalAccessCorpusClient:
                 raise ValueError("generated cursor conflicts with query options")
             options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -654,7 +1122,28 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_outside_score_after_commit(self, parameters: ItemsOutsideScoreParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideScoreResult]:
+        return await self.items_outside_score(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
+    async def items_outside_score_pages(self, parameters: ItemsOutsideScoreParams, max_pages: int = 64, options: QueryOptions = QueryOptions()) -> list[TypedQueryResult[ItemsOutsideScoreResult]]:
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1 or max_pages > 1024:
+            raise ValueError("max_pages must be an integer from 1 through 1024")
+        if parameters.after is not None and options.cursor is not None:
+            raise ValueError("generated cursor conflicts with query options")
+        cursor = options.cursor if options.cursor is not None else parameters.after
+        pages: list[TypedQueryResult[ItemsOutsideScoreResult]] = []
+        for _ in range(max_pages):
+            page_parameters = ItemsOutsideScoreParams(workspace_id=parameters.workspace_id, excluded=parameters.excluded, after=None)
+            page = await self.items_outside_score(page_parameters, QueryOptions(cursor=cursor, read_after_commit=options.read_after_commit, consistency=options.consistency))
+            pages.append(page)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return pages
+
     async def items_with_labels(self, parameters: ItemsWithLabelsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsWithLabelsResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -666,3 +1155,6 @@ class AsyncOperationalAccessCorpusClient:
             "IntegrityFailure": ItemsWithLabelsIntegrityFailure,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def items_with_labels_after_commit(self, parameters: ItemsWithLabelsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsWithLabelsResult]:
+        return await self.items_with_labels(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))

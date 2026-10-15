@@ -100,9 +100,27 @@ class GetSessionFound:
     session: GetSessionFoundSession = field(repr=False)
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetSessionFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetSessionMissing:
     outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetSessionFound:
+        raise ValueError("expected GetSession outcome found")
 
 GetSessionResult: TypeAlias = GetSessionFound | GetSessionMissing
 
@@ -124,9 +142,27 @@ class GetUserFound:
     user: GetUserFoundUser
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> GetUserFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserMissing:
     outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> GetUserFound:
+        raise ValueError("expected GetUser outcome found")
 
 GetUserResult: TypeAlias = GetUserFound | GetUserMissing
 
@@ -142,9 +178,33 @@ CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "d3eb6e22e8c5b85778d5480c8ace
 class ConsumeVerificationTokenVerificationTokenExpired:
     outcome: Literal["VerificationTokenExpired"] = field(default="VerificationTokenExpired", init=False)
 
+    def is_verification_token_expired(self) -> bool:
+        return True
+
+    def is_verification_token_missing(self) -> bool:
+        return False
+
+    def is_verification_token_consumed(self) -> bool:
+        return False
+
+    def is_verification_token_already_consumed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenMissing:
     outcome: Literal["VerificationTokenMissing"] = field(default="VerificationTokenMissing", init=False)
+
+    def is_verification_token_expired(self) -> bool:
+        return False
+
+    def is_verification_token_missing(self) -> bool:
+        return True
+
+    def is_verification_token_consumed(self) -> bool:
+        return False
+
+    def is_verification_token_already_consumed(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenConsumed:
@@ -152,9 +212,33 @@ class ConsumeVerificationTokenVerificationTokenConsumed:
     verification_token_id: UUID
     outcome: Literal["VerificationTokenConsumed"] = field(default="VerificationTokenConsumed", init=False)
 
+    def is_verification_token_expired(self) -> bool:
+        return False
+
+    def is_verification_token_missing(self) -> bool:
+        return False
+
+    def is_verification_token_consumed(self) -> bool:
+        return True
+
+    def is_verification_token_already_consumed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenAlreadyConsumed:
     outcome: Literal["VerificationTokenAlreadyConsumed"] = field(default="VerificationTokenAlreadyConsumed", init=False)
+
+    def is_verification_token_expired(self) -> bool:
+        return False
+
+    def is_verification_token_missing(self) -> bool:
+        return False
+
+    def is_verification_token_consumed(self) -> bool:
+        return False
+
+    def is_verification_token_already_consumed(self) -> bool:
+        return True
 
 ConsumeVerificationTokenOutcome: TypeAlias = ConsumeVerificationTokenVerificationTokenExpired | ConsumeVerificationTokenVerificationTokenMissing | ConsumeVerificationTokenVerificationTokenConsumed | ConsumeVerificationTokenVerificationTokenAlreadyConsumed
 
@@ -168,17 +252,65 @@ CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "17a6684beab818b87785af4109
 class CreateUserAccountSessionsSignupUserExists:
     outcome: Literal["SignupUserExists"] = field(default="SignupUserExists", init=False)
 
+    def is_signup_user_exists(self) -> bool:
+        return True
+
+    def is_signup_account_exists(self) -> bool:
+        return False
+
+    def is_signup_session_exists(self) -> bool:
+        return False
+
+    def is_user_account_sessions_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsSignupAccountExists:
     outcome: Literal["SignupAccountExists"] = field(default="SignupAccountExists", init=False)
+
+    def is_signup_user_exists(self) -> bool:
+        return False
+
+    def is_signup_account_exists(self) -> bool:
+        return True
+
+    def is_signup_session_exists(self) -> bool:
+        return False
+
+    def is_user_account_sessions_created(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsSignupSessionExists:
     outcome: Literal["SignupSessionExists"] = field(default="SignupSessionExists", init=False)
 
+    def is_signup_user_exists(self) -> bool:
+        return False
+
+    def is_signup_account_exists(self) -> bool:
+        return False
+
+    def is_signup_session_exists(self) -> bool:
+        return True
+
+    def is_user_account_sessions_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsUserAccountSessionsCreated:
     outcome: Literal["UserAccountSessionsCreated"] = field(default="UserAccountSessionsCreated", init=False)
+
+    def is_signup_user_exists(self) -> bool:
+        return False
+
+    def is_signup_account_exists(self) -> bool:
+        return False
+
+    def is_signup_session_exists(self) -> bool:
+        return False
+
+    def is_user_account_sessions_created(self) -> bool:
+        return True
 
 CreateUserAccountSessionsOutcome: TypeAlias = CreateUserAccountSessionsSignupUserExists | CreateUserAccountSessionsSignupAccountExists | CreateUserAccountSessionsSignupSessionExists | CreateUserAccountSessionsUserAccountSessionsCreated
 
@@ -193,13 +325,40 @@ DELETE_USERS_PLAN_HASH: Final[str] = "8b97f43474cf0ff07c3831985bf5150af485762356
 class DeleteUsersDeleteUserMissing:
     outcome: Literal["DeleteUserMissing"] = field(default="DeleteUserMissing", init=False)
 
+    def is_delete_user_missing(self) -> bool:
+        return True
+
+    def is_user_accounts_deleted(self) -> bool:
+        return False
+
+    def is_cascade_limit_exceeded(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteUsersUserAccountsDeleted:
     outcome: Literal["UserAccountsDeleted"] = field(default="UserAccountsDeleted", init=False)
 
+    def is_delete_user_missing(self) -> bool:
+        return False
+
+    def is_user_accounts_deleted(self) -> bool:
+        return True
+
+    def is_cascade_limit_exceeded(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteUsersCascadeLimitExceeded:
     outcome: Literal["CascadeLimitExceeded"] = field(default="CascadeLimitExceeded", init=False)
+
+    def is_delete_user_missing(self) -> bool:
+        return False
+
+    def is_user_accounts_deleted(self) -> bool:
+        return False
+
+    def is_cascade_limit_exceeded(self) -> bool:
+        return True
 
 DeleteUsersOutcome: TypeAlias = DeleteUsersDeleteUserMissing | DeleteUsersUserAccountsDeleted | DeleteUsersCascadeLimitExceeded
 
@@ -217,6 +376,15 @@ ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "de7410e8a99c62a397b99b7d13c6c4
 class IssueVerificationTokenVerificationTokenExists:
     outcome: Literal["VerificationTokenExists"] = field(default="VerificationTokenExists", init=False)
 
+    def is_verification_token_exists(self) -> bool:
+        return True
+
+    def is_verification_token_issued(self) -> bool:
+        return False
+
+    def is_verification_token_user_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenVerificationTokenIssued:
     issued_at: Timestamp
@@ -224,9 +392,27 @@ class IssueVerificationTokenVerificationTokenIssued:
     verification_token_id: UUID
     outcome: Literal["VerificationTokenIssued"] = field(default="VerificationTokenIssued", init=False)
 
+    def is_verification_token_exists(self) -> bool:
+        return False
+
+    def is_verification_token_issued(self) -> bool:
+        return True
+
+    def is_verification_token_user_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenVerificationTokenUserMissing:
     outcome: Literal["VerificationTokenUserMissing"] = field(default="VerificationTokenUserMissing", init=False)
+
+    def is_verification_token_exists(self) -> bool:
+        return False
+
+    def is_verification_token_issued(self) -> bool:
+        return False
+
+    def is_verification_token_user_missing(self) -> bool:
+        return True
 
 IssueVerificationTokenOutcome: TypeAlias = IssueVerificationTokenVerificationTokenExists | IssueVerificationTokenVerificationTokenIssued | IssueVerificationTokenVerificationTokenUserMissing
 
@@ -249,6 +435,21 @@ class RefreshSessionSessionRefreshed:
     session: Session
     outcome: Literal["SessionRefreshed"] = field(default="SessionRefreshed", init=False)
 
+    def is_session_refreshed(self) -> bool:
+        return True
+
+    def is_refresh_session_stale(self) -> bool:
+        return False
+
+    def is_refresh_session_expired(self) -> bool:
+        return False
+
+    def is_refresh_session_missing(self) -> bool:
+        return False
+
+    def is_refresh_session_revoked(self) -> bool:
+        return False
+
     def __repr__(self) -> str:
         return "RefreshSessionSessionRefreshed(<secret outputs redacted>)"
 
@@ -256,17 +457,77 @@ class RefreshSessionSessionRefreshed:
 class RefreshSessionRefreshSessionStale:
     outcome: Literal["RefreshSessionStale"] = field(default="RefreshSessionStale", init=False)
 
+    def is_session_refreshed(self) -> bool:
+        return False
+
+    def is_refresh_session_stale(self) -> bool:
+        return True
+
+    def is_refresh_session_expired(self) -> bool:
+        return False
+
+    def is_refresh_session_missing(self) -> bool:
+        return False
+
+    def is_refresh_session_revoked(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionRefreshSessionExpired:
     outcome: Literal["RefreshSessionExpired"] = field(default="RefreshSessionExpired", init=False)
+
+    def is_session_refreshed(self) -> bool:
+        return False
+
+    def is_refresh_session_stale(self) -> bool:
+        return False
+
+    def is_refresh_session_expired(self) -> bool:
+        return True
+
+    def is_refresh_session_missing(self) -> bool:
+        return False
+
+    def is_refresh_session_revoked(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionRefreshSessionMissing:
     outcome: Literal["RefreshSessionMissing"] = field(default="RefreshSessionMissing", init=False)
 
+    def is_session_refreshed(self) -> bool:
+        return False
+
+    def is_refresh_session_stale(self) -> bool:
+        return False
+
+    def is_refresh_session_expired(self) -> bool:
+        return False
+
+    def is_refresh_session_missing(self) -> bool:
+        return True
+
+    def is_refresh_session_revoked(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionRefreshSessionRevoked:
     outcome: Literal["RefreshSessionRevoked"] = field(default="RefreshSessionRevoked", init=False)
+
+    def is_session_refreshed(self) -> bool:
+        return False
+
+    def is_refresh_session_stale(self) -> bool:
+        return False
+
+    def is_refresh_session_expired(self) -> bool:
+        return False
+
+    def is_refresh_session_missing(self) -> bool:
+        return False
+
+    def is_refresh_session_revoked(self) -> bool:
+        return True
 
 RefreshSessionOutcome: TypeAlias = RefreshSessionSessionRefreshed | RefreshSessionRefreshSessionStale | RefreshSessionRefreshSessionExpired | RefreshSessionRefreshSessionMissing | RefreshSessionRefreshSessionRevoked
 
@@ -288,6 +549,18 @@ class RevokeSessionSessionRevoked:
     session: Session
     outcome: Literal["SessionRevoked"] = field(default="SessionRevoked", init=False)
 
+    def is_session_revoked(self) -> bool:
+        return True
+
+    def is_revoke_session_stale(self) -> bool:
+        return False
+
+    def is_revoke_session_missing(self) -> bool:
+        return False
+
+    def is_session_already_revoked(self) -> bool:
+        return False
+
     def __repr__(self) -> str:
         return "RevokeSessionSessionRevoked(<secret outputs redacted>)"
 
@@ -295,22 +568,76 @@ class RevokeSessionSessionRevoked:
 class RevokeSessionRevokeSessionStale:
     outcome: Literal["RevokeSessionStale"] = field(default="RevokeSessionStale", init=False)
 
+    def is_session_revoked(self) -> bool:
+        return False
+
+    def is_revoke_session_stale(self) -> bool:
+        return True
+
+    def is_revoke_session_missing(self) -> bool:
+        return False
+
+    def is_session_already_revoked(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionRevokeSessionMissing:
     outcome: Literal["RevokeSessionMissing"] = field(default="RevokeSessionMissing", init=False)
+
+    def is_session_revoked(self) -> bool:
+        return False
+
+    def is_revoke_session_stale(self) -> bool:
+        return False
+
+    def is_revoke_session_missing(self) -> bool:
+        return True
+
+    def is_session_already_revoked(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionSessionAlreadyRevoked:
     outcome: Literal["SessionAlreadyRevoked"] = field(default="SessionAlreadyRevoked", init=False)
 
+    def is_session_revoked(self) -> bool:
+        return False
+
+    def is_revoke_session_stale(self) -> bool:
+        return False
+
+    def is_revoke_session_missing(self) -> bool:
+        return False
+
+    def is_session_already_revoked(self) -> bool:
+        return True
+
 RevokeSessionOutcome: TypeAlias = RevokeSessionSessionRevoked | RevokeSessionRevokeSessionStale | RevokeSessionRevokeSessionMissing | RevokeSessionSessionAlreadyRevoked
 
 class BetterAuthAcceptanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> BetterAuthAcceptanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> BetterAuthAcceptanceClient:
+        return BetterAuthAcceptanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> BetterAuthAcceptanceClient:
+        return BetterAuthAcceptanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def get_session(self, parameters: GetSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -323,7 +650,12 @@ class BetterAuthAcceptanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_session_after_commit(self, parameters: GetSessionParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
+        return self.get_session(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -335,6 +667,9 @@ class BetterAuthAcceptanceClient:
             "Missing": GetUserMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def get_user_after_commit(self, parameters: GetUserParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        return self.get_user(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def consume_verification_token(self, input: ConsumeVerificationTokenInput) -> TypedCommandResult[ConsumeVerificationTokenOutcome]:
         raw = self._transport._execute_command(
@@ -348,7 +683,10 @@ class BetterAuthAcceptanceClient:
             "VerificationTokenConsumed": ConsumeVerificationTokenVerificationTokenConsumed,
             "VerificationTokenAlreadyConsumed": ConsumeVerificationTokenVerificationTokenAlreadyConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeVerificationTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def consume_verification_token_batch(
         self, inputs: Sequence[ConsumeVerificationTokenInput], options: CommandBatchOptions,
@@ -370,7 +708,10 @@ class BetterAuthAcceptanceClient:
             "SignupSessionExists": CreateUserAccountSessionsSignupSessionExists,
             "UserAccountSessionsCreated": CreateUserAccountSessionsUserAccountSessionsCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserAccountSessionsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_user_account_sessions_batch(
         self, inputs: Sequence[CreateUserAccountSessionsInput], options: CommandBatchOptions,
@@ -394,7 +735,10 @@ class BetterAuthAcceptanceClient:
             "UserAccountsDeleted": DeleteUsersUserAccountsDeleted,
             "CascadeLimitExceeded": DeleteUsersCascadeLimitExceeded,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[DeleteUsersOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def delete_users_batch(
         self, inputs: Sequence[DeleteUsersInput], options: CommandBatchOptions,
@@ -416,7 +760,10 @@ class BetterAuthAcceptanceClient:
             "VerificationTokenIssued": IssueVerificationTokenVerificationTokenIssued,
             "VerificationTokenUserMissing": IssueVerificationTokenVerificationTokenUserMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueVerificationTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def issue_verification_token_batch(
         self, inputs: Sequence[IssueVerificationTokenInput], options: CommandBatchOptions,
@@ -438,6 +785,8 @@ class BetterAuthAcceptanceClient:
             "RefreshSessionRevoked": RefreshSessionRefreshSessionRevoked,
         }
         result: TypedCommandResult[RefreshSessionOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, RefreshSessionSessionRefreshed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -465,6 +814,8 @@ class BetterAuthAcceptanceClient:
             "SessionAlreadyRevoked": RevokeSessionSessionAlreadyRevoked,
         }
         result: TypedCommandResult[RevokeSessionOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, RevokeSessionSessionRevoked):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -480,11 +831,29 @@ class BetterAuthAcceptanceClient:
         return self._transport._command_batch(inputs, options, self.revoke_session, progress)
 
 class AsyncBetterAuthAcceptanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncBetterAuthAcceptanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncBetterAuthAcceptanceClient:
+        return AsyncBetterAuthAcceptanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncBetterAuthAcceptanceClient:
+        return AsyncBetterAuthAcceptanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def get_session(self, parameters: GetSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -497,7 +866,12 @@ class AsyncBetterAuthAcceptanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_session_after_commit(self, parameters: GetSessionParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
+        return await self.get_session(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -509,6 +883,9 @@ class AsyncBetterAuthAcceptanceClient:
             "Missing": GetUserMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def get_user_after_commit(self, parameters: GetUserParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        return await self.get_user(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def consume_verification_token(self, input: ConsumeVerificationTokenInput) -> TypedCommandResult[ConsumeVerificationTokenOutcome]:
         raw = await self._transport._execute_command(
@@ -522,7 +899,10 @@ class AsyncBetterAuthAcceptanceClient:
             "VerificationTokenConsumed": ConsumeVerificationTokenVerificationTokenConsumed,
             "VerificationTokenAlreadyConsumed": ConsumeVerificationTokenVerificationTokenAlreadyConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeVerificationTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def consume_verification_token_batch(
         self, inputs: Sequence[ConsumeVerificationTokenInput], options: CommandBatchOptions,
@@ -544,7 +924,10 @@ class AsyncBetterAuthAcceptanceClient:
             "SignupSessionExists": CreateUserAccountSessionsSignupSessionExists,
             "UserAccountSessionsCreated": CreateUserAccountSessionsUserAccountSessionsCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateUserAccountSessionsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_user_account_sessions_batch(
         self, inputs: Sequence[CreateUserAccountSessionsInput], options: CommandBatchOptions,
@@ -568,7 +951,10 @@ class AsyncBetterAuthAcceptanceClient:
             "UserAccountsDeleted": DeleteUsersUserAccountsDeleted,
             "CascadeLimitExceeded": DeleteUsersCascadeLimitExceeded,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[DeleteUsersOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def delete_users_batch(
         self, inputs: Sequence[DeleteUsersInput], options: CommandBatchOptions,
@@ -590,7 +976,10 @@ class AsyncBetterAuthAcceptanceClient:
             "VerificationTokenIssued": IssueVerificationTokenVerificationTokenIssued,
             "VerificationTokenUserMissing": IssueVerificationTokenVerificationTokenUserMissing,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueVerificationTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def issue_verification_token_batch(
         self, inputs: Sequence[IssueVerificationTokenInput], options: CommandBatchOptions,
@@ -612,6 +1001,8 @@ class AsyncBetterAuthAcceptanceClient:
             "RefreshSessionRevoked": RefreshSessionRefreshSessionRevoked,
         }
         result: TypedCommandResult[RefreshSessionOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, RefreshSessionSessionRefreshed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -639,6 +1030,8 @@ class AsyncBetterAuthAcceptanceClient:
             "SessionAlreadyRevoked": RevokeSessionSessionAlreadyRevoked,
         }
         result: TypedCommandResult[RevokeSessionOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, RevokeSessionSessionRevoked):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:

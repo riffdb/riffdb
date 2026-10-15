@@ -41,11 +41,13 @@ type GetTokenTokenFound struct {
 	Token struct { OrganizationId string; TokenId string; Identifier string; ExpiresAt riffdb.Instant; IssuedAt riffdb.Instant }
 }
 func (GetTokenTokenFound) isGetTokenResult() {}
+func IsGetTokenTokenFound(value GetTokenResult) (GetTokenTokenFound, bool) { branch, ok := value.(GetTokenTokenFound); return branch, ok }
 
 type GetTokenTokenMissing struct {
 	Outcome string
 }
 func (GetTokenTokenMissing) isGetTokenResult() {}
+func IsGetTokenTokenMissing(value GetTokenResult) (GetTokenTokenMissing, bool) { branch, ok := value.(GetTokenTokenMissing); return branch, ok }
 
 var ConsumeTokenSecretOutputs = []struct { Outcome, Field, Entity, SourceField string }{
 	{Outcome: "TokenConsumed", Field: "value", Entity: "OneTimeToken", SourceField: "value"},
@@ -61,11 +63,13 @@ type ConsumeTokenTokenExpired struct {
 	Outcome string
 }
 func (ConsumeTokenTokenExpired) isConsumeTokenOutcome() {}
+func IsConsumeTokenTokenExpired(value ConsumeTokenOutcome) (ConsumeTokenTokenExpired, bool) { branch, ok := value.(ConsumeTokenTokenExpired); return branch, ok }
 
 type ConsumeTokenTokenMissing struct {
 	Outcome string
 }
 func (ConsumeTokenTokenMissing) isConsumeTokenOutcome() {}
+func IsConsumeTokenTokenMissing(value ConsumeTokenOutcome) (ConsumeTokenTokenMissing, bool) { branch, ok := value.(ConsumeTokenTokenMissing); return branch, ok }
 
 type ConsumeTokenTokenConsumed struct {
 	Outcome string
@@ -76,6 +80,7 @@ type ConsumeTokenTokenConsumed struct {
 	Identifier string
 }
 func (ConsumeTokenTokenConsumed) isConsumeTokenOutcome() {}
+func IsConsumeTokenTokenConsumed(value ConsumeTokenOutcome) (ConsumeTokenTokenConsumed, bool) { branch, ok := value.(ConsumeTokenTokenConsumed); return branch, ok }
 
 func (ConsumeTokenTokenConsumed) String() string { return "ConsumeTokenTokenConsumed{<secret outputs redacted>}" }
 func (ConsumeTokenTokenConsumed) GoString() string { return "ConsumeTokenTokenConsumed{<secret outputs redacted>}" }
@@ -95,15 +100,21 @@ type IssueTokenTokenIssued struct {
 	IssuedAt riffdb.Instant
 }
 func (IssueTokenTokenIssued) isIssueTokenOutcome() {}
+func IsIssueTokenTokenIssued(value IssueTokenOutcome) (IssueTokenTokenIssued, bool) { branch, ok := value.(IssueTokenTokenIssued); return branch, ok }
 
 type IssueTokenTokenAlreadyExists struct {
 	Outcome string
 }
 func (IssueTokenTokenAlreadyExists) isIssueTokenOutcome() {}
+func IsIssueTokenTokenAlreadyExists(value IssueTokenOutcome) (IssueTokenTokenAlreadyExists, bool) { branch, ok := value.(IssueTokenTokenAlreadyExists); return branch, ok }
 
-type Client struct { session *riffdb.Session; commandAttempts uint32 }
+const DefaultCommandAttempts uint32 = 3
+type Client struct { session *riffdb.Session; commandAttempts uint32; readAfterCommit *uint64; trackCausalWrites bool }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) { if session == nil || commandAttempts < 1 || commandAttempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: commandAttempts}, nil }
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) { attempts := DefaultCommandAttempts; if len(commandAttempts) > 1 { return nil, errors.New("invalid generated RiffDB client configuration") } else if len(commandAttempts) == 1 { attempts = commandAttempts[0] }; if session == nil || attempts < 1 || attempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil }
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client { var copied *uint64; if commitSequence != nil { value := *commitSequence; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites} }
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client { var copied *uint64; if len(initialCommitSequence) > 0 { value := initialCommitSequence[0]; copied = &value } else if client.readAfterCommit != nil { value := *client.readAfterCommit; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true} }
+func (client *Client) LastCommitSequence() *uint64 { if client.readAfterCommit == nil { return nil }; value := *client.readAfterCommit; return &value }
 
 func encodeOneTimeToken(value OneTimeToken) riffdb.Value { return riffdb.Record(map[string]riffdb.Value{
 	"value": riffdb.String(value.Value),
@@ -131,10 +142,11 @@ return result, nil
 case "TokenMissing": result := GetTokenTokenMissing{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) GetToken(ctx context.Context, parameters GetTokenParams, options QueryOptions) (QueryResult[GetTokenResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) GetToken(ctx context.Context, parameters GetTokenParams, optionsList ...QueryOptions) (QueryResult[GetTokenResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetTokenResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["token_id"] = riffdb.UUID(parameters.TokenId)
 response, err := client.session.Invoke(ctx, GetTokenOperation, input, options); if err != nil { return QueryResult[GetTokenResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[GetTokenResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeGetTokenResult(response.Value); if err != nil { return QueryResult[GetTokenResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetToken", PlanHash: GetTokenQueryPlanHash}; return QueryResult[GetTokenResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) GetTokenAfterCommit(ctx context.Context, parameters GetTokenParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetTokenResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetTokenResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.GetToken(ctx, parameters, options) }
 
 const ConsumeTokenPlanHash = "d42336ae6bbb2f75abd3616d8918f9a7628084e97be26c5e82348fddb6b0af84"
 var ConsumeTokenOperation = riffdb.Operation{Name: "one_time_tokens_consume_token", InputSchemaHash: "6fe9e04a4e2c880062d481fb30917816a0cae314acc951479a808a61e53ecacb"}
@@ -156,7 +168,7 @@ raw, err = requiredField(fields, "expires_at"); if err != nil { return nil, err 
 raw, err = requiredField(fields, "identifier"); if err != nil { return nil, err }; result.Identifier, err = riffdb.StringValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) ConsumeToken(ctx context.Context, input ConsumeTokenInput) (CommandResult[ConsumeTokenOutcome], error) { response, err := client.session.Invoke(ctx, ConsumeTokenOperation, encodeConsumeTokenInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; outcome, err := decodeConsumeTokenOutcome(response.Value); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; return CommandResult[ConsumeTokenOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ConsumeTokenPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) ConsumeToken(ctx context.Context, input ConsumeTokenInput) (CommandResult[ConsumeTokenOutcome], error) { response, err := client.session.Invoke(ctx, ConsumeTokenOperation, encodeConsumeTokenInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; outcome, err := decodeConsumeTokenOutcome(response.Value); if err != nil { return CommandResult[ConsumeTokenOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[ConsumeTokenOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ConsumeTokenPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) ConsumeTokenBatch(ctx context.Context, inputs []ConsumeTokenInput, concurrency, checkpoint uint32) (BatchResult[ConsumeTokenOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeConsumeTokenInput(input) }; response, err := client.session.Batch(ctx, ConsumeTokenOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ConsumeTokenOutcome]{}, err }; result := BatchResult[ConsumeTokenOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ConsumeTokenOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ConsumeTokenOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeConsumeTokenOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ConsumeTokenOutcome]{}, decodeErr }; converted.Result = &CommandResult[ConsumeTokenOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ConsumeTokenPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const IssueTokenPlanHash = "9db88ad2da13526f606ca497d31323b02066a625ca6614c5aef06f53ed677d2d"
@@ -177,7 +189,7 @@ return result, nil
 case "TokenAlreadyExists": result := IssueTokenTokenAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) IssueToken(ctx context.Context, input IssueTokenInput) (CommandResult[IssueTokenOutcome], error) { response, err := client.session.Invoke(ctx, IssueTokenOperation, encodeIssueTokenInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[IssueTokenOutcome]{}, err }; outcome, err := decodeIssueTokenOutcome(response.Value); if err != nil { return CommandResult[IssueTokenOutcome]{}, err }; return CommandResult[IssueTokenOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: IssueTokenPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) IssueToken(ctx context.Context, input IssueTokenInput) (CommandResult[IssueTokenOutcome], error) { response, err := client.session.Invoke(ctx, IssueTokenOperation, encodeIssueTokenInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[IssueTokenOutcome]{}, err }; outcome, err := decodeIssueTokenOutcome(response.Value); if err != nil { return CommandResult[IssueTokenOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[IssueTokenOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: IssueTokenPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) IssueTokenBatch(ctx context.Context, inputs []IssueTokenInput, concurrency, checkpoint uint32) (BatchResult[IssueTokenOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeIssueTokenInput(input) }; response, err := client.session.Batch(ctx, IssueTokenOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[IssueTokenOutcome]{}, err }; result := BatchResult[IssueTokenOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[IssueTokenOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[IssueTokenOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeIssueTokenOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[IssueTokenOutcome]{}, decodeErr }; converted.Result = &CommandResult[IssueTokenOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: IssueTokenPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 func requiredField(fields map[string]riffdb.Value, name string) (riffdb.Value, error) { value, ok := fields[name]; if !ok { return riffdb.Value{}, errors.New("RiffDB driver result is missing a generated field") }; return value, nil }

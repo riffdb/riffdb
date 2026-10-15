@@ -63,9 +63,27 @@ class DueRunFound:
     run: DueRunFoundRun
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_missing(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> DueRunFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DueRunMissing:
     outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_missing(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> DueRunFound:
+        raise ValueError("expected DueRun outcome found")
 
 DueRunResult: TypeAlias = DueRunFound | DueRunMissing
 
@@ -74,7 +92,7 @@ class ClaimRunInput:
     run_id: UUID
     duration: Annotated[int, "u64"]
     owner_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
@@ -83,26 +101,134 @@ CLAIM_RUN_PLAN_HASH: Final[str] = "4664b92d065345af657315f573aabdc4bb54ca6a99c4e
 class ClaimRunClaimStale:
     outcome: Literal["ClaimStale"] = field(default="ClaimStale", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return True
+
+    def is_run_claimed(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimRunRunClaimed:
     run: ScheduledRun
     outcome: Literal["RunClaimed"] = field(default="RunClaimed", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_run_claimed(self) -> bool:
+        return True
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimRunRunMissing:
     outcome: Literal["RunMissing"] = field(default="RunMissing", init=False)
+
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_run_claimed(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return True
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimRunClaimInvalid:
     outcome: Literal["ClaimInvalid"] = field(default="ClaimInvalid", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_run_claimed(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return True
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimRunClaimExhausted:
     outcome: Literal["ClaimExhausted"] = field(default="ClaimExhausted", init=False)
 
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_run_claimed(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return True
+
+    def is_claim_unavailable(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaimRunClaimUnavailable:
     outcome: Literal["ClaimUnavailable"] = field(default="ClaimUnavailable", init=False)
+
+    def is_claim_stale(self) -> bool:
+        return False
+
+    def is_run_claimed(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_claim_invalid(self) -> bool:
+        return False
+
+    def is_claim_exhausted(self) -> bool:
+        return False
+
+    def is_claim_unavailable(self) -> bool:
+        return True
 
 ClaimRunOutcome: TypeAlias = ClaimRunClaimStale | ClaimRunRunClaimed | ClaimRunRunMissing | ClaimRunClaimInvalid | ClaimRunClaimExhausted | ClaimRunClaimUnavailable
 
@@ -110,7 +236,7 @@ ClaimRunOutcome: TypeAlias = ClaimRunClaimStale | ClaimRunRunClaimed | ClaimRunR
 class CompleteRunInput:
     run_id: UUID
     owner_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     fencing_token: Annotated[int, "u64"]
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
@@ -120,30 +246,177 @@ COMPLETE_RUN_PLAN_HASH: Final[str] = "99f9711ec973cd40b42c065ff01dce4c1b548b3a74
 class CompleteRunFenceStale:
     outcome: Literal["FenceStale"] = field(default="FenceStale", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return True
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunRunMissing:
     outcome: Literal["RunMissing"] = field(default="RunMissing", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return True
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunFenceExpired:
     outcome: Literal["FenceExpired"] = field(default="FenceExpired", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return True
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunFenceInvalid:
     outcome: Literal["FenceInvalid"] = field(default="FenceInvalid", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return True
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunRunCompleted:
     run: ScheduledRun
     outcome: Literal["RunCompleted"] = field(default="RunCompleted", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return True
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunCompleteStale:
     outcome: Literal["CompleteStale"] = field(default="CompleteStale", init=False)
 
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return True
+
+    def is_complete_illegal(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CompleteRunCompleteIllegal:
     outcome: Literal["CompleteIllegal"] = field(default="CompleteIllegal", init=False)
+
+    def is_fence_stale(self) -> bool:
+        return False
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_fence_expired(self) -> bool:
+        return False
+
+    def is_fence_invalid(self) -> bool:
+        return False
+
+    def is_run_completed(self) -> bool:
+        return False
+
+    def is_complete_stale(self) -> bool:
+        return False
+
+    def is_complete_illegal(self) -> bool:
+        return True
 
 CompleteRunOutcome: TypeAlias = CompleteRunFenceStale | CompleteRunRunMissing | CompleteRunFenceExpired | CompleteRunFenceInvalid | CompleteRunRunCompleted | CompleteRunCompleteStale | CompleteRunCompleteIllegal
 
@@ -151,7 +424,7 @@ CompleteRunOutcome: TypeAlias = CompleteRunFenceStale | CompleteRunRunMissing | 
 class ReleaseRunInput:
     run_id: UUID
     owner_id: UUID
-    request_key: str
+    request_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     fencing_token: Annotated[int, "u64"]
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
@@ -161,27 +434,93 @@ RELEASE_RUN_PLAN_HASH: Final[str] = "7e8e7af0567376ba19784069e41c8613a4de5cd3174
 class ReleaseRunRunMissing:
     outcome: Literal["RunMissing"] = field(default="RunMissing", init=False)
 
+    def is_run_missing(self) -> bool:
+        return True
+
+    def is_run_released(self) -> bool:
+        return False
+
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleaseRunRunReleased:
     run: ScheduledRun
     outcome: Literal["RunReleased"] = field(default="RunReleased", init=False)
 
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_run_released(self) -> bool:
+        return True
+
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleaseRunReleaseStale:
     outcome: Literal["ReleaseStale"] = field(default="ReleaseStale", init=False)
+
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_run_released(self) -> bool:
+        return False
+
+    def is_release_stale(self) -> bool:
+        return True
+
+    def is_release_invalid(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleaseRunReleaseInvalid:
     outcome: Literal["ReleaseInvalid"] = field(default="ReleaseInvalid", init=False)
 
+    def is_run_missing(self) -> bool:
+        return False
+
+    def is_run_released(self) -> bool:
+        return False
+
+    def is_release_stale(self) -> bool:
+        return False
+
+    def is_release_invalid(self) -> bool:
+        return True
+
 ReleaseRunOutcome: TypeAlias = ReleaseRunRunMissing | ReleaseRunRunReleased | ReleaseRunReleaseStale | ReleaseRunReleaseInvalid
 
 class MlflowSchedulerClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> MlflowSchedulerClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> MlflowSchedulerClient:
+        return MlflowSchedulerClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> MlflowSchedulerClient:
+        return MlflowSchedulerClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def due_run(self, parameters: DueRunParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DueRunResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -193,6 +532,9 @@ class MlflowSchedulerClient:
             "Missing": DueRunMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def due_run_after_commit(self, parameters: DueRunParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DueRunResult]:
+        return self.due_run(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def claim_run(self, input: ClaimRunInput) -> TypedCommandResult[ClaimRunOutcome]:
         raw = self._transport._execute_command(
@@ -209,6 +551,8 @@ class MlflowSchedulerClient:
             "ClaimUnavailable": ClaimRunClaimUnavailable,
         }
         result: TypedCommandResult[ClaimRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ClaimRunRunClaimed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -239,6 +583,8 @@ class MlflowSchedulerClient:
             "CompleteIllegal": CompleteRunCompleteIllegal,
         }
         result: TypedCommandResult[CompleteRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, CompleteRunRunCompleted):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -266,6 +612,8 @@ class MlflowSchedulerClient:
             "ReleaseInvalid": ReleaseRunReleaseInvalid,
         }
         result: TypedCommandResult[ReleaseRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ReleaseRunRunReleased):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -281,11 +629,29 @@ class MlflowSchedulerClient:
         return self._transport._command_batch(inputs, options, self.release_run, progress)
 
 class AsyncMlflowSchedulerClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncMlflowSchedulerClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncMlflowSchedulerClient:
+        return AsyncMlflowSchedulerClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncMlflowSchedulerClient:
+        return AsyncMlflowSchedulerClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def due_run(self, parameters: DueRunParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DueRunResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -297,6 +663,9 @@ class AsyncMlflowSchedulerClient:
             "Missing": DueRunMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def due_run_after_commit(self, parameters: DueRunParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[DueRunResult]:
+        return await self.due_run(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def claim_run(self, input: ClaimRunInput) -> TypedCommandResult[ClaimRunOutcome]:
         raw = await self._transport._execute_command(
@@ -313,6 +682,8 @@ class AsyncMlflowSchedulerClient:
             "ClaimUnavailable": ClaimRunClaimUnavailable,
         }
         result: TypedCommandResult[ClaimRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ClaimRunRunClaimed):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -343,6 +714,8 @@ class AsyncMlflowSchedulerClient:
             "CompleteIllegal": CompleteRunCompleteIllegal,
         }
         result: TypedCommandResult[CompleteRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, CompleteRunRunCompleted):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:
@@ -370,6 +743,8 @@ class AsyncMlflowSchedulerClient:
             "ReleaseInvalid": ReleaseRunReleaseInvalid,
         }
         result: TypedCommandResult[ReleaseRunOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
         if not isinstance(result.outcome, ReleaseRunRunReleased):
             return result._with_workflow_revisions(())
         if input.expected_revision >= 2**64 - 1:

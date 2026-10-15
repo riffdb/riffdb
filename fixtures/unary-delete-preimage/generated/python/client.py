@@ -54,9 +54,21 @@ class GetTokenTokenFound:
     token: GetTokenTokenFoundToken
     outcome: Literal["TokenFound"] = field(default="TokenFound", init=False)
 
+    def is_token_found(self) -> bool:
+        return True
+
+    def is_token_missing(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTokenTokenMissing:
     outcome: Literal["TokenMissing"] = field(default="TokenMissing", init=False)
+
+    def is_token_found(self) -> bool:
+        return False
+
+    def is_token_missing(self) -> bool:
+        return True
 
 GetTokenResult: TypeAlias = GetTokenTokenFound | GetTokenTokenMissing
 
@@ -75,9 +87,27 @@ CONSUME_TOKEN_PLAN_HASH: Final[str] = "d42336ae6bbb2f75abd3616d8918f9a7628084e97
 class ConsumeTokenTokenExpired:
     outcome: Literal["TokenExpired"] = field(default="TokenExpired", init=False)
 
+    def is_token_expired(self) -> bool:
+        return True
+
+    def is_token_missing(self) -> bool:
+        return False
+
+    def is_token_consumed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeTokenTokenMissing:
     outcome: Literal["TokenMissing"] = field(default="TokenMissing", init=False)
+
+    def is_token_expired(self) -> bool:
+        return False
+
+    def is_token_missing(self) -> bool:
+        return True
+
+    def is_token_consumed(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class ConsumeTokenTokenConsumed:
@@ -87,6 +117,15 @@ class ConsumeTokenTokenConsumed:
     expires_at: Timestamp
     identifier: str
     outcome: Literal["TokenConsumed"] = field(default="TokenConsumed", init=False)
+
+    def is_token_expired(self) -> bool:
+        return False
+
+    def is_token_missing(self) -> bool:
+        return False
+
+    def is_token_consumed(self) -> bool:
+        return True
 
     def __repr__(self) -> str:
         return "ConsumeTokenTokenConsumed(<secret outputs redacted>)"
@@ -109,18 +148,48 @@ class IssueTokenTokenIssued:
     issued_at: Timestamp
     outcome: Literal["TokenIssued"] = field(default="TokenIssued", init=False)
 
+    def is_token_issued(self) -> bool:
+        return True
+
+    def is_token_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueTokenTokenAlreadyExists:
     outcome: Literal["TokenAlreadyExists"] = field(default="TokenAlreadyExists", init=False)
 
+    def is_token_issued(self) -> bool:
+        return False
+
+    def is_token_already_exists(self) -> bool:
+        return True
+
 IssueTokenOutcome: TypeAlias = IssueTokenTokenIssued | IssueTokenTokenAlreadyExists
 
 class OneTimeTokenAcceptanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> OneTimeTokenAcceptanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> OneTimeTokenAcceptanceClient:
+        return OneTimeTokenAcceptanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> OneTimeTokenAcceptanceClient:
+        return OneTimeTokenAcceptanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def get_token(self, parameters: GetTokenParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTokenResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -133,6 +202,9 @@ class OneTimeTokenAcceptanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def get_token_after_commit(self, parameters: GetTokenParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTokenResult]:
+        return self.get_token(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -144,7 +216,10 @@ class OneTimeTokenAcceptanceClient:
             "TokenMissing": ConsumeTokenTokenMissing,
             "TokenConsumed": ConsumeTokenTokenConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def consume_token_batch(
         self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
@@ -162,7 +237,10 @@ class OneTimeTokenAcceptanceClient:
             "TokenIssued": IssueTokenTokenIssued,
             "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def issue_token_batch(
         self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,
@@ -171,11 +249,29 @@ class OneTimeTokenAcceptanceClient:
         return self._transport._command_batch(inputs, options, self.issue_token, progress)
 
 class AsyncOneTimeTokenAcceptanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncOneTimeTokenAcceptanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncOneTimeTokenAcceptanceClient:
+        return AsyncOneTimeTokenAcceptanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncOneTimeTokenAcceptanceClient:
+        return AsyncOneTimeTokenAcceptanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def get_token(self, parameters: GetTokenParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTokenResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -188,6 +284,9 @@ class AsyncOneTimeTokenAcceptanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_token_after_commit(self, parameters: GetTokenParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTokenResult]:
+        return await self.get_token(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -199,7 +298,10 @@ class AsyncOneTimeTokenAcceptanceClient:
             "TokenMissing": ConsumeTokenTokenMissing,
             "TokenConsumed": ConsumeTokenTokenConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def consume_token_batch(
         self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
@@ -217,7 +319,10 @@ class AsyncOneTimeTokenAcceptanceClient:
             "TokenIssued": IssueTokenTokenIssued,
             "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def issue_token_batch(
         self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,

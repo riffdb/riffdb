@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -175,6 +176,20 @@ export interface ItemPageNotFound {
 
 export type ItemPageResult = ItemPageFound | ItemPageNotFound;
 
+export function isItemPageFound(value: ItemPageResult): value is ItemPageFound {
+  return value.outcome === "Found";
+}
+
+export function isItemPageNotFound(value: ItemPageResult): value is ItemPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapItemPageFound(value: ItemPageResult | TypedQueryResult<ItemPageResult>): ItemPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams, ItemPageResult> {
   return { driverOperation: { name: "agent_alpha_item_page", inputSchemaHash: "e80f7b5c93c2a56b94d286b35377068aea67449dcb2a8f243a00375ffe92e47b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", planHash: ITEM_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -182,34 +197,74 @@ export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPage
 export interface CreateItemInput {
   readonly title: string;
   readonly item_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
 }
 
 export type CreateItemOutcome = { readonly outcome: "Created"; readonly item: { readonly title: string; readonly item_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } } } | { readonly outcome: "ItemExists"; readonly item_id: string };
 
+export function isCreateItemCreated(value: CreateItemOutcome): value is Extract<CreateItemOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateItemItemExists(value: CreateItemOutcome): value is Extract<CreateItemOutcome, { readonly outcome: "ItemExists" }> {
+  return value.outcome === "ItemExists";
+}
+
 export const CREATE_ITEM_PLAN_HASH = "004b0f6913bfd2aec84b2287949038ff517242df1453c010dbf2d9a7a8b472a0" as const;
 export function createItem(input: CreateItemInput): CommandRequest<CreateItemInput, CreateItemOutcome> {
-  return { driverOperation: { name: "agent_alpha_create_item", inputSchemaHash: "5c7a3a44a20ddd450af975c763a45de00e5bbf246598171dcc2a556089935dc2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"item","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"item_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateItemInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "agent_alpha_create_item", inputSchemaHash: "5c7a3a44a20ddd450af975c763a45de00e5bbf246598171dcc2a556089935dc2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"item","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"item_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AgentAlphaClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AgentAlphaClient {
+    return new AgentAlphaClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): AgentAlphaClient {
+    return new AgentAlphaClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): AgentAlphaClient {
+    return new AgentAlphaClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async itemPage(parameters: ItemPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = itemPage(parameters);
-    const result = await this.transport.executeNamedQuery<ItemPageParams, ItemPageResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ItemPageParams, ItemPageResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async itemPageAfterCommit(parameters: ItemPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemPageResult>> {
+    return this.itemPage(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async createItem(input: CreateItemInput): Promise<TypedCommandResult<CreateItemOutcome>> {
     const result = await this.transport.executeCommand<CreateItemInput, CreateItemOutcome>(createItem(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ITEM_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

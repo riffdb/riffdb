@@ -415,6 +415,7 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                         "defaulted": defaulted,
                     })
                 }).collect::<Vec<_>>(),
+                "has_found": schemas.results().iter().any(|branch| branch.name().eq_ignore_ascii_case("found")),
                 "results": schemas.results().iter().map(|branch| {
                     let branch_name = format!("{name}{}", pascal(branch.name()));
                     let nested = branch.fields().iter().flat_map(|field| {
@@ -427,6 +428,8 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     }).collect::<Vec<_>>();
                     json!({
                         "name": branch_name,
+                        "snake_branch": python_identifier(&snake(branch.name())),
+                        "is_found": branch.name().eq_ignore_ascii_case("found"),
                         "wire_name": format!("{:?}", branch.name()),
                         "nested": nested,
                         "fields": branch.fields().iter().map(|field| json!({
@@ -535,6 +538,10 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     "version_input": python_identifier(&facade.version_input_name),
                 })
             }).collect::<Vec<_>>();
+            let idempotency_field = command
+                .idempotency_input()
+                .and_then(|id| command.input().record().field(id))
+                .map(|field| field.name());
             json!({
                 "name": name,
                 "wire_name": format!("{:?}", wire_name),
@@ -550,10 +557,12 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                 "inputs": command.input().record().fields().iter().map(|field| json!({
                     "name": python_identifier(field.name()),
                     "type": python_contract_type(field.value_type(), contract),
+                    "is_idempotency": idempotency_field == Some(field.name()) && field.value_type().tag() == ValueTypeTag::String,
                 })).collect::<Vec<_>>(),
                 "facades": facades,
                 "outcomes": command.outcomes().iter().map(|outcome| json!({
                     "name": format!("{name}{}", pascal(outcome.name())),
+                    "snake_outcome": python_identifier(&snake(outcome.name())),
                     "wire_name": format!("{:?}", outcome.name()),
                     "fields": outcome.payload().fields().iter().map(|field| json!({
                         "name": python_identifier(field.name()),

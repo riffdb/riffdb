@@ -64,7 +64,13 @@ implement count, offset, filtering, or sorting.
 The starter connects with the driver socket plus the host's public handshake
 identity. Those hashes are substitution checks, not authority. Do not put a
 credential, remote endpoint, raw method name, numeric compiler ID, field mask,
-or Protobuf value in Go application code.
+or Protobuf value in Go application code. Generated role clients also embed
+their compiled role and lock identity constants (`Connect<Role>Client`),
+automatically generate an `IdempotencyKey` per command invocation when omitted
+from the input struct, track causal read-your-writes watermarks by default on
+each client handle (`Causal()`), and expose `.OutcomeTag()`, `.UnwrapFound()`,
+`.OrNil()`, `.Items()`, and bounded `<Query>Pages` / `<Query>Items` pagination
+helpers (defaulting `maxPages` to 64).
 
 For a repository created with `riffdb init --generator go`, author `main.go`
 against the generated client and `riffdb.dev/application`, then run the whole

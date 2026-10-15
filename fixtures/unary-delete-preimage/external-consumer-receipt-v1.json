@@ -38,7 +38,7 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "bec1e2e1110d6f1327a1fe72759e44d89bca4050251e3b7da42859f53195aa61"
+      "sha256": "12d9fe49cabe746cd41a6d88ae00a10887ee3bfa7c743d4eefa0673d5e1826e8"
     },
     {
       "kind": "mcp",
@@ -48,17 +48,17 @@
     {
       "kind": "python",
       "path": "fixtures/driver/conformance-app/generated/python/client.py",
-      "sha256": "1179652f588ebf986bc1fe37b5df02784f1b347f28fe40c1bd9cee9fd10f3db4"
+      "sha256": "0c705f6cc7cb9fdb31e26fdaea75f3aa32f53de4b4eabee1e9e11fec611a210b"
     },
     {
       "kind": "rust",
       "path": "fixtures/driver/conformance-app/generated/rust/client.rs",
-      "sha256": "13ffa0c8625b8c22ed14446ce2b629f5cd8d4783084519888c7711b15adec128"
+      "sha256": "2228c214703481875800d6918c377dea5ea3fbcad26cea50272a27449725b162"
     },
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "fcd729f7ea8ea5df149a170b8d0442d42523e391edfe4cd146f63babd3b9efa0"
+      "sha256": "49ee3f75adf6e6e86cd322c4245e54ac2a8aeffb7e43289bb41a45823dfbb331"
     }
   ],
   "observation": {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "48894025d8c091f50edfb27ca5fc5033c8881746779743cc7d538c72ed338c9c"
+    "sha256": "16d8658d5ae74e644d8069b8336a53208cdbda64c5cc8b97c8f2c6802f29c72c"
   },
   "status": "passed",
   "verified_semantics": {

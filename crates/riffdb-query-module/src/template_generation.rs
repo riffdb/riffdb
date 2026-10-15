@@ -190,8 +190,10 @@ pub fn generate_canonical_generation_model(
                         "type": value_type,
                     })
                 }).collect::<Vec<_>>(),
+                "has_found": schemas.results().iter().any(|branch| branch.name().eq_ignore_ascii_case("found")),
                 "results": schemas.results().iter().map(|branch| json!({
                     "name": format!("{}{}", name, go_public(branch.name())),
+                    "is_found": branch.name().eq_ignore_ascii_case("found"),
                     "wire_name": format!("{:?}", branch.name()),
                     "fields": branch.fields().iter().map(|field| json!({
                         "name": go_public(field.name()),
@@ -340,6 +342,11 @@ pub fn generate_canonical_generation_model(
                 "plan_hash": hex(command.plan_hash().as_bytes()),
                 "operation": format!("{:?}", operation),
                 "schema_hash": format!("{:?}", operation_schema_hash),
+                "idempotency_field": command
+                    .idempotency_input()
+                    .and_then(|id| command.input().record().field(id))
+                    .filter(|field| field.value_type().tag() == ValueTypeTag::String)
+                    .map(|field| go_public(field.name())),
                 "secret_outputs": secret_outputs.iter().map(|secret| json!({
                     "outcome": format!("{:?}", secret.outcome),
                     "field": format!("{:?}", secret.field),

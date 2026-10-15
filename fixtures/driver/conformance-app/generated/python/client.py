@@ -61,9 +61,27 @@ class ItemPageFound:
     item: ItemPageFoundItem
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> ItemPageFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemPageFound:
+        raise ValueError("expected ItemPage outcome found")
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
@@ -87,9 +105,27 @@ class ItemSecretFound:
     secret: ItemSecretFoundSecret = field(repr=False)
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def is_not_found(self) -> bool:
+        return False
+
+    def unwrap_found(self) -> ItemSecretFound:
+        return self
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemSecretNotFound:
     outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+    def is_found(self) -> bool:
+        return False
+
+    def is_not_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> ItemSecretFound:
+        raise ValueError("expected ItemSecret outcome found")
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
@@ -120,6 +156,12 @@ class SearchItemsFound:
     total: SearchItemsFoundTotal
     outcome: Literal["Found"] = field(default="Found", init=False)
 
+    def is_found(self) -> bool:
+        return True
+
+    def unwrap_found(self) -> SearchItemsFound:
+        return self
+
 SearchItemsResult: TypeAlias = SearchItemsFound
 
 CONSUME_TOKEN_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (
@@ -137,9 +179,27 @@ CONSUME_TOKEN_PLAN_HASH: Final[str] = "da9bd3f011355d787c5939e270ee331aea5e20560
 class ConsumeTokenTokenExpired:
     outcome: Literal["TokenExpired"] = field(default="TokenExpired", init=False)
 
+    def is_token_expired(self) -> bool:
+        return True
+
+    def is_token_missing(self) -> bool:
+        return False
+
+    def is_token_consumed(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeTokenTokenMissing:
     outcome: Literal["TokenMissing"] = field(default="TokenMissing", init=False)
+
+    def is_token_expired(self) -> bool:
+        return False
+
+    def is_token_missing(self) -> bool:
+        return True
+
+    def is_token_consumed(self) -> bool:
+        return False
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class ConsumeTokenTokenConsumed:
@@ -149,6 +209,15 @@ class ConsumeTokenTokenConsumed:
     expires_at: Timestamp
     identifier: str
     outcome: Literal["TokenConsumed"] = field(default="TokenConsumed", init=False)
+
+    def is_token_expired(self) -> bool:
+        return False
+
+    def is_token_missing(self) -> bool:
+        return False
+
+    def is_token_consumed(self) -> bool:
+        return True
 
     def __repr__(self) -> str:
         return "ConsumeTokenTokenConsumed(<secret outputs redacted>)"
@@ -160,7 +229,7 @@ class CreateItemInput:
     title: str
     item_id: UUID
     token_digest: str
-    idempotency_key: str
+    idempotency_key: str = field(default_factory=lambda: str(__import__("uuid").uuid4()))
     organization_id: UUID
 
 CREATE_ITEM_PLAN_HASH: Final[str] = "1864a0fb9a8ca3f70f973fc26aaca832d3dfe7e08155d49cfbd4b4f0f1422a1c"
@@ -168,10 +237,22 @@ CREATE_ITEM_PLAN_HASH: Final[str] = "1864a0fb9a8ca3f70f973fc26aaca832d3dfe7e0815
 class CreateItemCreated:
     outcome: Literal["Created"] = field(default="Created", init=False)
 
+    def is_created(self) -> bool:
+        return True
+
+    def is_item_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemItemExists:
     item_id: UUID
     outcome: Literal["ItemExists"] = field(default="ItemExists", init=False)
+
+    def is_created(self) -> bool:
+        return False
+
+    def is_item_exists(self) -> bool:
+        return True
 
 CreateItemOutcome: TypeAlias = CreateItemCreated | CreateItemItemExists
 
@@ -191,18 +272,48 @@ class IssueTokenTokenIssued:
     issued_at: Timestamp
     outcome: Literal["TokenIssued"] = field(default="TokenIssued", init=False)
 
+    def is_token_issued(self) -> bool:
+        return True
+
+    def is_token_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueTokenTokenAlreadyExists:
     outcome: Literal["TokenAlreadyExists"] = field(default="TokenAlreadyExists", init=False)
 
+    def is_token_issued(self) -> bool:
+        return False
+
+    def is_token_already_exists(self) -> bool:
+        return True
+
 IssueTokenOutcome: TypeAlias = IssueTokenTokenIssued | IssueTokenTokenAlreadyExists
 
 class DriverConformanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> DriverConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> DriverConformanceClient:
+        return DriverConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> DriverConformanceClient:
+        return DriverConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def item_page(self, parameters: ItemPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -215,7 +326,12 @@ class DriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def item_page_after_commit(self, parameters: ItemPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemPageResult]:
+        return self.item_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def item_secret(self, parameters: ItemSecretParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -228,9 +344,14 @@ class DriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def item_secret_after_commit(self, parameters: ItemSecretParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        return self.item_secret(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -241,6 +362,9 @@ class DriverConformanceClient:
             "Found": SearchItemsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def search_items_after_commit(self, parameters: SearchItemsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        return self.search_items(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = self._transport._execute_command(
@@ -253,7 +377,10 @@ class DriverConformanceClient:
             "TokenMissing": ConsumeTokenTokenMissing,
             "TokenConsumed": ConsumeTokenTokenConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def consume_token_batch(
         self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
@@ -271,7 +398,10 @@ class DriverConformanceClient:
             "Created": CreateItemCreated,
             "ItemExists": CreateItemItemExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateItemOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_item_batch(
         self, inputs: Sequence[CreateItemInput], options: CommandBatchOptions,
@@ -289,7 +419,10 @@ class DriverConformanceClient:
             "TokenIssued": IssueTokenTokenIssued,
             "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def issue_token_batch(
         self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,
@@ -298,11 +431,29 @@ class DriverConformanceClient:
         return self._transport._command_batch(inputs, options, self.issue_token, progress)
 
 class AsyncDriverConformanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncDriverConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncDriverConformanceClient:
+        return AsyncDriverConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncDriverConformanceClient:
+        return AsyncDriverConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def item_page(self, parameters: ItemPageParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemPageResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -315,7 +466,12 @@ class AsyncDriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def item_page_after_commit(self, parameters: ItemPageParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemPageResult]:
+        return await self.item_page(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def item_secret(self, parameters: ItemSecretParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -328,9 +484,14 @@ class AsyncDriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def item_secret_after_commit(self, parameters: ItemSecretParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        return await self.item_secret(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
+
     async def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -341,6 +502,9 @@ class AsyncDriverConformanceClient:
             "Found": SearchItemsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def search_items_after_commit(self, parameters: SearchItemsParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        return await self.search_items(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
         raw = await self._transport._execute_command(
@@ -353,7 +517,10 @@ class AsyncDriverConformanceClient:
             "TokenMissing": ConsumeTokenTokenMissing,
             "TokenConsumed": ConsumeTokenTokenConsumed,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[ConsumeTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def consume_token_batch(
         self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
@@ -371,7 +538,10 @@ class AsyncDriverConformanceClient:
             "Created": CreateItemCreated,
             "ItemExists": CreateItemItemExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateItemOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_item_batch(
         self, inputs: Sequence[CreateItemInput], options: CommandBatchOptions,
@@ -389,7 +559,10 @@ class AsyncDriverConformanceClient:
             "TokenIssued": IssueTokenTokenIssued,
             "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[IssueTokenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def issue_token_batch(
         self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,

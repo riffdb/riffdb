@@ -71,6 +71,16 @@ The exact generated names come from your contract and lock. Treat a changed
 generated diff like an API change: review the source change and new lock before
 accepting it.
 
+Generated role clients also embed their compiled role and lock identity
+constants, provide `connect_env` for one-line environment-backed setup with a
+default `AttemptBudget::new(3)`, generate a fresh `IdempotencyKey` per command
+invocation when omitted, track causal read-your-writes watermarks by default on
+each client handle (`causal()` / `with_default_read_after_commit`), expose
+direct `.outcome_tag()`, `.unwrap_found()`, `.or_none()`, and `.items()` result
+helpers, emit contract enum types in query parameter and row structs, and
+provide bounded `<query>_pages` / `<query>_items` pagination helpers with a
+default 64-page ceiling.
+
 ### Optional bounded application session
 
 Rust generated clients expose `open_bounded_session` as an explicit alpha

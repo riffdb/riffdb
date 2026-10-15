@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -176,6 +177,20 @@ export interface DueRunMissing {
 
 export type DueRunResult = DueRunFound | DueRunMissing;
 
+export function isDueRunFound(value: DueRunResult): value is DueRunFound {
+  return value.outcome === "Found";
+}
+
+export function isDueRunMissing(value: DueRunResult): value is DueRunMissing {
+  return value.outcome === "Missing";
+}
+
+export function unwrapDueRunFound(value: DueRunResult | TypedQueryResult<DueRunResult>): DueRunFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as DueRunResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected DueRun outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function dueRun(parameters: DueRunParams): NamedQueryRequest<DueRunParams, DueRunResult> {
   return { driverOperation: { name: "mlflow_scheduler_due_run", inputSchemaHash: "9f0567daf98e0420fbc3c101d206c78dd315302aff10473c1e454b2c5ea22776" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "DueRun", planHash: DUE_RUN_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"run_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"run","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"state","schema":{"kind":"enum"}},{"name":"due_at","schema":{"kind":"timestamp"}},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}},{"name":"lease_fence","schema":{"kind":"u64"}},{"name":"lease_attempts","schema":{"kind":"u64"}}],"kind":"record"}}],"kind":"record"},"Missing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -184,22 +199,48 @@ export interface ClaimRunInput {
   readonly run_id: string;
   readonly duration: bigint;
   readonly owner_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly organization_id: string;
   readonly expected_revision: bigint;
 }
 
 export type ClaimRunOutcome = { readonly outcome: "ClaimStale" } | { readonly outcome: "RunClaimed"; readonly run: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly run_id: string; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } } | { readonly outcome: "RunMissing" } | { readonly outcome: "ClaimInvalid" } | { readonly outcome: "ClaimExhausted" } | { readonly outcome: "ClaimUnavailable" };
 
+export function isClaimRunClaimStale(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "ClaimStale" }> {
+  return value.outcome === "ClaimStale";
+}
+
+export function isClaimRunRunClaimed(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "RunClaimed" }> {
+  return value.outcome === "RunClaimed";
+}
+
+export function isClaimRunRunMissing(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "RunMissing" }> {
+  return value.outcome === "RunMissing";
+}
+
+export function isClaimRunClaimInvalid(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "ClaimInvalid" }> {
+  return value.outcome === "ClaimInvalid";
+}
+
+export function isClaimRunClaimExhausted(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "ClaimExhausted" }> {
+  return value.outcome === "ClaimExhausted";
+}
+
+export function isClaimRunClaimUnavailable(value: ClaimRunOutcome): value is Extract<ClaimRunOutcome, { readonly outcome: "ClaimUnavailable" }> {
+  return value.outcome === "ClaimUnavailable";
+}
+
 export const CLAIM_RUN_PLAN_HASH = "4664b92d065345af657315f573aabdc4bb54ca6a99c4ef2e8a44ff94234769a0" as const;
 export function claimRun(input: ClaimRunInput): CommandRequest<ClaimRunInput, ClaimRunOutcome> {
-  return { driverOperation: { name: "mlflow_scheduler_claim_run", inputSchemaHash: "50a48bcd44da4cad8c88b7c9517bd91d8bfe0fcb6740d28a84b89653323efb2a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ClaimRun", planHash: CLAIM_RUN_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"duration","schema":{"kind":"u64"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ClaimExhausted":{"fields":[],"kind":"record"},"ClaimInvalid":{"fields":[],"kind":"record"},"ClaimStale":{"fields":[],"kind":"record"},"ClaimUnavailable":{"fields":[],"kind":"record"},"RunClaimed":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: ClaimRunInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "mlflow_scheduler_claim_run", inputSchemaHash: "50a48bcd44da4cad8c88b7c9517bd91d8bfe0fcb6740d28a84b89653323efb2a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ClaimRun", planHash: CLAIM_RUN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"duration","schema":{"kind":"u64"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ClaimExhausted":{"fields":[],"kind":"record"},"ClaimInvalid":{"fields":[],"kind":"record"},"ClaimStale":{"fields":[],"kind":"record"},"ClaimUnavailable":{"fields":[],"kind":"record"},"RunClaimed":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CompleteRunInput {
   readonly run_id: string;
   readonly owner_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly fencing_token: bigint;
   readonly organization_id: string;
   readonly expected_revision: bigint;
@@ -207,15 +248,45 @@ export interface CompleteRunInput {
 
 export type CompleteRunOutcome = { readonly outcome: "FenceStale" } | { readonly outcome: "RunMissing" } | { readonly outcome: "FenceExpired" } | { readonly outcome: "FenceInvalid" } | { readonly outcome: "RunCompleted"; readonly run: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly run_id: string; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } } | { readonly outcome: "CompleteStale" } | { readonly outcome: "CompleteIllegal" };
 
+export function isCompleteRunFenceStale(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "FenceStale" }> {
+  return value.outcome === "FenceStale";
+}
+
+export function isCompleteRunRunMissing(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "RunMissing" }> {
+  return value.outcome === "RunMissing";
+}
+
+export function isCompleteRunFenceExpired(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "FenceExpired" }> {
+  return value.outcome === "FenceExpired";
+}
+
+export function isCompleteRunFenceInvalid(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "FenceInvalid" }> {
+  return value.outcome === "FenceInvalid";
+}
+
+export function isCompleteRunRunCompleted(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "RunCompleted" }> {
+  return value.outcome === "RunCompleted";
+}
+
+export function isCompleteRunCompleteStale(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "CompleteStale" }> {
+  return value.outcome === "CompleteStale";
+}
+
+export function isCompleteRunCompleteIllegal(value: CompleteRunOutcome): value is Extract<CompleteRunOutcome, { readonly outcome: "CompleteIllegal" }> {
+  return value.outcome === "CompleteIllegal";
+}
+
 export const COMPLETE_RUN_PLAN_HASH = "99f9711ec973cd40b42c065ff01dce4c1b548b3a74344af45cbe75d7d567f50a" as const;
 export function completeRun(input: CompleteRunInput): CommandRequest<CompleteRunInput, CompleteRunOutcome> {
-  return { driverOperation: { name: "mlflow_scheduler_complete_run", inputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CompleteRun", planHash: COMPLETE_RUN_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"CompleteIllegal":{"fields":[],"kind":"record"},"CompleteStale":{"fields":[],"kind":"record"},"FenceExpired":{"fields":[],"kind":"record"},"FenceInvalid":{"fields":[],"kind":"record"},"FenceStale":{"fields":[],"kind":"record"},"RunCompleted":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CompleteRunInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "mlflow_scheduler_complete_run", inputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CompleteRun", planHash: COMPLETE_RUN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"CompleteIllegal":{"fields":[],"kind":"record"},"CompleteStale":{"fields":[],"kind":"record"},"FenceExpired":{"fields":[],"kind":"record"},"FenceInvalid":{"fields":[],"kind":"record"},"FenceStale":{"fields":[],"kind":"record"},"RunCompleted":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ReleaseRunInput {
   readonly run_id: string;
   readonly owner_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly fencing_token: bigint;
   readonly organization_id: string;
   readonly expected_revision: bigint;
@@ -223,29 +294,77 @@ export interface ReleaseRunInput {
 
 export type ReleaseRunOutcome = { readonly outcome: "RunMissing" } | { readonly outcome: "RunReleased"; readonly run: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly run_id: string; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } } | { readonly outcome: "ReleaseStale" } | { readonly outcome: "ReleaseInvalid" };
 
+export function isReleaseRunRunMissing(value: ReleaseRunOutcome): value is Extract<ReleaseRunOutcome, { readonly outcome: "RunMissing" }> {
+  return value.outcome === "RunMissing";
+}
+
+export function isReleaseRunRunReleased(value: ReleaseRunOutcome): value is Extract<ReleaseRunOutcome, { readonly outcome: "RunReleased" }> {
+  return value.outcome === "RunReleased";
+}
+
+export function isReleaseRunReleaseStale(value: ReleaseRunOutcome): value is Extract<ReleaseRunOutcome, { readonly outcome: "ReleaseStale" }> {
+  return value.outcome === "ReleaseStale";
+}
+
+export function isReleaseRunReleaseInvalid(value: ReleaseRunOutcome): value is Extract<ReleaseRunOutcome, { readonly outcome: "ReleaseInvalid" }> {
+  return value.outcome === "ReleaseInvalid";
+}
+
 export const RELEASE_RUN_PLAN_HASH = "7e8e7af0567376ba19784069e41c8613a4de5cd3174d58cc2cd4d3de02832522" as const;
 export function releaseRun(input: ReleaseRunInput): CommandRequest<ReleaseRunInput, ReleaseRunOutcome> {
-  return { driverOperation: { name: "mlflow_scheduler_release_run", inputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReleaseRun", planHash: RELEASE_RUN_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ReleaseInvalid":{"fields":[],"kind":"record"},"ReleaseStale":{"fields":[],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"},"RunReleased":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: ReleaseRunInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "mlflow_scheduler_release_run", inputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReleaseRun", planHash: RELEASE_RUN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ReleaseInvalid":{"fields":[],"kind":"record"},"ReleaseStale":{"fields":[],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"},"RunReleased":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"run_id","schema":{"kind":"uuid"},"wireId":3},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":4},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class MlflowSchedulerClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): MlflowSchedulerClient {
+    return new MlflowSchedulerClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): MlflowSchedulerClient {
+    return new MlflowSchedulerClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): MlflowSchedulerClient {
+    return new MlflowSchedulerClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async dueRun(parameters: DueRunParams, options: QueryOptions = {}): Promise<TypedQueryResult<DueRunResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = dueRun(parameters);
-    const result = await this.transport.executeNamedQuery<DueRunParams, DueRunResult>(request, options);
+    const result = await this.transport.executeNamedQuery<DueRunParams, DueRunResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async dueRunAfterCommit(parameters: DueRunParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<DueRunResult>> {
+    return this.dueRun(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async claimRun(input: ClaimRunInput): Promise<TypedCommandResult<ClaimRunOutcome>> {
     const result = await this.transport.executeCommand<ClaimRunInput, ClaimRunOutcome>(claimRun(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CLAIM_RUN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "RunClaimed") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [
@@ -273,6 +392,9 @@ export class MlflowSchedulerClient {
   public async completeRun(input: CompleteRunInput): Promise<TypedCommandResult<CompleteRunOutcome>> {
     const result = await this.transport.executeCommand<CompleteRunInput, CompleteRunOutcome>(completeRun(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== COMPLETE_RUN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "RunCompleted") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [
@@ -300,6 +422,9 @@ export class MlflowSchedulerClient {
   public async releaseRun(input: ReleaseRunInput): Promise<TypedCommandResult<ReleaseRunOutcome>> {
     const result = await this.transport.executeCommand<ReleaseRunInput, ReleaseRunOutcome>(releaseRun(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== RELEASE_RUN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "RunReleased") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [

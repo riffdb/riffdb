@@ -143,6 +143,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -206,7 +207,17 @@ export type VectorModelVersionResult = { readonly kind: "model_version_summary";
 
 {% endfor %}export type {{ query.name }}Result = {% for result in query.results %}{% if not loop.first %} | {% endif %}{{ result.name }}{% endfor %};
 
-{% if query.compact %}function {{ query.compact.function }}(value: CompactNamedQueryResult): {{ query.name }}Result {
+{% for result in query.results %}export function is{{ query.pascal }}{{ result.pascal_outcome }}(value: {{ query.name }}Result): value is {{ result.name }} {
+  return value.outcome === "{{ result.outcome }}";
+}
+
+{% endfor %}{% if query.found_outcome %}export function unwrap{{ query.pascal }}Found(value: {{ query.name }}Result | TypedQueryResult<{{ query.name }}Result>): {{ query.name }}Found {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as {{ query.name }}Result;
+  if (resolved.outcome !== "{{ query.found_outcome }}") throw new Error(`expected {{ query.name }} outcome "{{ query.found_outcome }}", got "${resolved.outcome}"`);
+  return resolved;
+}
+
+{% endif %}{% if query.compact %}function {{ query.compact.function }}(value: CompactNamedQueryResult): {{ query.name }}Result {
 if (value.outcome !== {{ query.compact.outcome }} || value.resultName !== {{ query.compact.result_name }} || value.entity !== {{ query.compact.entity }}
 || value.fields.length !== {{ query.compact.width }} || value.fields.some((field, index) => field !== [{% for field in query.compact.field_literals %}{% if not loop.first %}, {% endif %}{{ field }}{% endfor %}][index])
 || value.rows.length > {{ query.compact.maximum_rows }}) throw new Error("invalid RiffDB compact result");
@@ -228,7 +239,7 @@ return {
 }
 
 {% endfor %}{% for command in languages.typescript.commands %}export interface {{ command.name }}Input {
-{% for field in command.inputs %}  readonly {{ field.name }}: {{ field.type }};
+{% for field in command.inputs %}  readonly {{ field.name }}{% if field.optional %}?{% endif %}: {{ field.type }};
 {% endfor %}}
 
 {% if command.secret_outputs %}export const {{ command.constant }}_SECRET_OUTPUTS = [
@@ -246,38 +257,88 @@ export function {{ facade.helper }}Model(input: {{ command.name }}Input): { read
 
 {% endfor %}export type {{ command.name }}Outcome = {% for outcome in command.outcomes %}{% if not loop.first %} | {% endif %}{ readonly outcome: "{{ outcome.name }}"{% for field in outcome.fields %}; readonly {{ field.name }}: {{ field.type }}{% endfor %} }{% endfor %};
 
-{% if command.secret_outputs %}export function redact{{ command.pascal }}Outcome(value: {{ command.name }}Outcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof {{ command.constant }}_SECRET_OUTPUTS } {
+{% for outcome in command.outcomes %}export function is{{ command.pascal }}{{ outcome.pascal_name }}(value: {{ command.name }}Outcome): value is Extract<{{ command.name }}Outcome, { readonly outcome: "{{ outcome.name }}" }> {
+  return value.outcome === "{{ outcome.name }}";
+}
+
+{% endfor %}{% if command.secret_outputs %}export function redact{{ command.pascal }}Outcome(value: {{ command.name }}Outcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof {{ command.constant }}_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: {{ command.constant }}_SECRET_OUTPUTS };
 }
 
 {% endif %}export const {{ command.constant }}_PLAN_HASH = "{{ command.plan_hash }}" as const;
 export function {{ command.function }}(input: {{ command.name }}Input): CommandRequest<{{ command.name }}Input, {{ command.name }}Outcome> {
-  return { driverOperation: { name: "{{ command.operation }}", inputSchemaHash: "{{ command.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "{{ command.name }}", planHash: {{ command.constant }}_PLAN_HASH, input, idempotencyKey: input.{{ command.idempotency }}, inputSchema: {{ command.input_schema }}, outcomeSchemas: {{ command.outcome_schemas }}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.{{ command.idempotency }} && input.{{ command.idempotency }}.length > 0 ? input.{{ command.idempotency }} : globalThis.crypto.randomUUID();
+  const resolvedInput: {{ command.name }}Input = input.{{ command.idempotency }} === idempotencyKey ? input : { ...input, {{ command.idempotency }}: idempotencyKey };
+  return { driverOperation: { name: "{{ command.operation }}", inputSchemaHash: "{{ command.schema_hash }}" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "{{ command.name }}", planHash: {{ command.constant }}_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {{ command.input_schema }}, outcomeSchemas: {{ command.outcome_schemas }}, decodeError: decodeApplicationError };
 }
 
 {% endfor %}export class {{ languages.typescript.client.name }} {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): {{ languages.typescript.client.name }} {
+    return new {{ languages.typescript.client.name }}(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): {{ languages.typescript.client.name }} {
+    return new {{ languages.typescript.client.name }}(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): {{ languages.typescript.client.name }} {
+    return new {{ languages.typescript.client.name }}(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
 {% for query in languages.typescript.queries %}  public async {{ query.function }}(parameters: {{ query.name }}Params, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Result>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
 {% if query.cursor %}    const { {{ query.cursor.field }}: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = {{ query.function }}(routedParameters as unknown as {{ query.name }}Params);
     const result = await this.transport.executeNamedQuery<{{ query.name }}Params, {{ query.name }}Result>(request, routedOptions);
 {% else %}    const request = {{ query.function }}(parameters);
-    const result = await this.transport.executeNamedQuery<{{ query.name }}Params, {{ query.name }}Result>(request, options);
+    const result = await this.transport.executeNamedQuery<{{ query.name }}Params, {{ query.name }}Result>(request, effectiveOptions);
 {% endif %}    if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
-{% endfor %}{% for command in languages.typescript.commands %}  public async {{ command.function }}(input: {{ command.name }}Input): Promise<TypedCommandResult<{{ command.name }}Outcome>> {
+  public async {{ query.function }}AfterCommit(parameters: {{ query.name }}Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<{{ query.name }}Result>> {
+    return this.{{ query.function }}(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+{% if query.cursor %}  public async *{{ query.function }}Pages(parameters: {{ query.name }}Params, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<{{ query.name }}Result>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.{{ query.function }}(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { {{ query.cursor.field }}: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as {{ query.name }}Params;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
+{% endif %}{% endfor %}{% for command in languages.typescript.commands %}  public async {{ command.function }}(input: {{ command.name }}Input): Promise<TypedCommandResult<{{ command.name }}Outcome>> {
     const result = await this.transport.executeCommand<{{ command.name }}Input, {{ command.name }}Outcome>({{ command.function }}(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== {{ command.constant }}_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
 {% if command.workflow.revisions %}    if (result.outcome.outcome !== {{ command.workflow.success_outcome }}) return { ...result, workflowRevisions: [] };
 {% for revision in command.workflow.revisions %}    if (input.{{ revision.input }} === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
 {% endfor %}    return { ...result, workflowRevisions: [

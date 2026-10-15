@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -176,6 +177,20 @@ export interface GetPipelineMissing {
 
 export type GetPipelineResult = GetPipelineFound | GetPipelineMissing;
 
+export function isGetPipelineFound(value: GetPipelineResult): value is GetPipelineFound {
+  return value.outcome === "Found";
+}
+
+export function isGetPipelineMissing(value: GetPipelineResult): value is GetPipelineMissing {
+  return value.outcome === "Missing";
+}
+
+export function unwrapGetPipelineFound(value: GetPipelineResult | TypedQueryResult<GetPipelineResult>): GetPipelineFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetPipelineResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetPipeline outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function getPipeline(parameters: GetPipelineParams): NamedQueryRequest<GetPipelineParams, GetPipelineResult> {
   return { driverOperation: { name: "woodpecker_scheduler_get_pipeline", inputSchemaHash: "530d432fc561c6c5ec7e683df26e43c26a1c4d30066906196c13eaef0356c28c" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetPipeline", planHash: GET_PIPELINE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"state","schema":{"kind":"enum"}},{"name":"due_at","schema":{"kind":"timestamp"}},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}},{"name":"lease_fence","schema":{"kind":"u64"}},{"name":"lease_attempts","schema":{"kind":"u64"}}],"kind":"record"}}],"kind":"record"},"Missing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -184,22 +199,48 @@ export interface ClaimPipelineInput {
   readonly duration: bigint;
   readonly owner_id: string;
   readonly pipeline_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly organization_id: string;
   readonly expected_revision: bigint;
 }
 
 export type ClaimPipelineOutcome = { readonly outcome: "ClaimStale" } | { readonly outcome: "ClaimInvalid" } | { readonly outcome: "ClaimExhausted" } | { readonly outcome: "PipelineClaimed"; readonly pipeline: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly pipeline_id: string; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } } | { readonly outcome: "PipelineMissing" } | { readonly outcome: "ClaimUnavailable" };
 
+export function isClaimPipelineClaimStale(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "ClaimStale" }> {
+  return value.outcome === "ClaimStale";
+}
+
+export function isClaimPipelineClaimInvalid(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "ClaimInvalid" }> {
+  return value.outcome === "ClaimInvalid";
+}
+
+export function isClaimPipelineClaimExhausted(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "ClaimExhausted" }> {
+  return value.outcome === "ClaimExhausted";
+}
+
+export function isClaimPipelinePipelineClaimed(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "PipelineClaimed" }> {
+  return value.outcome === "PipelineClaimed";
+}
+
+export function isClaimPipelinePipelineMissing(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "PipelineMissing" }> {
+  return value.outcome === "PipelineMissing";
+}
+
+export function isClaimPipelineClaimUnavailable(value: ClaimPipelineOutcome): value is Extract<ClaimPipelineOutcome, { readonly outcome: "ClaimUnavailable" }> {
+  return value.outcome === "ClaimUnavailable";
+}
+
 export const CLAIM_PIPELINE_PLAN_HASH = "d772226a1aa832ad4e805920412c432d80de54363cb89f30826e7d54ebaebf0a" as const;
 export function claimPipeline(input: ClaimPipelineInput): CommandRequest<ClaimPipelineInput, ClaimPipelineOutcome> {
-  return { driverOperation: { name: "woodpecker_scheduler_claim_pipeline", inputSchemaHash: "19b93251b73a2a51c3c4d6bffff102ffe47552637d56b04e474f7d7002c7cecc" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ClaimPipeline", planHash: CLAIM_PIPELINE_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"duration","schema":{"kind":"u64"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ClaimExhausted":{"fields":[],"kind":"record"},"ClaimInvalid":{"fields":[],"kind":"record"},"ClaimStale":{"fields":[],"kind":"record"},"ClaimUnavailable":{"fields":[],"kind":"record"},"PipelineClaimed":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"PipelineMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: ClaimPipelineInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "woodpecker_scheduler_claim_pipeline", inputSchemaHash: "19b93251b73a2a51c3c4d6bffff102ffe47552637d56b04e474f7d7002c7cecc" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ClaimPipeline", planHash: CLAIM_PIPELINE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"duration","schema":{"kind":"u64"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"ClaimExhausted":{"fields":[],"kind":"record"},"ClaimInvalid":{"fields":[],"kind":"record"},"ClaimStale":{"fields":[],"kind":"record"},"ClaimUnavailable":{"fields":[],"kind":"record"},"PipelineClaimed":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"PipelineMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ReleasePipelineInput {
   readonly owner_id: string;
   readonly pipeline_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly fencing_token: bigint;
   readonly organization_id: string;
   readonly expected_revision: bigint;
@@ -207,15 +248,33 @@ export interface ReleasePipelineInput {
 
 export type ReleasePipelineOutcome = { readonly outcome: "ReleaseStale" } | { readonly outcome: "ReleaseInvalid" } | { readonly outcome: "PipelineMissing" } | { readonly outcome: "PipelineReleased"; readonly pipeline: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly pipeline_id: string; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } };
 
+export function isReleasePipelineReleaseStale(value: ReleasePipelineOutcome): value is Extract<ReleasePipelineOutcome, { readonly outcome: "ReleaseStale" }> {
+  return value.outcome === "ReleaseStale";
+}
+
+export function isReleasePipelineReleaseInvalid(value: ReleasePipelineOutcome): value is Extract<ReleasePipelineOutcome, { readonly outcome: "ReleaseInvalid" }> {
+  return value.outcome === "ReleaseInvalid";
+}
+
+export function isReleasePipelinePipelineMissing(value: ReleasePipelineOutcome): value is Extract<ReleasePipelineOutcome, { readonly outcome: "PipelineMissing" }> {
+  return value.outcome === "PipelineMissing";
+}
+
+export function isReleasePipelinePipelineReleased(value: ReleasePipelineOutcome): value is Extract<ReleasePipelineOutcome, { readonly outcome: "PipelineReleased" }> {
+  return value.outcome === "PipelineReleased";
+}
+
 export const RELEASE_PIPELINE_PLAN_HASH = "d0b0de194872c07734a81e9cbf5c8c09372dfab9e19dd3307651252ff76e0892" as const;
 export function releasePipeline(input: ReleasePipelineInput): CommandRequest<ReleasePipelineInput, ReleasePipelineOutcome> {
-  return { driverOperation: { name: "woodpecker_scheduler_release_pipeline", inputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReleasePipeline", planHash: RELEASE_PIPELINE_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"PipelineMissing":{"fields":[],"kind":"record"},"PipelineReleased":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"ReleaseInvalid":{"fields":[],"kind":"record"},"ReleaseStale":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: ReleasePipelineInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "woodpecker_scheduler_release_pipeline", inputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ReleasePipeline", planHash: RELEASE_PIPELINE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"PipelineMissing":{"fields":[],"kind":"record"},"PipelineReleased":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"ReleaseInvalid":{"fields":[],"kind":"record"},"ReleaseStale":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface StartPipelineInput {
   readonly owner_id: string;
   readonly pipeline_id: string;
-  readonly request_key: string;
+  readonly request_key?: string;
   readonly fencing_token: bigint;
   readonly organization_id: string;
   readonly expected_revision: bigint;
@@ -223,29 +282,89 @@ export interface StartPipelineInput {
 
 export type StartPipelineOutcome = { readonly outcome: "FenceStale" } | { readonly outcome: "StartStale" } | { readonly outcome: "FenceExpired" } | { readonly outcome: "FenceInvalid" } | { readonly outcome: "StartIllegal" } | { readonly outcome: "PipelineMissing" } | { readonly outcome: "PipelineStarted"; readonly pipeline: { readonly state: string; readonly due_at: { readonly seconds: bigint; readonly nanos: number }; readonly lease_fence: bigint; readonly lease_owner: string | null; readonly pipeline_id: string; readonly lease_attempts: bigint; readonly organization_id: string; readonly lease_expires_at: { readonly seconds: bigint; readonly nanos: number } | null } };
 
+export function isStartPipelineFenceStale(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "FenceStale" }> {
+  return value.outcome === "FenceStale";
+}
+
+export function isStartPipelineStartStale(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "StartStale" }> {
+  return value.outcome === "StartStale";
+}
+
+export function isStartPipelineFenceExpired(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "FenceExpired" }> {
+  return value.outcome === "FenceExpired";
+}
+
+export function isStartPipelineFenceInvalid(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "FenceInvalid" }> {
+  return value.outcome === "FenceInvalid";
+}
+
+export function isStartPipelineStartIllegal(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "StartIllegal" }> {
+  return value.outcome === "StartIllegal";
+}
+
+export function isStartPipelinePipelineMissing(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "PipelineMissing" }> {
+  return value.outcome === "PipelineMissing";
+}
+
+export function isStartPipelinePipelineStarted(value: StartPipelineOutcome): value is Extract<StartPipelineOutcome, { readonly outcome: "PipelineStarted" }> {
+  return value.outcome === "PipelineStarted";
+}
+
 export const START_PIPELINE_PLAN_HASH = "c753ddcf3b99c45a069a0be94d51397ae088229eea334cf0d4f5f437854791f5" as const;
 export function startPipeline(input: StartPipelineInput): CommandRequest<StartPipelineInput, StartPipelineOutcome> {
-  return { driverOperation: { name: "woodpecker_scheduler_start_pipeline", inputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "StartPipeline", planHash: START_PIPELINE_PLAN_HASH, input, idempotencyKey: input.request_key, inputSchema: {"fields":[{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"FenceExpired":{"fields":[],"kind":"record"},"FenceInvalid":{"fields":[],"kind":"record"},"FenceStale":{"fields":[],"kind":"record"},"PipelineMissing":{"fields":[],"kind":"record"},"PipelineStarted":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"StartIllegal":{"fields":[],"kind":"record"},"StartStale":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_key && input.request_key.length > 0 ? input.request_key : globalThis.crypto.randomUUID();
+  const resolvedInput: StartPipelineInput = input.request_key === idempotencyKey ? input : { ...input, request_key: idempotencyKey };
+  return { driverOperation: { name: "woodpecker_scheduler_start_pipeline", inputSchemaHash: "ca9e22f8010bebd1deb91e4415c03f56060b38dfbc82307459e1cbf1ca425256" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "StartPipeline", planHash: START_PIPELINE_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"pipeline_id","schema":{"kind":"uuid"}},{"name":"request_key","schema":{"kind":"string"}},{"name":"fencing_token","schema":{"kind":"u64"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"FenceExpired":{"fields":[],"kind":"record"},"FenceInvalid":{"fields":[],"kind":"record"},"FenceStale":{"fields":[],"kind":"record"},"PipelineMissing":{"fields":[],"kind":"record"},"PipelineStarted":{"fields":[{"name":"pipeline","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"due_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"lease_fence","schema":{"kind":"u64"},"wireId":3},{"name":"lease_owner","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"pipeline_id","schema":{"kind":"uuid"},"wireId":5},{"name":"lease_attempts","schema":{"kind":"u64"},"wireId":6},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":7},{"name":"lease_expires_at","schema":{"kind":"optional","value":{"kind":"timestamp"}},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"StartIllegal":{"fields":[],"kind":"record"},"StartStale":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class WoodpeckerSchedulerClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): WoodpeckerSchedulerClient {
+    return new WoodpeckerSchedulerClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): WoodpeckerSchedulerClient {
+    return new WoodpeckerSchedulerClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): WoodpeckerSchedulerClient {
+    return new WoodpeckerSchedulerClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async getPipeline(parameters: GetPipelineParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetPipelineResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getPipeline(parameters);
-    const result = await this.transport.executeNamedQuery<GetPipelineParams, GetPipelineResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetPipelineParams, GetPipelineResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getPipelineAfterCommit(parameters: GetPipelineParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetPipelineResult>> {
+    return this.getPipeline(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async claimPipeline(input: ClaimPipelineInput): Promise<TypedCommandResult<ClaimPipelineOutcome>> {
     const result = await this.transport.executeCommand<ClaimPipelineInput, ClaimPipelineOutcome>(claimPipeline(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CLAIM_PIPELINE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "PipelineClaimed") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [
@@ -273,6 +392,9 @@ export class WoodpeckerSchedulerClient {
   public async releasePipeline(input: ReleasePipelineInput): Promise<TypedCommandResult<ReleasePipelineOutcome>> {
     const result = await this.transport.executeCommand<ReleasePipelineInput, ReleasePipelineOutcome>(releasePipeline(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== RELEASE_PIPELINE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "PipelineReleased") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [
@@ -300,6 +422,9 @@ export class WoodpeckerSchedulerClient {
   public async startPipeline(input: StartPipelineInput): Promise<TypedCommandResult<StartPipelineOutcome>> {
     const result = await this.transport.executeCommand<StartPipelineInput, StartPipelineOutcome>(startPipeline(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== START_PIPELINE_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     if (result.outcome.outcome !== "PipelineStarted") return { ...result, workflowRevisions: [] };
     if (input.expected_revision === 18446744073709551615n) throw new Error("RiffDB workflow successor revision overflow");
     return { ...result, workflowRevisions: [

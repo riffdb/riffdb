@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -173,6 +174,16 @@ export interface ItemsByCodeFound {
 
 export type ItemsByCodeResult = ItemsByCodeFound;
 
+export function isItemsByCodeFound(value: ItemsByCodeResult): value is ItemsByCodeFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsByCodeFound(value: ItemsByCodeResult | TypedQueryResult<ItemsByCodeResult>): ItemsByCodeFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsByCodeResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsByCode outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsByCode(parameters: ItemsByCodeParams): NamedQueryRequest<ItemsByCodeParams, ItemsByCodeResult> {
   return { driverOperation: { name: "operational_access_corpus_items_by_code", inputSchemaHash: "80f33f85cc14065b66a8ae6f59f6d3740d42386508d442f0b2a6fe451c8270d7" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsByCode", planHash: ITEMS_BY_CODE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -190,6 +201,16 @@ export interface ItemsByCodePrefixFound {
 }
 
 export type ItemsByCodePrefixResult = ItemsByCodePrefixFound;
+
+export function isItemsByCodePrefixFound(value: ItemsByCodePrefixResult): value is ItemsByCodePrefixFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsByCodePrefixFound(value: ItemsByCodePrefixResult | TypedQueryResult<ItemsByCodePrefixResult>): ItemsByCodePrefixFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsByCodePrefixResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsByCodePrefix outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function itemsByCodePrefix(parameters: ItemsByCodePrefixParams): NamedQueryRequest<ItemsByCodePrefixParams, ItemsByCodePrefixResult> {
   return { driverOperation: { name: "operational_access_corpus_items_by_code_prefix", inputSchemaHash: "117cb1d867d3557adb09db8a3713258a610d9862886459067a86c13f5db1e053" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsByCodePrefix", planHash: ITEMS_BY_CODE_PREFIX_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"prefix","schema":{"kind":"string"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -209,6 +230,16 @@ export interface ItemsByCodesFound {
 
 export type ItemsByCodesResult = ItemsByCodesFound;
 
+export function isItemsByCodesFound(value: ItemsByCodesResult): value is ItemsByCodesFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsByCodesFound(value: ItemsByCodesResult | TypedQueryResult<ItemsByCodesResult>): ItemsByCodesFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsByCodesResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsByCodes outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsByCodes(parameters: ItemsByCodesParams): NamedQueryRequest<ItemsByCodesParams, ItemsByCodesResult> {
   return { driverOperation: { name: "operational_access_corpus_items_by_codes", inputSchemaHash: "3eb43894d1e1d41f3d3cb50a25a7d72ef4be5231295f74161ad58ab9401e423b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsByCodes", planHash: ITEMS_BY_CODES_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"codes","schema":{"kind":"list","value":{"kind":"string"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -227,6 +258,16 @@ export interface ItemsByCodesReverseFound {
 
 export type ItemsByCodesReverseResult = ItemsByCodesReverseFound;
 
+export function isItemsByCodesReverseFound(value: ItemsByCodesReverseResult): value is ItemsByCodesReverseFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsByCodesReverseFound(value: ItemsByCodesReverseResult | TypedQueryResult<ItemsByCodesReverseResult>): ItemsByCodesReverseFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsByCodesReverseResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsByCodesReverse outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsByCodesReverse(parameters: ItemsByCodesReverseParams): NamedQueryRequest<ItemsByCodesReverseParams, ItemsByCodesReverseResult> {
   return { driverOperation: { name: "operational_access_corpus_items_by_codes_reverse", inputSchemaHash: "3eb43894d1e1d41f3d3cb50a25a7d72ef4be5231295f74161ad58ab9401e423b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsByCodesReverse", planHash: ITEMS_BY_CODES_REVERSE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"codes","schema":{"kind":"list","value":{"kind":"string"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -244,6 +285,16 @@ export interface ItemsByKindsFound {
 }
 
 export type ItemsByKindsResult = ItemsByKindsFound;
+
+export function isItemsByKindsFound(value: ItemsByKindsResult): value is ItemsByKindsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsByKindsFound(value: ItemsByKindsResult | TypedQueryResult<ItemsByKindsResult>): ItemsByKindsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsByKindsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsByKinds outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function itemsByKinds(parameters: ItemsByKindsParams): NamedQueryRequest<ItemsByKindsParams, ItemsByKindsResult> {
   return { driverOperation: { name: "operational_access_corpus_items_by_kinds", inputSchemaHash: "c4ad8303b5bdc02114be889218870e75392931f029de11a6c386960a8ce957cf" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsByKinds", planHash: ITEMS_BY_KINDS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"kinds","schema":{"kind":"list","value":{"kind":"string"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -264,6 +315,16 @@ export interface ItemsInCodeWindowFound {
 
 export type ItemsInCodeWindowResult = ItemsInCodeWindowFound;
 
+export function isItemsInCodeWindowFound(value: ItemsInCodeWindowResult): value is ItemsInCodeWindowFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsInCodeWindowFound(value: ItemsInCodeWindowResult | TypedQueryResult<ItemsInCodeWindowResult>): ItemsInCodeWindowFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsInCodeWindowResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsInCodeWindow outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsInCodeWindow(parameters: ItemsInCodeWindowParams): NamedQueryRequest<ItemsInCodeWindowParams, ItemsInCodeWindowResult> {
   return { driverOperation: { name: "operational_access_corpus_items_in_code_window", inputSchemaHash: "0ab880c232f251302745330753d5ae19e55d9d555db3cf79c0b27761c5131d18" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsInCodeWindow", planHash: ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"after_code","schema":{"kind":"string"}},{"name":"horizon_code","schema":{"kind":"string"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -283,6 +344,16 @@ export interface ItemsInScoreWindowFound {
 
 export type ItemsInScoreWindowResult = ItemsInScoreWindowFound;
 
+export function isItemsInScoreWindowFound(value: ItemsInScoreWindowResult): value is ItemsInScoreWindowFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsInScoreWindowFound(value: ItemsInScoreWindowResult | TypedQueryResult<ItemsInScoreWindowResult>): ItemsInScoreWindowFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsInScoreWindowResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsInScoreWindow outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsInScoreWindow(parameters: ItemsInScoreWindowParams): NamedQueryRequest<ItemsInScoreWindowParams, ItemsInScoreWindowResult> {
   return { driverOperation: { name: "operational_access_corpus_items_in_score_window", inputSchemaHash: "72e5fd6978a3675c1efe90b582e93c979996f42f4892babc475a4e1864d39ea9" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsInScoreWindow", planHash: ITEMS_IN_SCORE_WINDOW_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"minimum","schema":{"kind":"i64"}},{"name":"maximum","schema":{"kind":"i64"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -301,6 +372,16 @@ export interface ItemsOutsideCodeFound {
 
 export type ItemsOutsideCodeResult = ItemsOutsideCodeFound;
 
+export function isItemsOutsideCodeFound(value: ItemsOutsideCodeResult): value is ItemsOutsideCodeFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsOutsideCodeFound(value: ItemsOutsideCodeResult | TypedQueryResult<ItemsOutsideCodeResult>): ItemsOutsideCodeFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsOutsideCodeResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsOutsideCode outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsOutsideCode(parameters: ItemsOutsideCodeParams): NamedQueryRequest<ItemsOutsideCodeParams, ItemsOutsideCodeResult> {
   return { driverOperation: { name: "operational_access_corpus_items_outside_code", inputSchemaHash: "e56bb8f209560205854233348cf60af5e3218e566e1e5af99dd2735f5394a922" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsOutsideCode", planHash: ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"excluded_code","schema":{"kind":"string"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -318,6 +399,16 @@ export interface ItemsOutsideScoreFound {
 }
 
 export type ItemsOutsideScoreResult = ItemsOutsideScoreFound;
+
+export function isItemsOutsideScoreFound(value: ItemsOutsideScoreResult): value is ItemsOutsideScoreFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapItemsOutsideScoreFound(value: ItemsOutsideScoreResult | TypedQueryResult<ItemsOutsideScoreResult>): ItemsOutsideScoreFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsOutsideScoreResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsOutsideScore outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function itemsOutsideScore(parameters: ItemsOutsideScoreParams): NamedQueryRequest<ItemsOutsideScoreParams, ItemsOutsideScoreResult> {
   return { driverOperation: { name: "operational_access_corpus_items_outside_score", inputSchemaHash: "b9ba335b756b5b2b5baec892178336aa2fb1f30d4cbab3693bd969f9990f9b1f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsOutsideScore", planHash: ITEMS_OUTSIDE_SCORE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}},{"name":"excluded","schema":{"kind":"i64"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"code","schema":{"kind":"string"}},{"name":"kind","schema":{"kind":"string"}},{"name":"score","schema":{"kind":"i64"}},{"name":"published_at","schema":{"kind":"optional","value":{"kind":"timestamp"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -340,113 +431,325 @@ export interface ItemsWithLabelsIntegrityFailure {
 
 export type ItemsWithLabelsResult = ItemsWithLabelsFound | ItemsWithLabelsIntegrityFailure;
 
+export function isItemsWithLabelsFound(value: ItemsWithLabelsResult): value is ItemsWithLabelsFound {
+  return value.outcome === "Found";
+}
+
+export function isItemsWithLabelsIntegrityFailure(value: ItemsWithLabelsResult): value is ItemsWithLabelsIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapItemsWithLabelsFound(value: ItemsWithLabelsResult | TypedQueryResult<ItemsWithLabelsResult>): ItemsWithLabelsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemsWithLabelsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemsWithLabels outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemsWithLabels(parameters: ItemsWithLabelsParams): NamedQueryRequest<ItemsWithLabelsParams, ItemsWithLabelsResult> {
   return { driverOperation: { name: "operational_access_corpus_items_with_labels", inputSchemaHash: "13f5ffa2f0f62ea46e73d187236ff4f6b5384ed09504c6aa5415c6965287dd57" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemsWithLabels", planHash: ITEMS_WITH_LABELS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"workspace_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"item_code","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":16,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class OperationalAccessCorpusClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): OperationalAccessCorpusClient {
+    return new OperationalAccessCorpusClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): OperationalAccessCorpusClient {
+    return new OperationalAccessCorpusClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): OperationalAccessCorpusClient {
+    return new OperationalAccessCorpusClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async itemsByCode(parameters: ItemsByCodeParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodeResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsByCode(routedParameters as unknown as ItemsByCodeParams);
     const result = await this.transport.executeNamedQuery<ItemsByCodeParams, ItemsByCodeResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsByCodeAfterCommit(parameters: ItemsByCodeParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodeResult>> {
+    return this.itemsByCode(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsByCodePages(parameters: ItemsByCodeParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsByCodeResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsByCode(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsByCodeParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsByCodePrefix(parameters: ItemsByCodePrefixParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodePrefixResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsByCodePrefix(routedParameters as unknown as ItemsByCodePrefixParams);
     const result = await this.transport.executeNamedQuery<ItemsByCodePrefixParams, ItemsByCodePrefixResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsByCodePrefixAfterCommit(parameters: ItemsByCodePrefixParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodePrefixResult>> {
+    return this.itemsByCodePrefix(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsByCodePrefixPages(parameters: ItemsByCodePrefixParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsByCodePrefixResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsByCodePrefix(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsByCodePrefixParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsByCodes(parameters: ItemsByCodesParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsByCodes(routedParameters as unknown as ItemsByCodesParams);
     const result = await this.transport.executeNamedQuery<ItemsByCodesParams, ItemsByCodesResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsByCodesAfterCommit(parameters: ItemsByCodesParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesResult>> {
+    return this.itemsByCodes(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsByCodesPages(parameters: ItemsByCodesParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsByCodesResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsByCodes(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsByCodesParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsByCodesReverse(parameters: ItemsByCodesReverseParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesReverseResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsByCodesReverse(routedParameters as unknown as ItemsByCodesReverseParams);
     const result = await this.transport.executeNamedQuery<ItemsByCodesReverseParams, ItemsByCodesReverseResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsByCodesReverseAfterCommit(parameters: ItemsByCodesReverseParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByCodesReverseResult>> {
+    return this.itemsByCodesReverse(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsByCodesReversePages(parameters: ItemsByCodesReverseParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsByCodesReverseResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsByCodesReverse(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsByCodesReverseParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsByKinds(parameters: ItemsByKindsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByKindsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsByKinds(routedParameters as unknown as ItemsByKindsParams);
     const result = await this.transport.executeNamedQuery<ItemsByKindsParams, ItemsByKindsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsByKindsAfterCommit(parameters: ItemsByKindsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsByKindsResult>> {
+    return this.itemsByKinds(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsByKindsPages(parameters: ItemsByKindsParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsByKindsResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsByKinds(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsByKindsParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsInCodeWindow(parameters: ItemsInCodeWindowParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsInCodeWindowResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsInCodeWindow(routedParameters as unknown as ItemsInCodeWindowParams);
     const result = await this.transport.executeNamedQuery<ItemsInCodeWindowParams, ItemsInCodeWindowResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsInCodeWindowAfterCommit(parameters: ItemsInCodeWindowParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsInCodeWindowResult>> {
+    return this.itemsInCodeWindow(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsInCodeWindowPages(parameters: ItemsInCodeWindowParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsInCodeWindowResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsInCodeWindow(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsInCodeWindowParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsInScoreWindow(parameters: ItemsInScoreWindowParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsInScoreWindowResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsInScoreWindow(routedParameters as unknown as ItemsInScoreWindowParams);
     const result = await this.transport.executeNamedQuery<ItemsInScoreWindowParams, ItemsInScoreWindowResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsInScoreWindowAfterCommit(parameters: ItemsInScoreWindowParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsInScoreWindowResult>> {
+    return this.itemsInScoreWindow(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsInScoreWindowPages(parameters: ItemsInScoreWindowParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsInScoreWindowResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsInScoreWindow(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsInScoreWindowParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsOutsideCode(parameters: ItemsOutsideCodeParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsOutsideCodeResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsOutsideCode(routedParameters as unknown as ItemsOutsideCodeParams);
     const result = await this.transport.executeNamedQuery<ItemsOutsideCodeParams, ItemsOutsideCodeResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsOutsideCodeAfterCommit(parameters: ItemsOutsideCodeParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsOutsideCodeResult>> {
+    return this.itemsOutsideCode(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsOutsideCodePages(parameters: ItemsOutsideCodeParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsOutsideCodeResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsOutsideCode(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsOutsideCodeParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsOutsideScore(parameters: ItemsOutsideScoreParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsOutsideScoreResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = itemsOutsideScore(routedParameters as unknown as ItemsOutsideScoreParams);
     const result = await this.transport.executeNamedQuery<ItemsOutsideScoreParams, ItemsOutsideScoreResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemsOutsideScoreAfterCommit(parameters: ItemsOutsideScoreParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsOutsideScoreResult>> {
+    return this.itemsOutsideScore(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *itemsOutsideScorePages(parameters: ItemsOutsideScoreParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ItemsOutsideScoreResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.itemsOutsideScore(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ItemsOutsideScoreParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async itemsWithLabels(parameters: ItemsWithLabelsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsWithLabelsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = itemsWithLabels(parameters);
-    const result = await this.transport.executeNamedQuery<ItemsWithLabelsParams, ItemsWithLabelsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ItemsWithLabelsParams, ItemsWithLabelsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async itemsWithLabelsAfterCommit(parameters: ItemsWithLabelsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemsWithLabelsResult>> {
+    return this.itemsWithLabels(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
 }

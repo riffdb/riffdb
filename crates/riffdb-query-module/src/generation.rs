@@ -1497,6 +1497,8 @@ pub(crate) fn rust_generation_model(
             .map(|parameter| {
                 let field = rust_identifier(parameter.name());
                 json!({
+                    "field": field,
+                    "optional": !matches!(parameter.value_type(), NamedTypeSchema::Cursor),
                     "expression": if matches!(parameter.value_type(), NamedTypeSchema::Cursor) {
                         format!("Some(self.0.{field})")
                     } else {
@@ -1532,10 +1534,26 @@ pub(crate) fn rust_generation_model(
                     };
                     json!({"wire_name": parameter.name(), "expression": expression})
                 }).collect::<Vec<_>>(),
+            "has_found": schemas.results().iter().any(|branch| branch.name() == "found"),
             "results": schemas.results().iter().map(|branch| {
                 let variant = pascal(branch.name());
+                let single_field = if branch.fields().len() == 1 {
+                    let field = &branch.fields()[0];
+                    Some(json!({
+                        "name": rust_identifier(field.name()),
+                        "type": rust_query_type(
+                            field.value_type(),
+                            &format!("{name}{variant}{}", pascal(field.name())),
+                        ),
+                    }))
+                } else {
+                    None
+                };
                 json!({
                     "variant": variant,
+                    "snake_variant": snake(branch.name()),
+                    "is_found": branch.name().eq_ignore_ascii_case("found"),
+                    "single_field": single_field,
                     "wire_name": branch.name(),
                     "struct": rust_fields_model(
                         &format!("{name}{variant}"),
@@ -1633,26 +1651,31 @@ pub(crate) fn rust_generation_model(
     json!({
         "module_hash_bytes": module.identity().as_bytes().iter().map(|byte| format!("0x{byte:02x}")).collect::<Vec<_>>().join(", "),
         "contract_hash_bytes": module.contract_hash().as_bytes().iter().map(|byte| format!("0x{byte:02x}")).collect::<Vec<_>>().join(", "),
-        "enums": if module.queries().iter().any(|query| query.order_family().is_some()) {
-            contract.schema().enums().iter().map(|enumeration| json!({
-                "name": pascal(enumeration.name()),
-                "variants": enumeration.variants().iter().map(|variant| json!({
-                    "name": pascal(variant.name()),
-                    "wire_name": format!("{:?}", variant.name()),
-                })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        },
+        "enums": contract.schema().enums().iter().map(|enumeration| json!({
+            "name": pascal(enumeration.name()),
+            "variants": enumeration.variants().iter().map(|variant| json!({
+                "name": pascal(variant.name()),
+                "wire_name": format!("{:?}", variant.name()),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
         "queries": queries,
         "entities": entities,
         "commands": commands,
         "client": {
             "name": format!("{}Client", pascal(module.contract_lineage().as_str())),
-            "queries": module.queries().iter().map(|query| json!({
-                "name": query.name(),
-                "function": snake(query.name()),
-            })).collect::<Vec<_>>(),
+            "queries": module.queries().iter().map(|query| {
+                let cursor = query.plan().schemas().parameters().iter()
+                    .find(|parameter| is_cursor_type(parameter.value_type()))
+                    .map(|parameter| json!({
+                        "field": rust_identifier(parameter.name()),
+                        "optional": !matches!(parameter.value_type(), NamedTypeSchema::Cursor),
+                    }));
+                json!({
+                    "name": query.name(),
+                    "function": snake(query.name()),
+                    "cursor": cursor,
+                })
+            }).collect::<Vec<_>>(),
             "vector_inspections": vector_inspections,
         },
         "reactive_modules": rust_reactive_generation_model(
@@ -1781,6 +1804,11 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
         .idempotency_input()
         .and_then(|id| command.input().record().field(id))
         .map(|field| rust_identifier(field.name()));
+    let idempotency_string_field = command
+        .idempotency_input()
+        .and_then(|id| command.input().record().field(id))
+        .filter(|field| field.value_type().tag() == ValueTypeTag::String)
+        .map(|field| rust_identifier(field.name()));
     let collection = command.collection_expansion().map(|expansion| {
         let field = command
             .input()
@@ -1864,10 +1892,12 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
             "source_field": format!("{:?}", secret.source_field),
         })).collect::<Vec<_>>(),
         "redacted": redacted,
+        "has_enum_inputs": command.input().record().fields().iter().any(|field| field.value_type().enum_type_id().is_some()),
         "inputs": command.input().record().fields().iter().map(|field| json!({
             "name": rust_identifier(field.name()),
             "wire_name": field.name(),
             "type": rust_contract_type(field.value_type(), contract),
+            "enum_type": field.value_type().enum_type_id().and_then(|id| contract.schema().enumeration(id)).map(|enumeration| pascal(enumeration.name())),
             "encode": rust_encode_wire_expr(
                 field.value_type(),
                 &format!("&self.{}", rust_identifier(field.name())),
@@ -1877,11 +1907,13 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
         "facades": facades,
         "collection": collection,
         "idempotency_field": idempotency_field,
+        "idempotency_string_field": idempotency_string_field,
         "outcomes_mutable": command.outcomes().iter().any(|outcome| !outcome.payload().fields().is_empty()),
         "outcomes": command.outcomes().iter().map(|outcome| {
             let variant = pascal(outcome.name());
             json!({
                 "variant": variant,
+                "snake_variant": snake(outcome.name()),
                 "wire_name": outcome.name(),
                 "fields": outcome.payload().fields().iter().map(|field| json!({
                     "name": rust_identifier(field.name()),
@@ -3223,9 +3255,12 @@ pub(crate) fn typescript_generation_model(
                         || is_optional_type(parameter.value_type()),
                     "type": ts_query_parameter_type(query, parameter),
                 })).collect::<Vec<_>>(),
+                "found_outcome": schemas.results().iter().find(|branch| branch.name().eq_ignore_ascii_case("found")).map(|branch| branch.name()),
                 "results": schemas.results().iter().map(|branch| json!({
                     "name": format!("{name}{}", pascal(branch.name())),
                     "outcome": branch.name(),
+                    "pascal_outcome": pascal(branch.name()),
+                    "is_found": branch.name().eq_ignore_ascii_case("found"),
                     "fields": branch.fields().iter().map(|field| json!({
                         "name": ts_identifier(field.name()),
                         "type": ts_query_type(field.value_type()),
@@ -3333,6 +3368,10 @@ pub(crate) fn typescript_generation_model(
                     .collect(),
             );
             let workflow_revisions = workflow_revision_bindings(command);
+            let idempotency_field_name = command
+                .idempotency_input()
+                .and_then(|id| command.input().record().field(id))
+                .map_or("idempotency_key", |field| field.name());
             json!({
                 "name": name,
                 "function": camel(name),
@@ -3341,12 +3380,11 @@ pub(crate) fn typescript_generation_model(
                 "plan_hash": hex(command.plan_hash().as_bytes()),
                 "operation": driver_operation_name,
                 "schema_hash": driver_input_schema_hash,
-                "idempotency": command.idempotency_input()
-                    .and_then(|id| command.input().record().field(id))
-                    .map_or("idempotency_key", |field| field.name()),
+                "idempotency": idempotency_field_name,
                 "inputs": command.input().record().fields().iter().map(|field| json!({
                     "name": ts_identifier(field.name()),
                     "type": ts_contract_type(field.value_type(), contract),
+                    "optional": field.name() == idempotency_field_name && field.value_type().tag() == ValueTypeTag::String,
                 })).collect::<Vec<_>>(),
                 "secret_outputs": secret_outputs.iter().map(|secret| json!({
                     "outcome": format!("{:?}", secret.outcome),
@@ -3369,6 +3407,7 @@ pub(crate) fn typescript_generation_model(
                 }).collect::<Vec<_>>(),
                 "outcomes": command.outcomes().iter().map(|outcome| json!({
                     "name": outcome.name(),
+                    "pascal_name": pascal(outcome.name()),
                     "fields": outcome.payload().fields().iter().map(|field| json!({
                         "name": ts_identifier(field.name()),
                         "type": ts_contract_type(field.value_type(), contract),
@@ -3652,6 +3691,7 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
          export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }}\n\
          export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
          export const MAX_COMMAND_BATCH_CONCURRENCY = 384;\n\
+         export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;\n\
          export interface CommandBatchOptions {{ readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }}\n\
          export interface CommandBatchItem<T> {{ readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }}\n\
          export interface CommandBatchResult<T> {{ readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }}\n\
@@ -3752,6 +3792,31 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             write!(output, "{name}{}", pascal(branch.name())).infallible();
         }
         writeln!(output, ";\n").infallible();
+        for branch in schemas.results() {
+            let branch_name = format!("{name}{}", pascal(branch.name()));
+            writeln!(
+                output,
+                "export function is{}{}(value: {name}Result): value is {branch_name} {{\n  return value.outcome === {:?};\n}}\n",
+                pascal(name),
+                pascal(branch.name()),
+                branch.name(),
+            )
+            .infallible();
+        }
+        if let Some(found_branch) = schemas
+            .results()
+            .iter()
+            .find(|branch| branch.name().eq_ignore_ascii_case("found"))
+        {
+            writeln!(
+                output,
+                "export function unwrap{}Found(value: {name}Result | TypedQueryResult<{name}Result>): {name}Found {{\n  const resolved = (\"identity\" in value && \"applicationHead\" in value && \"value\" in value ? value.value : value) as {name}Result;\n  if (resolved.outcome !== {:?}) throw new Error(`expected {name} outcome {:?}, got \"${{resolved.outcome}}\"`);\n  return resolved;\n}}\n",
+                pascal(name),
+                found_branch.name(),
+                found_branch.name(),
+            )
+            .infallible();
+        }
         if let Some(shape) = compact_shape.as_ref() {
             emit_typescript_compact_query_decoder(&mut output, name, shape, contract);
         }
@@ -3834,11 +3899,22 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
         let (driver_operation_name, driver_input_schema_hash) = command_driver_operations
             .get(name)
             .expect("generated command operation");
+        let idempotency = command
+            .idempotency_input()
+            .and_then(|id| command.input().record().field(id))
+            .map_or("idempotency_key", |field| field.name());
         writeln!(output, "export interface {name}Input {{").infallible();
         for field in command.input().record().fields() {
+            let optional = if field.name() == idempotency
+                && field.value_type().tag() == ValueTypeTag::String
+            {
+                "?"
+            } else {
+                ""
+            };
             writeln!(
                 output,
-                "  readonly {}: {};",
+                "  readonly {}{optional}: {};",
                 ts_identifier(field.name()),
                 ts_contract_type(field.value_type(), contract)
             )
@@ -3882,6 +3958,17 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             write!(output, " }}").infallible();
         }
         writeln!(output, ";\n").infallible();
+        for outcome in command.outcomes() {
+            writeln!(
+                output,
+                "export function is{}{}(value: {name}Outcome): value is Extract<{name}Outcome, {{ readonly outcome: {:?} }}> {{\n  return value.outcome === {:?};\n}}\n",
+                pascal(name),
+                pascal(outcome.name()),
+                outcome.name(),
+                outcome.name(),
+            )
+            .infallible();
+        }
         if !secret_outputs.is_empty() {
             writeln!(
                 output,
@@ -3893,10 +3980,6 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             )
             .infallible();
         }
-        let idempotency = command
-            .idempotency_input()
-            .and_then(|id| command.input().record().field(id))
-            .map_or("idempotency_key", |field| field.name());
         let mut input_schema = ts_contract_record_schema(
             command
                 .input()
@@ -3969,9 +4052,11 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
             output,
             "export const {constant}_PLAN_HASH = \"{plan_hash}\" as const;\n\
              export function {function}(input: {name}Input): CommandRequest<{name}Input, {name}Outcome> {{\n\
+             \x20 const idempotencyKey = input.{idempotency} && input.{idempotency}.length > 0 ? input.{idempotency} : globalThis.crypto.randomUUID();\n\
+             \x20 const resolvedInput: {name}Input = input.{idempotency} === idempotencyKey ? input : {{ ...input, {idempotency}: idempotencyKey }};\n\
              \x20 return {{ driverOperation: {{ name: \"{driver_operation_name}\", inputSchemaHash: \"{driver_input_schema_hash}\" }}, \
              contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
-             commandName: \"{name}\", planHash: {constant}_PLAN_HASH, input, idempotencyKey: input.{idempotency}, \
+             commandName: \"{name}\", planHash: {constant}_PLAN_HASH, input: resolvedInput, idempotencyKey, \
              inputSchema: {input_schema}, outcomeSchemas: {outcome_schemas}, decodeError: decodeApplicationError }};\n\
              }}\n",
             function = camel(name),
@@ -4617,9 +4702,13 @@ fn emit_typescript_client_facade(
     let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
     writeln!(
         output,
-        "export class {client_name} {{\n  public constructor(\n    private readonly transport: ApplicationTransport,\n    \
-         private readonly commandAttemptBudget: number,\n  ) {{\n    if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) \
-         throw new Error(\"invalid command attempt budget\");\n  }}\n"
+        "export class {client_name} {{\n  private lastCommitSeq: bigint | undefined;\n\n  public constructor(\n    private readonly transport: ApplicationTransport,\n    \
+         private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,\n    defaultReadAfterCommit?: bigint,\n    private readonly trackCausalWrites: boolean = true,\n  ) {{\n    if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) \
+         throw new Error(\"invalid command attempt budget\");\n    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error(\"invalid read-after-commit sequence\");\n    this.lastCommitSeq = defaultReadAfterCommit;\n  }}\n\n  \
+         public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): {client_name} {{\n    return new {client_name}(transport, commandAttemptBudget);\n  }}\n\n  \
+         public withReadAfterCommit(commitSequence: bigint | undefined): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);\n  }}\n\n  \
+         public causalSession(initialCommitSequence?: bigint): {client_name} {{\n    return new {client_name}(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);\n  }}\n\n  \
+         public get lastCommitSequence(): bigint | undefined {{\n    return this.lastCommitSeq;\n  }}\n"
     )
     .infallible();
     for query in module.queries() {
@@ -4631,12 +4720,12 @@ fn emit_typescript_client_facade(
             .iter()
             .find(|parameter| is_cursor_type(parameter.value_type()));
         let (parameter_routing, options_name) = cursor.map_or_else(
-            || (String::new(), "options".to_owned()),
+            || (String::new(), "effectiveOptions".to_owned()),
             |parameter| {
                 let field = ts_identifier(parameter.name());
                 (
                     format!(
-                        "    const {{ {field}: generatedCursor, ...routedParameters }} = parameters;\n    if (generatedCursor != null && options.cursor !== undefined) throw new Error(\"generated cursor conflicts with query options\");\n    const routedOptions: QueryOptions = generatedCursor == null ? options : {{ ...options, cursor: generatedCursor }};\n"
+                        "    const {{ {field}: generatedCursor, ...routedParameters }} = parameters;\n    if (generatedCursor != null && options.cursor !== undefined) throw new Error(\"generated cursor conflicts with query options\");\n    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : {{ ...effectiveOptions, cursor: generatedCursor }};\n"
                     ),
                     "routedOptions".to_owned(),
                 )
@@ -4650,12 +4739,22 @@ fn emit_typescript_client_facade(
         writeln!(
             output,
             "  public async {function}(parameters: {name}Params, options: QueryOptions = {{}}): \
-             Promise<TypedQueryResult<{name}Result>> {{\n{parameter_routing}    const request = {function}({request_argument});\n    \
+             Promise<TypedQueryResult<{name}Result>> {{\n    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? {{ ...options, readAfterCommit: this.lastCommitSeq }} : options;\n{parameter_routing}    const request = {function}({request_argument});\n    \
              const result = await this.transport.executeNamedQuery<{name}Params, {name}Result>(request, {options_name});\n    \
-             if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
+             if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n\n  \
+             public async {function}AfterCommit(parameters: {name}Params, commitSequence: bigint, options: QueryOptions = {{}}): Promise<TypedQueryResult<{name}Result>> {{\n    return this.{function}(parameters, {{ ...options, readAfterCommit: commitSequence }});\n  }}\n",
             function = camel(name)
         )
         .infallible();
+        if let Some(parameter) = cursor {
+            let field = ts_identifier(parameter.name());
+            writeln!(
+                output,
+                "  public async *{function}Pages(parameters: {name}Params, maxPages: number = 64, options: QueryOptions = {{}}): AsyncGenerator<TypedQueryResult<{name}Result>, void, undefined> {{\n    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError(\"maxPages must be an integer from 1 through 1024\");\n    let currentParameters = parameters;\n    let currentOptions = options;\n    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {{\n      const page = await this.{function}(currentParameters, currentOptions);\n      yield page;\n      if (page.nextCursor === undefined) return;\n      const {{ {field}: _ignoredCursor, ...restParameters }} = currentParameters;\n      currentParameters = restParameters as unknown as {name}Params;\n      currentOptions = {{ ...currentOptions, cursor: page.nextCursor }};\n    }}\n  }}\n",
+                function = camel(name)
+            )
+            .infallible();
+        }
     }
     for command in commands {
         let name = command.name();
@@ -4666,7 +4765,8 @@ fn emit_typescript_client_facade(
             "  public async {function}(input: {name}Input): Promise<TypedCommandResult<{name}Outcome>> {{\n    \
              const result = await this.transport.executeCommand<{name}Input, {name}Outcome>({function}(input), this.commandAttemptBudget);\n    \
              if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== {constant}_PLAN_HASH) \
-             throw new Error(\"RiffDB application identity mismatch\");",
+             throw new Error(\"RiffDB application identity mismatch\");\n    \
+             if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {{\n      this.lastCommitSeq = result.commitSequence;\n    }}",
             function = camel(name),
             constant = screaming_snake(name),
         )
@@ -5738,5 +5838,161 @@ mod tests {
         assert!(!typescript.contains("packedDecoder: decodeBoardPage450Packed"));
         assert!(!python.contains("def _decode_board_page450_packed("));
         assert!(!python.contains("accept_packed_result="));
+    }
+
+    fn ticketdesk_module() -> (QueryModule, ContractBundle) {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract");
+        let get_ticket = NamedQuerySource::new(
+            "GetTicket",
+            "query GetTicket($organization_id: Organization.organization_id, $ticket_id: Ticket.ticket_id) { one ticket from Ticket where organization_id == $organization_id && ticket_id == $ticket_id else NotFound return Found { ticket: ticket { ticket_id title status } } outcomes Found | NotFound }",
+        )
+        .expect("GetTicket query");
+        let list_comments = NamedQuerySource::new(
+            "ListComments",
+            include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+        )
+        .expect("ListComments query");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("TicketDesk").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![get_ticket, list_comments],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+        (module, contract)
+    }
+
+    // req: DRV-001, DRV-005
+    #[test]
+    fn generated_sdks_emit_exhaustiveness_and_enum_helpers_across_languages() {
+        let (module, contract) = ticketdesk_module();
+        let rust = generate_rust_client(&module, &contract);
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+        let go = crate::generate_go_client(&module, &contract);
+
+        assert!(rust.contains("pub enum TicketStatus {"));
+        assert!(rust.contains("impl std::fmt::Display for TicketStatus"));
+        assert!(rust.contains("impl std::str::FromStr for TicketStatus"));
+        assert!(rust.contains("impl PartialEq<&str> for TicketStatus"));
+        assert!(rust.contains("pub const fn is_found(&self) -> bool"));
+        assert!(rust.contains(
+            "pub fn unwrap_found(&self) -> Result<&GetTicketFound, ApplicationClientError>"
+        ));
+        assert!(rust.contains("pub fn unwrap_found_value(&self) -> Result<&GetTicketFoundTicket, ApplicationClientError>"));
+        assert!(rust.contains("pub const fn is_created(&self) -> bool"));
+
+        assert!(typescript.contains(
+            "export function isGetTicketFound(value: GetTicketResult): value is GetTicketFound"
+        ));
+        assert!(typescript.contains("export function unwrapGetTicketFound(value: GetTicketResult | TypedQueryResult<GetTicketResult>): GetTicketFound"));
+        assert!(typescript.contains("export function isCreateTicketCreated(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: \"Created\" }>"));
+
+        assert!(python.contains("def is_found(self) -> bool:"));
+        assert!(python.contains("def unwrap_found(self) -> GetTicketFound:"));
+        assert!(python.contains("def is_created(self) -> bool:"));
+
+        assert!(go.contains("func IsGetTicketFound(value GetTicketResult) (GetTicketFound, bool)"));
+        assert!(
+            go.contains("func UnwrapGetTicketFound(value GetTicketResult) (GetTicketFound, error)")
+        );
+        assert!(go.contains(
+            "func IsCreateTicketCreated(value CreateTicketOutcome) (CreateTicketCreated, bool)"
+        ));
+    }
+
+    // req: DRV-007, DRV-008, DRV-013
+    #[test]
+    fn generated_sdks_emit_default_attempt_budgets_and_optional_query_options() {
+        let (module, contract) = ticketdesk_module();
+        let rust = generate_rust_client(&module, &contract);
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+        let go = crate::generate_go_client(&module, &contract);
+
+        assert!(rust.contains("pub const DEFAULT_COMMAND_ATTEMPT_BUDGET: u32 = 3;"));
+        assert!(rust.contains(
+            "pub fn from_client(client: StableApplicationClient, metadata: CallMetadata) -> Self"
+        ));
+        assert!(rust.contains("pub async fn connect(endpoint: impl Into<String>, bearer_token: &str) -> Result<Self, ApplicationClientError>"));
+        assert!(rust.contains("pub async fn connect_database(endpoint: impl Into<String>, bearer_token: &str, database: &str) -> Result<Self, ApplicationClientError>"));
+        assert!(rust.contains(
+            "pub const fn with_command_attempts(mut self, command_attempts: AttemptBudget) -> Self"
+        ));
+
+        assert!(typescript.contains("export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;"));
+        assert!(typescript.contains(
+            "private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,"
+        ));
+        assert!(typescript.contains("public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): TicketDeskClient"));
+
+        assert!(python.contains("command_attempts: AttemptBudget = AttemptBudget(3)"));
+        assert!(python.contains("def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> TicketDeskClient:"));
+
+        assert!(go.contains("const DefaultCommandAttempts uint32 = 3"));
+        assert!(go.contains(
+            "func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error)"
+        ));
+        assert!(go.contains("func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams, optionsList ...QueryOptions)"));
+    }
+
+    // req: DRV-012, DRV-016
+    #[test]
+    fn generated_sdks_emit_causal_session_and_bounded_pagination_helpers() {
+        let (module, contract) = ticketdesk_module();
+        let rust = generate_rust_client(&module, &contract);
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+        let go = crate::generate_go_client(&module, &contract);
+
+        assert!(rust.contains("track_causal_writes: true"));
+        assert!(rust.contains(
+            "pub fn with_read_after_commit(&self, commit_sequence: Option<u64>) -> Self"
+        ));
+        assert!(rust.contains("pub fn causal_session(&self) -> Self"));
+        assert!(rust.contains("pub const fn last_commit_sequence(&self) -> Option<u64>"));
+        assert!(rust.contains("pub async fn list_comments_pages(&mut self, mut parameters: ListCommentsParams, max_pages: usize, options: QueryOptions)"));
+
+        assert!(typescript.contains("readonly idempotency_key?: string;"));
+        assert!(typescript.contains("private readonly trackCausalWrites: boolean = true,"));
+        assert!(
+            typescript.contains(
+                "withReadAfterCommit(commitSequence: bigint | undefined): TicketDeskClient"
+            )
+        );
+        assert!(
+            typescript.contains("causalSession(initialCommitSequence?: bigint): TicketDeskClient")
+        );
+        assert!(typescript.contains("lastCommitSequence(): bigint | undefined"));
+        assert!(typescript.contains("async getTicketAfterCommit(parameters: GetTicketParams, commitSequence: bigint, options: QueryOptions = {})"));
+        assert!(typescript.contains("async *listCommentsPages(parameters: ListCommentsParams, maxPages: number = 64, options: QueryOptions = {})"));
+
+        assert!(python.contains("track_causal_writes: bool = True"));
+        assert!(python.contains(
+            "def with_read_after_commit(self, commit_sequence: int | None) -> TicketDeskClient:"
+        ));
+        assert!(python.contains("def causal_session(self, initial_commit_sequence: int | None = None) -> TicketDeskClient:"));
+        assert!(python.contains("def last_commit_sequence(self) -> int | None:"));
+        assert!(python.contains("def get_ticket_after_commit(self, parameters: GetTicketParams, commit_sequence: int, options: QueryOptions = QueryOptions())"));
+        assert!(python.contains("def list_comments_pages(self, parameters: ListCommentsParams, max_pages: int = 64, options: QueryOptions = QueryOptions())"));
+
+        assert!(go.contains("trackCausalWrites: true"));
+        assert!(
+            go.contains(
+                "func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client"
+            )
+        );
+        assert!(go.contains(
+            "func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client"
+        ));
+        assert!(go.contains("func (client *Client) LastCommitSequence() *uint64"));
+        assert!(go.contains("func (client *Client) GetTicketAfterCommit(ctx context.Context, parameters GetTicketParams, commitSequence uint64, optionsList ...QueryOptions)"));
+        assert!(go.contains("func (client *Client) ListCommentsPages(ctx context.Context, parameters ListCommentsParams, maxPages uint32, optionsList ...QueryOptions)"));
     }
 }

@@ -111,12 +111,15 @@ type GetTicketFound struct {
 	Ticket struct { TicketId string; ProjectId string; Title string; Status TicketStatus; Revision uint64; ReporterId string; AssigneeId string }
 }
 func (GetTicketFound) isGetTicketResult() {}
+func IsGetTicketFound(value GetTicketResult) (GetTicketFound, bool) { branch, ok := value.(GetTicketFound); return branch, ok }
 
 type GetTicketNotFound struct {
 	Outcome string
 }
 func (GetTicketNotFound) isGetTicketResult() {}
+func IsGetTicketNotFound(value GetTicketResult) (GetTicketNotFound, bool) { branch, ok := value.(GetTicketNotFound); return branch, ok }
 
+func UnwrapGetTicketFound(value GetTicketResult) (GetTicketFound, error) { if branch, ok := value.(GetTicketFound); ok { return branch, nil }; return GetTicketFound{}, errors.New("expected GetTicket outcome found") }
 type TicketQueueParams struct {
 	OrganizationId string
 	ProjectId string
@@ -128,7 +131,9 @@ type TicketQueueFound struct {
 	Tickets []struct { OrganizationId string; TicketId string; ProjectId string; Title string; Status TicketStatus; UpdatedAt riffdb.Instant; ReporterId string; AssigneeId string }
 }
 func (TicketQueueFound) isTicketQueueResult() {}
+func IsTicketQueueFound(value TicketQueueResult) (TicketQueueFound, bool) { branch, ok := value.(TicketQueueFound); return branch, ok }
 
+func UnwrapTicketQueueFound(value TicketQueueResult) (TicketQueueFound, error) { if branch, ok := value.(TicketQueueFound); ok { return branch, nil }; return TicketQueueFound{}, errors.New("expected TicketQueue outcome found") }
 type AddProjectMemberInput struct {
 	Role string
 	UserId string
@@ -142,12 +147,14 @@ type AddProjectMemberCreated struct {
 	Member ProjectMember
 }
 func (AddProjectMemberCreated) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberCreated(value AddProjectMemberOutcome) (AddProjectMemberCreated, bool) { branch, ok := value.(AddProjectMemberCreated); return branch, ok }
 
 type AddProjectMemberUserMissing struct {
 	Outcome string
 	UserId string
 }
 func (AddProjectMemberUserMissing) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberUserMissing(value AddProjectMemberOutcome) (AddProjectMemberUserMissing, bool) { branch, ok := value.(AddProjectMemberUserMissing); return branch, ok }
 
 type AddProjectMemberMemberExists struct {
 	Outcome string
@@ -155,12 +162,14 @@ type AddProjectMemberMemberExists struct {
 	ProjectId string
 }
 func (AddProjectMemberMemberExists) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberMemberExists(value AddProjectMemberOutcome) (AddProjectMemberMemberExists, bool) { branch, ok := value.(AddProjectMemberMemberExists); return branch, ok }
 
 type AddProjectMemberProjectMissing struct {
 	Outcome string
 	ProjectId string
 }
 func (AddProjectMemberProjectMissing) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberProjectMissing(value AddProjectMemberOutcome) (AddProjectMemberProjectMissing, bool) { branch, ok := value.(AddProjectMemberProjectMissing); return branch, ok }
 
 type AttachLabelInput struct {
 	LabelId string
@@ -174,6 +183,7 @@ type AttachLabelCreated struct {
 	Link TicketLabel
 }
 func (AttachLabelCreated) isAttachLabelOutcome() {}
+func IsAttachLabelCreated(value AttachLabelOutcome) (AttachLabelCreated, bool) { branch, ok := value.(AttachLabelCreated); return branch, ok }
 
 type AttachLabelLinkExists struct {
 	Outcome string
@@ -181,18 +191,21 @@ type AttachLabelLinkExists struct {
 	TicketId string
 }
 func (AttachLabelLinkExists) isAttachLabelOutcome() {}
+func IsAttachLabelLinkExists(value AttachLabelOutcome) (AttachLabelLinkExists, bool) { branch, ok := value.(AttachLabelLinkExists); return branch, ok }
 
 type AttachLabelLabelMissing struct {
 	Outcome string
 	LabelId string
 }
 func (AttachLabelLabelMissing) isAttachLabelOutcome() {}
+func IsAttachLabelLabelMissing(value AttachLabelOutcome) (AttachLabelLabelMissing, bool) { branch, ok := value.(AttachLabelLabelMissing); return branch, ok }
 
 type AttachLabelTicketMissing struct {
 	Outcome string
 	TicketId string
 }
 func (AttachLabelTicketMissing) isAttachLabelOutcome() {}
+func IsAttachLabelTicketMissing(value AttachLabelOutcome) (AttachLabelTicketMissing, bool) { branch, ok := value.(AttachLabelTicketMissing); return branch, ok }
 
 type CloseTicketWithCommentInput struct {
 	Body string
@@ -209,30 +222,35 @@ type CloseTicketWithCommentClosed struct {
 	Comment Comment
 }
 func (CloseTicketWithCommentClosed) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentClosed(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentClosed, bool) { branch, ok := value.(CloseTicketWithCommentClosed); return branch, ok }
 
 type CloseTicketWithCommentTicketGone struct {
 	Outcome string
 	TicketId string
 }
 func (CloseTicketWithCommentTicketGone) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentTicketGone(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentTicketGone, bool) { branch, ok := value.(CloseTicketWithCommentTicketGone); return branch, ok }
 
 type CloseTicketWithCommentAuthorMissing struct {
 	Outcome string
 	UserId string
 }
 func (CloseTicketWithCommentAuthorMissing) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentAuthorMissing(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentAuthorMissing, bool) { branch, ok := value.(CloseTicketWithCommentAuthorMissing); return branch, ok }
 
 type CloseTicketWithCommentCommentExists struct {
 	Outcome string
 	CommentId string
 }
 func (CloseTicketWithCommentCommentExists) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentCommentExists(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentCommentExists, bool) { branch, ok := value.(CloseTicketWithCommentCommentExists); return branch, ok }
 
 type CloseTicketWithCommentTicketMissing struct {
 	Outcome string
 	TicketId string
 }
 func (CloseTicketWithCommentTicketMissing) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentTicketMissing(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentTicketMissing, bool) { branch, ok := value.(CloseTicketWithCommentTicketMissing); return branch, ok }
 
 type CreateCommentInput struct {
 	Body string
@@ -248,24 +266,28 @@ type CreateCommentCreated struct {
 	Comment Comment
 }
 func (CreateCommentCreated) isCreateCommentOutcome() {}
+func IsCreateCommentCreated(value CreateCommentOutcome) (CreateCommentCreated, bool) { branch, ok := value.(CreateCommentCreated); return branch, ok }
 
 type CreateCommentAuthorMissing struct {
 	Outcome string
 	UserId string
 }
 func (CreateCommentAuthorMissing) isCreateCommentOutcome() {}
+func IsCreateCommentAuthorMissing(value CreateCommentOutcome) (CreateCommentAuthorMissing, bool) { branch, ok := value.(CreateCommentAuthorMissing); return branch, ok }
 
 type CreateCommentCommentExists struct {
 	Outcome string
 	CommentId string
 }
 func (CreateCommentCommentExists) isCreateCommentOutcome() {}
+func IsCreateCommentCommentExists(value CreateCommentOutcome) (CreateCommentCommentExists, bool) { branch, ok := value.(CreateCommentCommentExists); return branch, ok }
 
 type CreateCommentTicketMissing struct {
 	Outcome string
 	TicketId string
 }
 func (CreateCommentTicketMissing) isCreateCommentOutcome() {}
+func IsCreateCommentTicketMissing(value CreateCommentOutcome) (CreateCommentTicketMissing, bool) { branch, ok := value.(CreateCommentTicketMissing); return branch, ok }
 
 type CreateLabelInput struct {
 	Name string
@@ -279,18 +301,21 @@ type CreateLabelCreated struct {
 	Label Label
 }
 func (CreateLabelCreated) isCreateLabelOutcome() {}
+func IsCreateLabelCreated(value CreateLabelOutcome) (CreateLabelCreated, bool) { branch, ok := value.(CreateLabelCreated); return branch, ok }
 
 type CreateLabelLabelExists struct {
 	Outcome string
 	LabelId string
 }
 func (CreateLabelLabelExists) isCreateLabelOutcome() {}
+func IsCreateLabelLabelExists(value CreateLabelOutcome) (CreateLabelLabelExists, bool) { branch, ok := value.(CreateLabelLabelExists); return branch, ok }
 
 type CreateLabelOrganizationMissing struct {
 	Outcome string
 	OrganizationId string
 }
 func (CreateLabelOrganizationMissing) isCreateLabelOutcome() {}
+func IsCreateLabelOrganizationMissing(value CreateLabelOutcome) (CreateLabelOrganizationMissing, bool) { branch, ok := value.(CreateLabelOrganizationMissing); return branch, ok }
 
 type CreateOrganizationInput struct {
 	Name string
@@ -303,12 +328,14 @@ type CreateOrganizationCreated struct {
 	Organization Organization
 }
 func (CreateOrganizationCreated) isCreateOrganizationOutcome() {}
+func IsCreateOrganizationCreated(value CreateOrganizationOutcome) (CreateOrganizationCreated, bool) { branch, ok := value.(CreateOrganizationCreated); return branch, ok }
 
 type CreateOrganizationOrganizationExists struct {
 	Outcome string
 	OrganizationId string
 }
 func (CreateOrganizationOrganizationExists) isCreateOrganizationOutcome() {}
+func IsCreateOrganizationOrganizationExists(value CreateOrganizationOutcome) (CreateOrganizationOrganizationExists, bool) { branch, ok := value.(CreateOrganizationOrganizationExists); return branch, ok }
 
 type CreateProjectInput struct {
 	Name string
@@ -322,18 +349,21 @@ type CreateProjectCreated struct {
 	Project Project
 }
 func (CreateProjectCreated) isCreateProjectOutcome() {}
+func IsCreateProjectCreated(value CreateProjectOutcome) (CreateProjectCreated, bool) { branch, ok := value.(CreateProjectCreated); return branch, ok }
 
 type CreateProjectProjectExists struct {
 	Outcome string
 	ProjectId string
 }
 func (CreateProjectProjectExists) isCreateProjectOutcome() {}
+func IsCreateProjectProjectExists(value CreateProjectOutcome) (CreateProjectProjectExists, bool) { branch, ok := value.(CreateProjectProjectExists); return branch, ok }
 
 type CreateProjectOrganizationMissing struct {
 	Outcome string
 	OrganizationId string
 }
 func (CreateProjectOrganizationMissing) isCreateProjectOutcome() {}
+func IsCreateProjectOrganizationMissing(value CreateProjectOutcome) (CreateProjectOrganizationMissing, bool) { branch, ok := value.(CreateProjectOrganizationMissing); return branch, ok }
 
 type CreateTicketInput struct {
 	Title string
@@ -351,30 +381,35 @@ type CreateTicketCreated struct {
 	Ticket Ticket
 }
 func (CreateTicketCreated) isCreateTicketOutcome() {}
+func IsCreateTicketCreated(value CreateTicketOutcome) (CreateTicketCreated, bool) { branch, ok := value.(CreateTicketCreated); return branch, ok }
 
 type CreateTicketTicketExists struct {
 	Outcome string
 	TicketId string
 }
 func (CreateTicketTicketExists) isCreateTicketOutcome() {}
+func IsCreateTicketTicketExists(value CreateTicketOutcome) (CreateTicketTicketExists, bool) { branch, ok := value.(CreateTicketTicketExists); return branch, ok }
 
 type CreateTicketProjectMissing struct {
 	Outcome string
 	ProjectId string
 }
 func (CreateTicketProjectMissing) isCreateTicketOutcome() {}
+func IsCreateTicketProjectMissing(value CreateTicketOutcome) (CreateTicketProjectMissing, bool) { branch, ok := value.(CreateTicketProjectMissing); return branch, ok }
 
 type CreateTicketAssigneeMissing struct {
 	Outcome string
 	UserId string
 }
 func (CreateTicketAssigneeMissing) isCreateTicketOutcome() {}
+func IsCreateTicketAssigneeMissing(value CreateTicketOutcome) (CreateTicketAssigneeMissing, bool) { branch, ok := value.(CreateTicketAssigneeMissing); return branch, ok }
 
 type CreateTicketReporterMissing struct {
 	Outcome string
 	UserId string
 }
 func (CreateTicketReporterMissing) isCreateTicketOutcome() {}
+func IsCreateTicketReporterMissing(value CreateTicketOutcome) (CreateTicketReporterMissing, bool) { branch, ok := value.(CreateTicketReporterMissing); return branch, ok }
 
 type CreateUserInput struct {
 	Email string
@@ -389,18 +424,21 @@ type CreateUserCreated struct {
 	User AppUser
 }
 func (CreateUserCreated) isCreateUserOutcome() {}
+func IsCreateUserCreated(value CreateUserOutcome) (CreateUserCreated, bool) { branch, ok := value.(CreateUserCreated); return branch, ok }
 
 type CreateUserUserExists struct {
 	Outcome string
 	UserId string
 }
 func (CreateUserUserExists) isCreateUserOutcome() {}
+func IsCreateUserUserExists(value CreateUserOutcome) (CreateUserUserExists, bool) { branch, ok := value.(CreateUserUserExists); return branch, ok }
 
 type CreateUserOrganizationMissing struct {
 	Outcome string
 	OrganizationId string
 }
 func (CreateUserOrganizationMissing) isCreateUserOutcome() {}
+func IsCreateUserOrganizationMissing(value CreateUserOutcome) (CreateUserOrganizationMissing, bool) { branch, ok := value.(CreateUserOrganizationMissing); return branch, ok }
 
 type OpenTicketWithLabelsInput struct {
 	Title string
@@ -421,6 +459,7 @@ type OpenTicketWithLabelsCreated struct {
 	SecondLink TicketLabel
 }
 func (OpenTicketWithLabelsCreated) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsCreated(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsCreated, bool) { branch, ok := value.(OpenTicketWithLabelsCreated); return branch, ok }
 
 type OpenTicketWithLabelsLinkExists struct {
 	Outcome string
@@ -428,36 +467,42 @@ type OpenTicketWithLabelsLinkExists struct {
 	TicketId string
 }
 func (OpenTicketWithLabelsLinkExists) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsLinkExists(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsLinkExists, bool) { branch, ok := value.(OpenTicketWithLabelsLinkExists); return branch, ok }
 
 type OpenTicketWithLabelsLabelMissing struct {
 	Outcome string
 	LabelId string
 }
 func (OpenTicketWithLabelsLabelMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsLabelMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsLabelMissing, bool) { branch, ok := value.(OpenTicketWithLabelsLabelMissing); return branch, ok }
 
 type OpenTicketWithLabelsTicketExists struct {
 	Outcome string
 	TicketId string
 }
 func (OpenTicketWithLabelsTicketExists) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsTicketExists(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsTicketExists, bool) { branch, ok := value.(OpenTicketWithLabelsTicketExists); return branch, ok }
 
 type OpenTicketWithLabelsProjectMissing struct {
 	Outcome string
 	ProjectId string
 }
 func (OpenTicketWithLabelsProjectMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsProjectMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsProjectMissing, bool) { branch, ok := value.(OpenTicketWithLabelsProjectMissing); return branch, ok }
 
 type OpenTicketWithLabelsAssigneeMissing struct {
 	Outcome string
 	UserId string
 }
 func (OpenTicketWithLabelsAssigneeMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsAssigneeMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsAssigneeMissing, bool) { branch, ok := value.(OpenTicketWithLabelsAssigneeMissing); return branch, ok }
 
 type OpenTicketWithLabelsReporterMissing struct {
 	Outcome string
 	UserId string
 }
 func (OpenTicketWithLabelsReporterMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsReporterMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsReporterMissing, bool) { branch, ok := value.(OpenTicketWithLabelsReporterMissing); return branch, ok }
 
 type SwapMemberRolesInput struct {
 	RoleA string
@@ -475,18 +520,21 @@ type SwapMemberRolesSwapped struct {
 	MemberB ProjectMember
 }
 func (SwapMemberRolesSwapped) isSwapMemberRolesOutcome() {}
+func IsSwapMemberRolesSwapped(value SwapMemberRolesOutcome) (SwapMemberRolesSwapped, bool) { branch, ok := value.(SwapMemberRolesSwapped); return branch, ok }
 
 type SwapMemberRolesMemberAMissing struct {
 	Outcome string
 	UserId string
 }
 func (SwapMemberRolesMemberAMissing) isSwapMemberRolesOutcome() {}
+func IsSwapMemberRolesMemberAMissing(value SwapMemberRolesOutcome) (SwapMemberRolesMemberAMissing, bool) { branch, ok := value.(SwapMemberRolesMemberAMissing); return branch, ok }
 
 type SwapMemberRolesMemberBMissing struct {
 	Outcome string
 	UserId string
 }
 func (SwapMemberRolesMemberBMissing) isSwapMemberRolesOutcome() {}
+func IsSwapMemberRolesMemberBMissing(value SwapMemberRolesOutcome) (SwapMemberRolesMemberBMissing, bool) { branch, ok := value.(SwapMemberRolesMemberBMissing); return branch, ok }
 
 type UpdateTicketInput struct {
 	Status TicketStatus
@@ -500,6 +548,7 @@ type UpdateTicketStale struct {
 	Outcome string
 }
 func (UpdateTicketStale) isUpdateTicketOutcome() {}
+func IsUpdateTicketStale(value UpdateTicketOutcome) (UpdateTicketStale, bool) { branch, ok := value.(UpdateTicketStale); return branch, ok }
 
 type UpdateTicketUpdated struct {
 	Outcome string
@@ -507,16 +556,22 @@ type UpdateTicketUpdated struct {
 	Revision uint64
 }
 func (UpdateTicketUpdated) isUpdateTicketOutcome() {}
+func IsUpdateTicketUpdated(value UpdateTicketOutcome) (UpdateTicketUpdated, bool) { branch, ok := value.(UpdateTicketUpdated); return branch, ok }
 
 type UpdateTicketTicketMissing struct {
 	Outcome string
 	TicketId string
 }
 func (UpdateTicketTicketMissing) isUpdateTicketOutcome() {}
+func IsUpdateTicketTicketMissing(value UpdateTicketOutcome) (UpdateTicketTicketMissing, bool) { branch, ok := value.(UpdateTicketTicketMissing); return branch, ok }
 
-type Client struct { session *riffdb.Session; commandAttempts uint32 }
+const DefaultCommandAttempts uint32 = 3
+type Client struct { session *riffdb.Session; commandAttempts uint32; readAfterCommit *uint64; trackCausalWrites bool }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) { if session == nil || commandAttempts < 1 || commandAttempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: commandAttempts}, nil }
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) { attempts := DefaultCommandAttempts; if len(commandAttempts) > 1 { return nil, errors.New("invalid generated RiffDB client configuration") } else if len(commandAttempts) == 1 { attempts = commandAttempts[0] }; if session == nil || attempts < 1 || attempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil }
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client { var copied *uint64; if commitSequence != nil { value := *commitSequence; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites} }
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client { var copied *uint64; if len(initialCommitSequence) > 0 { value := initialCommitSequence[0]; copied = &value } else if client.readAfterCommit != nil { value := *client.readAfterCommit; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true} }
+func (client *Client) LastCommitSequence() *uint64 { if client.readAfterCommit == nil { return nil }; value := *client.readAfterCommit; return &value }
 
 func encodeLabel(value Label) riffdb.Value { return riffdb.Record(map[string]riffdb.Value{
 	"name": riffdb.String(value.Name),
@@ -649,10 +704,11 @@ return result, nil
 case "NotFound": result := GetTicketNotFound{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams, options QueryOptions) (QueryResult[GetTicketResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams, optionsList ...QueryOptions) (QueryResult[GetTicketResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetTicketResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["ticket_id"] = riffdb.UUID(parameters.TicketId)
 response, err := client.session.Invoke(ctx, GetTicketOperation, input, options); if err != nil { return QueryResult[GetTicketResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[GetTicketResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeGetTicketResult(response.Value); if err != nil { return QueryResult[GetTicketResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetTicket", PlanHash: GetTicketQueryPlanHash}; return QueryResult[GetTicketResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) GetTicketAfterCommit(ctx context.Context, parameters GetTicketParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetTicketResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetTicketResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.GetTicket(ctx, parameters, options) }
 
 const TicketQueueQueryPlanHash = "7bcd9d61da148314f91be9f825b32d2b3a1afb89865eebbc69a128ca6874ccd1"
 var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}
@@ -661,14 +717,15 @@ case "Found": result := TicketQueueFound{Outcome: outcome}
 raw, err = requiredField(fields, "tickets"); if err != nil { return nil, err }; result.Tickets, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { OrganizationId string; TicketId string; ProjectId string; Title string; Status TicketStatus; UpdatedAt riffdb.Instant; ReporterId string; AssigneeId string }, error) { return func() (struct { OrganizationId string; TicketId string; ProjectId string; Title string; Status TicketStatus; UpdatedAt riffdb.Instant; ReporterId string; AssigneeId string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { OrganizationId string; TicketId string; ProjectId string; Title string; Status TicketStatus; UpdatedAt riffdb.Instant; ReporterId string; AssigneeId string }{}, err }; var result struct { OrganizationId string; TicketId string; ProjectId string; Title string; Status TicketStatus; UpdatedAt riffdb.Instant; ReporterId string; AssigneeId string }; var raw riffdb.Value; raw, err = requiredField(fields, "organization_id"); if err != nil { return result, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "ticket_id"); if err != nil { return result, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "project_id"); if err != nil { return result, err }; result.ProjectId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "status"); if err != nil { return result, err }; result.Status, err = func() (TicketStatus, error) { raw, err := riffdb.EnumValue(raw); return TicketStatus(raw), err }(); if err != nil { return result, err }; raw, err = requiredField(fields, "updated_at"); if err != nil { return result, err }; result.UpdatedAt, err = riffdb.TimestampValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "reporter_id"); if err != nil { return result, err }; result.ReporterId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "assignee_id"); if err != nil { return result, err }; result.AssigneeId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueueParams, options QueryOptions) (QueryResult[TicketQueueResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueueParams, optionsList ...QueryOptions) (QueryResult[TicketQueueResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[TicketQueueResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["project_id"] = riffdb.UUID(parameters.ProjectId)
 response, err := client.session.Invoke(ctx, TicketQueueOperation, input, options); if err != nil { return QueryResult[TicketQueueResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[TicketQueueResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeTicketQueueResult(response.Value); if err != nil { return QueryResult[TicketQueueResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketQueue", PlanHash: TicketQueueQueryPlanHash}; return QueryResult[TicketQueueResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) TicketQueueAfterCommit(ctx context.Context, parameters TicketQueueParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[TicketQueueResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[TicketQueueResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.TicketQueue(ctx, parameters, options) }
 
 const AddProjectMemberPlanHash = "18d69bcdeaafdd2f6a08c595f32f3970e960ec37d7b69f304f1b11ea64f14d98"
 var AddProjectMemberOperation = riffdb.Operation{Name: "ticketdesk_add_project_member", InputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590"}
-func encodeAddProjectMemberInput(input AddProjectMemberInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeAddProjectMemberInput(input AddProjectMemberInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"role": riffdb.String(input.Role),
 	"user_id": riffdb.UUID(input.UserId),
 	"project_id": riffdb.UUID(input.ProjectId),
@@ -690,12 +747,12 @@ case "ProjectMissing": result := AddProjectMemberProjectMissing{Outcome: outcome
 raw, err = requiredField(fields, "project_id"); if err != nil { return nil, err }; result.ProjectId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) AddProjectMember(ctx context.Context, input AddProjectMemberInput) (CommandResult[AddProjectMemberOutcome], error) { response, err := client.session.Invoke(ctx, AddProjectMemberOperation, encodeAddProjectMemberInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[AddProjectMemberOutcome]{}, err }; outcome, err := decodeAddProjectMemberOutcome(response.Value); if err != nil { return CommandResult[AddProjectMemberOutcome]{}, err }; return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) AddProjectMember(ctx context.Context, input AddProjectMemberInput) (CommandResult[AddProjectMemberOutcome], error) { response, err := client.session.Invoke(ctx, AddProjectMemberOperation, encodeAddProjectMemberInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[AddProjectMemberOutcome]{}, err }; outcome, err := decodeAddProjectMemberOutcome(response.Value); if err != nil { return CommandResult[AddProjectMemberOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddProjectMemberInput, concurrency, checkpoint uint32) (BatchResult[AddProjectMemberOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeAddProjectMemberInput(input) }; response, err := client.session.Batch(ctx, AddProjectMemberOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[AddProjectMemberOutcome]{}, err }; result := BatchResult[AddProjectMemberOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[AddProjectMemberOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[AddProjectMemberOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeAddProjectMemberOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[AddProjectMemberOutcome]{}, decodeErr }; converted.Result = &CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const AttachLabelPlanHash = "8942af6586549f9b124f87ffa1b7ce6a6f9e37b206f6ef12231f6ca61214c7db"
 var AttachLabelOperation = riffdb.Operation{Name: "ticketdesk_attach_label", InputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de"}
-func encodeAttachLabelInput(input AttachLabelInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeAttachLabelInput(input AttachLabelInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"label_id": riffdb.UUID(input.LabelId),
 	"ticket_id": riffdb.UUID(input.TicketId),
 	"idempotency_key": riffdb.String(input.IdempotencyKey),
@@ -716,12 +773,12 @@ case "TicketMissing": result := AttachLabelTicketMissing{Outcome: outcome}
 raw, err = requiredField(fields, "ticket_id"); if err != nil { return nil, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) AttachLabel(ctx context.Context, input AttachLabelInput) (CommandResult[AttachLabelOutcome], error) { response, err := client.session.Invoke(ctx, AttachLabelOperation, encodeAttachLabelInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[AttachLabelOutcome]{}, err }; outcome, err := decodeAttachLabelOutcome(response.Value); if err != nil { return CommandResult[AttachLabelOutcome]{}, err }; return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) AttachLabel(ctx context.Context, input AttachLabelInput) (CommandResult[AttachLabelOutcome], error) { response, err := client.session.Invoke(ctx, AttachLabelOperation, encodeAttachLabelInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[AttachLabelOutcome]{}, err }; outcome, err := decodeAttachLabelOutcome(response.Value); if err != nil { return CommandResult[AttachLabelOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabelInput, concurrency, checkpoint uint32) (BatchResult[AttachLabelOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeAttachLabelInput(input) }; response, err := client.session.Batch(ctx, AttachLabelOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[AttachLabelOutcome]{}, err }; result := BatchResult[AttachLabelOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[AttachLabelOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[AttachLabelOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeAttachLabelOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[AttachLabelOutcome]{}, decodeErr }; converted.Result = &CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CloseTicketWithCommentPlanHash = "f2245a2c32839f4944bde61e4062baa46e51554c1e210d79b8b95799451ccdf0"
 var CloseTicketWithCommentOperation = riffdb.Operation{Name: "ticketdesk_close_ticket_with_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
-func encodeCloseTicketWithCommentInput(input CloseTicketWithCommentInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCloseTicketWithCommentInput(input CloseTicketWithCommentInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"body": riffdb.String(input.Body),
 	"author_id": riffdb.UUID(input.AuthorId),
 	"ticket_id": riffdb.UUID(input.TicketId),
@@ -747,12 +804,12 @@ case "TicketMissing": result := CloseTicketWithCommentTicketMissing{Outcome: out
 raw, err = requiredField(fields, "ticket_id"); if err != nil { return nil, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CloseTicketWithComment(ctx context.Context, input CloseTicketWithCommentInput) (CommandResult[CloseTicketWithCommentOutcome], error) { response, err := client.session.Invoke(ctx, CloseTicketWithCommentOperation, encodeCloseTicketWithCommentInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CloseTicketWithCommentOutcome]{}, err }; outcome, err := decodeCloseTicketWithCommentOutcome(response.Value); if err != nil { return CommandResult[CloseTicketWithCommentOutcome]{}, err }; return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CloseTicketWithComment(ctx context.Context, input CloseTicketWithCommentInput) (CommandResult[CloseTicketWithCommentOutcome], error) { response, err := client.session.Invoke(ctx, CloseTicketWithCommentOperation, encodeCloseTicketWithCommentInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CloseTicketWithCommentOutcome]{}, err }; outcome, err := decodeCloseTicketWithCommentOutcome(response.Value); if err != nil { return CommandResult[CloseTicketWithCommentOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []CloseTicketWithCommentInput, concurrency, checkpoint uint32) (BatchResult[CloseTicketWithCommentOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCloseTicketWithCommentInput(input) }; response, err := client.session.Batch(ctx, CloseTicketWithCommentOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CloseTicketWithCommentOutcome]{}, err }; result := BatchResult[CloseTicketWithCommentOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CloseTicketWithCommentOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CloseTicketWithCommentOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCloseTicketWithCommentOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CloseTicketWithCommentOutcome]{}, decodeErr }; converted.Result = &CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateCommentPlanHash = "d29bfdfb8944aefbb69d368f814a320481804a166aac367ca260429be95198c5"
 var CreateCommentOperation = riffdb.Operation{Name: "ticketdesk_create_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
-func encodeCreateCommentInput(input CreateCommentInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateCommentInput(input CreateCommentInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"body": riffdb.String(input.Body),
 	"author_id": riffdb.UUID(input.AuthorId),
 	"ticket_id": riffdb.UUID(input.TicketId),
@@ -774,12 +831,12 @@ case "TicketMissing": result := CreateCommentTicketMissing{Outcome: outcome}
 raw, err = requiredField(fields, "ticket_id"); if err != nil { return nil, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateComment(ctx context.Context, input CreateCommentInput) (CommandResult[CreateCommentOutcome], error) { response, err := client.session.Invoke(ctx, CreateCommentOperation, encodeCreateCommentInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateCommentOutcome]{}, err }; outcome, err := decodeCreateCommentOutcome(response.Value); if err != nil { return CommandResult[CreateCommentOutcome]{}, err }; return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateComment(ctx context.Context, input CreateCommentInput) (CommandResult[CreateCommentOutcome], error) { response, err := client.session.Invoke(ctx, CreateCommentOperation, encodeCreateCommentInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateCommentOutcome]{}, err }; outcome, err := decodeCreateCommentOutcome(response.Value); if err != nil { return CommandResult[CreateCommentOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCommentInput, concurrency, checkpoint uint32) (BatchResult[CreateCommentOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateCommentInput(input) }; response, err := client.session.Batch(ctx, CreateCommentOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateCommentOutcome]{}, err }; result := BatchResult[CreateCommentOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateCommentOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateCommentOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateCommentOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateCommentOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateLabelPlanHash = "9dd134ede0e16105306f168dce83be75fa5dad45704b581a641dbe235d061012"
 var CreateLabelOperation = riffdb.Operation{Name: "ticketdesk_create_label", InputSchemaHash: "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6"}
-func encodeCreateLabelInput(input CreateLabelInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateLabelInput(input CreateLabelInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"name": riffdb.String(input.Name),
 	"label_id": riffdb.UUID(input.LabelId),
 	"idempotency_key": riffdb.String(input.IdempotencyKey),
@@ -796,12 +853,12 @@ case "OrganizationMissing": result := CreateLabelOrganizationMissing{Outcome: ou
 raw, err = requiredField(fields, "organization_id"); if err != nil { return nil, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateLabel(ctx context.Context, input CreateLabelInput) (CommandResult[CreateLabelOutcome], error) { response, err := client.session.Invoke(ctx, CreateLabelOperation, encodeCreateLabelInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateLabelOutcome]{}, err }; outcome, err := decodeCreateLabelOutcome(response.Value); if err != nil { return CommandResult[CreateLabelOutcome]{}, err }; return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateLabel(ctx context.Context, input CreateLabelInput) (CommandResult[CreateLabelOutcome], error) { response, err := client.session.Invoke(ctx, CreateLabelOperation, encodeCreateLabelInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateLabelOutcome]{}, err }; outcome, err := decodeCreateLabelOutcome(response.Value); if err != nil { return CommandResult[CreateLabelOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabelInput, concurrency, checkpoint uint32) (BatchResult[CreateLabelOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateLabelInput(input) }; response, err := client.session.Batch(ctx, CreateLabelOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateLabelOutcome]{}, err }; result := BatchResult[CreateLabelOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateLabelOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateLabelOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateLabelOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateLabelOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateOrganizationPlanHash = "603a8bc900bc7e9a800decba6e11673a0a5beca3e9e3a9521b2a5f699aaa2417"
 var CreateOrganizationOperation = riffdb.Operation{Name: "ticketdesk_create_organization", InputSchemaHash: "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce"}
-func encodeCreateOrganizationInput(input CreateOrganizationInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateOrganizationInput(input CreateOrganizationInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"name": riffdb.String(input.Name),
 	"idempotency_key": riffdb.String(input.IdempotencyKey),
 	"organization_id": riffdb.UUID(input.OrganizationId),
@@ -814,12 +871,12 @@ case "OrganizationExists": result := CreateOrganizationOrganizationExists{Outcom
 raw, err = requiredField(fields, "organization_id"); if err != nil { return nil, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateOrganization(ctx context.Context, input CreateOrganizationInput) (CommandResult[CreateOrganizationOutcome], error) { response, err := client.session.Invoke(ctx, CreateOrganizationOperation, encodeCreateOrganizationInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateOrganizationOutcome]{}, err }; outcome, err := decodeCreateOrganizationOutcome(response.Value); if err != nil { return CommandResult[CreateOrganizationOutcome]{}, err }; return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateOrganization(ctx context.Context, input CreateOrganizationInput) (CommandResult[CreateOrganizationOutcome], error) { response, err := client.session.Invoke(ctx, CreateOrganizationOperation, encodeCreateOrganizationInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateOrganizationOutcome]{}, err }; outcome, err := decodeCreateOrganizationOutcome(response.Value); if err != nil { return CommandResult[CreateOrganizationOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []CreateOrganizationInput, concurrency, checkpoint uint32) (BatchResult[CreateOrganizationOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateOrganizationInput(input) }; response, err := client.session.Batch(ctx, CreateOrganizationOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateOrganizationOutcome]{}, err }; result := BatchResult[CreateOrganizationOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateOrganizationOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateOrganizationOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateOrganizationOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateOrganizationOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateProjectPlanHash = "7a14918f80fa9e80d1367ed91c6a536aa4bb4d4b7e416206ab5061cfb191f022"
 var CreateProjectOperation = riffdb.Operation{Name: "ticketdesk_create_project", InputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031"}
-func encodeCreateProjectInput(input CreateProjectInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateProjectInput(input CreateProjectInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"name": riffdb.String(input.Name),
 	"project_id": riffdb.UUID(input.ProjectId),
 	"idempotency_key": riffdb.String(input.IdempotencyKey),
@@ -836,12 +893,12 @@ case "OrganizationMissing": result := CreateProjectOrganizationMissing{Outcome: 
 raw, err = requiredField(fields, "organization_id"); if err != nil { return nil, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateProject(ctx context.Context, input CreateProjectInput) (CommandResult[CreateProjectOutcome], error) { response, err := client.session.Invoke(ctx, CreateProjectOperation, encodeCreateProjectInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateProjectOutcome]{}, err }; outcome, err := decodeCreateProjectOutcome(response.Value); if err != nil { return CommandResult[CreateProjectOutcome]{}, err }; return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateProject(ctx context.Context, input CreateProjectInput) (CommandResult[CreateProjectOutcome], error) { response, err := client.session.Invoke(ctx, CreateProjectOperation, encodeCreateProjectInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateProjectOutcome]{}, err }; outcome, err := decodeCreateProjectOutcome(response.Value); if err != nil { return CommandResult[CreateProjectOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreateProjectInput, concurrency, checkpoint uint32) (BatchResult[CreateProjectOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateProjectInput(input) }; response, err := client.session.Batch(ctx, CreateProjectOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateProjectOutcome]{}, err }; result := BatchResult[CreateProjectOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateProjectOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateProjectOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateProjectOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateProjectOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateTicketPlanHash = "d50adaae4a17bbf5ad82e42a63577f452e92c6cd3316b887dcc342c8dd56dd31"
 var CreateTicketOperation = riffdb.Operation{Name: "ticketdesk_create_ticket", InputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b"}
-func encodeCreateTicketInput(input CreateTicketInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateTicketInput(input CreateTicketInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"title": riffdb.String(input.Title),
 	"status": riffdb.Enum(string(input.Status)),
 	"ticket_id": riffdb.UUID(input.TicketId),
@@ -868,12 +925,12 @@ case "ReporterMissing": result := CreateTicketReporterMissing{Outcome: outcome}
 raw, err = requiredField(fields, "user_id"); if err != nil { return nil, err }; result.UserId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateTicket(ctx context.Context, input CreateTicketInput) (CommandResult[CreateTicketOutcome], error) { response, err := client.session.Invoke(ctx, CreateTicketOperation, encodeCreateTicketInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateTicketOutcome]{}, err }; outcome, err := decodeCreateTicketOutcome(response.Value); if err != nil { return CommandResult[CreateTicketOutcome]{}, err }; return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateTicket(ctx context.Context, input CreateTicketInput) (CommandResult[CreateTicketOutcome], error) { response, err := client.session.Invoke(ctx, CreateTicketOperation, encodeCreateTicketInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateTicketOutcome]{}, err }; outcome, err := decodeCreateTicketOutcome(response.Value); if err != nil { return CommandResult[CreateTicketOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTicketInput, concurrency, checkpoint uint32) (BatchResult[CreateTicketOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateTicketInput(input) }; response, err := client.session.Batch(ctx, CreateTicketOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateTicketOutcome]{}, err }; result := BatchResult[CreateTicketOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateTicketOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateTicketOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateTicketOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateTicketOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateUserPlanHash = "90117e7235098470c692eea141460d7e99d04cd4647f1b307e26f134dbc4964d"
 var CreateUserOperation = riffdb.Operation{Name: "ticketdesk_create_user", InputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4"}
-func encodeCreateUserInput(input CreateUserInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCreateUserInput(input CreateUserInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"email": riffdb.String(input.Email),
 	"user_id": riffdb.UUID(input.UserId),
 	"display_name": riffdb.String(input.DisplayName),
@@ -891,12 +948,12 @@ case "OrganizationMissing": result := CreateUserOrganizationMissing{Outcome: out
 raw, err = requiredField(fields, "organization_id"); if err != nil { return nil, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateUser(ctx context.Context, input CreateUserInput) (CommandResult[CreateUserOutcome], error) { response, err := client.session.Invoke(ctx, CreateUserOperation, encodeCreateUserInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateUserOutcome]{}, err }; outcome, err := decodeCreateUserOutcome(response.Value); if err != nil { return CommandResult[CreateUserOutcome]{}, err }; return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateUser(ctx context.Context, input CreateUserInput) (CommandResult[CreateUserOutcome], error) { response, err := client.session.Invoke(ctx, CreateUserOperation, encodeCreateUserInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateUserOutcome]{}, err }; outcome, err := decodeCreateUserOutcome(response.Value); if err != nil { return CommandResult[CreateUserOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserInput, concurrency, checkpoint uint32) (BatchResult[CreateUserOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateUserInput(input) }; response, err := client.session.Batch(ctx, CreateUserOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateUserOutcome]{}, err }; result := BatchResult[CreateUserOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateUserOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateUserOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateUserOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateUserOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const OpenTicketWithLabelsPlanHash = "908eca05ede786e272ecbfe0124bb5a9fb470e9dbf889fc6b8b5831c453eb815"
 var OpenTicketWithLabelsOperation = riffdb.Operation{Name: "ticketdesk_open_ticket_with_labels", InputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f"}
-func encodeOpenTicketWithLabelsInput(input OpenTicketWithLabelsInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeOpenTicketWithLabelsInput(input OpenTicketWithLabelsInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"title": riffdb.String(input.Title),
 	"label_a": riffdb.UUID(input.LabelA),
 	"label_b": riffdb.UUID(input.LabelB),
@@ -933,12 +990,12 @@ case "ReporterMissing": result := OpenTicketWithLabelsReporterMissing{Outcome: o
 raw, err = requiredField(fields, "user_id"); if err != nil { return nil, err }; result.UserId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) OpenTicketWithLabels(ctx context.Context, input OpenTicketWithLabelsInput) (CommandResult[OpenTicketWithLabelsOutcome], error) { response, err := client.session.Invoke(ctx, OpenTicketWithLabelsOperation, encodeOpenTicketWithLabelsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[OpenTicketWithLabelsOutcome]{}, err }; outcome, err := decodeOpenTicketWithLabelsOutcome(response.Value); if err != nil { return CommandResult[OpenTicketWithLabelsOutcome]{}, err }; return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) OpenTicketWithLabels(ctx context.Context, input OpenTicketWithLabelsInput) (CommandResult[OpenTicketWithLabelsOutcome], error) { response, err := client.session.Invoke(ctx, OpenTicketWithLabelsOperation, encodeOpenTicketWithLabelsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[OpenTicketWithLabelsOutcome]{}, err }; outcome, err := decodeOpenTicketWithLabelsOutcome(response.Value); if err != nil { return CommandResult[OpenTicketWithLabelsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []OpenTicketWithLabelsInput, concurrency, checkpoint uint32) (BatchResult[OpenTicketWithLabelsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeOpenTicketWithLabelsInput(input) }; response, err := client.session.Batch(ctx, OpenTicketWithLabelsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[OpenTicketWithLabelsOutcome]{}, err }; result := BatchResult[OpenTicketWithLabelsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[OpenTicketWithLabelsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[OpenTicketWithLabelsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeOpenTicketWithLabelsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[OpenTicketWithLabelsOutcome]{}, decodeErr }; converted.Result = &CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SwapMemberRolesPlanHash = "e2ce3cb8aaab3aeff9dd8d6165eff549440328dc5294db2a1b584e924463657b"
 var SwapMemberRolesOperation = riffdb.Operation{Name: "ticketdesk_swap_member_roles", InputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445"}
-func encodeSwapMemberRolesInput(input SwapMemberRolesInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeSwapMemberRolesInput(input SwapMemberRolesInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"role_a": riffdb.String(input.RoleA),
 	"role_b": riffdb.String(input.RoleB),
 	"user_a": riffdb.UUID(input.UserA),
@@ -959,12 +1016,12 @@ case "MemberBMissing": result := SwapMemberRolesMemberBMissing{Outcome: outcome}
 raw, err = requiredField(fields, "user_id"); if err != nil { return nil, err }; result.UserId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SwapMemberRoles(ctx context.Context, input SwapMemberRolesInput) (CommandResult[SwapMemberRolesOutcome], error) { response, err := client.session.Invoke(ctx, SwapMemberRolesOperation, encodeSwapMemberRolesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SwapMemberRolesOutcome]{}, err }; outcome, err := decodeSwapMemberRolesOutcome(response.Value); if err != nil { return CommandResult[SwapMemberRolesOutcome]{}, err }; return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SwapMemberRoles(ctx context.Context, input SwapMemberRolesInput) (CommandResult[SwapMemberRolesOutcome], error) { response, err := client.session.Invoke(ctx, SwapMemberRolesOperation, encodeSwapMemberRolesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SwapMemberRolesOutcome]{}, err }; outcome, err := decodeSwapMemberRolesOutcome(response.Value); if err != nil { return CommandResult[SwapMemberRolesOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SwapMemberRolesBatch(ctx context.Context, inputs []SwapMemberRolesInput, concurrency, checkpoint uint32) (BatchResult[SwapMemberRolesOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeSwapMemberRolesInput(input) }; response, err := client.session.Batch(ctx, SwapMemberRolesOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SwapMemberRolesOutcome]{}, err }; result := BatchResult[SwapMemberRolesOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SwapMemberRolesOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SwapMemberRolesOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSwapMemberRolesOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SwapMemberRolesOutcome]{}, decodeErr }; converted.Result = &CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const UpdateTicketPlanHash = "554230da7a847550d4a3b91d8ba2d47d0ad514da117b31a89b407c7823c045f0"
 var UpdateTicketOperation = riffdb.Operation{Name: "ticketdesk_update_ticket", InputSchemaHash: "7971eb20e5c61d7da0e341604642056ae5b3d2020c4e8a639a8ed5581a9aa84a"}
-func encodeUpdateTicketInput(input UpdateTicketInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeUpdateTicketInput(input UpdateTicketInput) map[string]riffdb.Value { input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey); return map[string]riffdb.Value{
 	"status": riffdb.Enum(string(input.Status)),
 	"ticket_id": riffdb.UUID(input.TicketId),
 	"idempotency_key": riffdb.String(input.IdempotencyKey),
@@ -982,7 +1039,7 @@ case "TicketMissing": result := UpdateTicketTicketMissing{Outcome: outcome}
 raw, err = requiredField(fields, "ticket_id"); if err != nil { return nil, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) UpdateTicket(ctx context.Context, input UpdateTicketInput) (CommandResult[UpdateTicketOutcome], error) { response, err := client.session.Invoke(ctx, UpdateTicketOperation, encodeUpdateTicketInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[UpdateTicketOutcome]{}, err }; outcome, err := decodeUpdateTicketOutcome(response.Value); if err != nil { return CommandResult[UpdateTicketOutcome]{}, err }; return CommandResult[UpdateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: UpdateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) UpdateTicket(ctx context.Context, input UpdateTicketInput) (CommandResult[UpdateTicketOutcome], error) { response, err := client.session.Invoke(ctx, UpdateTicketOperation, encodeUpdateTicketInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[UpdateTicketOutcome]{}, err }; outcome, err := decodeUpdateTicketOutcome(response.Value); if err != nil { return CommandResult[UpdateTicketOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[UpdateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: UpdateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) UpdateTicketBatch(ctx context.Context, inputs []UpdateTicketInput, concurrency, checkpoint uint32) (BatchResult[UpdateTicketOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeUpdateTicketInput(input) }; response, err := client.session.Batch(ctx, UpdateTicketOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[UpdateTicketOutcome]{}, err }; result := BatchResult[UpdateTicketOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[UpdateTicketOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[UpdateTicketOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeUpdateTicketOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[UpdateTicketOutcome]{}, decodeErr }; converted.Result = &CommandResult[UpdateTicketOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: UpdateTicketPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 

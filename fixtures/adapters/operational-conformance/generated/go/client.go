@@ -157,7 +157,9 @@ type ExactDocumentsContainsAscFound struct {
 	Total struct { Value uint64 }
 }
 func (ExactDocumentsContainsAscFound) isExactDocumentsContainsAscResult() {}
+func IsExactDocumentsContainsAscFound(value ExactDocumentsContainsAscResult) (ExactDocumentsContainsAscFound, bool) { branch, ok := value.(ExactDocumentsContainsAscFound); return branch, ok }
 
+func UnwrapExactDocumentsContainsAscFound(value ExactDocumentsContainsAscResult) (ExactDocumentsContainsAscFound, error) { if branch, ok := value.(ExactDocumentsContainsAscFound); ok { return branch, nil }; return ExactDocumentsContainsAscFound{}, errors.New("expected ExactDocumentsContainsAsc outcome found") }
 type ExactDocumentsEndsWithDescParams struct {
 	SiteId string
 	Needle string
@@ -173,7 +175,9 @@ type ExactDocumentsEndsWithDescFound struct {
 	Total struct { Value uint64 }
 }
 func (ExactDocumentsEndsWithDescFound) isExactDocumentsEndsWithDescResult() {}
+func IsExactDocumentsEndsWithDescFound(value ExactDocumentsEndsWithDescResult) (ExactDocumentsEndsWithDescFound, bool) { branch, ok := value.(ExactDocumentsEndsWithDescFound); return branch, ok }
 
+func UnwrapExactDocumentsEndsWithDescFound(value ExactDocumentsEndsWithDescResult) (ExactDocumentsEndsWithDescFound, error) { if branch, ok := value.(ExactDocumentsEndsWithDescFound); ok { return branch, nil }; return ExactDocumentsEndsWithDescFound{}, errors.New("expected ExactDocumentsEndsWithDesc outcome found") }
 type ExactDocumentsStartsWithAscParams struct {
 	SiteId string
 	Needle string
@@ -189,7 +193,9 @@ type ExactDocumentsStartsWithAscFound struct {
 	Total struct { Value uint64 }
 }
 func (ExactDocumentsStartsWithAscFound) isExactDocumentsStartsWithAscResult() {}
+func IsExactDocumentsStartsWithAscFound(value ExactDocumentsStartsWithAscResult) (ExactDocumentsStartsWithAscFound, bool) { branch, ok := value.(ExactDocumentsStartsWithAscFound); return branch, ok }
 
+func UnwrapExactDocumentsStartsWithAscFound(value ExactDocumentsStartsWithAscResult) (ExactDocumentsStartsWithAscFound, error) { if branch, ok := value.(ExactDocumentsStartsWithAscFound); ok { return branch, nil }; return ExactDocumentsStartsWithAscFound{}, errors.New("expected ExactDocumentsStartsWithAsc outcome found") }
 type FgaObjectsWithRelationsParams struct {
 	StoreId string
 	Kind string
@@ -201,7 +207,9 @@ type FgaObjectsWithRelationsFound struct {
 	Objects []struct { ObjectId string; Relations []struct { RelationId string; Relation string; Subject string } }
 }
 func (FgaObjectsWithRelationsFound) isFgaObjectsWithRelationsResult() {}
+func IsFgaObjectsWithRelationsFound(value FgaObjectsWithRelationsResult) (FgaObjectsWithRelationsFound, bool) { branch, ok := value.(FgaObjectsWithRelationsFound); return branch, ok }
 
+func UnwrapFgaObjectsWithRelationsFound(value FgaObjectsWithRelationsResult) (FgaObjectsWithRelationsFound, error) { if branch, ok := value.(FgaObjectsWithRelationsFound); ok { return branch, nil }; return FgaObjectsWithRelationsFound{}, errors.New("expected FgaObjectsWithRelations outcome found") }
 type GetAuthSessionParams struct {
 	OrganizationId string
 	UserId string
@@ -214,12 +222,15 @@ type GetAuthSessionFound struct {
 	Session struct { OrganizationId string; UserId string; SessionId string; State AuthSessionState; ExpiresAt riffdb.Instant }
 }
 func (GetAuthSessionFound) isGetAuthSessionResult() {}
+func IsGetAuthSessionFound(value GetAuthSessionResult) (GetAuthSessionFound, bool) { branch, ok := value.(GetAuthSessionFound); return branch, ok }
 
 type GetAuthSessionMissing struct {
 	Outcome string
 }
 func (GetAuthSessionMissing) isGetAuthSessionResult() {}
+func IsGetAuthSessionMissing(value GetAuthSessionResult) (GetAuthSessionMissing, bool) { branch, ok := value.(GetAuthSessionMissing); return branch, ok }
 
+func UnwrapGetAuthSessionFound(value GetAuthSessionResult) (GetAuthSessionFound, error) { if branch, ok := value.(GetAuthSessionFound); ok { return branch, nil }; return GetAuthSessionFound{}, errors.New("expected GetAuthSession outcome found") }
 type InventoryByObservedAscNullsLastParams struct {
 	OrganizationId string
 	Limit *uint32
@@ -233,7 +244,9 @@ type InventoryByObservedAscNullsLastFound struct {
 	Total struct { Value uint64 }
 }
 func (InventoryByObservedAscNullsLastFound) isInventoryByObservedAscNullsLastResult() {}
+func IsInventoryByObservedAscNullsLastFound(value InventoryByObservedAscNullsLastResult) (InventoryByObservedAscNullsLastFound, bool) { branch, ok := value.(InventoryByObservedAscNullsLastFound); return branch, ok }
 
+func UnwrapInventoryByObservedAscNullsLastFound(value InventoryByObservedAscNullsLastResult) (InventoryByObservedAscNullsLastFound, error) { if branch, ok := value.(InventoryByObservedAscNullsLastFound); ok { return branch, nil }; return InventoryByObservedAscNullsLastFound{}, errors.New("expected InventoryByObservedAscNullsLast outcome found") }
 type InventoryByObservedDescNullsFirstParams struct {
 	OrganizationId string
 	Limit *uint32
@@ -247,7 +260,9 @@ type InventoryByObservedDescNullsFirstFound struct {
 	Total struct { Value uint64 }
 }
 func (InventoryByObservedDescNullsFirstFound) isInventoryByObservedDescNullsFirstResult() {}
+func IsInventoryByObservedDescNullsFirstFound(value InventoryByObservedDescNullsFirstResult) (InventoryByObservedDescNullsFirstFound, bool) { branch, ok := value.(InventoryByObservedDescNullsFirstFound); return branch, ok }
 
+func UnwrapInventoryByObservedDescNullsFirstFound(value InventoryByObservedDescNullsFirstResult) (InventoryByObservedDescNullsFirstFound, error) { if branch, ok := value.(InventoryByObservedDescNullsFirstFound); ok { return branch, nil }; return InventoryByObservedDescNullsFirstFound{}, errors.New("expected InventoryByObservedDescNullsFirst outcome found") }
 type InventoryBySubtitleAscNullsFirstParams struct {
 	OrganizationId string
 	Limit *uint32
@@ -261,7 +276,9 @@ type InventoryBySubtitleAscNullsFirstFound struct {
 	Total struct { Value uint64 }
 }
 func (InventoryBySubtitleAscNullsFirstFound) isInventoryBySubtitleAscNullsFirstResult() {}
+func IsInventoryBySubtitleAscNullsFirstFound(value InventoryBySubtitleAscNullsFirstResult) (InventoryBySubtitleAscNullsFirstFound, bool) { branch, ok := value.(InventoryBySubtitleAscNullsFirstFound); return branch, ok }
 
+func UnwrapInventoryBySubtitleAscNullsFirstFound(value InventoryBySubtitleAscNullsFirstResult) (InventoryBySubtitleAscNullsFirstFound, error) { if branch, ok := value.(InventoryBySubtitleAscNullsFirstFound); ok { return branch, nil }; return InventoryBySubtitleAscNullsFirstFound{}, errors.New("expected InventoryBySubtitleAscNullsFirst outcome found") }
 type InventoryBySubtitleDescNullsLastParams struct {
 	OrganizationId string
 	Limit *uint32
@@ -275,7 +292,9 @@ type InventoryBySubtitleDescNullsLastFound struct {
 	Total struct { Value uint64 }
 }
 func (InventoryBySubtitleDescNullsLastFound) isInventoryBySubtitleDescNullsLastResult() {}
+func IsInventoryBySubtitleDescNullsLastFound(value InventoryBySubtitleDescNullsLastResult) (InventoryBySubtitleDescNullsLastFound, bool) { branch, ok := value.(InventoryBySubtitleDescNullsLastFound); return branch, ok }
 
+func UnwrapInventoryBySubtitleDescNullsLastFound(value InventoryBySubtitleDescNullsLastResult) (InventoryBySubtitleDescNullsLastFound, error) { if branch, ok := value.(InventoryBySubtitleDescNullsLastFound); ok { return branch, nil }; return InventoryBySubtitleDescNullsLastFound{}, errors.New("expected InventoryBySubtitleDescNullsLast outcome found") }
 type ListDraftDocumentsParams struct {
 	SiteId string
 }
@@ -286,7 +305,9 @@ type ListDraftDocumentsFound struct {
 	Documents []struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }
 }
 func (ListDraftDocumentsFound) isListDraftDocumentsResult() {}
+func IsListDraftDocumentsFound(value ListDraftDocumentsResult) (ListDraftDocumentsFound, bool) { branch, ok := value.(ListDraftDocumentsFound); return branch, ok }
 
+func UnwrapListDraftDocumentsFound(value ListDraftDocumentsResult) (ListDraftDocumentsFound, error) { if branch, ok := value.(ListDraftDocumentsFound); ok { return branch, nil }; return ListDraftDocumentsFound{}, errors.New("expected ListDraftDocuments outcome found") }
 type ListFgaTuplesParams struct {
 	StoreId string
 	Relation *string
@@ -299,7 +320,9 @@ type ListFgaTuplesFound struct {
 	Tuples []struct { TupleId string; Object string; Relation string; Subject string }
 }
 func (ListFgaTuplesFound) isListFgaTuplesResult() {}
+func IsListFgaTuplesFound(value ListFgaTuplesResult) (ListFgaTuplesFound, bool) { branch, ok := value.(ListFgaTuplesFound); return branch, ok }
 
+func UnwrapListFgaTuplesFound(value ListFgaTuplesResult) (ListFgaTuplesFound, error) { if branch, ok := value.(ListFgaTuplesFound); ok { return branch, nil }; return ListFgaTuplesFound{}, errors.New("expected ListFgaTuples outcome found") }
 type ListPipelinesParams struct {
 	OrganizationId string
 	State *string
@@ -312,7 +335,9 @@ type ListPipelinesFound struct {
 	Pipelines []struct { PipelineId string; Name string; State string }
 }
 func (ListPipelinesFound) isListPipelinesResult() {}
+func IsListPipelinesFound(value ListPipelinesResult) (ListPipelinesFound, bool) { branch, ok := value.(ListPipelinesFound); return branch, ok }
 
+func UnwrapListPipelinesFound(value ListPipelinesResult) (ListPipelinesFound, error) { if branch, ok := value.(ListPipelinesFound); ok { return branch, nil }; return ListPipelinesFound{}, errors.New("expected ListPipelines outcome found") }
 type MetricDashboardParams struct {
 	ExperimentId string
 }
@@ -323,7 +348,9 @@ type MetricDashboardFound struct {
 	Summary []struct { Name string; SampleCount uint64; TotalMicros riffdb.ExactDecimal; MinimumMicros *int64; MaximumMicros *int64 }
 }
 func (MetricDashboardFound) isMetricDashboardResult() {}
+func IsMetricDashboardFound(value MetricDashboardResult) (MetricDashboardFound, bool) { branch, ok := value.(MetricDashboardFound); return branch, ok }
 
+func UnwrapMetricDashboardFound(value MetricDashboardResult) (MetricDashboardFound, error) { if branch, ok := value.(MetricDashboardFound); ok { return branch, nil }; return MetricDashboardFound{}, errors.New("expected MetricDashboard outcome found") }
 type MlflowRunsWithTagsParams struct {
 	ExperimentId string
 	Lifecycle string
@@ -335,7 +362,9 @@ type MlflowRunsWithTagsFound struct {
 	Runs []struct { RunId string; Tags []struct { TagId string; Name string; Value string } }
 }
 func (MlflowRunsWithTagsFound) isMlflowRunsWithTagsResult() {}
+func IsMlflowRunsWithTagsFound(value MlflowRunsWithTagsResult) (MlflowRunsWithTagsFound, bool) { branch, ok := value.(MlflowRunsWithTagsFound); return branch, ok }
 
+func UnwrapMlflowRunsWithTagsFound(value MlflowRunsWithTagsResult) (MlflowRunsWithTagsFound, error) { if branch, ok := value.(MlflowRunsWithTagsFound); ok { return branch, nil }; return MlflowRunsWithTagsFound{}, errors.New("expected MlflowRunsWithTags outcome found") }
 type ReviewedDirectoryUsersParams struct {
 	OrganizationId string
 	States []string
@@ -351,7 +380,9 @@ type ReviewedDirectoryUsersFound struct {
 	Total struct { Value uint64 }
 }
 func (ReviewedDirectoryUsersFound) isReviewedDirectoryUsersResult() {}
+func IsReviewedDirectoryUsersFound(value ReviewedDirectoryUsersResult) (ReviewedDirectoryUsersFound, bool) { branch, ok := value.(ReviewedDirectoryUsersFound); return branch, ok }
 
+func UnwrapReviewedDirectoryUsersFound(value ReviewedDirectoryUsersResult) (ReviewedDirectoryUsersFound, error) { if branch, ok := value.(ReviewedDirectoryUsersFound); ok { return branch, nil }; return ReviewedDirectoryUsersFound{}, errors.New("expected ReviewedDirectoryUsers outcome found") }
 type SearchDirectoryUsersParams struct {
 	OrganizationId string
 	Needle string
@@ -368,7 +399,9 @@ type SearchDirectoryUsersFound struct {
 	Total struct { Value uint64 }
 }
 func (SearchDirectoryUsersFound) isSearchDirectoryUsersResult() {}
+func IsSearchDirectoryUsersFound(value SearchDirectoryUsersResult) (SearchDirectoryUsersFound, bool) { branch, ok := value.(SearchDirectoryUsersFound); return branch, ok }
 
+func UnwrapSearchDirectoryUsersFound(value SearchDirectoryUsersResult) (SearchDirectoryUsersFound, error) { if branch, ok := value.(SearchDirectoryUsersFound); ok { return branch, nil }; return SearchDirectoryUsersFound{}, errors.New("expected SearchDirectoryUsers outcome found") }
 type SearchDocumentsParams struct {
 	SiteId string
 	TitlePrefix string
@@ -381,7 +414,9 @@ type SearchDocumentsFound struct {
 	Documents []struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }
 }
 func (SearchDocumentsFound) isSearchDocumentsResult() {}
+func IsSearchDocumentsFound(value SearchDocumentsResult) (SearchDocumentsFound, bool) { branch, ok := value.(SearchDocumentsFound); return branch, ok }
 
+func UnwrapSearchDocumentsFound(value SearchDocumentsResult) (SearchDocumentsFound, error) { if branch, ok := value.(SearchDocumentsFound); ok { return branch, nil }; return SearchDocumentsFound{}, errors.New("expected SearchDocuments outcome found") }
 type TicketPageWithCommentsParams struct {
 	OrganizationId string
 	State string
@@ -393,7 +428,9 @@ type TicketPageWithCommentsFound struct {
 	Tickets []struct { TicketId string; Title string; Comments []struct { CommentId string; Body string; CreatedAt uint64 } }
 }
 func (TicketPageWithCommentsFound) isTicketPageWithCommentsResult() {}
+func IsTicketPageWithCommentsFound(value TicketPageWithCommentsResult) (TicketPageWithCommentsFound, bool) { branch, ok := value.(TicketPageWithCommentsFound); return branch, ok }
 
+func UnwrapTicketPageWithCommentsFound(value TicketPageWithCommentsResult) (TicketPageWithCommentsFound, error) { if branch, ok := value.(TicketPageWithCommentsFound); ok { return branch, nil }; return TicketPageWithCommentsFound{}, errors.New("expected TicketPageWithComments outcome found") }
 type ChangeInventoryRecordStateInput struct {
 	Subtitle *string
 	TieRank uint64
@@ -407,12 +444,14 @@ type ChangeInventoryRecordStateInventoryRecordMissing struct {
 	Outcome string
 }
 func (ChangeInventoryRecordStateInventoryRecordMissing) isChangeInventoryRecordStateOutcome() {}
+func IsChangeInventoryRecordStateInventoryRecordMissing(value ChangeInventoryRecordStateOutcome) (ChangeInventoryRecordStateInventoryRecordMissing, bool) { branch, ok := value.(ChangeInventoryRecordStateInventoryRecordMissing); return branch, ok }
 
 type ChangeInventoryRecordStateInventoryRecordStateChanged struct {
 	Outcome string
 	Record InventoryRecord
 }
 func (ChangeInventoryRecordStateInventoryRecordStateChanged) isChangeInventoryRecordStateOutcome() {}
+func IsChangeInventoryRecordStateInventoryRecordStateChanged(value ChangeInventoryRecordStateOutcome) (ChangeInventoryRecordStateInventoryRecordStateChanged, bool) { branch, ok := value.(ChangeInventoryRecordStateInventoryRecordStateChanged); return branch, ok }
 
 type CreateAuthSessionsInput struct {
 	Signups []AuthSignupInput
@@ -423,16 +462,19 @@ type CreateAuthSessionsSessionsCreated struct {
 	Outcome string
 }
 func (CreateAuthSessionsSessionsCreated) isCreateAuthSessionsOutcome() {}
+func IsCreateAuthSessionsSessionsCreated(value CreateAuthSessionsOutcome) (CreateAuthSessionsSessionsCreated, bool) { branch, ok := value.(CreateAuthSessionsSessionsCreated); return branch, ok }
 
 type CreateAuthSessionsUserAlreadyExists struct {
 	Outcome string
 }
 func (CreateAuthSessionsUserAlreadyExists) isCreateAuthSessionsOutcome() {}
+func IsCreateAuthSessionsUserAlreadyExists(value CreateAuthSessionsOutcome) (CreateAuthSessionsUserAlreadyExists, bool) { branch, ok := value.(CreateAuthSessionsUserAlreadyExists); return branch, ok }
 
 type CreateAuthSessionsSessionAlreadyExists struct {
 	Outcome string
 }
 func (CreateAuthSessionsSessionAlreadyExists) isCreateAuthSessionsOutcome() {}
+func IsCreateAuthSessionsSessionAlreadyExists(value CreateAuthSessionsOutcome) (CreateAuthSessionsSessionAlreadyExists, bool) { branch, ok := value.(CreateAuthSessionsSessionAlreadyExists); return branch, ok }
 
 type CreateDirectoryUsersInput struct {
 	Users []DirectoryUser
@@ -443,11 +485,13 @@ type CreateDirectoryUsersDirectoryUsersCreated struct {
 	Outcome string
 }
 func (CreateDirectoryUsersDirectoryUsersCreated) isCreateDirectoryUsersOutcome() {}
+func IsCreateDirectoryUsersDirectoryUsersCreated(value CreateDirectoryUsersOutcome) (CreateDirectoryUsersDirectoryUsersCreated, bool) { branch, ok := value.(CreateDirectoryUsersDirectoryUsersCreated); return branch, ok }
 
 type CreateDirectoryUsersDirectoryUserAlreadyExists struct {
 	Outcome string
 }
 func (CreateDirectoryUsersDirectoryUserAlreadyExists) isCreateDirectoryUsersOutcome() {}
+func IsCreateDirectoryUsersDirectoryUserAlreadyExists(value CreateDirectoryUsersOutcome) (CreateDirectoryUsersDirectoryUserAlreadyExists, bool) { branch, ok := value.(CreateDirectoryUsersDirectoryUserAlreadyExists); return branch, ok }
 
 type CreateDocumentsInput struct {
 	Documents []Document
@@ -458,11 +502,13 @@ type CreateDocumentsDocumentsCreated struct {
 	Outcome string
 }
 func (CreateDocumentsDocumentsCreated) isCreateDocumentsOutcome() {}
+func IsCreateDocumentsDocumentsCreated(value CreateDocumentsOutcome) (CreateDocumentsDocumentsCreated, bool) { branch, ok := value.(CreateDocumentsDocumentsCreated); return branch, ok }
 
 type CreateDocumentsDocumentAlreadyExists struct {
 	Outcome string
 }
 func (CreateDocumentsDocumentAlreadyExists) isCreateDocumentsOutcome() {}
+func IsCreateDocumentsDocumentAlreadyExists(value CreateDocumentsOutcome) (CreateDocumentsDocumentAlreadyExists, bool) { branch, ok := value.(CreateDocumentsDocumentAlreadyExists); return branch, ok }
 
 type CreateInventoryRecordMissingInput struct {
 	TieRank uint64
@@ -475,11 +521,13 @@ type CreateInventoryRecordMissingInventoryRecordAlreadyExists struct {
 	Outcome string
 }
 func (CreateInventoryRecordMissingInventoryRecordAlreadyExists) isCreateInventoryRecordMissingOutcome() {}
+func IsCreateInventoryRecordMissingInventoryRecordAlreadyExists(value CreateInventoryRecordMissingOutcome) (CreateInventoryRecordMissingInventoryRecordAlreadyExists, bool) { branch, ok := value.(CreateInventoryRecordMissingInventoryRecordAlreadyExists); return branch, ok }
 
 type CreateInventoryRecordMissingInventoryRecordMissingCreated struct {
 	Outcome string
 }
 func (CreateInventoryRecordMissingInventoryRecordMissingCreated) isCreateInventoryRecordMissingOutcome() {}
+func IsCreateInventoryRecordMissingInventoryRecordMissingCreated(value CreateInventoryRecordMissingOutcome) (CreateInventoryRecordMissingInventoryRecordMissingCreated, bool) { branch, ok := value.(CreateInventoryRecordMissingInventoryRecordMissingCreated); return branch, ok }
 
 type CreateInventoryRecordsInput struct {
 	Records []InventoryRecord
@@ -490,11 +538,13 @@ type CreateInventoryRecordsInventoryRecordsCreated struct {
 	Outcome string
 }
 func (CreateInventoryRecordsInventoryRecordsCreated) isCreateInventoryRecordsOutcome() {}
+func IsCreateInventoryRecordsInventoryRecordsCreated(value CreateInventoryRecordsOutcome) (CreateInventoryRecordsInventoryRecordsCreated, bool) { branch, ok := value.(CreateInventoryRecordsInventoryRecordsCreated); return branch, ok }
 
 type CreateInventoryRecordsInventoryRecordBatchAlreadyExists struct {
 	Outcome string
 }
 func (CreateInventoryRecordsInventoryRecordBatchAlreadyExists) isCreateInventoryRecordsOutcome() {}
+func IsCreateInventoryRecordsInventoryRecordBatchAlreadyExists(value CreateInventoryRecordsOutcome) (CreateInventoryRecordsInventoryRecordBatchAlreadyExists, bool) { branch, ok := value.(CreateInventoryRecordsInventoryRecordBatchAlreadyExists); return branch, ok }
 
 type CreatePipelinesInput struct {
 	Pipelines []Pipeline
@@ -505,11 +555,13 @@ type CreatePipelinesPipelinesCreated struct {
 	Outcome string
 }
 func (CreatePipelinesPipelinesCreated) isCreatePipelinesOutcome() {}
+func IsCreatePipelinesPipelinesCreated(value CreatePipelinesOutcome) (CreatePipelinesPipelinesCreated, bool) { branch, ok := value.(CreatePipelinesPipelinesCreated); return branch, ok }
 
 type CreatePipelinesPipelineAlreadyExists struct {
 	Outcome string
 }
 func (CreatePipelinesPipelineAlreadyExists) isCreatePipelinesOutcome() {}
+func IsCreatePipelinesPipelineAlreadyExists(value CreatePipelinesOutcome) (CreatePipelinesPipelineAlreadyExists, bool) { branch, ok := value.(CreatePipelinesPipelineAlreadyExists); return branch, ok }
 
 type LogMetricsInput struct {
 	Metrics []Metric
@@ -520,11 +572,13 @@ type LogMetricsMetricsLogged struct {
 	Outcome string
 }
 func (LogMetricsMetricsLogged) isLogMetricsOutcome() {}
+func IsLogMetricsMetricsLogged(value LogMetricsOutcome) (LogMetricsMetricsLogged, bool) { branch, ok := value.(LogMetricsMetricsLogged); return branch, ok }
 
 type LogMetricsMetricAlreadyExists struct {
 	Outcome string
 }
 func (LogMetricsMetricAlreadyExists) isLogMetricsOutcome() {}
+func IsLogMetricsMetricAlreadyExists(value LogMetricsOutcome) (LogMetricsMetricAlreadyExists, bool) { branch, ok := value.(LogMetricsMetricAlreadyExists); return branch, ok }
 
 type SeedObjectRelationsInput struct {
 	Relations []FgaRelation
@@ -535,16 +589,19 @@ type SeedObjectRelationsFgaObjectMissing struct {
 	Outcome string
 }
 func (SeedObjectRelationsFgaObjectMissing) isSeedObjectRelationsOutcome() {}
+func IsSeedObjectRelationsFgaObjectMissing(value SeedObjectRelationsOutcome) (SeedObjectRelationsFgaObjectMissing, bool) { branch, ok := value.(SeedObjectRelationsFgaObjectMissing); return branch, ok }
 
 type SeedObjectRelationsObjectRelationsSeeded struct {
 	Outcome string
 }
 func (SeedObjectRelationsObjectRelationsSeeded) isSeedObjectRelationsOutcome() {}
+func IsSeedObjectRelationsObjectRelationsSeeded(value SeedObjectRelationsOutcome) (SeedObjectRelationsObjectRelationsSeeded, bool) { branch, ok := value.(SeedObjectRelationsObjectRelationsSeeded); return branch, ok }
 
 type SeedObjectRelationsFgaRelationAlreadyExists struct {
 	Outcome string
 }
 func (SeedObjectRelationsFgaRelationAlreadyExists) isSeedObjectRelationsOutcome() {}
+func IsSeedObjectRelationsFgaRelationAlreadyExists(value SeedObjectRelationsOutcome) (SeedObjectRelationsFgaRelationAlreadyExists, bool) { branch, ok := value.(SeedObjectRelationsFgaRelationAlreadyExists); return branch, ok }
 
 type SeedObjectsInput struct {
 	Objects []FgaObject
@@ -555,11 +612,13 @@ type SeedObjectsObjectsSeeded struct {
 	Outcome string
 }
 func (SeedObjectsObjectsSeeded) isSeedObjectsOutcome() {}
+func IsSeedObjectsObjectsSeeded(value SeedObjectsOutcome) (SeedObjectsObjectsSeeded, bool) { branch, ok := value.(SeedObjectsObjectsSeeded); return branch, ok }
 
 type SeedObjectsFgaObjectAlreadyExists struct {
 	Outcome string
 }
 func (SeedObjectsFgaObjectAlreadyExists) isSeedObjectsOutcome() {}
+func IsSeedObjectsFgaObjectAlreadyExists(value SeedObjectsOutcome) (SeedObjectsFgaObjectAlreadyExists, bool) { branch, ok := value.(SeedObjectsFgaObjectAlreadyExists); return branch, ok }
 
 type SeedRunTagsInput struct {
 	Tags []MlflowRunTag
@@ -570,16 +629,19 @@ type SeedRunTagsRunTagsSeeded struct {
 	Outcome string
 }
 func (SeedRunTagsRunTagsSeeded) isSeedRunTagsOutcome() {}
+func IsSeedRunTagsRunTagsSeeded(value SeedRunTagsOutcome) (SeedRunTagsRunTagsSeeded, bool) { branch, ok := value.(SeedRunTagsRunTagsSeeded); return branch, ok }
 
 type SeedRunTagsMlflowRunMissing struct {
 	Outcome string
 }
 func (SeedRunTagsMlflowRunMissing) isSeedRunTagsOutcome() {}
+func IsSeedRunTagsMlflowRunMissing(value SeedRunTagsOutcome) (SeedRunTagsMlflowRunMissing, bool) { branch, ok := value.(SeedRunTagsMlflowRunMissing); return branch, ok }
 
 type SeedRunTagsMlflowRunTagAlreadyExists struct {
 	Outcome string
 }
 func (SeedRunTagsMlflowRunTagAlreadyExists) isSeedRunTagsOutcome() {}
+func IsSeedRunTagsMlflowRunTagAlreadyExists(value SeedRunTagsOutcome) (SeedRunTagsMlflowRunTagAlreadyExists, bool) { branch, ok := value.(SeedRunTagsMlflowRunTagAlreadyExists); return branch, ok }
 
 type SeedRunsInput struct {
 	Runs []MlflowRun
@@ -590,11 +652,13 @@ type SeedRunsRunsSeeded struct {
 	Outcome string
 }
 func (SeedRunsRunsSeeded) isSeedRunsOutcome() {}
+func IsSeedRunsRunsSeeded(value SeedRunsOutcome) (SeedRunsRunsSeeded, bool) { branch, ok := value.(SeedRunsRunsSeeded); return branch, ok }
 
 type SeedRunsMlflowRunAlreadyExists struct {
 	Outcome string
 }
 func (SeedRunsMlflowRunAlreadyExists) isSeedRunsOutcome() {}
+func IsSeedRunsMlflowRunAlreadyExists(value SeedRunsOutcome) (SeedRunsMlflowRunAlreadyExists, bool) { branch, ok := value.(SeedRunsMlflowRunAlreadyExists); return branch, ok }
 
 type SeedTicketCommentsInput struct {
 	Comments []TicketComment
@@ -605,16 +669,19 @@ type SeedTicketCommentsTicketMissing struct {
 	Outcome string
 }
 func (SeedTicketCommentsTicketMissing) isSeedTicketCommentsOutcome() {}
+func IsSeedTicketCommentsTicketMissing(value SeedTicketCommentsOutcome) (SeedTicketCommentsTicketMissing, bool) { branch, ok := value.(SeedTicketCommentsTicketMissing); return branch, ok }
 
 type SeedTicketCommentsTicketCommentsSeeded struct {
 	Outcome string
 }
 func (SeedTicketCommentsTicketCommentsSeeded) isSeedTicketCommentsOutcome() {}
+func IsSeedTicketCommentsTicketCommentsSeeded(value SeedTicketCommentsOutcome) (SeedTicketCommentsTicketCommentsSeeded, bool) { branch, ok := value.(SeedTicketCommentsTicketCommentsSeeded); return branch, ok }
 
 type SeedTicketCommentsTicketCommentAlreadyExists struct {
 	Outcome string
 }
 func (SeedTicketCommentsTicketCommentAlreadyExists) isSeedTicketCommentsOutcome() {}
+func IsSeedTicketCommentsTicketCommentAlreadyExists(value SeedTicketCommentsOutcome) (SeedTicketCommentsTicketCommentAlreadyExists, bool) { branch, ok := value.(SeedTicketCommentsTicketCommentAlreadyExists); return branch, ok }
 
 type SeedTicketsInput struct {
 	Tickets []Ticket
@@ -625,11 +692,13 @@ type SeedTicketsTicketsSeeded struct {
 	Outcome string
 }
 func (SeedTicketsTicketsSeeded) isSeedTicketsOutcome() {}
+func IsSeedTicketsTicketsSeeded(value SeedTicketsOutcome) (SeedTicketsTicketsSeeded, bool) { branch, ok := value.(SeedTicketsTicketsSeeded); return branch, ok }
 
 type SeedTicketsTicketAlreadyExists struct {
 	Outcome string
 }
 func (SeedTicketsTicketAlreadyExists) isSeedTicketsOutcome() {}
+func IsSeedTicketsTicketAlreadyExists(value SeedTicketsOutcome) (SeedTicketsTicketAlreadyExists, bool) { branch, ok := value.(SeedTicketsTicketAlreadyExists); return branch, ok }
 
 type WriteTuplesInput struct {
 	Tuples []FgaTuple
@@ -640,15 +709,21 @@ type WriteTuplesTuplesWritten struct {
 	Outcome string
 }
 func (WriteTuplesTuplesWritten) isWriteTuplesOutcome() {}
+func IsWriteTuplesTuplesWritten(value WriteTuplesOutcome) (WriteTuplesTuplesWritten, bool) { branch, ok := value.(WriteTuplesTuplesWritten); return branch, ok }
 
 type WriteTuplesTupleAlreadyExists struct {
 	Outcome string
 }
 func (WriteTuplesTupleAlreadyExists) isWriteTuplesOutcome() {}
+func IsWriteTuplesTupleAlreadyExists(value WriteTuplesOutcome) (WriteTuplesTupleAlreadyExists, bool) { branch, ok := value.(WriteTuplesTupleAlreadyExists); return branch, ok }
 
-type Client struct { session *riffdb.Session; commandAttempts uint32 }
+const DefaultCommandAttempts uint32 = 3
+type Client struct { session *riffdb.Session; commandAttempts uint32; readAfterCommit *uint64; trackCausalWrites bool }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) { if session == nil || commandAttempts < 1 || commandAttempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: commandAttempts}, nil }
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) { attempts := DefaultCommandAttempts; if len(commandAttempts) > 1 { return nil, errors.New("invalid generated RiffDB client configuration") } else if len(commandAttempts) == 1 { attempts = commandAttempts[0] }; if session == nil || attempts < 1 || attempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil }
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client { var copied *uint64; if commitSequence != nil { value := *commitSequence; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites} }
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client { var copied *uint64; if len(initialCommitSequence) > 0 { value := initialCommitSequence[0]; copied = &value } else if client.readAfterCommit != nil { value := *client.readAfterCommit; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true} }
+func (client *Client) LastCommitSequence() *uint64 { if client.readAfterCommit == nil { return nil }; value := *client.readAfterCommit; return &value }
 
 func encodeMetric(value Metric) riffdb.Value { return riffdb.Record(map[string]riffdb.Value{
 	"name": riffdb.String(value.Name),
@@ -871,7 +946,7 @@ raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ExactDocumentsContainsAsc(ctx context.Context, parameters ExactDocumentsContainsAscParams, options QueryOptions) (QueryResult[ExactDocumentsContainsAscResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ExactDocumentsContainsAsc(ctx context.Context, parameters ExactDocumentsContainsAscParams, optionsList ...QueryOptions) (QueryResult[ExactDocumentsContainsAscResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsContainsAscResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[ExactDocumentsContainsAscResult]{}, errors.New("limit must be from 1 through 499") }
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 input["needle"] = riffdb.String(parameters.Needle)
@@ -879,6 +954,7 @@ if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(paramet
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, ExactDocumentsContainsAscOperation, input, options); if err != nil { return QueryResult[ExactDocumentsContainsAscResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsContainsAscResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsContainsAscResult(response.Value); if err != nil { return QueryResult[ExactDocumentsContainsAscResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsContainsAsc", PlanHash: ExactDocumentsContainsAscQueryPlanHash}; return QueryResult[ExactDocumentsContainsAscResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ExactDocumentsContainsAscAfterCommit(ctx context.Context, parameters ExactDocumentsContainsAscParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ExactDocumentsContainsAscResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsContainsAscResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ExactDocumentsContainsAsc(ctx, parameters, options) }
 
 const ExactDocumentsEndsWithDescQueryPlanHash = "0e232b3a1b86ffc8aad5f893b9baf939959a76d91faea49bdb16c6174598abef"
 var ExactDocumentsEndsWithDescOperation = riffdb.Operation{Name: "adapter_operational_conformance_exact_documents_ends_with_desc", InputSchemaHash: "8dff1ab8827f2eb67e53d45320c86e7194a5080003f9b8640ce8d54593ad7445"}
@@ -888,7 +964,7 @@ raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ExactDocumentsEndsWithDesc(ctx context.Context, parameters ExactDocumentsEndsWithDescParams, options QueryOptions) (QueryResult[ExactDocumentsEndsWithDescResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ExactDocumentsEndsWithDesc(ctx context.Context, parameters ExactDocumentsEndsWithDescParams, optionsList ...QueryOptions) (QueryResult[ExactDocumentsEndsWithDescResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsEndsWithDescResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[ExactDocumentsEndsWithDescResult]{}, errors.New("limit must be from 1 through 499") }
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 input["needle"] = riffdb.String(parameters.Needle)
@@ -896,6 +972,7 @@ if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(paramet
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, ExactDocumentsEndsWithDescOperation, input, options); if err != nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsEndsWithDescResult(response.Value); if err != nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsEndsWithDesc", PlanHash: ExactDocumentsEndsWithDescQueryPlanHash}; return QueryResult[ExactDocumentsEndsWithDescResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ExactDocumentsEndsWithDescAfterCommit(ctx context.Context, parameters ExactDocumentsEndsWithDescParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ExactDocumentsEndsWithDescResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsEndsWithDescResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ExactDocumentsEndsWithDesc(ctx, parameters, options) }
 
 const ExactDocumentsStartsWithAscQueryPlanHash = "95b1997e8ced3fd513d866d9509065d53f35f00404d621fbe3393a54b8e2f71d"
 var ExactDocumentsStartsWithAscOperation = riffdb.Operation{Name: "adapter_operational_conformance_exact_documents_starts_with_asc", InputSchemaHash: "8dff1ab8827f2eb67e53d45320c86e7194a5080003f9b8640ce8d54593ad7445"}
@@ -905,7 +982,7 @@ raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ExactDocumentsStartsWithAsc(ctx context.Context, parameters ExactDocumentsStartsWithAscParams, options QueryOptions) (QueryResult[ExactDocumentsStartsWithAscResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ExactDocumentsStartsWithAsc(ctx context.Context, parameters ExactDocumentsStartsWithAscParams, optionsList ...QueryOptions) (QueryResult[ExactDocumentsStartsWithAscResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsStartsWithAscResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[ExactDocumentsStartsWithAscResult]{}, errors.New("limit must be from 1 through 499") }
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 input["needle"] = riffdb.String(parameters.Needle)
@@ -913,6 +990,7 @@ if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(paramet
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, ExactDocumentsStartsWithAscOperation, input, options); if err != nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsStartsWithAscResult(response.Value); if err != nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsStartsWithAsc", PlanHash: ExactDocumentsStartsWithAscQueryPlanHash}; return QueryResult[ExactDocumentsStartsWithAscResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ExactDocumentsStartsWithAscAfterCommit(ctx context.Context, parameters ExactDocumentsStartsWithAscParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ExactDocumentsStartsWithAscResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ExactDocumentsStartsWithAscResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ExactDocumentsStartsWithAsc(ctx, parameters, options) }
 
 const FgaObjectsWithRelationsQueryPlanHash = "41a550adbfaf29eb67a22a286279d875004abe03a7fce35a2cd582d2cf6b5104"
 var FgaObjectsWithRelationsOperation = riffdb.Operation{Name: "adapter_operational_conformance_fga_objects_with_relations", InputSchemaHash: "262cc8481893c167b13bea290344b4149a2d3cb0d7c6c3ec7bf97a2f376fe8cf"}
@@ -921,10 +999,11 @@ case "Found": result := FgaObjectsWithRelationsFound{Outcome: outcome}
 raw, err = requiredField(fields, "objects"); if err != nil { return nil, err }; result.Objects, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { ObjectId string; Relations []struct { RelationId string; Relation string; Subject string } }, error) { return func() (struct { ObjectId string; Relations []struct { RelationId string; Relation string; Subject string } }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { ObjectId string; Relations []struct { RelationId string; Relation string; Subject string } }{}, err }; var result struct { ObjectId string; Relations []struct { RelationId string; Relation string; Subject string } }; var raw riffdb.Value; raw, err = requiredField(fields, "object_id"); if err != nil { return result, err }; result.ObjectId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "relations"); if err != nil { return result, err }; result.Relations, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { RelationId string; Relation string; Subject string }, error) { return func() (struct { RelationId string; Relation string; Subject string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { RelationId string; Relation string; Subject string }{}, err }; var result struct { RelationId string; Relation string; Subject string }; var raw riffdb.Value; raw, err = requiredField(fields, "relation_id"); if err != nil { return result, err }; result.RelationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "relation"); if err != nil { return result, err }; result.Relation, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "subject"); if err != nil { return result, err }; result.Subject, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) FgaObjectsWithRelations(ctx context.Context, parameters FgaObjectsWithRelationsParams, options QueryOptions) (QueryResult[FgaObjectsWithRelationsResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) FgaObjectsWithRelations(ctx context.Context, parameters FgaObjectsWithRelationsParams, optionsList ...QueryOptions) (QueryResult[FgaObjectsWithRelationsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[FgaObjectsWithRelationsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["store_id"] = riffdb.UUID(parameters.StoreId)
 input["kind"] = riffdb.String(parameters.Kind)
 response, err := client.session.Invoke(ctx, FgaObjectsWithRelationsOperation, input, options); if err != nil { return QueryResult[FgaObjectsWithRelationsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[FgaObjectsWithRelationsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeFgaObjectsWithRelationsResult(response.Value); if err != nil { return QueryResult[FgaObjectsWithRelationsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "FgaObjectsWithRelations", PlanHash: FgaObjectsWithRelationsQueryPlanHash}; return QueryResult[FgaObjectsWithRelationsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) FgaObjectsWithRelationsAfterCommit(ctx context.Context, parameters FgaObjectsWithRelationsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[FgaObjectsWithRelationsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[FgaObjectsWithRelationsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.FgaObjectsWithRelations(ctx, parameters, options) }
 
 const GetAuthSessionQueryPlanHash = "efd579414bcd2c9b5876fd726db705497744accd88040125ea05083734b506ac"
 var GetAuthSessionOperation = riffdb.Operation{Name: "adapter_operational_conformance_get_auth_session", InputSchemaHash: "a55572d0b3289623e7ca9f5303a08fe2ab6d96a74525e9cd89996d56b0335eb9"}
@@ -935,11 +1014,12 @@ return result, nil
 case "Missing": result := GetAuthSessionMissing{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) GetAuthSession(ctx context.Context, parameters GetAuthSessionParams, options QueryOptions) (QueryResult[GetAuthSessionResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) GetAuthSession(ctx context.Context, parameters GetAuthSessionParams, optionsList ...QueryOptions) (QueryResult[GetAuthSessionResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetAuthSessionResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["user_id"] = riffdb.UUID(parameters.UserId)
 input["session_id"] = riffdb.UUID(parameters.SessionId)
 response, err := client.session.Invoke(ctx, GetAuthSessionOperation, input, options); if err != nil { return QueryResult[GetAuthSessionResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[GetAuthSessionResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeGetAuthSessionResult(response.Value); if err != nil { return QueryResult[GetAuthSessionResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetAuthSession", PlanHash: GetAuthSessionQueryPlanHash}; return QueryResult[GetAuthSessionResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) GetAuthSessionAfterCommit(ctx context.Context, parameters GetAuthSessionParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetAuthSessionResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[GetAuthSessionResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.GetAuthSession(ctx, parameters, options) }
 
 const InventoryByObservedAscNullsLastQueryPlanHash = "7b217ea99d90e4aeed739214463ec2d2f94070ecc3d1b4521582f6168e70aee7"
 var InventoryByObservedAscNullsLastOperation = riffdb.Operation{Name: "adapter_operational_conformance_inventory_by_observed_asc_nulls_last", InputSchemaHash: "8f9889f3e9b631bf6ecd5471d485ad14596b941c9e9672b2e51ea8072bf047c0"}
@@ -949,12 +1029,13 @@ raw, err = requiredField(fields, "records"); if err != nil { return nil, err }; 
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) InventoryByObservedAscNullsLast(ctx context.Context, parameters InventoryByObservedAscNullsLastParams, options QueryOptions) (QueryResult[InventoryByObservedAscNullsLastResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) InventoryByObservedAscNullsLast(ctx context.Context, parameters InventoryByObservedAscNullsLastParams, optionsList ...QueryOptions) (QueryResult[InventoryByObservedAscNullsLastResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryByObservedAscNullsLastResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[InventoryByObservedAscNullsLastResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, InventoryByObservedAscNullsLastOperation, input, options); if err != nil { return QueryResult[InventoryByObservedAscNullsLastResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[InventoryByObservedAscNullsLastResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeInventoryByObservedAscNullsLastResult(response.Value); if err != nil { return QueryResult[InventoryByObservedAscNullsLastResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "InventoryByObservedAscNullsLast", PlanHash: InventoryByObservedAscNullsLastQueryPlanHash}; return QueryResult[InventoryByObservedAscNullsLastResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) InventoryByObservedAscNullsLastAfterCommit(ctx context.Context, parameters InventoryByObservedAscNullsLastParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[InventoryByObservedAscNullsLastResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryByObservedAscNullsLastResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.InventoryByObservedAscNullsLast(ctx, parameters, options) }
 
 const InventoryByObservedDescNullsFirstQueryPlanHash = "5b0284f6bbb257b13c1541591cdb78862fdc4f34cbf4b1dfd8e40af244a147af"
 var InventoryByObservedDescNullsFirstOperation = riffdb.Operation{Name: "adapter_operational_conformance_inventory_by_observed_desc_nulls_first", InputSchemaHash: "8f9889f3e9b631bf6ecd5471d485ad14596b941c9e9672b2e51ea8072bf047c0"}
@@ -964,12 +1045,13 @@ raw, err = requiredField(fields, "records"); if err != nil { return nil, err }; 
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) InventoryByObservedDescNullsFirst(ctx context.Context, parameters InventoryByObservedDescNullsFirstParams, options QueryOptions) (QueryResult[InventoryByObservedDescNullsFirstResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) InventoryByObservedDescNullsFirst(ctx context.Context, parameters InventoryByObservedDescNullsFirstParams, optionsList ...QueryOptions) (QueryResult[InventoryByObservedDescNullsFirstResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, InventoryByObservedDescNullsFirstOperation, input, options); if err != nil { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeInventoryByObservedDescNullsFirstResult(response.Value); if err != nil { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "InventoryByObservedDescNullsFirst", PlanHash: InventoryByObservedDescNullsFirstQueryPlanHash}; return QueryResult[InventoryByObservedDescNullsFirstResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) InventoryByObservedDescNullsFirstAfterCommit(ctx context.Context, parameters InventoryByObservedDescNullsFirstParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[InventoryByObservedDescNullsFirstResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryByObservedDescNullsFirstResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.InventoryByObservedDescNullsFirst(ctx, parameters, options) }
 
 const InventoryBySubtitleAscNullsFirstQueryPlanHash = "4b2d42f54a384e01e26ce5786fc7a99d2ed69a4f82ce6f4561a3bf4cce5ecdd7"
 var InventoryBySubtitleAscNullsFirstOperation = riffdb.Operation{Name: "adapter_operational_conformance_inventory_by_subtitle_asc_nulls_first", InputSchemaHash: "8f9889f3e9b631bf6ecd5471d485ad14596b941c9e9672b2e51ea8072bf047c0"}
@@ -979,12 +1061,13 @@ raw, err = requiredField(fields, "records"); if err != nil { return nil, err }; 
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) InventoryBySubtitleAscNullsFirst(ctx context.Context, parameters InventoryBySubtitleAscNullsFirstParams, options QueryOptions) (QueryResult[InventoryBySubtitleAscNullsFirstResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) InventoryBySubtitleAscNullsFirst(ctx context.Context, parameters InventoryBySubtitleAscNullsFirstParams, optionsList ...QueryOptions) (QueryResult[InventoryBySubtitleAscNullsFirstResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, InventoryBySubtitleAscNullsFirstOperation, input, options); if err != nil { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeInventoryBySubtitleAscNullsFirstResult(response.Value); if err != nil { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "InventoryBySubtitleAscNullsFirst", PlanHash: InventoryBySubtitleAscNullsFirstQueryPlanHash}; return QueryResult[InventoryBySubtitleAscNullsFirstResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) InventoryBySubtitleAscNullsFirstAfterCommit(ctx context.Context, parameters InventoryBySubtitleAscNullsFirstParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[InventoryBySubtitleAscNullsFirstResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryBySubtitleAscNullsFirstResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.InventoryBySubtitleAscNullsFirst(ctx, parameters, options) }
 
 const InventoryBySubtitleDescNullsLastQueryPlanHash = "94f0956e18971aa230888afdc2ec5293fdbe9b92d47ddd92da7c34e8c4a71872"
 var InventoryBySubtitleDescNullsLastOperation = riffdb.Operation{Name: "adapter_operational_conformance_inventory_by_subtitle_desc_nulls_last", InputSchemaHash: "8f9889f3e9b631bf6ecd5471d485ad14596b941c9e9672b2e51ea8072bf047c0"}
@@ -994,12 +1077,13 @@ raw, err = requiredField(fields, "records"); if err != nil { return nil, err }; 
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) InventoryBySubtitleDescNullsLast(ctx context.Context, parameters InventoryBySubtitleDescNullsLastParams, options QueryOptions) (QueryResult[InventoryBySubtitleDescNullsLastResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) InventoryBySubtitleDescNullsLast(ctx context.Context, parameters InventoryBySubtitleDescNullsLastParams, optionsList ...QueryOptions) (QueryResult[InventoryBySubtitleDescNullsLastResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, InventoryBySubtitleDescNullsLastOperation, input, options); if err != nil { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeInventoryBySubtitleDescNullsLastResult(response.Value); if err != nil { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "InventoryBySubtitleDescNullsLast", PlanHash: InventoryBySubtitleDescNullsLastQueryPlanHash}; return QueryResult[InventoryBySubtitleDescNullsLastResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) InventoryBySubtitleDescNullsLastAfterCommit(ctx context.Context, parameters InventoryBySubtitleDescNullsLastParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[InventoryBySubtitleDescNullsLastResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[InventoryBySubtitleDescNullsLastResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.InventoryBySubtitleDescNullsLast(ctx, parameters, options) }
 
 const ListDraftDocumentsQueryPlanHash = "ae4303998bde4b3d81c19b292f94ea177b7106070e2a754cb87c2d2a73fc3fb5"
 var ListDraftDocumentsOperation = riffdb.Operation{Name: "adapter_operational_conformance_list_draft_documents", InputSchemaHash: "a3bd8b11279936403288cdc3e9ff73e6cdb8f88f1ee3681a40bfa1d9584c3996"}
@@ -1008,9 +1092,10 @@ case "Found": result := ListDraftDocumentsFound{Outcome: outcome}
 raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }; result.Documents, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }, error) { return func() (struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }{}, err }; var result struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }; var raw riffdb.Value; raw, err = requiredField(fields, "document_id"); if err != nil { return result, err }; result.DocumentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "published_at"); if err != nil { return result, err }; result.PublishedAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ListDraftDocuments(ctx context.Context, parameters ListDraftDocumentsParams, options QueryOptions) (QueryResult[ListDraftDocumentsResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ListDraftDocuments(ctx context.Context, parameters ListDraftDocumentsParams, optionsList ...QueryOptions) (QueryResult[ListDraftDocumentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListDraftDocumentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 response, err := client.session.Invoke(ctx, ListDraftDocumentsOperation, input, options); if err != nil { return QueryResult[ListDraftDocumentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListDraftDocumentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListDraftDocumentsResult(response.Value); if err != nil { return QueryResult[ListDraftDocumentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListDraftDocuments", PlanHash: ListDraftDocumentsQueryPlanHash}; return QueryResult[ListDraftDocumentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ListDraftDocumentsAfterCommit(ctx context.Context, parameters ListDraftDocumentsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListDraftDocumentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListDraftDocumentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ListDraftDocuments(ctx, parameters, options) }
 
 const ListFgaTuplesQueryPlanHash = "68999b3fc1aaa32e6d6a2bf649a5985902043c72c8d41998c9a93fcce8a62c64"
 var ListFgaTuplesOperation = riffdb.Operation{Name: "adapter_operational_conformance_list_fga_tuples", InputSchemaHash: "4809a7669bf200efdc464941571ca38be3fb55807831345b949aec111212d37d"}
@@ -1019,11 +1104,13 @@ case "Found": result := ListFgaTuplesFound{Outcome: outcome}
 raw, err = requiredField(fields, "tuples"); if err != nil { return nil, err }; result.Tuples, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { TupleId string; Object string; Relation string; Subject string }, error) { return func() (struct { TupleId string; Object string; Relation string; Subject string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { TupleId string; Object string; Relation string; Subject string }{}, err }; var result struct { TupleId string; Object string; Relation string; Subject string }; var raw riffdb.Value; raw, err = requiredField(fields, "tuple_id"); if err != nil { return result, err }; result.TupleId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "object"); if err != nil { return result, err }; result.Object, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "relation"); if err != nil { return result, err }; result.Relation, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "subject"); if err != nil { return result, err }; result.Subject, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ListFgaTuples(ctx context.Context, parameters ListFgaTuplesParams, options QueryOptions) (QueryResult[ListFgaTuplesResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ListFgaTuples(ctx context.Context, parameters ListFgaTuplesParams, optionsList ...QueryOptions) (QueryResult[ListFgaTuplesResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListFgaTuplesResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.After != nil { if options.Cursor != "" { return QueryResult[ListFgaTuplesResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["store_id"] = riffdb.UUID(parameters.StoreId)
 if parameters.Relation != nil { input["relation"] = riffdb.Optional(parameters.Relation, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ListFgaTuplesOperation, input, options); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListFgaTuplesResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListFgaTuplesResult(response.Value); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListFgaTuples", PlanHash: ListFgaTuplesQueryPlanHash}; return QueryResult[ListFgaTuplesResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ListFgaTuplesAfterCommit(ctx context.Context, parameters ListFgaTuplesParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListFgaTuplesResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListFgaTuplesResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ListFgaTuples(ctx, parameters, options) }
+func (client *Client) ListFgaTuplesPages(ctx context.Context, parameters ListFgaTuplesParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ListFgaTuplesResult], error) { if maxPages == 0 { maxPages = 64 }; if maxPages > 1024 { return nil, errors.New("maxPages must be from 1 through 1024") }; var options QueryOptions; if len(optionsList) > 1 { return nil, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if parameters.After != nil { if options.Cursor != "" { return nil, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After; parameters.After = nil }; pages := make([]QueryResult[ListFgaTuplesResult], 0, maxPages); for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ { page, err := client.ListFgaTuples(ctx, parameters, options); if err != nil { return nil, err }; pages = append(pages, page); if page.NextCursor == "" { break }; options.Cursor = page.NextCursor }; return pages, nil }
 
 const ListPipelinesQueryPlanHash = "e9fc1dc963117c3338eb02f1f5edbf6e1adf257eae0dc1104363634f914942cf"
 var ListPipelinesOperation = riffdb.Operation{Name: "adapter_operational_conformance_list_pipelines", InputSchemaHash: "c749b544b945298d30d5e3f22b18d0a069858a48149dd7e6ad5b1d44ed5078c6"}
@@ -1032,11 +1119,13 @@ case "Found": result := ListPipelinesFound{Outcome: outcome}
 raw, err = requiredField(fields, "pipelines"); if err != nil { return nil, err }; result.Pipelines, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { PipelineId string; Name string; State string }, error) { return func() (struct { PipelineId string; Name string; State string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { PipelineId string; Name string; State string }{}, err }; var result struct { PipelineId string; Name string; State string }; var raw riffdb.Value; raw, err = requiredField(fields, "pipeline_id"); if err != nil { return result, err }; result.PipelineId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "name"); if err != nil { return result, err }; result.Name, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "state"); if err != nil { return result, err }; result.State, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ListPipelines(ctx context.Context, parameters ListPipelinesParams, options QueryOptions) (QueryResult[ListPipelinesResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ListPipelines(ctx context.Context, parameters ListPipelinesParams, optionsList ...QueryOptions) (QueryResult[ListPipelinesResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListPipelinesResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.After != nil { if options.Cursor != "" { return QueryResult[ListPipelinesResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.State != nil { input["state"] = riffdb.Optional(parameters.State, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ListPipelinesOperation, input, options); if err != nil { return QueryResult[ListPipelinesResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListPipelinesResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListPipelinesResult(response.Value); if err != nil { return QueryResult[ListPipelinesResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListPipelines", PlanHash: ListPipelinesQueryPlanHash}; return QueryResult[ListPipelinesResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ListPipelinesAfterCommit(ctx context.Context, parameters ListPipelinesParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListPipelinesResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ListPipelinesResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ListPipelines(ctx, parameters, options) }
+func (client *Client) ListPipelinesPages(ctx context.Context, parameters ListPipelinesParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ListPipelinesResult], error) { if maxPages == 0 { maxPages = 64 }; if maxPages > 1024 { return nil, errors.New("maxPages must be from 1 through 1024") }; var options QueryOptions; if len(optionsList) > 1 { return nil, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if parameters.After != nil { if options.Cursor != "" { return nil, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After; parameters.After = nil }; pages := make([]QueryResult[ListPipelinesResult], 0, maxPages); for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ { page, err := client.ListPipelines(ctx, parameters, options); if err != nil { return nil, err }; pages = append(pages, page); if page.NextCursor == "" { break }; options.Cursor = page.NextCursor }; return pages, nil }
 
 const MetricDashboardQueryPlanHash = "942a66e10da8fe30a9d3f7a3bf00c1bac3dc433354b3e266b4dd3eef57dfdcc1"
 var MetricDashboardOperation = riffdb.Operation{Name: "adapter_operational_conformance_metric_dashboard", InputSchemaHash: "1729a53448c39dc8970d5b9d30c38c6d696bc1d588bf0f08c0d2a105c1fef0e3"}
@@ -1045,9 +1134,10 @@ case "Found": result := MetricDashboardFound{Outcome: outcome}
 raw, err = requiredField(fields, "summary"); if err != nil { return nil, err }; result.Summary, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { Name string; SampleCount uint64; TotalMicros riffdb.ExactDecimal; MinimumMicros *int64; MaximumMicros *int64 }, error) { return func() (struct { Name string; SampleCount uint64; TotalMicros riffdb.ExactDecimal; MinimumMicros *int64; MaximumMicros *int64 }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { Name string; SampleCount uint64; TotalMicros riffdb.ExactDecimal; MinimumMicros *int64; MaximumMicros *int64 }{}, err }; var result struct { Name string; SampleCount uint64; TotalMicros riffdb.ExactDecimal; MinimumMicros *int64; MaximumMicros *int64 }; var raw riffdb.Value; raw, err = requiredField(fields, "name"); if err != nil { return result, err }; result.Name, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "sample_count"); if err != nil { return result, err }; result.SampleCount, err = riffdb.U64Value(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "total_micros"); if err != nil { return result, err }; result.TotalMicros, err = riffdb.DecimalValueWithSchema(raw, 39, 0); if err != nil { return result, err }; raw, err = requiredField(fields, "minimum_micros"); if err != nil { return result, err }; result.MinimumMicros, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (int64, error) { return riffdb.I64Value(item) }); if err != nil { return result, err }; raw, err = requiredField(fields, "maximum_micros"); if err != nil { return result, err }; result.MaximumMicros, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (int64, error) { return riffdb.I64Value(item) }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) MetricDashboard(ctx context.Context, parameters MetricDashboardParams, options QueryOptions) (QueryResult[MetricDashboardResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) MetricDashboard(ctx context.Context, parameters MetricDashboardParams, optionsList ...QueryOptions) (QueryResult[MetricDashboardResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[MetricDashboardResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["experiment_id"] = riffdb.UUID(parameters.ExperimentId)
 response, err := client.session.Invoke(ctx, MetricDashboardOperation, input, options); if err != nil { return QueryResult[MetricDashboardResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[MetricDashboardResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeMetricDashboardResult(response.Value); if err != nil { return QueryResult[MetricDashboardResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "MetricDashboard", PlanHash: MetricDashboardQueryPlanHash}; return QueryResult[MetricDashboardResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) MetricDashboardAfterCommit(ctx context.Context, parameters MetricDashboardParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[MetricDashboardResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[MetricDashboardResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.MetricDashboard(ctx, parameters, options) }
 
 const MlflowRunsWithTagsQueryPlanHash = "8ce281ca7682635dbcaf6e640a0bd5b2d1fb4aabbf5febb9669e6ff5e4287ec3"
 var MlflowRunsWithTagsOperation = riffdb.Operation{Name: "adapter_operational_conformance_mlflow_runs_with_tags", InputSchemaHash: "5a84d4950429575d515f8d153ffee6d7898439828674456ddc964dc2a17a0a14"}
@@ -1056,10 +1146,11 @@ case "Found": result := MlflowRunsWithTagsFound{Outcome: outcome}
 raw, err = requiredField(fields, "runs"); if err != nil { return nil, err }; result.Runs, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { RunId string; Tags []struct { TagId string; Name string; Value string } }, error) { return func() (struct { RunId string; Tags []struct { TagId string; Name string; Value string } }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { RunId string; Tags []struct { TagId string; Name string; Value string } }{}, err }; var result struct { RunId string; Tags []struct { TagId string; Name string; Value string } }; var raw riffdb.Value; raw, err = requiredField(fields, "run_id"); if err != nil { return result, err }; result.RunId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "tags"); if err != nil { return result, err }; result.Tags, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { TagId string; Name string; Value string }, error) { return func() (struct { TagId string; Name string; Value string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { TagId string; Name string; Value string }{}, err }; var result struct { TagId string; Name string; Value string }; var raw riffdb.Value; raw, err = requiredField(fields, "tag_id"); if err != nil { return result, err }; result.TagId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "name"); if err != nil { return result, err }; result.Name, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) MlflowRunsWithTags(ctx context.Context, parameters MlflowRunsWithTagsParams, options QueryOptions) (QueryResult[MlflowRunsWithTagsResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) MlflowRunsWithTags(ctx context.Context, parameters MlflowRunsWithTagsParams, optionsList ...QueryOptions) (QueryResult[MlflowRunsWithTagsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[MlflowRunsWithTagsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["experiment_id"] = riffdb.UUID(parameters.ExperimentId)
 input["lifecycle"] = riffdb.String(parameters.Lifecycle)
 response, err := client.session.Invoke(ctx, MlflowRunsWithTagsOperation, input, options); if err != nil { return QueryResult[MlflowRunsWithTagsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[MlflowRunsWithTagsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeMlflowRunsWithTagsResult(response.Value); if err != nil { return QueryResult[MlflowRunsWithTagsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "MlflowRunsWithTags", PlanHash: MlflowRunsWithTagsQueryPlanHash}; return QueryResult[MlflowRunsWithTagsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) MlflowRunsWithTagsAfterCommit(ctx context.Context, parameters MlflowRunsWithTagsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[MlflowRunsWithTagsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[MlflowRunsWithTagsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.MlflowRunsWithTags(ctx, parameters, options) }
 
 const ReviewedDirectoryUsersQueryPlanHash = "c5389bb3db8fc36e4f17022135af0f95b5124eb748ce22988e0e77fb4f26e753"
 var ReviewedDirectoryUsersOperation = riffdb.Operation{Name: "adapter_operational_conformance_reviewed_directory_users", InputSchemaHash: "41cc3fd61368658ba470a7e60c5ff9e21df76e6c61e1bb0633198e4aa12db7be"}
@@ -1069,7 +1160,7 @@ raw, err = requiredField(fields, "users"); if err != nil { return nil, err }; re
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) ReviewedDirectoryUsers(ctx context.Context, parameters ReviewedDirectoryUsersParams, options QueryOptions) (QueryResult[ReviewedDirectoryUsersResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) ReviewedDirectoryUsers(ctx context.Context, parameters ReviewedDirectoryUsersParams, optionsList ...QueryOptions) (QueryResult[ReviewedDirectoryUsersResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ReviewedDirectoryUsersResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[ReviewedDirectoryUsersResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["states"] = riffdb.Values(parameters.States, func(item string) riffdb.Value { return riffdb.String(item) })
@@ -1077,6 +1168,7 @@ input["before_created_at"] = riffdb.U64(parameters.BeforeCreatedAt)
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, ReviewedDirectoryUsersOperation, input, options); if err != nil { return QueryResult[ReviewedDirectoryUsersResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ReviewedDirectoryUsersResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeReviewedDirectoryUsersResult(response.Value); if err != nil { return QueryResult[ReviewedDirectoryUsersResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ReviewedDirectoryUsers", PlanHash: ReviewedDirectoryUsersQueryPlanHash}; return QueryResult[ReviewedDirectoryUsersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) ReviewedDirectoryUsersAfterCommit(ctx context.Context, parameters ReviewedDirectoryUsersParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ReviewedDirectoryUsersResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[ReviewedDirectoryUsersResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.ReviewedDirectoryUsers(ctx, parameters, options) }
 
 const SearchDirectoryUsersQueryPlanHash = "b1a85464d1006024dd198b936328ef7c57129ef47725ca5f881d3641405134e4"
 var SearchDirectoryUsersOperation = riffdb.Operation{Name: "adapter_operational_conformance_search_directory_users", InputSchemaHash: "26eecbd6439329c939cd287d7e14c053cc65d2c929e167970fc322dc3623cc78"}
@@ -1086,7 +1178,7 @@ raw, err = requiredField(fields, "users"); if err != nil { return nil, err }; re
 raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) SearchDirectoryUsers(ctx context.Context, parameters SearchDirectoryUsersParams, options QueryOptions) (QueryResult[SearchDirectoryUsersResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) SearchDirectoryUsers(ctx context.Context, parameters SearchDirectoryUsersParams, optionsList ...QueryOptions) (QueryResult[SearchDirectoryUsersResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[SearchDirectoryUsersResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[SearchDirectoryUsersResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["needle"] = riffdb.String(parameters.Needle)
@@ -1095,6 +1187,7 @@ if parameters.MaximumCreatedAt != nil { input["maximum_created_at"] = riffdb.Opt
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, SearchDirectoryUsersOperation, input, options); if err != nil { return QueryResult[SearchDirectoryUsersResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[SearchDirectoryUsersResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeSearchDirectoryUsersResult(response.Value); if err != nil { return QueryResult[SearchDirectoryUsersResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "SearchDirectoryUsers", PlanHash: SearchDirectoryUsersQueryPlanHash}; return QueryResult[SearchDirectoryUsersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) SearchDirectoryUsersAfterCommit(ctx context.Context, parameters SearchDirectoryUsersParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[SearchDirectoryUsersResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[SearchDirectoryUsersResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.SearchDirectoryUsers(ctx, parameters, options) }
 
 const SearchDocumentsQueryPlanHash = "5b89e7ad735a10ebfe66f55e85c8d6c9eea437cf4df0772fab59fcaeb3f0b5c3"
 var SearchDocumentsOperation = riffdb.Operation{Name: "adapter_operational_conformance_search_documents", InputSchemaHash: "5c788251ae2bdba4ef775a1a3001c9e9eb3d2cb1a6f5bdf8d9ced1a0dc7cce02"}
@@ -1103,11 +1196,13 @@ case "Found": result := SearchDocumentsFound{Outcome: outcome}
 raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }; result.Documents, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }, error) { return func() (struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }{}, err }; var result struct { DocumentId string; Title string; PublishedAt *riffdb.Instant }; var raw riffdb.Value; raw, err = requiredField(fields, "document_id"); if err != nil { return result, err }; result.DocumentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "published_at"); if err != nil { return result, err }; result.PublishedAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) SearchDocuments(ctx context.Context, parameters SearchDocumentsParams, options QueryOptions) (QueryResult[SearchDocumentsResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) SearchDocuments(ctx context.Context, parameters SearchDocumentsParams, optionsList ...QueryOptions) (QueryResult[SearchDocumentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[SearchDocumentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 if parameters.After != nil { if options.Cursor != "" { return QueryResult[SearchDocumentsResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 input["title_prefix"] = riffdb.String(parameters.TitlePrefix)
 response, err := client.session.Invoke(ctx, SearchDocumentsOperation, input, options); if err != nil { return QueryResult[SearchDocumentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[SearchDocumentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeSearchDocumentsResult(response.Value); if err != nil { return QueryResult[SearchDocumentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "SearchDocuments", PlanHash: SearchDocumentsQueryPlanHash}; return QueryResult[SearchDocumentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) SearchDocumentsAfterCommit(ctx context.Context, parameters SearchDocumentsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[SearchDocumentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[SearchDocumentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.SearchDocuments(ctx, parameters, options) }
+func (client *Client) SearchDocumentsPages(ctx context.Context, parameters SearchDocumentsParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[SearchDocumentsResult], error) { if maxPages == 0 { maxPages = 64 }; if maxPages > 1024 { return nil, errors.New("maxPages must be from 1 through 1024") }; var options QueryOptions; if len(optionsList) > 1 { return nil, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if parameters.After != nil { if options.Cursor != "" { return nil, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After; parameters.After = nil }; pages := make([]QueryResult[SearchDocumentsResult], 0, maxPages); for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ { page, err := client.SearchDocuments(ctx, parameters, options); if err != nil { return nil, err }; pages = append(pages, page); if page.NextCursor == "" { break }; options.Cursor = page.NextCursor }; return pages, nil }
 
 const TicketPageWithCommentsQueryPlanHash = "aa9bea485ee222ebaf4da2e96c96600134b736114a1d5d6f71d8d5cb0d5e2453"
 var TicketPageWithCommentsOperation = riffdb.Operation{Name: "adapter_operational_conformance_ticket_page_with_comments", InputSchemaHash: "bf01f861d4d3bc6fdd259bc25cdd2f3707db8dc06446e74ee5261c7719360b0b"}
@@ -1116,10 +1211,11 @@ case "Found": result := TicketPageWithCommentsFound{Outcome: outcome}
 raw, err = requiredField(fields, "tickets"); if err != nil { return nil, err }; result.Tickets, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { TicketId string; Title string; Comments []struct { CommentId string; Body string; CreatedAt uint64 } }, error) { return func() (struct { TicketId string; Title string; Comments []struct { CommentId string; Body string; CreatedAt uint64 } }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { TicketId string; Title string; Comments []struct { CommentId string; Body string; CreatedAt uint64 } }{}, err }; var result struct { TicketId string; Title string; Comments []struct { CommentId string; Body string; CreatedAt uint64 } }; var raw riffdb.Value; raw, err = requiredField(fields, "ticket_id"); if err != nil { return result, err }; result.TicketId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "comments"); if err != nil { return result, err }; result.Comments, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { CommentId string; Body string; CreatedAt uint64 }, error) { return func() (struct { CommentId string; Body string; CreatedAt uint64 }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { CommentId string; Body string; CreatedAt uint64 }{}, err }; var result struct { CommentId string; Body string; CreatedAt uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "comment_id"); if err != nil { return result, err }; result.CommentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "body"); if err != nil { return result, err }; result.Body, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "created_at"); if err != nil { return result, err }; result.CreatedAt, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) TicketPageWithComments(ctx context.Context, parameters TicketPageWithCommentsParams, options QueryOptions) (QueryResult[TicketPageWithCommentsResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) TicketPageWithComments(ctx context.Context, parameters TicketPageWithCommentsParams, optionsList ...QueryOptions) (QueryResult[TicketPageWithCommentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[TicketPageWithCommentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["state"] = riffdb.String(parameters.State)
 response, err := client.session.Invoke(ctx, TicketPageWithCommentsOperation, input, options); if err != nil { return QueryResult[TicketPageWithCommentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[TicketPageWithCommentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeTicketPageWithCommentsResult(response.Value); if err != nil { return QueryResult[TicketPageWithCommentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketPageWithComments", PlanHash: TicketPageWithCommentsQueryPlanHash}; return QueryResult[TicketPageWithCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) TicketPageWithCommentsAfterCommit(ctx context.Context, parameters TicketPageWithCommentsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[TicketPageWithCommentsResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[TicketPageWithCommentsResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.TicketPageWithComments(ctx, parameters, options) }
 
 const ChangeInventoryRecordStatePlanHash = "baf7cf55cdaed4b4c0b80e11a94631d5d83714a57261db3f5c5e0e146d201eb9"
 var ChangeInventoryRecordStateOperation = riffdb.Operation{Name: "adapter_operational_conformance_change_inventory_record_state", InputSchemaHash: "9c581c07a54a249c71ddf5fa1498a72d82a243053044db5c8abfce95e64c0e64"}
@@ -1138,7 +1234,7 @@ case "InventoryRecordStateChanged": result := ChangeInventoryRecordStateInventor
 raw, err = requiredField(fields, "record"); if err != nil { return nil, err }; result.Record, err = decodeInventoryRecord(raw); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) ChangeInventoryRecordState(ctx context.Context, input ChangeInventoryRecordStateInput) (CommandResult[ChangeInventoryRecordStateOutcome], error) { response, err := client.session.Invoke(ctx, ChangeInventoryRecordStateOperation, encodeChangeInventoryRecordStateInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ChangeInventoryRecordStateOutcome]{}, err }; outcome, err := decodeChangeInventoryRecordStateOutcome(response.Value); if err != nil { return CommandResult[ChangeInventoryRecordStateOutcome]{}, err }; return CommandResult[ChangeInventoryRecordStateOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ChangeInventoryRecordStatePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) ChangeInventoryRecordState(ctx context.Context, input ChangeInventoryRecordStateInput) (CommandResult[ChangeInventoryRecordStateOutcome], error) { response, err := client.session.Invoke(ctx, ChangeInventoryRecordStateOperation, encodeChangeInventoryRecordStateInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ChangeInventoryRecordStateOutcome]{}, err }; outcome, err := decodeChangeInventoryRecordStateOutcome(response.Value); if err != nil { return CommandResult[ChangeInventoryRecordStateOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[ChangeInventoryRecordStateOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ChangeInventoryRecordStatePlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) ChangeInventoryRecordStateBatch(ctx context.Context, inputs []ChangeInventoryRecordStateInput, concurrency, checkpoint uint32) (BatchResult[ChangeInventoryRecordStateOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeChangeInventoryRecordStateInput(input) }; response, err := client.session.Batch(ctx, ChangeInventoryRecordStateOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ChangeInventoryRecordStateOutcome]{}, err }; result := BatchResult[ChangeInventoryRecordStateOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ChangeInventoryRecordStateOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ChangeInventoryRecordStateOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeChangeInventoryRecordStateOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ChangeInventoryRecordStateOutcome]{}, decodeErr }; converted.Result = &CommandResult[ChangeInventoryRecordStateOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ChangeInventoryRecordStatePlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateAuthSessionsPlanHash = "b72849398192f4a37b2c42d13b41ae5acd6facffa078af560119781ad6a4c7b2"
@@ -1156,7 +1252,7 @@ return result, nil
 case "SessionAlreadyExists": result := CreateAuthSessionsSessionAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateAuthSessions(ctx context.Context, input CreateAuthSessionsInput) (CommandResult[CreateAuthSessionsOutcome], error) { if err := validateCreateAuthSessionsInput(input); err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateAuthSessionsOperation, encodeCreateAuthSessionsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; outcome, err := decodeCreateAuthSessionsOutcome(response.Value); if err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; return CommandResult[CreateAuthSessionsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateAuthSessionsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateAuthSessions(ctx context.Context, input CreateAuthSessionsInput) (CommandResult[CreateAuthSessionsOutcome], error) { if err := validateCreateAuthSessionsInput(input); err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateAuthSessionsOperation, encodeCreateAuthSessionsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; outcome, err := decodeCreateAuthSessionsOutcome(response.Value); if err != nil { return CommandResult[CreateAuthSessionsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateAuthSessionsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateAuthSessionsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateAuthSessionsBatch(ctx context.Context, inputs []CreateAuthSessionsInput, concurrency, checkpoint uint32) (BatchResult[CreateAuthSessionsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateCreateAuthSessionsInput(input); err != nil { return BatchResult[CreateAuthSessionsOutcome]{}, err }; encoded[index] = encodeCreateAuthSessionsInput(input) }; response, err := client.session.Batch(ctx, CreateAuthSessionsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateAuthSessionsOutcome]{}, err }; result := BatchResult[CreateAuthSessionsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateAuthSessionsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateAuthSessionsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateAuthSessionsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateAuthSessionsOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateAuthSessionsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateAuthSessionsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateDirectoryUsersPlanHash = "3ee3e717d5ba93e3f31589131050e5de2964c2dd5a35b071ff3e0fafba8b36d7"
@@ -1172,7 +1268,7 @@ return result, nil
 case "DirectoryUserAlreadyExists": result := CreateDirectoryUsersDirectoryUserAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateDirectoryUsers(ctx context.Context, input CreateDirectoryUsersInput) (CommandResult[CreateDirectoryUsersOutcome], error) { if err := validateCreateDirectoryUsersInput(input); err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateDirectoryUsersOperation, encodeCreateDirectoryUsersInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; outcome, err := decodeCreateDirectoryUsersOutcome(response.Value); if err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; return CommandResult[CreateDirectoryUsersOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateDirectoryUsersPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateDirectoryUsers(ctx context.Context, input CreateDirectoryUsersInput) (CommandResult[CreateDirectoryUsersOutcome], error) { if err := validateCreateDirectoryUsersInput(input); err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateDirectoryUsersOperation, encodeCreateDirectoryUsersInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; outcome, err := decodeCreateDirectoryUsersOutcome(response.Value); if err != nil { return CommandResult[CreateDirectoryUsersOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateDirectoryUsersOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateDirectoryUsersPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateDirectoryUsersBatch(ctx context.Context, inputs []CreateDirectoryUsersInput, concurrency, checkpoint uint32) (BatchResult[CreateDirectoryUsersOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateCreateDirectoryUsersInput(input); err != nil { return BatchResult[CreateDirectoryUsersOutcome]{}, err }; encoded[index] = encodeCreateDirectoryUsersInput(input) }; response, err := client.session.Batch(ctx, CreateDirectoryUsersOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateDirectoryUsersOutcome]{}, err }; result := BatchResult[CreateDirectoryUsersOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateDirectoryUsersOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateDirectoryUsersOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateDirectoryUsersOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateDirectoryUsersOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateDirectoryUsersOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateDirectoryUsersPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateDocumentsPlanHash = "e2c714aa19f9c9fc2ee7a22d096f5a9a5ccc7380e67959e528304953d3163b48"
@@ -1188,7 +1284,7 @@ return result, nil
 case "DocumentAlreadyExists": result := CreateDocumentsDocumentAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateDocuments(ctx context.Context, input CreateDocumentsInput) (CommandResult[CreateDocumentsOutcome], error) { if err := validateCreateDocumentsInput(input); err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateDocumentsOperation, encodeCreateDocumentsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; outcome, err := decodeCreateDocumentsOutcome(response.Value); if err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; return CommandResult[CreateDocumentsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateDocumentsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateDocuments(ctx context.Context, input CreateDocumentsInput) (CommandResult[CreateDocumentsOutcome], error) { if err := validateCreateDocumentsInput(input); err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateDocumentsOperation, encodeCreateDocumentsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; outcome, err := decodeCreateDocumentsOutcome(response.Value); if err != nil { return CommandResult[CreateDocumentsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateDocumentsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateDocumentsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateDocumentsBatch(ctx context.Context, inputs []CreateDocumentsInput, concurrency, checkpoint uint32) (BatchResult[CreateDocumentsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateCreateDocumentsInput(input); err != nil { return BatchResult[CreateDocumentsOutcome]{}, err }; encoded[index] = encodeCreateDocumentsInput(input) }; response, err := client.session.Batch(ctx, CreateDocumentsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateDocumentsOutcome]{}, err }; result := BatchResult[CreateDocumentsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateDocumentsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateDocumentsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateDocumentsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateDocumentsOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateDocumentsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateDocumentsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateInventoryRecordMissingPlanHash = "055752a556c24254b5c475e2a747f2ce2879a7013704f6cc7631a8e814364d84"
@@ -1205,7 +1301,7 @@ return result, nil
 case "InventoryRecordMissingCreated": result := CreateInventoryRecordMissingInventoryRecordMissingCreated{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateInventoryRecordMissing(ctx context.Context, input CreateInventoryRecordMissingInput) (CommandResult[CreateInventoryRecordMissingOutcome], error) { response, err := client.session.Invoke(ctx, CreateInventoryRecordMissingOperation, encodeCreateInventoryRecordMissingInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateInventoryRecordMissingOutcome]{}, err }; outcome, err := decodeCreateInventoryRecordMissingOutcome(response.Value); if err != nil { return CommandResult[CreateInventoryRecordMissingOutcome]{}, err }; return CommandResult[CreateInventoryRecordMissingOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordMissingPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateInventoryRecordMissing(ctx context.Context, input CreateInventoryRecordMissingInput) (CommandResult[CreateInventoryRecordMissingOutcome], error) { response, err := client.session.Invoke(ctx, CreateInventoryRecordMissingOperation, encodeCreateInventoryRecordMissingInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateInventoryRecordMissingOutcome]{}, err }; outcome, err := decodeCreateInventoryRecordMissingOutcome(response.Value); if err != nil { return CommandResult[CreateInventoryRecordMissingOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateInventoryRecordMissingOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordMissingPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateInventoryRecordMissingBatch(ctx context.Context, inputs []CreateInventoryRecordMissingInput, concurrency, checkpoint uint32) (BatchResult[CreateInventoryRecordMissingOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCreateInventoryRecordMissingInput(input) }; response, err := client.session.Batch(ctx, CreateInventoryRecordMissingOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateInventoryRecordMissingOutcome]{}, err }; result := BatchResult[CreateInventoryRecordMissingOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateInventoryRecordMissingOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateInventoryRecordMissingOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateInventoryRecordMissingOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateInventoryRecordMissingOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateInventoryRecordMissingOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordMissingPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreateInventoryRecordsPlanHash = "f71cf68ffc4cd623901ed96f2c1791576e320e829dd658917a0639966ec0c3ca"
@@ -1221,7 +1317,7 @@ return result, nil
 case "InventoryRecordBatchAlreadyExists": result := CreateInventoryRecordsInventoryRecordBatchAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreateInventoryRecords(ctx context.Context, input CreateInventoryRecordsInput) (CommandResult[CreateInventoryRecordsOutcome], error) { if err := validateCreateInventoryRecordsInput(input); err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateInventoryRecordsOperation, encodeCreateInventoryRecordsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; outcome, err := decodeCreateInventoryRecordsOutcome(response.Value); if err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; return CommandResult[CreateInventoryRecordsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreateInventoryRecords(ctx context.Context, input CreateInventoryRecordsInput) (CommandResult[CreateInventoryRecordsOutcome], error) { if err := validateCreateInventoryRecordsInput(input); err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreateInventoryRecordsOperation, encodeCreateInventoryRecordsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; outcome, err := decodeCreateInventoryRecordsOutcome(response.Value); if err != nil { return CommandResult[CreateInventoryRecordsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreateInventoryRecordsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreateInventoryRecordsBatch(ctx context.Context, inputs []CreateInventoryRecordsInput, concurrency, checkpoint uint32) (BatchResult[CreateInventoryRecordsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateCreateInventoryRecordsInput(input); err != nil { return BatchResult[CreateInventoryRecordsOutcome]{}, err }; encoded[index] = encodeCreateInventoryRecordsInput(input) }; response, err := client.session.Batch(ctx, CreateInventoryRecordsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreateInventoryRecordsOutcome]{}, err }; result := BatchResult[CreateInventoryRecordsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreateInventoryRecordsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreateInventoryRecordsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreateInventoryRecordsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreateInventoryRecordsOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreateInventoryRecordsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateInventoryRecordsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CreatePipelinesPlanHash = "305590f0dc5c6075fa223c5e62ad03b96823ee5759b1e41d22c21a705b97a5fe"
@@ -1237,7 +1333,7 @@ return result, nil
 case "PipelineAlreadyExists": result := CreatePipelinesPipelineAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) CreatePipelines(ctx context.Context, input CreatePipelinesInput) (CommandResult[CreatePipelinesOutcome], error) { if err := validateCreatePipelinesInput(input); err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreatePipelinesOperation, encodeCreatePipelinesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; outcome, err := decodeCreatePipelinesOutcome(response.Value); if err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; return CommandResult[CreatePipelinesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreatePipelinesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) CreatePipelines(ctx context.Context, input CreatePipelinesInput) (CommandResult[CreatePipelinesOutcome], error) { if err := validateCreatePipelinesInput(input); err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; response, err := client.session.Invoke(ctx, CreatePipelinesOperation, encodeCreatePipelinesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; outcome, err := decodeCreatePipelinesOutcome(response.Value); if err != nil { return CommandResult[CreatePipelinesOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[CreatePipelinesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreatePipelinesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) CreatePipelinesBatch(ctx context.Context, inputs []CreatePipelinesInput, concurrency, checkpoint uint32) (BatchResult[CreatePipelinesOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateCreatePipelinesInput(input); err != nil { return BatchResult[CreatePipelinesOutcome]{}, err }; encoded[index] = encodeCreatePipelinesInput(input) }; response, err := client.session.Batch(ctx, CreatePipelinesOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CreatePipelinesOutcome]{}, err }; result := BatchResult[CreatePipelinesOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CreatePipelinesOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CreatePipelinesOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCreatePipelinesOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CreatePipelinesOutcome]{}, decodeErr }; converted.Result = &CommandResult[CreatePipelinesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreatePipelinesPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const LogMetricsPlanHash = "3978dd324d8c9d5255330f5e0a43fe951e6cc48f6d607b5efb2dcb16a148aae8"
@@ -1253,7 +1349,7 @@ return result, nil
 case "MetricAlreadyExists": result := LogMetricsMetricAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) LogMetrics(ctx context.Context, input LogMetricsInput) (CommandResult[LogMetricsOutcome], error) { if err := validateLogMetricsInput(input); err != nil { return CommandResult[LogMetricsOutcome]{}, err }; response, err := client.session.Invoke(ctx, LogMetricsOperation, encodeLogMetricsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[LogMetricsOutcome]{}, err }; outcome, err := decodeLogMetricsOutcome(response.Value); if err != nil { return CommandResult[LogMetricsOutcome]{}, err }; return CommandResult[LogMetricsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: LogMetricsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) LogMetrics(ctx context.Context, input LogMetricsInput) (CommandResult[LogMetricsOutcome], error) { if err := validateLogMetricsInput(input); err != nil { return CommandResult[LogMetricsOutcome]{}, err }; response, err := client.session.Invoke(ctx, LogMetricsOperation, encodeLogMetricsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[LogMetricsOutcome]{}, err }; outcome, err := decodeLogMetricsOutcome(response.Value); if err != nil { return CommandResult[LogMetricsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[LogMetricsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: LogMetricsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) LogMetricsBatch(ctx context.Context, inputs []LogMetricsInput, concurrency, checkpoint uint32) (BatchResult[LogMetricsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateLogMetricsInput(input); err != nil { return BatchResult[LogMetricsOutcome]{}, err }; encoded[index] = encodeLogMetricsInput(input) }; response, err := client.session.Batch(ctx, LogMetricsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[LogMetricsOutcome]{}, err }; result := BatchResult[LogMetricsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[LogMetricsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[LogMetricsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeLogMetricsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[LogMetricsOutcome]{}, decodeErr }; converted.Result = &CommandResult[LogMetricsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: LogMetricsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedObjectRelationsPlanHash = "72f449ba44316e6517d2192d3ba0898e9a9132fff5d1362c2afb92dfe2bd0e91"
@@ -1271,7 +1367,7 @@ return result, nil
 case "FgaRelationAlreadyExists": result := SeedObjectRelationsFgaRelationAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedObjectRelations(ctx context.Context, input SeedObjectRelationsInput) (CommandResult[SeedObjectRelationsOutcome], error) { if err := validateSeedObjectRelationsInput(input); err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedObjectRelationsOperation, encodeSeedObjectRelationsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; outcome, err := decodeSeedObjectRelationsOutcome(response.Value); if err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; return CommandResult[SeedObjectRelationsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedObjectRelationsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedObjectRelations(ctx context.Context, input SeedObjectRelationsInput) (CommandResult[SeedObjectRelationsOutcome], error) { if err := validateSeedObjectRelationsInput(input); err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedObjectRelationsOperation, encodeSeedObjectRelationsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; outcome, err := decodeSeedObjectRelationsOutcome(response.Value); if err != nil { return CommandResult[SeedObjectRelationsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedObjectRelationsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedObjectRelationsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedObjectRelationsBatch(ctx context.Context, inputs []SeedObjectRelationsInput, concurrency, checkpoint uint32) (BatchResult[SeedObjectRelationsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedObjectRelationsInput(input); err != nil { return BatchResult[SeedObjectRelationsOutcome]{}, err }; encoded[index] = encodeSeedObjectRelationsInput(input) }; response, err := client.session.Batch(ctx, SeedObjectRelationsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedObjectRelationsOutcome]{}, err }; result := BatchResult[SeedObjectRelationsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedObjectRelationsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedObjectRelationsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedObjectRelationsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedObjectRelationsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedObjectRelationsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedObjectRelationsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedObjectsPlanHash = "7a5df265166ed4a9a822c4860b166bc72062a280aa3170ea70852494669e1c5b"
@@ -1287,7 +1383,7 @@ return result, nil
 case "FgaObjectAlreadyExists": result := SeedObjectsFgaObjectAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedObjects(ctx context.Context, input SeedObjectsInput) (CommandResult[SeedObjectsOutcome], error) { if err := validateSeedObjectsInput(input); err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedObjectsOperation, encodeSeedObjectsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; outcome, err := decodeSeedObjectsOutcome(response.Value); if err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; return CommandResult[SeedObjectsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedObjectsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedObjects(ctx context.Context, input SeedObjectsInput) (CommandResult[SeedObjectsOutcome], error) { if err := validateSeedObjectsInput(input); err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedObjectsOperation, encodeSeedObjectsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; outcome, err := decodeSeedObjectsOutcome(response.Value); if err != nil { return CommandResult[SeedObjectsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedObjectsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedObjectsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedObjectsBatch(ctx context.Context, inputs []SeedObjectsInput, concurrency, checkpoint uint32) (BatchResult[SeedObjectsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedObjectsInput(input); err != nil { return BatchResult[SeedObjectsOutcome]{}, err }; encoded[index] = encodeSeedObjectsInput(input) }; response, err := client.session.Batch(ctx, SeedObjectsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedObjectsOutcome]{}, err }; result := BatchResult[SeedObjectsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedObjectsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedObjectsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedObjectsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedObjectsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedObjectsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedObjectsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedRunTagsPlanHash = "718067dea6348d23edcec0d76498ec3e7053663befc8ed60b429e67c95603f1d"
@@ -1305,7 +1401,7 @@ return result, nil
 case "MlflowRunTagAlreadyExists": result := SeedRunTagsMlflowRunTagAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedRunTags(ctx context.Context, input SeedRunTagsInput) (CommandResult[SeedRunTagsOutcome], error) { if err := validateSeedRunTagsInput(input); err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedRunTagsOperation, encodeSeedRunTagsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; outcome, err := decodeSeedRunTagsOutcome(response.Value); if err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; return CommandResult[SeedRunTagsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedRunTagsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedRunTags(ctx context.Context, input SeedRunTagsInput) (CommandResult[SeedRunTagsOutcome], error) { if err := validateSeedRunTagsInput(input); err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedRunTagsOperation, encodeSeedRunTagsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; outcome, err := decodeSeedRunTagsOutcome(response.Value); if err != nil { return CommandResult[SeedRunTagsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedRunTagsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedRunTagsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedRunTagsBatch(ctx context.Context, inputs []SeedRunTagsInput, concurrency, checkpoint uint32) (BatchResult[SeedRunTagsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedRunTagsInput(input); err != nil { return BatchResult[SeedRunTagsOutcome]{}, err }; encoded[index] = encodeSeedRunTagsInput(input) }; response, err := client.session.Batch(ctx, SeedRunTagsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedRunTagsOutcome]{}, err }; result := BatchResult[SeedRunTagsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedRunTagsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedRunTagsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedRunTagsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedRunTagsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedRunTagsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedRunTagsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedRunsPlanHash = "daeef9d1b109db42e7c4dbb8fc4138e2e3fe785416ff5ae443fc49c5b3b09859"
@@ -1321,7 +1417,7 @@ return result, nil
 case "MlflowRunAlreadyExists": result := SeedRunsMlflowRunAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedRuns(ctx context.Context, input SeedRunsInput) (CommandResult[SeedRunsOutcome], error) { if err := validateSeedRunsInput(input); err != nil { return CommandResult[SeedRunsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedRunsOperation, encodeSeedRunsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedRunsOutcome]{}, err }; outcome, err := decodeSeedRunsOutcome(response.Value); if err != nil { return CommandResult[SeedRunsOutcome]{}, err }; return CommandResult[SeedRunsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedRunsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedRuns(ctx context.Context, input SeedRunsInput) (CommandResult[SeedRunsOutcome], error) { if err := validateSeedRunsInput(input); err != nil { return CommandResult[SeedRunsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedRunsOperation, encodeSeedRunsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedRunsOutcome]{}, err }; outcome, err := decodeSeedRunsOutcome(response.Value); if err != nil { return CommandResult[SeedRunsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedRunsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedRunsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedRunsBatch(ctx context.Context, inputs []SeedRunsInput, concurrency, checkpoint uint32) (BatchResult[SeedRunsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedRunsInput(input); err != nil { return BatchResult[SeedRunsOutcome]{}, err }; encoded[index] = encodeSeedRunsInput(input) }; response, err := client.session.Batch(ctx, SeedRunsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedRunsOutcome]{}, err }; result := BatchResult[SeedRunsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedRunsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedRunsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedRunsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedRunsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedRunsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedRunsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedTicketCommentsPlanHash = "c0c3a1826766349b7d4d85be420aa427131dd48fb6cb4f39c295de138ff514a5"
@@ -1339,7 +1435,7 @@ return result, nil
 case "TicketCommentAlreadyExists": result := SeedTicketCommentsTicketCommentAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedTicketComments(ctx context.Context, input SeedTicketCommentsInput) (CommandResult[SeedTicketCommentsOutcome], error) { if err := validateSeedTicketCommentsInput(input); err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedTicketCommentsOperation, encodeSeedTicketCommentsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; outcome, err := decodeSeedTicketCommentsOutcome(response.Value); if err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; return CommandResult[SeedTicketCommentsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedTicketCommentsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedTicketComments(ctx context.Context, input SeedTicketCommentsInput) (CommandResult[SeedTicketCommentsOutcome], error) { if err := validateSeedTicketCommentsInput(input); err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedTicketCommentsOperation, encodeSeedTicketCommentsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; outcome, err := decodeSeedTicketCommentsOutcome(response.Value); if err != nil { return CommandResult[SeedTicketCommentsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedTicketCommentsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedTicketCommentsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedTicketCommentsBatch(ctx context.Context, inputs []SeedTicketCommentsInput, concurrency, checkpoint uint32) (BatchResult[SeedTicketCommentsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedTicketCommentsInput(input); err != nil { return BatchResult[SeedTicketCommentsOutcome]{}, err }; encoded[index] = encodeSeedTicketCommentsInput(input) }; response, err := client.session.Batch(ctx, SeedTicketCommentsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedTicketCommentsOutcome]{}, err }; result := BatchResult[SeedTicketCommentsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedTicketCommentsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedTicketCommentsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedTicketCommentsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedTicketCommentsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedTicketCommentsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedTicketCommentsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const SeedTicketsPlanHash = "91bdec78af2b24a971d81c0ef84fcabd51d038ba71a7b1b8b09bc657c4367724"
@@ -1355,7 +1451,7 @@ return result, nil
 case "TicketAlreadyExists": result := SeedTicketsTicketAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) SeedTickets(ctx context.Context, input SeedTicketsInput) (CommandResult[SeedTicketsOutcome], error) { if err := validateSeedTicketsInput(input); err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedTicketsOperation, encodeSeedTicketsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; outcome, err := decodeSeedTicketsOutcome(response.Value); if err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; return CommandResult[SeedTicketsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedTicketsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) SeedTickets(ctx context.Context, input SeedTicketsInput) (CommandResult[SeedTicketsOutcome], error) { if err := validateSeedTicketsInput(input); err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; response, err := client.session.Invoke(ctx, SeedTicketsOperation, encodeSeedTicketsInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; outcome, err := decodeSeedTicketsOutcome(response.Value); if err != nil { return CommandResult[SeedTicketsOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[SeedTicketsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SeedTicketsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) SeedTicketsBatch(ctx context.Context, inputs []SeedTicketsInput, concurrency, checkpoint uint32) (BatchResult[SeedTicketsOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateSeedTicketsInput(input); err != nil { return BatchResult[SeedTicketsOutcome]{}, err }; encoded[index] = encodeSeedTicketsInput(input) }; response, err := client.session.Batch(ctx, SeedTicketsOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[SeedTicketsOutcome]{}, err }; result := BatchResult[SeedTicketsOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[SeedTicketsOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[SeedTicketsOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeSeedTicketsOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[SeedTicketsOutcome]{}, decodeErr }; converted.Result = &CommandResult[SeedTicketsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SeedTicketsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const WriteTuplesPlanHash = "b6c58b579ff64f6b913217f8ffaaa3640a23b6d5a6c17deead37fb64ef801f3d"
@@ -1371,7 +1467,7 @@ return result, nil
 case "TupleAlreadyExists": result := WriteTuplesTupleAlreadyExists{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown command outcome") } }
-func (client *Client) WriteTuples(ctx context.Context, input WriteTuplesInput) (CommandResult[WriteTuplesOutcome], error) { if err := validateWriteTuplesInput(input); err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; response, err := client.session.Invoke(ctx, WriteTuplesOperation, encodeWriteTuplesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; outcome, err := decodeWriteTuplesOutcome(response.Value); if err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; return CommandResult[WriteTuplesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: WriteTuplesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
+func (client *Client) WriteTuples(ctx context.Context, input WriteTuplesInput) (CommandResult[WriteTuplesOutcome], error) { if err := validateWriteTuplesInput(input); err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; response, err := client.session.Invoke(ctx, WriteTuplesOperation, encodeWriteTuplesInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; outcome, err := decodeWriteTuplesOutcome(response.Value); if err != nil { return CommandResult[WriteTuplesOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; return CommandResult[WriteTuplesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: WriteTuplesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil }
 func (client *Client) WriteTuplesBatch(ctx context.Context, inputs []WriteTuplesInput, concurrency, checkpoint uint32) (BatchResult[WriteTuplesOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { if err := validateWriteTuplesInput(input); err != nil { return BatchResult[WriteTuplesOutcome]{}, err }; encoded[index] = encodeWriteTuplesInput(input) }; response, err := client.session.Batch(ctx, WriteTuplesOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[WriteTuplesOutcome]{}, err }; result := BatchResult[WriteTuplesOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[WriteTuplesOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[WriteTuplesOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeWriteTuplesOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[WriteTuplesOutcome]{}, decodeErr }; converted.Result = &CommandResult[WriteTuplesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: WriteTuplesPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 func requiredField(fields map[string]riffdb.Value, name string) (riffdb.Value, error) { value, ok := fields[name]; if !ok { return riffdb.Value{}, errors.New("RiffDB driver result is missing a generated field") }; return value, nil }

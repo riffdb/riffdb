@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -176,6 +177,20 @@ export interface ItemPageNotFound {
 
 export type ItemPageResult = ItemPageFound | ItemPageNotFound;
 
+export function isItemPageFound(value: ItemPageResult): value is ItemPageFound {
+  return value.outcome === "Found";
+}
+
+export function isItemPageNotFound(value: ItemPageResult): value is ItemPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapItemPageFound(value: ItemPageResult | TypedQueryResult<ItemPageResult>): ItemPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function itemPage(parameters: ItemPageParams): NamedQueryRequest<ItemPageParams, ItemPageResult> {
   return { driverOperation: { name: "driver_conformance_item_page", inputSchemaHash: "6c5ac3d8b9ce0d9a07e57a5ea08e5a9cad362f5f3d05377af535436975cb54cb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ItemPage", planHash: ITEM_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"item_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"item","schema":{"fields":[{"name":"item_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -199,6 +214,20 @@ export interface ItemSecretNotFound {
 }
 
 export type ItemSecretResult = ItemSecretFound | ItemSecretNotFound;
+
+export function isItemSecretFound(value: ItemSecretResult): value is ItemSecretFound {
+  return value.outcome === "Found";
+}
+
+export function isItemSecretNotFound(value: ItemSecretResult): value is ItemSecretNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapItemSecretFound(value: ItemSecretResult | TypedQueryResult<ItemSecretResult>): ItemSecretFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ItemSecretResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ItemSecret outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function redactItemSecretResult(value: ItemSecretResult): { readonly outcome: string; readonly redactedSecretOutputs: typeof ITEM_SECRET_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: ITEM_SECRET_SECRET_OUTPUTS };
@@ -225,6 +254,16 @@ export interface SearchItemsFound {
 
 export type SearchItemsResult = SearchItemsFound;
 
+export function isSearchItemsFound(value: SearchItemsResult): value is SearchItemsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapSearchItemsFound(value: SearchItemsResult | TypedQueryResult<SearchItemsResult>): SearchItemsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as SearchItemsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected SearchItems outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function searchItems(parameters: SearchItemsParams): NamedQueryRequest<SearchItemsParams, SearchItemsResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "driver_conformance_search_items", inputSchemaHash: "8b5d1f261f1dc98cccaa81d531b27eb9e71094bb3f38485898e015f3a7fcd26c" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "SearchItems", planHash: SEARCH_ITEMS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"needle","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}},{"name":"offset","schema":{"kind":"u64"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"items","schema":{"kind":"list","value":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"total","schema":{"fields":[{"name":"value","schema":{"kind":"u64"}}],"kind":"record"}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -242,28 +281,52 @@ export const CONSUME_TOKEN_SECRET_OUTPUTS = [
 
 export type ConsumeTokenOutcome = { readonly outcome: "TokenExpired" } | { readonly outcome: "TokenMissing" } | { readonly outcome: "TokenConsumed"; readonly value: string; readonly token_id: string; readonly issued_at: { readonly seconds: bigint; readonly nanos: number }; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly identifier: string };
 
+export function isConsumeTokenTokenExpired(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenExpired" }> {
+  return value.outcome === "TokenExpired";
+}
+
+export function isConsumeTokenTokenMissing(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenMissing" }> {
+  return value.outcome === "TokenMissing";
+}
+
+export function isConsumeTokenTokenConsumed(value: ConsumeTokenOutcome): value is Extract<ConsumeTokenOutcome, { readonly outcome: "TokenConsumed" }> {
+  return value.outcome === "TokenConsumed";
+}
+
 export function redactConsumeTokenOutcome(value: ConsumeTokenOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof CONSUME_TOKEN_SECRET_OUTPUTS } {
   return { outcome: value.outcome, redactedSecretOutputs: CONSUME_TOKEN_SECRET_OUTPUTS };
 }
 
 export const CONSUME_TOKEN_PLAN_HASH = "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f" as const;
 export function consumeToken(input: ConsumeTokenInput): CommandRequest<ConsumeTokenInput, ConsumeTokenOutcome> {
-  return { driverOperation: { name: "driver_conformance_consume_token", inputSchemaHash: "6fe9e04a4e2c880062d481fb30917816a0cae314acc951479a808a61e53ecacb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeToken", planHash: CONSUME_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"token_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenConsumed":{"fields":[{"name":"value","schema":{"kind":"string"},"wireId":1},{"name":"token_id","schema":{"kind":"uuid"},"wireId":2},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"identifier","schema":{"kind":"string"},"wireId":5}],"kind":"record"},"TokenExpired":{"fields":[],"kind":"record"},"TokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: ConsumeTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "driver_conformance_consume_token", inputSchemaHash: "6fe9e04a4e2c880062d481fb30917816a0cae314acc951479a808a61e53ecacb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ConsumeToken", planHash: CONSUME_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"token_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenConsumed":{"fields":[{"name":"value","schema":{"kind":"string"},"wireId":1},{"name":"token_id","schema":{"kind":"uuid"},"wireId":2},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"expires_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"identifier","schema":{"kind":"string"},"wireId":5}],"kind":"record"},"TokenExpired":{"fields":[],"kind":"record"},"TokenMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateItemInput {
   readonly title: string;
   readonly item_id: string;
   readonly token_digest: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateItemOutcome = { readonly outcome: "Created" } | { readonly outcome: "ItemExists"; readonly item_id: string };
 
+export function isCreateItemCreated(value: CreateItemOutcome): value is Extract<CreateItemOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateItemItemExists(value: CreateItemOutcome): value is Extract<CreateItemOutcome, { readonly outcome: "ItemExists" }> {
+  return value.outcome === "ItemExists";
+}
+
 export const CREATE_ITEM_PLAN_HASH = "1864a0fb9a8ca3f70f973fc26aaca832d3dfe7e08155d49cfbd4b4f0f1422a1c" as const;
 export function createItem(input: CreateItemInput): CommandRequest<CreateItemInput, CreateItemOutcome> {
-  return { driverOperation: { name: "driver_conformance_create_item", inputSchemaHash: "61073bd1bbaacc606a002fba9d9f7810b43799ef379b4dda35741d38a606e670" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"token_digest","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateItemInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "driver_conformance_create_item", inputSchemaHash: "61073bd1bbaacc606a002fba9d9f7810b43799ef379b4dda35741d38a606e670" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateItem", planHash: CREATE_ITEM_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"item_id","schema":{"kind":"uuid"}},{"name":"token_digest","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[],"kind":"record"},"ItemExists":{"fields":[{"name":"item_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface IssueTokenInput {
@@ -277,43 +340,93 @@ export interface IssueTokenInput {
 
 export type IssueTokenOutcome = { readonly outcome: "TokenIssued"; readonly token_id: string; readonly issued_at: { readonly seconds: bigint; readonly nanos: number } } | { readonly outcome: "TokenAlreadyExists" };
 
+export function isIssueTokenTokenIssued(value: IssueTokenOutcome): value is Extract<IssueTokenOutcome, { readonly outcome: "TokenIssued" }> {
+  return value.outcome === "TokenIssued";
+}
+
+export function isIssueTokenTokenAlreadyExists(value: IssueTokenOutcome): value is Extract<IssueTokenOutcome, { readonly outcome: "TokenAlreadyExists" }> {
+  return value.outcome === "TokenAlreadyExists";
+}
+
 export const ISSUE_TOKEN_PLAN_HASH = "ca76f7e3dd6e5a607ac5d503cd1e9a705af77293b24c8a5e312e92eb0e190d44" as const;
 export function issueToken(input: IssueTokenInput): CommandRequest<IssueTokenInput, IssueTokenOutcome> {
-  return { driverOperation: { name: "driver_conformance_issue_token", inputSchemaHash: "359d4d3ac8acb5d945adc331064c8af5dc2f5b59694ee18c2dcf74ffb5dd7288" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueToken", planHash: ISSUE_TOKEN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"value","schema":{"kind":"string"}},{"name":"token_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"identifier","schema":{"kind":"string"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenAlreadyExists":{"fields":[],"kind":"record"},"TokenIssued":{"fields":[{"name":"token_id","schema":{"kind":"uuid"},"wireId":1},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: IssueTokenInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "driver_conformance_issue_token", inputSchemaHash: "359d4d3ac8acb5d945adc331064c8af5dc2f5b59694ee18c2dcf74ffb5dd7288" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "IssueToken", planHash: ISSUE_TOKEN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"value","schema":{"kind":"string"}},{"name":"token_id","schema":{"kind":"uuid"}},{"name":"expires_at","schema":{"kind":"timestamp"}},{"name":"identifier","schema":{"kind":"string"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"TokenAlreadyExists":{"fields":[],"kind":"record"},"TokenIssued":{"fields":[{"name":"token_id","schema":{"kind":"uuid"},"wireId":1},{"name":"issued_at","schema":{"kind":"timestamp"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class DriverConformanceClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): DriverConformanceClient {
+    return new DriverConformanceClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): DriverConformanceClient {
+    return new DriverConformanceClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): DriverConformanceClient {
+    return new DriverConformanceClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async itemPage(parameters: ItemPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = itemPage(parameters);
-    const result = await this.transport.executeNamedQuery<ItemPageParams, ItemPageResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ItemPageParams, ItemPageResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async itemPageAfterCommit(parameters: ItemPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemPageResult>> {
+    return this.itemPage(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async itemSecret(parameters: ItemSecretParams, options: QueryOptions = {}): Promise<TypedQueryResult<ItemSecretResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = itemSecret(parameters);
-    const result = await this.transport.executeNamedQuery<ItemSecretParams, ItemSecretResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ItemSecretParams, ItemSecretResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async itemSecretAfterCommit(parameters: ItemSecretParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ItemSecretResult>> {
+    return this.itemSecret(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async searchItems(parameters: SearchItemsParams, options: QueryOptions = {}): Promise<TypedQueryResult<SearchItemsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = searchItems(parameters);
-    const result = await this.transport.executeNamedQuery<SearchItemsParams, SearchItemsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<SearchItemsParams, SearchItemsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async searchItemsAfterCommit(parameters: SearchItemsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<SearchItemsResult>> {
+    return this.searchItems(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async consumeToken(input: ConsumeTokenInput): Promise<TypedCommandResult<ConsumeTokenOutcome>> {
     const result = await this.transport.executeCommand<ConsumeTokenInput, ConsumeTokenOutcome>(consumeToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CONSUME_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -337,6 +450,9 @@ export class DriverConformanceClient {
   public async createItem(input: CreateItemInput): Promise<TypedCommandResult<CreateItemOutcome>> {
     const result = await this.transport.executeCommand<CreateItemInput, CreateItemOutcome>(createItem(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ITEM_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -360,6 +476,9 @@ export class DriverConformanceClient {
   public async issueToken(input: IssueTokenInput): Promise<TypedCommandResult<IssueTokenOutcome>> {
     const result = await this.transport.executeCommand<IssueTokenInput, IssueTokenOutcome>(issueToken(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ISSUE_TOKEN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

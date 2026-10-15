@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -171,6 +172,16 @@ export interface DocumentSummaryFound {
 
 export type DocumentSummaryResult = DocumentSummaryFound;
 
+export function isDocumentSummaryFound(value: DocumentSummaryResult): value is DocumentSummaryFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapDocumentSummaryFound(value: DocumentSummaryResult | TypedQueryResult<DocumentSummaryResult>): DocumentSummaryFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as DocumentSummaryResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected DocumentSummary outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function documentSummary(parameters: DocumentSummaryParams): NamedQueryRequest<DocumentSummaryParams, DocumentSummaryResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_document_summary", inputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "DocumentSummary", planHash: DOCUMENT_SUMMARY_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"summary","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"state","schema":{"kind":"enum"}},{"name":"document_count","schema":{"kind":"u64"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -192,6 +203,20 @@ export interface GetDocumentNotFound {
 
 export type GetDocumentResult = GetDocumentFound | GetDocumentNotFound;
 
+export function isGetDocumentFound(value: GetDocumentResult): value is GetDocumentFound {
+  return value.outcome === "Found";
+}
+
+export function isGetDocumentNotFound(value: GetDocumentResult): value is GetDocumentNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapGetDocumentFound(value: GetDocumentResult | TypedQueryResult<GetDocumentResult>): GetDocumentFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetDocumentResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetDocument outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function getDocument(parameters: GetDocumentParams): NamedQueryRequest<GetDocumentParams, GetDocumentResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_get_document", inputSchemaHash: "774f267abc584279881797cd97a69b096dbc12f50323460f78cdedb049a69b0d" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetDocument", planHash: GET_DOCUMENT_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"document_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"document","schema":{"fields":[{"name":"document_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"state","schema":{"kind":"enum"}},{"name":"title","schema":{"kind":"string"}},{"name":"body","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -207,6 +232,16 @@ export interface ListDocumentsFound {
 }
 
 export type ListDocumentsResult = ListDocumentsFound;
+
+export function isListDocumentsFound(value: ListDocumentsResult): value is ListDocumentsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListDocumentsFound(value: ListDocumentsResult | TypedQueryResult<ListDocumentsResult>): ListDocumentsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListDocumentsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListDocuments outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function listDocuments(parameters: ListDocumentsParams): NamedQueryRequest<ListDocumentsParams, ListDocumentsResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_list_documents", inputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListDocuments", planHash: LIST_DOCUMENTS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"documents","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"document_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"state","schema":{"kind":"enum"}},{"name":"title","schema":{"kind":"string"}},{"name":"body","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -224,6 +259,16 @@ export interface ListDraftDocumentsFound {
 
 export type ListDraftDocumentsResult = ListDraftDocumentsFound;
 
+export function isListDraftDocumentsFound(value: ListDraftDocumentsResult): value is ListDraftDocumentsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListDraftDocumentsFound(value: ListDraftDocumentsResult | TypedQueryResult<ListDraftDocumentsResult>): ListDraftDocumentsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListDraftDocumentsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListDraftDocuments outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function listDraftDocuments(parameters: ListDraftDocumentsParams): NamedQueryRequest<ListDraftDocumentsParams, ListDraftDocumentsResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_list_draft_documents", inputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListDraftDocuments", planHash: LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"documents","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"document_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"state","schema":{"kind":"enum"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -240,6 +285,16 @@ export interface ListExperimentsFound {
 
 export type ListExperimentsResult = ListExperimentsFound;
 
+export function isListExperimentsFound(value: ListExperimentsResult): value is ListExperimentsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListExperimentsFound(value: ListExperimentsResult | TypedQueryResult<ListExperimentsResult>): ListExperimentsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListExperimentsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListExperiments outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function listExperiments(parameters: ListExperimentsParams): NamedQueryRequest<ListExperimentsParams, ListExperimentsResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_list_experiments", inputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListExperiments", planHash: LIST_EXPERIMENTS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"experiments","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -255,6 +310,16 @@ export interface MetricDashboardFound {
 }
 
 export type MetricDashboardResult = MetricDashboardFound;
+
+export function isMetricDashboardFound(value: MetricDashboardResult): value is MetricDashboardFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapMetricDashboardFound(value: MetricDashboardResult | TypedQueryResult<MetricDashboardResult>): MetricDashboardFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as MetricDashboardResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected MetricDashboard outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function metricDashboard(parameters: MetricDashboardParams): NamedQueryRequest<MetricDashboardParams, MetricDashboardResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_metric_dashboard", inputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "MetricDashboard", planHash: METRIC_DASHBOARD_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"summary","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"sample_count","schema":{"kind":"u64"}},{"name":"total_micros","schema":{"kind":"decimal","precision":39,"scale":0}},{"name":"minimum_micros","schema":{"kind":"optional","value":{"kind":"i64"}}},{"name":"maximum_micros","schema":{"kind":"optional","value":{"kind":"i64"}}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -280,6 +345,20 @@ export interface RunPageNotFound {
 
 export type RunPageResult = RunPageFound | RunPageNotFound;
 
+export function isRunPageFound(value: RunPageResult): value is RunPageFound {
+  return value.outcome === "Found";
+}
+
+export function isRunPageNotFound(value: RunPageResult): value is RunPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapRunPageFound(value: RunPageResult | TypedQueryResult<RunPageResult>): RunPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as RunPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected RunPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function runPage(parameters: RunPageParams): NamedQueryRequest<RunPageParams, RunPageResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_run_page", inputSchemaHash: "f190422959264010043261e2e729bd70f0f42bb76d8eba4fc8ce28401c6697dd" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "RunPage", planHash: RUN_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"run_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"run","schema":{"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"state","schema":{"kind":"enum"}}],"kind":"record"}},{"name":"metrics","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"metric_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}},{"name":"value_micros","schema":{"kind":"i64"}}],"kind":"record"}}},{"name":"artifacts","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"artifact_id","schema":{"kind":"uuid"}},{"name":"path","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -297,6 +376,16 @@ export interface SearchDocumentsFound {
 
 export type SearchDocumentsResult = SearchDocumentsFound;
 
+export function isSearchDocumentsFound(value: SearchDocumentsResult): value is SearchDocumentsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapSearchDocumentsFound(value: SearchDocumentsResult | TypedQueryResult<SearchDocumentsResult>): SearchDocumentsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as SearchDocumentsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected SearchDocuments outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function searchDocuments(parameters: SearchDocumentsParams): NamedQueryRequest<SearchDocumentsParams, SearchDocumentsResult> {
   return { driverOperation: { name: "adapter_row_policy_conformance_search_documents", inputSchemaHash: "0aeccd17cb9e9e8b16c378bc690069e2399e0697d2f834714edbfaa933f88478" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "SearchDocuments", planHash: SEARCH_DOCUMENTS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"title_prefix","schema":{"kind":"string"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"documents","schema":{"kind":"list","maximum":25,"value":{"fields":[{"name":"document_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"state","schema":{"kind":"enum"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -310,9 +399,19 @@ export interface AttemptDocumentTransferInput {
 
 export type AttemptDocumentTransferOutcome = { readonly outcome: "DocumentMissing" } | { readonly outcome: "DocumentTransferred"; readonly document: { readonly body: string; readonly state: string; readonly title: string; readonly group_id: string | null; readonly owner_id: string; readonly visibility: string; readonly document_id: string; readonly organization_id: string } };
 
+export function isAttemptDocumentTransferDocumentMissing(value: AttemptDocumentTransferOutcome): value is Extract<AttemptDocumentTransferOutcome, { readonly outcome: "DocumentMissing" }> {
+  return value.outcome === "DocumentMissing";
+}
+
+export function isAttemptDocumentTransferDocumentTransferred(value: AttemptDocumentTransferOutcome): value is Extract<AttemptDocumentTransferOutcome, { readonly outcome: "DocumentTransferred" }> {
+  return value.outcome === "DocumentTransferred";
+}
+
 export const ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH = "577409d3917653905aab400626d38f56718a25b504bc9ea7f42ec654639fee26" as const;
 export function attemptDocumentTransfer(input: AttemptDocumentTransferInput): CommandRequest<AttemptDocumentTransferInput, AttemptDocumentTransferOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_attempt_document_transfer", inputSchemaHash: "517423fc20c6dc5f3b93df89994a3a000b9a8d70612312ca0bd990e1396761d2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttemptDocumentTransfer", planHash: ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"request_id","schema":{"kind":"uuid"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"new_owner_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentMissing":{"fields":[],"kind":"record"},"DocumentTransferred":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: AttemptDocumentTransferInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_attempt_document_transfer", inputSchemaHash: "517423fc20c6dc5f3b93df89994a3a000b9a8d70612312ca0bd990e1396761d2" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttemptDocumentTransfer", planHash: ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"request_id","schema":{"kind":"uuid"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"new_owner_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentMissing":{"fields":[],"kind":"record"},"DocumentTransferred":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface ChangeDocumentAccessInput {
@@ -325,9 +424,19 @@ export interface ChangeDocumentAccessInput {
 
 export type ChangeDocumentAccessOutcome = { readonly outcome: "DocumentMissing" } | { readonly outcome: "DocumentAccessChanged"; readonly document: { readonly body: string; readonly state: string; readonly title: string; readonly group_id: string | null; readonly owner_id: string; readonly visibility: string; readonly document_id: string; readonly organization_id: string } };
 
+export function isChangeDocumentAccessDocumentMissing(value: ChangeDocumentAccessOutcome): value is Extract<ChangeDocumentAccessOutcome, { readonly outcome: "DocumentMissing" }> {
+  return value.outcome === "DocumentMissing";
+}
+
+export function isChangeDocumentAccessDocumentAccessChanged(value: ChangeDocumentAccessOutcome): value is Extract<ChangeDocumentAccessOutcome, { readonly outcome: "DocumentAccessChanged" }> {
+  return value.outcome === "DocumentAccessChanged";
+}
+
 export const CHANGE_DOCUMENT_ACCESS_PLAN_HASH = "5b9c70266a29652a028256e5c72341d86505a83ce14d8f6eac3ef7855cf83cb0" as const;
 export function changeDocumentAccess(input: ChangeDocumentAccessInput): CommandRequest<ChangeDocumentAccessInput, ChangeDocumentAccessOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_change_document_access", inputSchemaHash: "0a5be490ebf9f3bc8c31029dd0db722019ed78a64bd09edf82c39e651875f300" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ChangeDocumentAccess", planHash: CHANGE_DOCUMENT_ACCESS_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentAccessChanged":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"DocumentMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: ChangeDocumentAccessInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_change_document_access", inputSchemaHash: "0a5be490ebf9f3bc8c31029dd0db722019ed78a64bd09edf82c39e651875f300" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "ChangeDocumentAccess", planHash: CHANGE_DOCUMENT_ACCESS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentAccessChanged":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"DocumentMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateArtifactInput {
@@ -344,9 +453,19 @@ export interface CreateArtifactInput {
 
 export type CreateArtifactOutcome = { readonly outcome: "ArtifactExists" } | { readonly outcome: "ArtifactCreated"; readonly artifact: { readonly path: string; readonly run_id: string; readonly group_id: string | null; readonly owner_id: string; readonly visibility: string; readonly artifact_id: string; readonly experiment_id: string; readonly organization_id: string } };
 
+export function isCreateArtifactArtifactExists(value: CreateArtifactOutcome): value is Extract<CreateArtifactOutcome, { readonly outcome: "ArtifactExists" }> {
+  return value.outcome === "ArtifactExists";
+}
+
+export function isCreateArtifactArtifactCreated(value: CreateArtifactOutcome): value is Extract<CreateArtifactOutcome, { readonly outcome: "ArtifactCreated" }> {
+  return value.outcome === "ArtifactCreated";
+}
+
 export const CREATE_ARTIFACT_PLAN_HASH = "fd4fb59c4f94c29a370038d73d3fe0f9803c0ce9e201c13d03511103d0b8716b" as const;
 export function createArtifact(input: CreateArtifactInput): CommandRequest<CreateArtifactInput, CreateArtifactOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_create_artifact", inputSchemaHash: "e29c6876e9c029476b462de1510affb679f47fb97b86be6fe875b6dc05c2855a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateArtifact", planHash: CREATE_ARTIFACT_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"path","schema":{"kind":"string"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"artifact_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ArtifactCreated":{"fields":[{"name":"artifact","schema":{"fields":[{"name":"path","schema":{"kind":"string"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"visibility","schema":{"kind":"enum"},"wireId":5},{"name":"artifact_id","schema":{"kind":"uuid"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"ArtifactExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateArtifactInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_create_artifact", inputSchemaHash: "e29c6876e9c029476b462de1510affb679f47fb97b86be6fe875b6dc05c2855a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateArtifact", planHash: CREATE_ARTIFACT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"path","schema":{"kind":"string"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"artifact_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ArtifactCreated":{"fields":[{"name":"artifact","schema":{"fields":[{"name":"path","schema":{"kind":"string"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"visibility","schema":{"kind":"enum"},"wireId":5},{"name":"artifact_id","schema":{"kind":"uuid"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"ArtifactExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateDocumentInput {
@@ -363,9 +482,19 @@ export interface CreateDocumentInput {
 
 export type CreateDocumentOutcome = { readonly outcome: "DocumentExists" } | { readonly outcome: "DocumentCreated"; readonly document: { readonly body: string; readonly state: string; readonly title: string; readonly group_id: string | null; readonly owner_id: string; readonly visibility: string; readonly document_id: string; readonly organization_id: string } };
 
+export function isCreateDocumentDocumentExists(value: CreateDocumentOutcome): value is Extract<CreateDocumentOutcome, { readonly outcome: "DocumentExists" }> {
+  return value.outcome === "DocumentExists";
+}
+
+export function isCreateDocumentDocumentCreated(value: CreateDocumentOutcome): value is Extract<CreateDocumentOutcome, { readonly outcome: "DocumentCreated" }> {
+  return value.outcome === "DocumentCreated";
+}
+
 export const CREATE_DOCUMENT_PLAN_HASH = "cb7f63c1bd0b62d9e733a8aeb9eda02e8b08b58f478916fcb86f42af104d2dd6" as const;
 export function createDocument(input: CreateDocumentInput): CommandRequest<CreateDocumentInput, CreateDocumentOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_create_document", inputSchemaHash: "e0e534af8e232c3a0e879d43a94ed3ac0ea2b30aab0ed8b37a29793ed5025cbd" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateDocument", planHash: CREATE_DOCUMENT_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"state","schema":{"kind":"enum"}},{"name":"title","schema":{"kind":"string"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentCreated":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"DocumentExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateDocumentInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_create_document", inputSchemaHash: "e0e534af8e232c3a0e879d43a94ed3ac0ea2b30aab0ed8b37a29793ed5025cbd" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateDocument", planHash: CREATE_DOCUMENT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"state","schema":{"kind":"enum"}},{"name":"title","schema":{"kind":"string"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"document_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"DocumentCreated":{"fields":[{"name":"document","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"state","schema":{"kind":"enum"},"wireId":2},{"name":"title","schema":{"kind":"string"},"wireId":3},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":4},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"document_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"DocumentExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateExperimentInput {
@@ -380,9 +509,19 @@ export interface CreateExperimentInput {
 
 export type CreateExperimentOutcome = { readonly outcome: "ExperimentExists" } | { readonly outcome: "ExperimentCreated"; readonly experiment: { readonly name: string; readonly group_id: string | null; readonly owner_id: string; readonly visibility: string; readonly experiment_id: string; readonly organization_id: string } };
 
+export function isCreateExperimentExperimentExists(value: CreateExperimentOutcome): value is Extract<CreateExperimentOutcome, { readonly outcome: "ExperimentExists" }> {
+  return value.outcome === "ExperimentExists";
+}
+
+export function isCreateExperimentExperimentCreated(value: CreateExperimentOutcome): value is Extract<CreateExperimentOutcome, { readonly outcome: "ExperimentCreated" }> {
+  return value.outcome === "ExperimentCreated";
+}
+
 export const CREATE_EXPERIMENT_PLAN_HASH = "854b038da38b173799ad89e931344ac8dfc1c32f89f61e1852fb805faf32d21e" as const;
 export function createExperiment(input: CreateExperimentInput): CommandRequest<CreateExperimentInput, CreateExperimentOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_create_experiment", inputSchemaHash: "65ff5da90cebacddc5b305fb2df42b0a1397a6c99798c5d08c832f24380b1036" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateExperiment", planHash: CREATE_EXPERIMENT_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ExperimentCreated":{"fields":[{"name":"experiment","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":2},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":3},{"name":"visibility","schema":{"kind":"enum"},"wireId":4},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"ExperimentExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateExperimentInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_create_experiment", inputSchemaHash: "65ff5da90cebacddc5b305fb2df42b0a1397a6c99798c5d08c832f24380b1036" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateExperiment", planHash: CREATE_EXPERIMENT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"ExperimentCreated":{"fields":[{"name":"experiment","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":2},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":3},{"name":"visibility","schema":{"kind":"enum"},"wireId":4},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"ExperimentExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateRunInput {
@@ -398,9 +537,19 @@ export interface CreateRunInput {
 
 export type CreateRunOutcome = { readonly outcome: "RunExists" } | { readonly outcome: "RunCreated"; readonly run: { readonly state: string; readonly run_id: string; readonly group_id: string | null; readonly owner_id: string; readonly revision: bigint; readonly visibility: string; readonly experiment_id: string; readonly organization_id: string } };
 
+export function isCreateRunRunExists(value: CreateRunOutcome): value is Extract<CreateRunOutcome, { readonly outcome: "RunExists" }> {
+  return value.outcome === "RunExists";
+}
+
+export function isCreateRunRunCreated(value: CreateRunOutcome): value is Extract<CreateRunOutcome, { readonly outcome: "RunCreated" }> {
+  return value.outcome === "RunCreated";
+}
+
 export const CREATE_RUN_PLAN_HASH = "289e85b989f6da11b19b49d489e928cc18a5173d1b88d736e2d4d993d622dba3" as const;
 export function createRun(input: CreateRunInput): CommandRequest<CreateRunInput, CreateRunOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_create_run", inputSchemaHash: "f983149614778e51438ac6af1df18a14ab5a00ab217f6c044d1123e5c036670a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRun", planHash: CREATE_RUN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"state","schema":{"kind":"enum"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"RunCreated":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision","schema":{"kind":"u64"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateRunInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_create_run", inputSchemaHash: "f983149614778e51438ac6af1df18a14ab5a00ab217f6c044d1123e5c036670a" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateRun", planHash: CREATE_RUN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"state","schema":{"kind":"enum"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"RunCreated":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision","schema":{"kind":"u64"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunExists":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface FinishRunInput {
@@ -413,9 +562,27 @@ export interface FinishRunInput {
 
 export type FinishRunOutcome = { readonly outcome: "RunMissing" } | { readonly outcome: "FinishStale" } | { readonly outcome: "RunFinished"; readonly run: { readonly state: string; readonly run_id: string; readonly group_id: string | null; readonly owner_id: string; readonly revision: bigint; readonly visibility: string; readonly experiment_id: string; readonly organization_id: string } } | { readonly outcome: "FinishIllegal" };
 
+export function isFinishRunRunMissing(value: FinishRunOutcome): value is Extract<FinishRunOutcome, { readonly outcome: "RunMissing" }> {
+  return value.outcome === "RunMissing";
+}
+
+export function isFinishRunFinishStale(value: FinishRunOutcome): value is Extract<FinishRunOutcome, { readonly outcome: "FinishStale" }> {
+  return value.outcome === "FinishStale";
+}
+
+export function isFinishRunRunFinished(value: FinishRunOutcome): value is Extract<FinishRunOutcome, { readonly outcome: "RunFinished" }> {
+  return value.outcome === "RunFinished";
+}
+
+export function isFinishRunFinishIllegal(value: FinishRunOutcome): value is Extract<FinishRunOutcome, { readonly outcome: "FinishIllegal" }> {
+  return value.outcome === "FinishIllegal";
+}
+
 export const FINISH_RUN_PLAN_HASH = "47867b539cbd3499ba53923f19031513f10f1211b27e9f613d70df88d6b803f8" as const;
 export function finishRun(input: FinishRunInput): CommandRequest<FinishRunInput, FinishRunOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_finish_run", inputSchemaHash: "3d260f8e26f399bb0ea500ecb2c7cfc004858a5181ff4e8da42776c2abbf7ddb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "FinishRun", planHash: FINISH_RUN_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"FinishIllegal":{"fields":[],"kind":"record"},"FinishStale":{"fields":[],"kind":"record"},"RunFinished":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision","schema":{"kind":"u64"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: FinishRunInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_finish_run", inputSchemaHash: "3d260f8e26f399bb0ea500ecb2c7cfc004858a5181ff4e8da42776c2abbf7ddb" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "FinishRun", planHash: FINISH_RUN_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"run_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"expected_revision","schema":{"kind":"u64"}}],"kind":"record"}, outcomeSchemas: {"FinishIllegal":{"fields":[],"kind":"record"},"FinishStale":{"fields":[],"kind":"record"},"RunFinished":{"fields":[{"name":"run","schema":{"fields":[{"name":"state","schema":{"kind":"enum"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"revision","schema":{"kind":"u64"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":7},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":8}],"kind":"record"},"wireId":1}],"kind":"record"},"RunMissing":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface LogMetricInput {
@@ -433,78 +600,153 @@ export interface LogMetricInput {
 
 export type LogMetricOutcome = { readonly outcome: "MetricExists" } | { readonly outcome: "MetricLogged"; readonly metric: { readonly name: string; readonly run_id: string; readonly group_id: string | null; readonly owner_id: string; readonly metric_id: string; readonly visibility: string; readonly value_micros: bigint; readonly experiment_id: string; readonly organization_id: string } };
 
+export function isLogMetricMetricExists(value: LogMetricOutcome): value is Extract<LogMetricOutcome, { readonly outcome: "MetricExists" }> {
+  return value.outcome === "MetricExists";
+}
+
+export function isLogMetricMetricLogged(value: LogMetricOutcome): value is Extract<LogMetricOutcome, { readonly outcome: "MetricLogged" }> {
+  return value.outcome === "MetricLogged";
+}
+
 export const LOG_METRIC_PLAN_HASH = "023b0d923414555cce9e1db5229c9ff417232d00b4c2c3def1dec40e1b656b0e" as const;
 export function logMetric(input: LogMetricInput): CommandRequest<LogMetricInput, LogMetricOutcome> {
-  return { driverOperation: { name: "adapter_row_policy_conformance_log_metric", inputSchemaHash: "c8012885c7bc1b922417351a819b6fb4b8ba4048166c3766518734eb1091d608" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "LogMetric", planHash: LOG_METRIC_PLAN_HASH, input, idempotencyKey: input.request_id, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"metric_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"value_micros","schema":{"kind":"i64"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MetricExists":{"fields":[],"kind":"record"},"MetricLogged":{"fields":[{"name":"metric","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"metric_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"value_micros","schema":{"kind":"i64"},"wireId":7},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.request_id && input.request_id.length > 0 ? input.request_id : globalThis.crypto.randomUUID();
+  const resolvedInput: LogMetricInput = input.request_id === idempotencyKey ? input : { ...input, request_id: idempotencyKey };
+  return { driverOperation: { name: "adapter_row_policy_conformance_log_metric", inputSchemaHash: "c8012885c7bc1b922417351a819b6fb4b8ba4048166c3766518734eb1091d608" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "LogMetric", planHash: LOG_METRIC_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"run_id","schema":{"kind":"uuid"}},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}}},{"name":"owner_id","schema":{"kind":"uuid"}},{"name":"metric_id","schema":{"kind":"uuid"}},{"name":"request_id","schema":{"kind":"uuid"}},{"name":"visibility","schema":{"kind":"enum"}},{"name":"value_micros","schema":{"kind":"i64"}},{"name":"experiment_id","schema":{"kind":"uuid"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MetricExists":{"fields":[],"kind":"record"},"MetricLogged":{"fields":[{"name":"metric","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"run_id","schema":{"kind":"uuid"},"wireId":2},{"name":"group_id","schema":{"kind":"optional","value":{"kind":"uuid"}},"wireId":3},{"name":"owner_id","schema":{"kind":"uuid"},"wireId":4},{"name":"metric_id","schema":{"kind":"uuid"},"wireId":5},{"name":"visibility","schema":{"kind":"enum"},"wireId":6},{"name":"value_micros","schema":{"kind":"i64"},"wireId":7},{"name":"experiment_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class AdapterRowPolicyConformanceClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): AdapterRowPolicyConformanceClient {
+    return new AdapterRowPolicyConformanceClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): AdapterRowPolicyConformanceClient {
+    return new AdapterRowPolicyConformanceClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): AdapterRowPolicyConformanceClient {
+    return new AdapterRowPolicyConformanceClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async documentSummary(parameters: DocumentSummaryParams, options: QueryOptions = {}): Promise<TypedQueryResult<DocumentSummaryResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = documentSummary(parameters);
-    const result = await this.transport.executeNamedQuery<DocumentSummaryParams, DocumentSummaryResult>(request, options);
+    const result = await this.transport.executeNamedQuery<DocumentSummaryParams, DocumentSummaryResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async documentSummaryAfterCommit(parameters: DocumentSummaryParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<DocumentSummaryResult>> {
+    return this.documentSummary(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async getDocument(parameters: GetDocumentParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetDocumentResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getDocument(parameters);
-    const result = await this.transport.executeNamedQuery<GetDocumentParams, GetDocumentResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetDocumentParams, GetDocumentResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getDocumentAfterCommit(parameters: GetDocumentParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetDocumentResult>> {
+    return this.getDocument(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async listDocuments(parameters: ListDocumentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListDocumentsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = listDocuments(parameters);
-    const result = await this.transport.executeNamedQuery<ListDocumentsParams, ListDocumentsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ListDocumentsParams, ListDocumentsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async listDocumentsAfterCommit(parameters: ListDocumentsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListDocumentsResult>> {
+    return this.listDocuments(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async listDraftDocuments(parameters: ListDraftDocumentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListDraftDocumentsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = listDraftDocuments(parameters);
-    const result = await this.transport.executeNamedQuery<ListDraftDocumentsParams, ListDraftDocumentsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ListDraftDocumentsParams, ListDraftDocumentsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async listDraftDocumentsAfterCommit(parameters: ListDraftDocumentsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListDraftDocumentsResult>> {
+    return this.listDraftDocuments(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async listExperiments(parameters: ListExperimentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListExperimentsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = listExperiments(parameters);
-    const result = await this.transport.executeNamedQuery<ListExperimentsParams, ListExperimentsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ListExperimentsParams, ListExperimentsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async listExperimentsAfterCommit(parameters: ListExperimentsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListExperimentsResult>> {
+    return this.listExperiments(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async metricDashboard(parameters: MetricDashboardParams, options: QueryOptions = {}): Promise<TypedQueryResult<MetricDashboardResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = metricDashboard(parameters);
-    const result = await this.transport.executeNamedQuery<MetricDashboardParams, MetricDashboardResult>(request, options);
+    const result = await this.transport.executeNamedQuery<MetricDashboardParams, MetricDashboardResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async metricDashboardAfterCommit(parameters: MetricDashboardParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<MetricDashboardResult>> {
+    return this.metricDashboard(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async runPage(parameters: RunPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<RunPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = runPage(parameters);
-    const result = await this.transport.executeNamedQuery<RunPageParams, RunPageResult>(request, options);
+    const result = await this.transport.executeNamedQuery<RunPageParams, RunPageResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async runPageAfterCommit(parameters: RunPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<RunPageResult>> {
+    return this.runPage(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async searchDocuments(parameters: SearchDocumentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<SearchDocumentsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = searchDocuments(parameters);
-    const result = await this.transport.executeNamedQuery<SearchDocumentsParams, SearchDocumentsResult>(request, options);
+    const result = await this.transport.executeNamedQuery<SearchDocumentsParams, SearchDocumentsResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async searchDocumentsAfterCommit(parameters: SearchDocumentsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<SearchDocumentsResult>> {
+    return this.searchDocuments(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async attemptDocumentTransfer(input: AttemptDocumentTransferInput): Promise<TypedCommandResult<AttemptDocumentTransferOutcome>> {
     const result = await this.transport.executeCommand<AttemptDocumentTransferInput, AttemptDocumentTransferOutcome>(attemptDocumentTransfer(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ATTEMPT_DOCUMENT_TRANSFER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -528,6 +770,9 @@ export class AdapterRowPolicyConformanceClient {
   public async changeDocumentAccess(input: ChangeDocumentAccessInput): Promise<TypedCommandResult<ChangeDocumentAccessOutcome>> {
     const result = await this.transport.executeCommand<ChangeDocumentAccessInput, ChangeDocumentAccessOutcome>(changeDocumentAccess(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CHANGE_DOCUMENT_ACCESS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -551,6 +796,9 @@ export class AdapterRowPolicyConformanceClient {
   public async createArtifact(input: CreateArtifactInput): Promise<TypedCommandResult<CreateArtifactOutcome>> {
     const result = await this.transport.executeCommand<CreateArtifactInput, CreateArtifactOutcome>(createArtifact(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ARTIFACT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -574,6 +822,9 @@ export class AdapterRowPolicyConformanceClient {
   public async createDocument(input: CreateDocumentInput): Promise<TypedCommandResult<CreateDocumentOutcome>> {
     const result = await this.transport.executeCommand<CreateDocumentInput, CreateDocumentOutcome>(createDocument(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_DOCUMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -597,6 +848,9 @@ export class AdapterRowPolicyConformanceClient {
   public async createExperiment(input: CreateExperimentInput): Promise<TypedCommandResult<CreateExperimentOutcome>> {
     const result = await this.transport.executeCommand<CreateExperimentInput, CreateExperimentOutcome>(createExperiment(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_EXPERIMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -620,6 +874,9 @@ export class AdapterRowPolicyConformanceClient {
   public async createRun(input: CreateRunInput): Promise<TypedCommandResult<CreateRunOutcome>> {
     const result = await this.transport.executeCommand<CreateRunInput, CreateRunOutcome>(createRun(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_RUN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -643,6 +900,9 @@ export class AdapterRowPolicyConformanceClient {
   public async finishRun(input: FinishRunInput): Promise<TypedCommandResult<FinishRunOutcome>> {
     const result = await this.transport.executeCommand<FinishRunInput, FinishRunOutcome>(finishRun(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== FINISH_RUN_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -666,6 +926,9 @@ export class AdapterRowPolicyConformanceClient {
   public async logMetric(input: LogMetricInput): Promise<TypedCommandResult<LogMetricOutcome>> {
     const result = await this.transport.executeCommand<LogMetricInput, LogMetricOutcome>(logMetric(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== LOG_METRIC_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

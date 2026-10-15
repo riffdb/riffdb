@@ -50,12 +50,15 @@ type DueRunFound struct {
 	Run struct { OrganizationId string; RunId string; State RunState; DueAt riffdb.Instant; LeaseOwner *string; LeaseExpiresAt *riffdb.Instant; LeaseFence uint64; LeaseAttempts uint64 }
 }
 func (DueRunFound) isDueRunResult() {}
+func IsDueRunFound(value DueRunResult) (DueRunFound, bool) { branch, ok := value.(DueRunFound); return branch, ok }
 
 type DueRunMissing struct {
 	Outcome string
 }
 func (DueRunMissing) isDueRunResult() {}
+func IsDueRunMissing(value DueRunResult) (DueRunMissing, bool) { branch, ok := value.(DueRunMissing); return branch, ok }
 
+func UnwrapDueRunFound(value DueRunResult) (DueRunFound, error) { if branch, ok := value.(DueRunFound); ok { return branch, nil }; return DueRunFound{}, errors.New("expected DueRun outcome found") }
 type ClaimRunInput struct {
 	RunId string
 	Duration uint64
@@ -69,32 +72,38 @@ type ClaimRunClaimStale struct {
 	Outcome string
 }
 func (ClaimRunClaimStale) isClaimRunOutcome() {}
+func IsClaimRunClaimStale(value ClaimRunOutcome) (ClaimRunClaimStale, bool) { branch, ok := value.(ClaimRunClaimStale); return branch, ok }
 
 type ClaimRunRunClaimed struct {
 	Outcome string
 	Run ScheduledRun
 }
 func (ClaimRunRunClaimed) isClaimRunOutcome() {}
+func IsClaimRunRunClaimed(value ClaimRunOutcome) (ClaimRunRunClaimed, bool) { branch, ok := value.(ClaimRunRunClaimed); return branch, ok }
 
 type ClaimRunRunMissing struct {
 	Outcome string
 }
 func (ClaimRunRunMissing) isClaimRunOutcome() {}
+func IsClaimRunRunMissing(value ClaimRunOutcome) (ClaimRunRunMissing, bool) { branch, ok := value.(ClaimRunRunMissing); return branch, ok }
 
 type ClaimRunClaimInvalid struct {
 	Outcome string
 }
 func (ClaimRunClaimInvalid) isClaimRunOutcome() {}
+func IsClaimRunClaimInvalid(value ClaimRunOutcome) (ClaimRunClaimInvalid, bool) { branch, ok := value.(ClaimRunClaimInvalid); return branch, ok }
 
 type ClaimRunClaimExhausted struct {
 	Outcome string
 }
 func (ClaimRunClaimExhausted) isClaimRunOutcome() {}
+func IsClaimRunClaimExhausted(value ClaimRunOutcome) (ClaimRunClaimExhausted, bool) { branch, ok := value.(ClaimRunClaimExhausted); return branch, ok }
 
 type ClaimRunClaimUnavailable struct {
 	Outcome string
 }
 func (ClaimRunClaimUnavailable) isClaimRunOutcome() {}
+func IsClaimRunClaimUnavailable(value ClaimRunOutcome) (ClaimRunClaimUnavailable, bool) { branch, ok := value.(ClaimRunClaimUnavailable); return branch, ok }
 
 type CompleteRunInput struct {
 	RunId string
@@ -109,37 +118,44 @@ type CompleteRunFenceStale struct {
 	Outcome string
 }
 func (CompleteRunFenceStale) isCompleteRunOutcome() {}
+func IsCompleteRunFenceStale(value CompleteRunOutcome) (CompleteRunFenceStale, bool) { branch, ok := value.(CompleteRunFenceStale); return branch, ok }
 
 type CompleteRunRunMissing struct {
 	Outcome string
 }
 func (CompleteRunRunMissing) isCompleteRunOutcome() {}
+func IsCompleteRunRunMissing(value CompleteRunOutcome) (CompleteRunRunMissing, bool) { branch, ok := value.(CompleteRunRunMissing); return branch, ok }
 
 type CompleteRunFenceExpired struct {
 	Outcome string
 }
 func (CompleteRunFenceExpired) isCompleteRunOutcome() {}
+func IsCompleteRunFenceExpired(value CompleteRunOutcome) (CompleteRunFenceExpired, bool) { branch, ok := value.(CompleteRunFenceExpired); return branch, ok }
 
 type CompleteRunFenceInvalid struct {
 	Outcome string
 }
 func (CompleteRunFenceInvalid) isCompleteRunOutcome() {}
+func IsCompleteRunFenceInvalid(value CompleteRunOutcome) (CompleteRunFenceInvalid, bool) { branch, ok := value.(CompleteRunFenceInvalid); return branch, ok }
 
 type CompleteRunRunCompleted struct {
 	Outcome string
 	Run ScheduledRun
 }
 func (CompleteRunRunCompleted) isCompleteRunOutcome() {}
+func IsCompleteRunRunCompleted(value CompleteRunOutcome) (CompleteRunRunCompleted, bool) { branch, ok := value.(CompleteRunRunCompleted); return branch, ok }
 
 type CompleteRunCompleteStale struct {
 	Outcome string
 }
 func (CompleteRunCompleteStale) isCompleteRunOutcome() {}
+func IsCompleteRunCompleteStale(value CompleteRunOutcome) (CompleteRunCompleteStale, bool) { branch, ok := value.(CompleteRunCompleteStale); return branch, ok }
 
 type CompleteRunCompleteIllegal struct {
 	Outcome string
 }
 func (CompleteRunCompleteIllegal) isCompleteRunOutcome() {}
+func IsCompleteRunCompleteIllegal(value CompleteRunOutcome) (CompleteRunCompleteIllegal, bool) { branch, ok := value.(CompleteRunCompleteIllegal); return branch, ok }
 
 type ReleaseRunInput struct {
 	RunId string
@@ -154,26 +170,34 @@ type ReleaseRunRunMissing struct {
 	Outcome string
 }
 func (ReleaseRunRunMissing) isReleaseRunOutcome() {}
+func IsReleaseRunRunMissing(value ReleaseRunOutcome) (ReleaseRunRunMissing, bool) { branch, ok := value.(ReleaseRunRunMissing); return branch, ok }
 
 type ReleaseRunRunReleased struct {
 	Outcome string
 	Run ScheduledRun
 }
 func (ReleaseRunRunReleased) isReleaseRunOutcome() {}
+func IsReleaseRunRunReleased(value ReleaseRunOutcome) (ReleaseRunRunReleased, bool) { branch, ok := value.(ReleaseRunRunReleased); return branch, ok }
 
 type ReleaseRunReleaseStale struct {
 	Outcome string
 }
 func (ReleaseRunReleaseStale) isReleaseRunOutcome() {}
+func IsReleaseRunReleaseStale(value ReleaseRunOutcome) (ReleaseRunReleaseStale, bool) { branch, ok := value.(ReleaseRunReleaseStale); return branch, ok }
 
 type ReleaseRunReleaseInvalid struct {
 	Outcome string
 }
 func (ReleaseRunReleaseInvalid) isReleaseRunOutcome() {}
+func IsReleaseRunReleaseInvalid(value ReleaseRunOutcome) (ReleaseRunReleaseInvalid, bool) { branch, ok := value.(ReleaseRunReleaseInvalid); return branch, ok }
 
-type Client struct { session *riffdb.Session; commandAttempts uint32 }
+const DefaultCommandAttempts uint32 = 3
+type Client struct { session *riffdb.Session; commandAttempts uint32; readAfterCommit *uint64; trackCausalWrites bool }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) { if session == nil || commandAttempts < 1 || commandAttempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: commandAttempts}, nil }
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) { attempts := DefaultCommandAttempts; if len(commandAttempts) > 1 { return nil, errors.New("invalid generated RiffDB client configuration") } else if len(commandAttempts) == 1 { attempts = commandAttempts[0] }; if session == nil || attempts < 1 || attempts > 10 { return nil, errors.New("invalid generated RiffDB client configuration") }; return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil }
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client { var copied *uint64; if commitSequence != nil { value := *commitSequence; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites} }
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client { var copied *uint64; if len(initialCommitSequence) > 0 { value := initialCommitSequence[0]; copied = &value } else if client.readAfterCommit != nil { value := *client.readAfterCommit; copied = &value }; return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true} }
+func (client *Client) LastCommitSequence() *uint64 { if client.readAfterCommit == nil { return nil }; value := *client.readAfterCommit; return &value }
 
 func encodeScheduledRun(value ScheduledRun) riffdb.Value { return riffdb.Record(map[string]riffdb.Value{
 	"state": riffdb.Enum(string(value.State)),
@@ -205,14 +229,15 @@ return result, nil
 case "Missing": result := DueRunMissing{Outcome: outcome}
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
-func (client *Client) DueRun(ctx context.Context, parameters DueRunParams, options QueryOptions) (QueryResult[DueRunResult], error) { input := map[string]riffdb.Value{}
+func (client *Client) DueRun(ctx context.Context, parameters DueRunParams, optionsList ...QueryOptions) (QueryResult[DueRunResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[DueRunResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; if options.ReadAfterCommit == nil && client.readAfterCommit != nil { commitSeq := *client.readAfterCommit; options.ReadAfterCommit = &commitSeq }; input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["run_id"] = riffdb.UUID(parameters.RunId)
 response, err := client.session.Invoke(ctx, DueRunOperation, input, options); if err != nil { return QueryResult[DueRunResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[DueRunResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeDueRunResult(response.Value); if err != nil { return QueryResult[DueRunResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "DueRun", PlanHash: DueRunQueryPlanHash}; return QueryResult[DueRunResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+func (client *Client) DueRunAfterCommit(ctx context.Context, parameters DueRunParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[DueRunResult], error) { var options QueryOptions; if len(optionsList) > 1 { return QueryResult[DueRunResult]{}, errors.New("invalid generated RiffDB query options") } else if len(optionsList) == 1 { options = optionsList[0] }; options.ReadAfterCommit = &commitSequence; return client.DueRun(ctx, parameters, options) }
 
 const ClaimRunPlanHash = "4664b92d065345af657315f573aabdc4bb54ca6a99c4ef2e8a44ff94234769a0"
 var ClaimRunOperation = riffdb.Operation{Name: "mlflow_scheduler_claim_run", InputSchemaHash: "50a48bcd44da4cad8c88b7c9517bd91d8bfe0fcb6740d28a84b89653323efb2a"}
-func encodeClaimRunInput(input ClaimRunInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeClaimRunInput(input ClaimRunInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"run_id": riffdb.UUID(input.RunId),
 	"duration": riffdb.U64(input.Duration),
 	"owner_id": riffdb.UUID(input.OwnerId),
@@ -238,12 +263,12 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowClaimRunRevisions(input ClaimRunInput, outcome ClaimRunOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(ClaimRunRunClaimed); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "run", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) ClaimRun(ctx context.Context, input ClaimRunInput) (CommandResult[ClaimRunOutcome], error) { response, err := client.session.Invoke(ctx, ClaimRunOperation, encodeClaimRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; outcome, err := decodeClaimRunOutcome(response.Value); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; workflowRevisions, err := workflowClaimRunRevisions(input, outcome); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; return CommandResult[ClaimRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ClaimRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) ClaimRun(ctx context.Context, input ClaimRunInput) (CommandResult[ClaimRunOutcome], error) { response, err := client.session.Invoke(ctx, ClaimRunOperation, encodeClaimRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; outcome, err := decodeClaimRunOutcome(response.Value); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowClaimRunRevisions(input, outcome); if err != nil { return CommandResult[ClaimRunOutcome]{}, err }; return CommandResult[ClaimRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ClaimRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) ClaimRunBatch(ctx context.Context, inputs []ClaimRunInput, concurrency, checkpoint uint32) (BatchResult[ClaimRunOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeClaimRunInput(input) }; response, err := client.session.Batch(ctx, ClaimRunOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ClaimRunOutcome]{}, err }; result := BatchResult[ClaimRunOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ClaimRunOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ClaimRunOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeClaimRunOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ClaimRunOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[ClaimRunOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowClaimRunRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[ClaimRunOutcome]{}, revisionErr }; converted.Result = &CommandResult[ClaimRunOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ClaimRunPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const CompleteRunPlanHash = "99f9711ec973cd40b42c065ff01dce4c1b548b3a74344af45cbe75d7d567f50a"
 var CompleteRunOperation = riffdb.Operation{Name: "mlflow_scheduler_complete_run", InputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0"}
-func encodeCompleteRunInput(input CompleteRunInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeCompleteRunInput(input CompleteRunInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"run_id": riffdb.UUID(input.RunId),
 	"owner_id": riffdb.UUID(input.OwnerId),
 	"request_key": riffdb.String(input.RequestKey),
@@ -271,12 +296,12 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowCompleteRunRevisions(input CompleteRunInput, outcome CompleteRunOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(CompleteRunRunCompleted); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "run", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) CompleteRun(ctx context.Context, input CompleteRunInput) (CommandResult[CompleteRunOutcome], error) { response, err := client.session.Invoke(ctx, CompleteRunOperation, encodeCompleteRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; outcome, err := decodeCompleteRunOutcome(response.Value); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; workflowRevisions, err := workflowCompleteRunRevisions(input, outcome); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; return CommandResult[CompleteRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CompleteRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) CompleteRun(ctx context.Context, input CompleteRunInput) (CommandResult[CompleteRunOutcome], error) { response, err := client.session.Invoke(ctx, CompleteRunOperation, encodeCompleteRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; outcome, err := decodeCompleteRunOutcome(response.Value); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowCompleteRunRevisions(input, outcome); if err != nil { return CommandResult[CompleteRunOutcome]{}, err }; return CommandResult[CompleteRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CompleteRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) CompleteRunBatch(ctx context.Context, inputs []CompleteRunInput, concurrency, checkpoint uint32) (BatchResult[CompleteRunOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeCompleteRunInput(input) }; response, err := client.session.Batch(ctx, CompleteRunOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[CompleteRunOutcome]{}, err }; result := BatchResult[CompleteRunOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[CompleteRunOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[CompleteRunOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeCompleteRunOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[CompleteRunOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[CompleteRunOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowCompleteRunRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[CompleteRunOutcome]{}, revisionErr }; converted.Result = &CommandResult[CompleteRunOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CompleteRunPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 const ReleaseRunPlanHash = "7e8e7af0567376ba19784069e41c8613a4de5cd3174d58cc2cd4d3de02832522"
 var ReleaseRunOperation = riffdb.Operation{Name: "mlflow_scheduler_release_run", InputSchemaHash: "6bff06d0bb6315665aee30deec0d8a86dda23e8da61a63702744177fdf9dc3c0"}
-func encodeReleaseRunInput(input ReleaseRunInput) map[string]riffdb.Value { return map[string]riffdb.Value{
+func encodeReleaseRunInput(input ReleaseRunInput) map[string]riffdb.Value { input.RequestKey = riffdb.DefaultIdempotencyKey(input.RequestKey); return map[string]riffdb.Value{
 	"run_id": riffdb.UUID(input.RunId),
 	"owner_id": riffdb.UUID(input.OwnerId),
 	"request_key": riffdb.String(input.RequestKey),
@@ -298,7 +323,7 @@ default: return nil, errors.New("RiffDB driver returned unknown command outcome"
 func workflowReleaseRunRevisions(input ReleaseRunInput, outcome ReleaseRunOutcome) ([]WorkflowSuccessorRevision, error) { if _, ok := outcome.(ReleaseRunRunReleased); !ok { return nil, nil }
 if input.ExpectedRevision == ^uint64(0) { return nil, errors.New("RiffDB workflow successor revision overflow") }
 return []WorkflowSuccessorRevision{{Binding: "run", Revision: input.ExpectedRevision + 1},}, nil }
-func (client *Client) ReleaseRun(ctx context.Context, input ReleaseRunInput) (CommandResult[ReleaseRunOutcome], error) { response, err := client.session.Invoke(ctx, ReleaseRunOperation, encodeReleaseRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; outcome, err := decodeReleaseRunOutcome(response.Value); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; workflowRevisions, err := workflowReleaseRunRevisions(input, outcome); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; return CommandResult[ReleaseRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ReleaseRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
+func (client *Client) ReleaseRun(ctx context.Context, input ReleaseRunInput) (CommandResult[ReleaseRunOutcome], error) { response, err := client.session.Invoke(ctx, ReleaseRunOperation, encodeReleaseRunInput(input), riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; outcome, err := decodeReleaseRunOutcome(response.Value); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) { commitSeq := *response.ApplicationHead; client.readAfterCommit = &commitSeq }; workflowRevisions, err := workflowReleaseRunRevisions(input, outcome); if err != nil { return CommandResult[ReleaseRunOutcome]{}, err }; return CommandResult[ReleaseRunOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: ReleaseRunPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor, WorkflowRevisions: workflowRevisions}, nil }
 func (client *Client) ReleaseRunBatch(ctx context.Context, inputs []ReleaseRunInput, concurrency, checkpoint uint32) (BatchResult[ReleaseRunOutcome], error) { encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs { encoded[index] = encodeReleaseRunInput(input) }; response, err := client.session.Batch(ctx, ReleaseRunOperation, encoded, concurrency, checkpoint, riffdb.Options{MaximumAttempts: client.commandAttempts}); if err != nil { return BatchResult[ReleaseRunOutcome]{}, err }; result := BatchResult[ReleaseRunOutcome]{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[ReleaseRunOutcome], 0, len(response.Items))}; for _, item := range response.Items { converted := BatchItem[ReleaseRunOutcome]{Index: item.Index}; if item.Error != nil { converted.Error = item.Error } else if item.Result != nil { outcome, decodeErr := decodeReleaseRunOutcome(item.Result.Value); if decodeErr != nil { return BatchResult[ReleaseRunOutcome]{}, decodeErr }; if item.Index >= uint32(len(inputs)) { return BatchResult[ReleaseRunOutcome]{}, errors.New("RiffDB driver returned invalid batch index") }; workflowRevisions, revisionErr := workflowReleaseRunRevisions(inputs[item.Index], outcome); if revisionErr != nil { return BatchResult[ReleaseRunOutcome]{}, revisionErr }; converted.Result = &CommandResult[ReleaseRunOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: ReleaseRunPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI, WorkflowRevisions: workflowRevisions} }; result.Items = append(result.Items, converted) }; return result, nil }
 
 func requiredField(fields map[string]riffdb.Value, name string) (riffdb.Value, error) { value, ok := fields[name]; if !ok { return riffdb.Value{}, errors.New("RiffDB driver result is missing a generated field") }; return value, nil }

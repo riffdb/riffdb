@@ -142,6 +142,7 @@ export type QueryConsistency = "admissionHead";
 export interface QueryOptions { readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }
 export interface CommandBatchProgress { readonly completed: number; readonly total: number; readonly checkpoint: number; }
 export const MAX_COMMAND_BATCH_CONCURRENCY = 384;
+export const DEFAULT_COMMAND_ATTEMPT_BUDGET = 3;
 export interface CommandBatchOptions { readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }
 export interface CommandBatchItem<T> { readonly index: number; readonly result?: TypedCommandResult<T>; readonly error?: unknown; }
 export interface CommandBatchResult<T> { readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }
@@ -186,6 +187,16 @@ export interface BoardPage200Found {
 
 export type BoardPage200Result = BoardPage200Found;
 
+export function isBoardPage200Found(value: BoardPage200Result): value is BoardPage200Found {
+  return value.outcome === "Found";
+}
+
+export function unwrapBoardPage200Found(value: BoardPage200Result | TypedQueryResult<BoardPage200Result>): BoardPage200Found {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as BoardPage200Result;
+  if (resolved.outcome !== "Found") throw new Error(`expected BoardPage200 outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 function decodeBoardPage200Compact(value: CompactNamedQueryResult): BoardPage200Result {
 if (value.outcome !== "Found" || value.resultName !== "tickets" || value.entity !== "Ticket"
 || value.fields.length !== 6 || value.fields.some((field, index) => field !== ["assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"][index])
@@ -221,6 +232,16 @@ export interface BoardPage450Found {
 
 export type BoardPage450Result = BoardPage450Found;
 
+export function isBoardPage450Found(value: BoardPage450Result): value is BoardPage450Found {
+  return value.outcome === "Found";
+}
+
+export function unwrapBoardPage450Found(value: BoardPage450Result | TypedQueryResult<BoardPage450Result>): BoardPage450Found {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as BoardPage450Result;
+  if (resolved.outcome !== "Found") throw new Error(`expected BoardPage450 outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 function decodeBoardPage450Compact(value: CompactNamedQueryResult): BoardPage450Result {
 if (value.outcome !== "Found" || value.resultName !== "tickets" || value.entity !== "Ticket"
 || value.fields.length !== 6 || value.fields.some((field, index) => field !== ["assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"][index])
@@ -255,6 +276,16 @@ export interface BoardPage50Found {
 }
 
 export type BoardPage50Result = BoardPage50Found;
+
+export function isBoardPage50Found(value: BoardPage50Result): value is BoardPage50Found {
+  return value.outcome === "Found";
+}
+
+export function unwrapBoardPage50Found(value: BoardPage50Result | TypedQueryResult<BoardPage50Result>): BoardPage50Found {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as BoardPage50Result;
+  if (resolved.outcome !== "Found") throw new Error(`expected BoardPage50 outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 function decodeBoardPage50Compact(value: CompactNamedQueryResult): BoardPage50Result {
 if (value.outcome !== "Found" || value.resultName !== "tickets" || value.entity !== "Ticket"
@@ -294,6 +325,20 @@ export interface GetTicketNotFound {
 
 export type GetTicketResult = GetTicketFound | GetTicketNotFound;
 
+export function isGetTicketFound(value: GetTicketResult): value is GetTicketFound {
+  return value.outcome === "Found";
+}
+
+export function isGetTicketNotFound(value: GetTicketResult): value is GetTicketNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapGetTicketFound(value: GetTicketResult | TypedQueryResult<GetTicketResult>): GetTicketFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetTicketResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetTicket outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function getTicket(parameters: GetTicketParams): NamedQueryRequest<GetTicketParams, GetTicketResult> {
   return { driverOperation: { name: "ticketdesk_get_ticket", inputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetTicket", planHash: GET_TICKET_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -315,6 +360,20 @@ export interface GetUserNotFound {
 
 export type GetUserResult = GetUserFound | GetUserNotFound;
 
+export function isGetUserFound(value: GetUserResult): value is GetUserFound {
+  return value.outcome === "Found";
+}
+
+export function isGetUserNotFound(value: GetUserResult): value is GetUserNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapGetUserFound(value: GetUserResult | TypedQueryResult<GetUserResult>): GetUserFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as GetUserResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected GetUser outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function getUser(parameters: GetUserParams): NamedQueryRequest<GetUserParams, GetUserResult> {
   return { driverOperation: { name: "ticketdesk_get_user", inputSchemaHash: "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "GetUser", planHash: GET_USER_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"user_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"user","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"email","schema":{"kind":"string"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -333,6 +392,16 @@ export interface ListCommentsFound {
 }
 
 export type ListCommentsResult = ListCommentsFound;
+
+export function isListCommentsFound(value: ListCommentsResult): value is ListCommentsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListCommentsFound(value: ListCommentsResult | TypedQueryResult<ListCommentsResult>): ListCommentsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListCommentsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListComments outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function listComments(parameters: ListCommentsParams): NamedQueryRequest<ListCommentsParams, ListCommentsResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
@@ -355,6 +424,16 @@ export interface ListTicketsFound {
 
 export type ListTicketsResult = ListTicketsFound;
 
+export function isListTicketsFound(value: ListTicketsResult): value is ListTicketsFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListTicketsFound(value: ListTicketsResult | TypedQueryResult<ListTicketsResult>): ListTicketsFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListTicketsResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListTickets outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function listTickets(parameters: ListTicketsParams): NamedQueryRequest<ListTicketsParams, ListTicketsResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "ticketdesk_list_tickets", inputSchemaHash: "2e773748669493c1c19390469c5c3866a2d7a534e7c11b9531af6b8934035b2f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTickets", planHash: LIST_TICKETS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -376,6 +455,16 @@ export interface ListTicketsByAssigneeFound {
 
 export type ListTicketsByAssigneeResult = ListTicketsByAssigneeFound;
 
+export function isListTicketsByAssigneeFound(value: ListTicketsByAssigneeResult): value is ListTicketsByAssigneeFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapListTicketsByAssigneeFound(value: ListTicketsByAssigneeResult | TypedQueryResult<ListTicketsByAssigneeResult>): ListTicketsByAssigneeFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ListTicketsByAssigneeResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ListTicketsByAssignee outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function listTicketsByAssignee(parameters: ListTicketsByAssigneeParams): NamedQueryRequest<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult> {
   if (parameters.limit !== undefined && (!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 499)) throw new RangeError("limit must be an integer from 1 through 499");
   return { driverOperation: { name: "ticketdesk_list_tickets_by_assignee", inputSchemaHash: "a9f85816c8b408b769438a894cc30c08db18a1abf62ce326bd1a6b824a249063" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ListTicketsByAssignee", planHash: LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"statuses","schema":{"kind":"list","value":{"kind":"enum"}}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}},{"name":"limit","schema":{"kind":"limit","maximum":499}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -394,6 +483,16 @@ export interface ProjectMembersFound {
 }
 
 export type ProjectMembersResult = ProjectMembersFound;
+
+export function isProjectMembersFound(value: ProjectMembersResult): value is ProjectMembersFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapProjectMembersFound(value: ProjectMembersResult | TypedQueryResult<ProjectMembersResult>): ProjectMembersFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ProjectMembersResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ProjectMembers outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function projectMembers(parameters: ProjectMembersParams): NamedQueryRequest<ProjectMembersParams, ProjectMembersResult> {
   return { driverOperation: { name: "ticketdesk_project_members", inputSchemaHash: "140d0b389b383b0f8616b4b12003f9fcc6233ddb5240913fc25d78a15c9b374e" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectMembers", planHash: PROJECT_MEMBERS_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"members","schema":{"kind":"list","maximum":100,"value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"role","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -417,6 +516,20 @@ export interface ProjectSummaryNotFound {
 }
 
 export type ProjectSummaryResult = ProjectSummaryFound | ProjectSummaryNotFound;
+
+export function isProjectSummaryFound(value: ProjectSummaryResult): value is ProjectSummaryFound {
+  return value.outcome === "Found";
+}
+
+export function isProjectSummaryNotFound(value: ProjectSummaryResult): value is ProjectSummaryNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function unwrapProjectSummaryFound(value: ProjectSummaryResult | TypedQueryResult<ProjectSummaryResult>): ProjectSummaryFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as ProjectSummaryResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected ProjectSummary outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function projectSummary(parameters: ProjectSummaryParams): NamedQueryRequest<ProjectSummaryParams, ProjectSummaryResult> {
   return { driverOperation: { name: "ticketdesk_project_summary", inputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "ProjectSummary", planHash: PROJECT_SUMMARY_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"status","schema":{"kind":"enum"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"recent_tickets","schema":{"kind":"list","maximum":10,"value":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}}}],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -448,6 +561,24 @@ export interface TicketPageIntegrityFailure {
 }
 
 export type TicketPageResult = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure;
+
+export function isTicketPageFound(value: TicketPageResult): value is TicketPageFound {
+  return value.outcome === "Found";
+}
+
+export function isTicketPageNotFound(value: TicketPageResult): value is TicketPageNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function isTicketPageIntegrityFailure(value: TicketPageResult): value is TicketPageIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapTicketPageFound(value: TicketPageResult | TypedQueryResult<TicketPageResult>): TicketPageFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as TicketPageResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected TicketPage outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
 
 export function ticketPage(parameters: TicketPageParams): NamedQueryRequest<TicketPageParams, TicketPageResult> {
   return { driverOperation: { name: "ticketdesk_ticket_page", inputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPage", planHash: TICKET_PAGE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"organization","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"reporter","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"assignee","schema":{"kind":"optional","value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
@@ -481,6 +612,24 @@ export interface TicketPagePagedIntegrityFailure {
 
 export type TicketPagePagedResult = TicketPagePagedFound | TicketPagePagedNotFound | TicketPagePagedIntegrityFailure;
 
+export function isTicketPagePagedFound(value: TicketPagePagedResult): value is TicketPagePagedFound {
+  return value.outcome === "Found";
+}
+
+export function isTicketPagePagedNotFound(value: TicketPagePagedResult): value is TicketPagePagedNotFound {
+  return value.outcome === "NotFound";
+}
+
+export function isTicketPagePagedIntegrityFailure(value: TicketPagePagedResult): value is TicketPagePagedIntegrityFailure {
+  return value.outcome === "IntegrityFailure";
+}
+
+export function unwrapTicketPagePagedFound(value: TicketPagePagedResult | TypedQueryResult<TicketPagePagedResult>): TicketPagePagedFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as TicketPagePagedResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected TicketPagePaged outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function ticketPagePaged(parameters: TicketPagePagedParams): NamedQueryRequest<TicketPagePagedParams, TicketPagePagedResult> {
   return { driverOperation: { name: "ticketdesk_ticket_page_paged", inputSchemaHash: "24e73f5e8fe92707c91f1fea4f5d0b60d49f141e22494ebe7a0f4f8d1eab7166" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketPagePaged", planHash: TICKET_PAGE_PAGED_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comments_after","schema":{"kind":"optional","value":{"kind":"cursor"}}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"created_at","schema":{"kind":"timestamp"}},{"name":"updated_at","schema":{"kind":"timestamp"}}],"kind":"record"}},{"name":"project","schema":{"fields":[{"name":"project_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"organization","schema":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"reporter","schema":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}},{"name":"assignee","schema":{"kind":"optional","value":{"fields":[{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}}],"kind":"record"}}},{"name":"comments","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"created_at","schema":{"kind":"timestamp"}}],"kind":"record"}}},{"name":"labels","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"name","schema":{"kind":"string"}}],"kind":"record"}}}],"kind":"record"},"IntegrityFailure":{"fields":[],"kind":"record"},"NotFound":{"fields":[],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -498,6 +647,16 @@ export interface TicketQueueFound {
 
 export type TicketQueueResult = TicketQueueFound;
 
+export function isTicketQueueFound(value: TicketQueueResult): value is TicketQueueFound {
+  return value.outcome === "Found";
+}
+
+export function unwrapTicketQueueFound(value: TicketQueueResult | TypedQueryResult<TicketQueueResult>): TicketQueueFound {
+  const resolved = ("identity" in value && "applicationHead" in value && "value" in value ? value.value : value) as TicketQueueResult;
+  if (resolved.outcome !== "Found") throw new Error(`expected TicketQueue outcome "Found", got "${resolved.outcome}"`);
+  return resolved;
+}
+
 export function ticketQueue(parameters: TicketQueueParams): NamedQueryRequest<TicketQueueParams, TicketQueueResult> {
   return { driverOperation: { name: "ticketdesk_ticket_queue", inputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: "TicketQueue", planHash: TICKET_QUEUE_QUERY_PLAN_HASH, parameters, parameterSchema: {"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}}],"kind":"record"}, resultSchemas: {"Found":{"fields":[{"name":"tickets","schema":{"kind":"list","maximum":50,"value":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"updated_at","schema":{"kind":"timestamp"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}}],"kind":"record"}}}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
@@ -506,29 +665,65 @@ export interface AddProjectMemberInput {
   readonly role: string;
   readonly user_id: string;
   readonly project_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type AddProjectMemberOutcome = { readonly outcome: "Created"; readonly member: { readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "UserMissing"; readonly user_id: string } | { readonly outcome: "MemberExists"; readonly user_id: string; readonly project_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string };
 
+export function isAddProjectMemberCreated(value: AddProjectMemberOutcome): value is Extract<AddProjectMemberOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isAddProjectMemberUserMissing(value: AddProjectMemberOutcome): value is Extract<AddProjectMemberOutcome, { readonly outcome: "UserMissing" }> {
+  return value.outcome === "UserMissing";
+}
+
+export function isAddProjectMemberMemberExists(value: AddProjectMemberOutcome): value is Extract<AddProjectMemberOutcome, { readonly outcome: "MemberExists" }> {
+  return value.outcome === "MemberExists";
+}
+
+export function isAddProjectMemberProjectMissing(value: AddProjectMemberOutcome): value is Extract<AddProjectMemberOutcome, { readonly outcome: "ProjectMissing" }> {
+  return value.outcome === "ProjectMissing";
+}
+
 export const ADD_PROJECT_MEMBER_PLAN_HASH = "b5580aa5ee2e33ca210d57241e5b8e070bf7d15c8049ec142bd9e879896a3923" as const;
 export function addProjectMember(input: AddProjectMemberInput): CommandRequest<AddProjectMemberInput, AddProjectMemberOutcome> {
-  return { driverOperation: { name: "ticketdesk_add_project_member", inputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddProjectMember", planHash: ADD_PROJECT_MEMBER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"role","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"member","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"MemberExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1},{"name":"project_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: AddProjectMemberInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_add_project_member", inputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AddProjectMember", planHash: ADD_PROJECT_MEMBER_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"role","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"member","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"MemberExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1},{"name":"project_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface AttachLabelInput {
   readonly label_id: string;
   readonly ticket_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type AttachLabelOutcome = { readonly outcome: "Created"; readonly link: { readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LinkExists"; readonly label_id: string; readonly ticket_id: string } | { readonly outcome: "LabelMissing"; readonly label_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
 
+export function isAttachLabelCreated(value: AttachLabelOutcome): value is Extract<AttachLabelOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isAttachLabelLinkExists(value: AttachLabelOutcome): value is Extract<AttachLabelOutcome, { readonly outcome: "LinkExists" }> {
+  return value.outcome === "LinkExists";
+}
+
+export function isAttachLabelLabelMissing(value: AttachLabelOutcome): value is Extract<AttachLabelOutcome, { readonly outcome: "LabelMissing" }> {
+  return value.outcome === "LabelMissing";
+}
+
+export function isAttachLabelTicketMissing(value: AttachLabelOutcome): value is Extract<AttachLabelOutcome, { readonly outcome: "TicketMissing" }> {
+  return value.outcome === "TicketMissing";
+}
+
 export const ATTACH_LABEL_PLAN_HASH = "840405fa27f06c0d2193464e5f72f775bb51478ecf7e5e1dfc0dded4cdd3b040" as const;
 export function attachLabel(input: AttachLabelInput): CommandRequest<AttachLabelInput, AttachLabelOutcome> {
-  return { driverOperation: { name: "ticketdesk_attach_label", inputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachLabel", planHash: ATTACH_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelMissing":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LinkExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: AttachLabelInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_attach_label", inputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "AttachLabel", planHash: ATTACH_LABEL_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"label_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelMissing":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LinkExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CloseTicketWithCommentInput {
@@ -536,15 +731,37 @@ export interface CloseTicketWithCommentInput {
   readonly author_id: string;
   readonly ticket_id: string;
   readonly comment_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CloseTicketWithCommentOutcome = { readonly outcome: "Closed"; readonly ticket: { readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string }; readonly comment: { readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "TicketGone"; readonly ticket_id: string } | { readonly outcome: "AuthorMissing"; readonly user_id: string } | { readonly outcome: "CommentExists"; readonly comment_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
 
+export function isCloseTicketWithCommentClosed(value: CloseTicketWithCommentOutcome): value is Extract<CloseTicketWithCommentOutcome, { readonly outcome: "Closed" }> {
+  return value.outcome === "Closed";
+}
+
+export function isCloseTicketWithCommentTicketGone(value: CloseTicketWithCommentOutcome): value is Extract<CloseTicketWithCommentOutcome, { readonly outcome: "TicketGone" }> {
+  return value.outcome === "TicketGone";
+}
+
+export function isCloseTicketWithCommentAuthorMissing(value: CloseTicketWithCommentOutcome): value is Extract<CloseTicketWithCommentOutcome, { readonly outcome: "AuthorMissing" }> {
+  return value.outcome === "AuthorMissing";
+}
+
+export function isCloseTicketWithCommentCommentExists(value: CloseTicketWithCommentOutcome): value is Extract<CloseTicketWithCommentOutcome, { readonly outcome: "CommentExists" }> {
+  return value.outcome === "CommentExists";
+}
+
+export function isCloseTicketWithCommentTicketMissing(value: CloseTicketWithCommentOutcome): value is Extract<CloseTicketWithCommentOutcome, { readonly outcome: "TicketMissing" }> {
+  return value.outcome === "TicketMissing";
+}
+
 export const CLOSE_TICKET_WITH_COMMENT_PLAN_HASH = "9f1621a70ade76a7403f1003ac742af47f1f2af431b779e118e5466dbd2b11ee" as const;
 export function closeTicketWithComment(input: CloseTicketWithCommentInput): CommandRequest<CloseTicketWithCommentInput, CloseTicketWithCommentOutcome> {
-  return { driverOperation: { name: "ticketdesk_close_ticket_with_comment", inputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CloseTicketWithComment", planHash: CLOSE_TICKET_WITH_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Closed":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1},{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":2}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketGone":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CloseTicketWithCommentInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_close_ticket_with_comment", inputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CloseTicketWithComment", planHash: CLOSE_TICKET_WITH_COMMENT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Closed":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1},{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":2}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketGone":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateCommentInput {
@@ -552,56 +769,112 @@ export interface CreateCommentInput {
   readonly author_id: string;
   readonly ticket_id: string;
   readonly comment_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateCommentOutcome = { readonly outcome: "Created"; readonly comment: { readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "AuthorMissing"; readonly user_id: string } | { readonly outcome: "CommentExists"; readonly comment_id: string } | { readonly outcome: "TicketMissing"; readonly ticket_id: string };
 
+export function isCreateCommentCreated(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateCommentAuthorMissing(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "AuthorMissing" }> {
+  return value.outcome === "AuthorMissing";
+}
+
+export function isCreateCommentCommentExists(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "CommentExists" }> {
+  return value.outcome === "CommentExists";
+}
+
+export function isCreateCommentTicketMissing(value: CreateCommentOutcome): value is Extract<CreateCommentOutcome, { readonly outcome: "TicketMissing" }> {
+  return value.outcome === "TicketMissing";
+}
+
 export const CREATE_COMMENT_PLAN_HASH = "8405d272b6acafdeeb83fb146fa23da93cf6e9d51f8c0de83ddc8f2c914af190" as const;
 export function createComment(input: CreateCommentInput): CommandRequest<CreateCommentInput, CreateCommentOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_comment", inputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateCommentInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_comment", inputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateComment", planHash: CREATE_COMMENT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"body","schema":{"kind":"string"}},{"name":"author_id","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"comment_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AuthorMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"CommentExists":{"fields":[{"name":"comment_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"comment","schema":{"fields":[{"name":"body","schema":{"kind":"string"},"wireId":1},{"name":"author_id","schema":{"kind":"uuid"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"comment_id","schema":{"kind":"uuid"},"wireId":4},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":5},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":6}],"kind":"record"},"wireId":1}],"kind":"record"},"TicketMissing":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateLabelInput {
   readonly name: string;
   readonly label_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateLabelOutcome = { readonly outcome: "Created"; readonly label: { readonly name: string; readonly label_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LabelExists"; readonly label_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
+export function isCreateLabelCreated(value: CreateLabelOutcome): value is Extract<CreateLabelOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateLabelLabelExists(value: CreateLabelOutcome): value is Extract<CreateLabelOutcome, { readonly outcome: "LabelExists" }> {
+  return value.outcome === "LabelExists";
+}
+
+export function isCreateLabelOrganizationMissing(value: CreateLabelOutcome): value is Extract<CreateLabelOutcome, { readonly outcome: "OrganizationMissing" }> {
+  return value.outcome === "OrganizationMissing";
+}
+
 export const CREATE_LABEL_PLAN_HASH = "892dab3cb229074f5ebcd0723ccfae3eeaa2a011145b45cedaaae36418ac1c39" as const;
 export function createLabel(input: CreateLabelInput): CommandRequest<CreateLabelInput, CreateLabelOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_label", inputSchemaHash: "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateLabel", planHash: CREATE_LABEL_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"label_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"label","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"label_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateLabelInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_label", inputSchemaHash: "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateLabel", planHash: CREATE_LABEL_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"label_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"label","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"label_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"LabelExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateOrganizationInput {
   readonly name: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateOrganizationOutcome = { readonly outcome: "Created"; readonly organization: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "OrganizationExists"; readonly organization_id: string };
 
+export function isCreateOrganizationCreated(value: CreateOrganizationOutcome): value is Extract<CreateOrganizationOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateOrganizationOrganizationExists(value: CreateOrganizationOutcome): value is Extract<CreateOrganizationOutcome, { readonly outcome: "OrganizationExists" }> {
+  return value.outcome === "OrganizationExists";
+}
+
 export const CREATE_ORGANIZATION_PLAN_HASH = "5a09375e213c58bf4fa696ce35ea457f0015a713a3ec3881c125f845eb0d00de" as const;
 export function createOrganization(input: CreateOrganizationInput): CommandRequest<CreateOrganizationInput, CreateOrganizationOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_organization", inputSchemaHash: "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrganization", planHash: CREATE_ORGANIZATION_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"organization","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationExists":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateOrganizationInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_organization", inputSchemaHash: "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateOrganization", planHash: CREATE_ORGANIZATION_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"organization","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":3}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationExists":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateProjectInput {
   readonly name: string;
   readonly project_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateProjectOutcome = { readonly outcome: "Created"; readonly project: { readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "ProjectExists"; readonly project_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
+export function isCreateProjectCreated(value: CreateProjectOutcome): value is Extract<CreateProjectOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateProjectProjectExists(value: CreateProjectOutcome): value is Extract<CreateProjectOutcome, { readonly outcome: "ProjectExists" }> {
+  return value.outcome === "ProjectExists";
+}
+
+export function isCreateProjectOrganizationMissing(value: CreateProjectOutcome): value is Extract<CreateProjectOutcome, { readonly outcome: "OrganizationMissing" }> {
+  return value.outcome === "OrganizationMissing";
+}
+
 export const CREATE_PROJECT_PLAN_HASH = "370937f4ce5964832f548473cc9064eae04d49ddd973a14570285699d4cfd1ca" as const;
 export function createProject(input: CreateProjectInput): CommandRequest<CreateProjectInput, CreateProjectOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_project", inputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProject", planHash: CREATE_PROJECT_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"project","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"project_id","schema":{"kind":"uuid"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProjectExists":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateProjectInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_project", inputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateProject", planHash: CREATE_PROJECT_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"name","schema":{"kind":"string"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"project","schema":{"fields":[{"name":"name","schema":{"kind":"string"},"wireId":1},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":2},{"name":"project_id","schema":{"kind":"uuid"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ProjectExists":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateTicketInput {
@@ -611,30 +884,66 @@ export interface CreateTicketInput {
   readonly project_id: string;
   readonly assignee_id: string;
   readonly reporter_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateTicketOutcome = { readonly outcome: "Created"; readonly ticket: { readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string } } | { readonly outcome: "TicketExists"; readonly ticket_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string } | { readonly outcome: "AssigneeMissing"; readonly user_id: string } | { readonly outcome: "ReporterMissing"; readonly user_id: string };
 
+export function isCreateTicketCreated(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateTicketTicketExists(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: "TicketExists" }> {
+  return value.outcome === "TicketExists";
+}
+
+export function isCreateTicketProjectMissing(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: "ProjectMissing" }> {
+  return value.outcome === "ProjectMissing";
+}
+
+export function isCreateTicketAssigneeMissing(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: "AssigneeMissing" }> {
+  return value.outcome === "AssigneeMissing";
+}
+
+export function isCreateTicketReporterMissing(value: CreateTicketOutcome): value is Extract<CreateTicketOutcome, { readonly outcome: "ReporterMissing" }> {
+  return value.outcome === "ReporterMissing";
+}
+
 export const CREATE_TICKET_PLAN_HASH = "70afcc152fb137e09800f388522834346678cc56b535f0599322a54b3839bf0a" as const;
 export function createTicket(input: CreateTicketInput): CommandRequest<CreateTicketInput, CreateTicketOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_ticket", inputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTicket", planHash: CREATE_TICKET_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AssigneeMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ReporterMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketExists":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateTicketInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_ticket", inputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateTicket", planHash: CREATE_TICKET_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"status","schema":{"kind":"enum"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AssigneeMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ReporterMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketExists":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface CreateUserInput {
   readonly email: string;
   readonly user_id: string;
   readonly display_name: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type CreateUserOutcome = { readonly outcome: "Created"; readonly user: { readonly email: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly display_name: string; readonly organization_id: string } } | { readonly outcome: "UserExists"; readonly user_id: string } | { readonly outcome: "OrganizationMissing"; readonly organization_id: string };
 
+export function isCreateUserCreated(value: CreateUserOutcome): value is Extract<CreateUserOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isCreateUserUserExists(value: CreateUserOutcome): value is Extract<CreateUserOutcome, { readonly outcome: "UserExists" }> {
+  return value.outcome === "UserExists";
+}
+
+export function isCreateUserOrganizationMissing(value: CreateUserOutcome): value is Extract<CreateUserOutcome, { readonly outcome: "OrganizationMissing" }> {
+  return value.outcome === "OrganizationMissing";
+}
+
 export const CREATE_USER_PLAN_HASH = "747283ef27e6acb8c461b98f99c43921aa664519a226d78012f0583fdeb04cad" as const;
 export function createUser(input: CreateUserInput): CommandRequest<CreateUserInput, CreateUserOutcome> {
-  return { driverOperation: { name: "ticketdesk_create_user", inputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUser", planHash: CREATE_USER_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"email","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"user","schema":{"fields":[{"name":"email","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: CreateUserInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_create_user", inputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "CreateUser", planHash: CREATE_USER_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"email","schema":{"kind":"string"}},{"name":"user_id","schema":{"kind":"uuid"}},{"name":"display_name","schema":{"kind":"string"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"Created":{"fields":[{"name":"user","schema":{"fields":[{"name":"email","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"display_name","schema":{"kind":"string"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1}],"kind":"record"},"OrganizationMissing":{"fields":[{"name":"organization_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"UserExists":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface OpenTicketWithLabelsInput {
@@ -645,15 +954,45 @@ export interface OpenTicketWithLabelsInput {
   readonly project_id: string;
   readonly assignee_id: string;
   readonly reporter_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type OpenTicketWithLabelsOutcome = { readonly outcome: "Created"; readonly ticket: { readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string }; readonly first_link: { readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }; readonly second_link: { readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string } } | { readonly outcome: "LinkExists"; readonly label_id: string; readonly ticket_id: string } | { readonly outcome: "LabelMissing"; readonly label_id: string } | { readonly outcome: "TicketExists"; readonly ticket_id: string } | { readonly outcome: "ProjectMissing"; readonly project_id: string } | { readonly outcome: "AssigneeMissing"; readonly user_id: string } | { readonly outcome: "ReporterMissing"; readonly user_id: string };
 
+export function isOpenTicketWithLabelsCreated(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "Created" }> {
+  return value.outcome === "Created";
+}
+
+export function isOpenTicketWithLabelsLinkExists(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "LinkExists" }> {
+  return value.outcome === "LinkExists";
+}
+
+export function isOpenTicketWithLabelsLabelMissing(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "LabelMissing" }> {
+  return value.outcome === "LabelMissing";
+}
+
+export function isOpenTicketWithLabelsTicketExists(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "TicketExists" }> {
+  return value.outcome === "TicketExists";
+}
+
+export function isOpenTicketWithLabelsProjectMissing(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "ProjectMissing" }> {
+  return value.outcome === "ProjectMissing";
+}
+
+export function isOpenTicketWithLabelsAssigneeMissing(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "AssigneeMissing" }> {
+  return value.outcome === "AssigneeMissing";
+}
+
+export function isOpenTicketWithLabelsReporterMissing(value: OpenTicketWithLabelsOutcome): value is Extract<OpenTicketWithLabelsOutcome, { readonly outcome: "ReporterMissing" }> {
+  return value.outcome === "ReporterMissing";
+}
+
 export const OPEN_TICKET_WITH_LABELS_PLAN_HASH = "7d3897e751406ac440f2a8b4a0b58c1c91a8d2c490a3513c0f2107716d4c81d2" as const;
 export function openTicketWithLabels(input: OpenTicketWithLabelsInput): CommandRequest<OpenTicketWithLabelsInput, OpenTicketWithLabelsOutcome> {
-  return { driverOperation: { name: "ticketdesk_open_ticket_with_labels", inputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "OpenTicketWithLabels", planHash: OPEN_TICKET_WITH_LABELS_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"label_a","schema":{"kind":"uuid"}},{"name":"label_b","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AssigneeMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1},{"name":"first_link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":2},{"name":"second_link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":3}],"kind":"record"},"LabelMissing":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LinkExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ReporterMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketExists":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: OpenTicketWithLabelsInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_open_ticket_with_labels", inputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "OpenTicketWithLabels", planHash: OPEN_TICKET_WITH_LABELS_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"title","schema":{"kind":"string"}},{"name":"label_a","schema":{"kind":"uuid"}},{"name":"label_b","schema":{"kind":"uuid"}},{"name":"ticket_id","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"assignee_id","schema":{"kind":"uuid"}},{"name":"reporter_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"AssigneeMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Created":{"fields":[{"name":"ticket","schema":{"fields":[{"name":"title","schema":{"kind":"string"},"wireId":1},{"name":"status","schema":{"kind":"enum"},"wireId":2},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":3},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":4},{"name":"project_id","schema":{"kind":"uuid"},"wireId":5},{"name":"updated_at","schema":{"kind":"timestamp"},"wireId":6},{"name":"assignee_id","schema":{"kind":"uuid"},"wireId":7},{"name":"reporter_id","schema":{"kind":"uuid"},"wireId":8},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":9}],"kind":"record"},"wireId":1},{"name":"first_link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":2},{"name":"second_link","schema":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":4}],"kind":"record"},"wireId":3}],"kind":"record"},"LabelMissing":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"LinkExists":{"fields":[{"name":"label_id","schema":{"kind":"uuid"},"wireId":1},{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":2}],"kind":"record"},"ProjectMissing":{"fields":[{"name":"project_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"ReporterMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"TicketExists":{"fields":[{"name":"ticket_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export interface SwapMemberRolesInput {
@@ -662,134 +1001,308 @@ export interface SwapMemberRolesInput {
   readonly user_a: string;
   readonly user_b: string;
   readonly project_id: string;
-  readonly idempotency_key: string;
+  readonly idempotency_key?: string;
   readonly organization_id: string;
 }
 
 export type SwapMemberRolesOutcome = { readonly outcome: "Swapped"; readonly member_a: { readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string }; readonly member_b: { readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string } } | { readonly outcome: "MemberAMissing"; readonly user_id: string } | { readonly outcome: "MemberBMissing"; readonly user_id: string };
 
+export function isSwapMemberRolesSwapped(value: SwapMemberRolesOutcome): value is Extract<SwapMemberRolesOutcome, { readonly outcome: "Swapped" }> {
+  return value.outcome === "Swapped";
+}
+
+export function isSwapMemberRolesMemberAMissing(value: SwapMemberRolesOutcome): value is Extract<SwapMemberRolesOutcome, { readonly outcome: "MemberAMissing" }> {
+  return value.outcome === "MemberAMissing";
+}
+
+export function isSwapMemberRolesMemberBMissing(value: SwapMemberRolesOutcome): value is Extract<SwapMemberRolesOutcome, { readonly outcome: "MemberBMissing" }> {
+  return value.outcome === "MemberBMissing";
+}
+
 export const SWAP_MEMBER_ROLES_PLAN_HASH = "e7cdb24b1e827a4771bd4dba403b4a81691e562a52b0a2cc2430e1ddbe224a20" as const;
 export function swapMemberRoles(input: SwapMemberRolesInput): CommandRequest<SwapMemberRolesInput, SwapMemberRolesOutcome> {
-  return { driverOperation: { name: "ticketdesk_swap_member_roles", inputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "SwapMemberRoles", planHash: SWAP_MEMBER_ROLES_PLAN_HASH, input, idempotencyKey: input.idempotency_key, inputSchema: {"fields":[{"name":"role_a","schema":{"kind":"string"}},{"name":"role_b","schema":{"kind":"string"}},{"name":"user_a","schema":{"kind":"uuid"}},{"name":"user_b","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MemberAMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"MemberBMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Swapped":{"fields":[{"name":"member_a","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1},{"name":"member_b","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
+  const idempotencyKey = input.idempotency_key && input.idempotency_key.length > 0 ? input.idempotency_key : globalThis.crypto.randomUUID();
+  const resolvedInput: SwapMemberRolesInput = input.idempotency_key === idempotencyKey ? input : { ...input, idempotency_key: idempotencyKey };
+  return { driverOperation: { name: "ticketdesk_swap_member_roles", inputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445" }, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, commandName: "SwapMemberRoles", planHash: SWAP_MEMBER_ROLES_PLAN_HASH, input: resolvedInput, idempotencyKey, inputSchema: {"fields":[{"name":"role_a","schema":{"kind":"string"}},{"name":"role_b","schema":{"kind":"string"}},{"name":"user_a","schema":{"kind":"uuid"}},{"name":"user_b","schema":{"kind":"uuid"}},{"name":"project_id","schema":{"kind":"uuid"}},{"name":"idempotency_key","schema":{"kind":"string"}},{"name":"organization_id","schema":{"kind":"uuid"}}],"kind":"record"}, outcomeSchemas: {"MemberAMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"MemberBMissing":{"fields":[{"name":"user_id","schema":{"kind":"uuid"},"wireId":1}],"kind":"record"},"Swapped":{"fields":[{"name":"member_a","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":1},{"name":"member_b","schema":{"fields":[{"name":"role","schema":{"kind":"string"},"wireId":1},{"name":"user_id","schema":{"kind":"uuid"},"wireId":2},{"name":"created_at","schema":{"kind":"timestamp"},"wireId":3},{"name":"project_id","schema":{"kind":"uuid"},"wireId":4},{"name":"organization_id","schema":{"kind":"uuid"},"wireId":5}],"kind":"record"},"wireId":2}],"kind":"record"}}, decodeError: decodeApplicationError };
 }
 
 export class TicketDeskClient {
+  private lastCommitSeq: bigint | undefined;
+
   public constructor(
     private readonly transport: ApplicationTransport,
-    private readonly commandAttemptBudget: number,
+    private readonly commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET,
+    defaultReadAfterCommit?: bigint,
+    private readonly trackCausalWrites: boolean = true,
   ) {
     if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) throw new Error("invalid command attempt budget");
+    if (defaultReadAfterCommit !== undefined && defaultReadAfterCommit < 0n) throw new Error("invalid read-after-commit sequence");
+    this.lastCommitSeq = defaultReadAfterCommit;
+  }
+
+  public static fromTransport(transport: ApplicationTransport, commandAttemptBudget: number = DEFAULT_COMMAND_ATTEMPT_BUDGET): TicketDeskClient {
+    return new TicketDeskClient(transport, commandAttemptBudget);
+  }
+
+  public withReadAfterCommit(commitSequence: bigint | undefined): TicketDeskClient {
+    return new TicketDeskClient(this.transport, this.commandAttemptBudget, commitSequence, this.trackCausalWrites);
+  }
+
+  public causalSession(initialCommitSequence?: bigint): TicketDeskClient {
+    return new TicketDeskClient(this.transport, this.commandAttemptBudget, initialCommitSequence ?? this.lastCommitSeq, true);
+  }
+
+  public get lastCommitSequence(): bigint | undefined {
+    return this.lastCommitSeq;
   }
 
   public async boardPage200(parameters: BoardPage200Params, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage200Result>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = boardPage200(parameters);
-    const result = await this.transport.executeNamedQuery<BoardPage200Params, BoardPage200Result>(request, options);
+    const result = await this.transport.executeNamedQuery<BoardPage200Params, BoardPage200Result>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async boardPage200AfterCommit(parameters: BoardPage200Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage200Result>> {
+    return this.boardPage200(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async boardPage450(parameters: BoardPage450Params, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage450Result>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = boardPage450(parameters);
-    const result = await this.transport.executeNamedQuery<BoardPage450Params, BoardPage450Result>(request, options);
+    const result = await this.transport.executeNamedQuery<BoardPage450Params, BoardPage450Result>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async boardPage450AfterCommit(parameters: BoardPage450Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage450Result>> {
+    return this.boardPage450(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async boardPage50(parameters: BoardPage50Params, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage50Result>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = boardPage50(parameters);
-    const result = await this.transport.executeNamedQuery<BoardPage50Params, BoardPage50Result>(request, options);
+    const result = await this.transport.executeNamedQuery<BoardPage50Params, BoardPage50Result>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async boardPage50AfterCommit(parameters: BoardPage50Params, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<BoardPage50Result>> {
+    return this.boardPage50(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async getTicket(parameters: GetTicketParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetTicketResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getTicket(parameters);
-    const result = await this.transport.executeNamedQuery<GetTicketParams, GetTicketResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetTicketParams, GetTicketResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async getTicketAfterCommit(parameters: GetTicketParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetTicketResult>> {
+    return this.getTicket(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async getUser(parameters: GetUserParams, options: QueryOptions = {}): Promise<TypedQueryResult<GetUserResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = getUser(parameters);
-    const result = await this.transport.executeNamedQuery<GetUserParams, GetUserResult>(request, options);
+    const result = await this.transport.executeNamedQuery<GetUserParams, GetUserResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async getUserAfterCommit(parameters: GetUserParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<GetUserResult>> {
+    return this.getUser(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async listComments(parameters: ListCommentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListCommentsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = listComments(routedParameters as unknown as ListCommentsParams);
     const result = await this.transport.executeNamedQuery<ListCommentsParams, ListCommentsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async listCommentsAfterCommit(parameters: ListCommentsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListCommentsResult>> {
+    return this.listComments(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *listCommentsPages(parameters: ListCommentsParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ListCommentsResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.listComments(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ListCommentsParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async listTickets(parameters: ListTicketsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = listTickets(routedParameters as unknown as ListTicketsParams);
     const result = await this.transport.executeNamedQuery<ListTicketsParams, ListTicketsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async listTicketsAfterCommit(parameters: ListTicketsParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsResult>> {
+    return this.listTickets(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *listTicketsPages(parameters: ListTicketsParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ListTicketsResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.listTickets(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ListTicketsParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async listTicketsByAssignee(parameters: ListTicketsByAssigneeParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsByAssigneeResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = listTicketsByAssignee(routedParameters as unknown as ListTicketsByAssigneeParams);
     const result = await this.transport.executeNamedQuery<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async listTicketsByAssigneeAfterCommit(parameters: ListTicketsByAssigneeParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsByAssigneeResult>> {
+    return this.listTicketsByAssignee(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *listTicketsByAssigneePages(parameters: ListTicketsByAssigneeParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ListTicketsByAssigneeResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.listTicketsByAssignee(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ListTicketsByAssigneeParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async projectMembers(parameters: ProjectMembersParams, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectMembersResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = projectMembers(routedParameters as unknown as ProjectMembersParams);
     const result = await this.transport.executeNamedQuery<ProjectMembersParams, ProjectMembersResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async projectMembersAfterCommit(parameters: ProjectMembersParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectMembersResult>> {
+    return this.projectMembers(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *projectMembersPages(parameters: ProjectMembersParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<ProjectMembersResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.projectMembers(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as ProjectMembersParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async projectSummary(parameters: ProjectSummaryParams, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectSummaryResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = projectSummary(parameters);
-    const result = await this.transport.executeNamedQuery<ProjectSummaryParams, ProjectSummaryResult>(request, options);
+    const result = await this.transport.executeNamedQuery<ProjectSummaryParams, ProjectSummaryResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async projectSummaryAfterCommit(parameters: ProjectSummaryParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectSummaryResult>> {
+    return this.projectSummary(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async ticketPage(parameters: TicketPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPageResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = ticketPage(parameters);
-    const result = await this.transport.executeNamedQuery<TicketPageParams, TicketPageResult>(request, options);
+    const result = await this.transport.executeNamedQuery<TicketPageParams, TicketPageResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async ticketPageAfterCommit(parameters: TicketPageParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPageResult>> {
+    return this.ticketPage(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
   public async ticketPagePaged(parameters: TicketPagePagedParams, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPagePagedResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const { comments_after: generatedCursor, ...routedParameters } = parameters;
     if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
-    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const routedOptions: QueryOptions = generatedCursor == null ? effectiveOptions : { ...effectiveOptions, cursor: generatedCursor };
     const request = ticketPagePaged(routedParameters as unknown as TicketPagePagedParams);
     const result = await this.transport.executeNamedQuery<TicketPagePagedParams, TicketPagePagedResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
+  public async ticketPagePagedAfterCommit(parameters: TicketPagePagedParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPagePagedResult>> {
+    return this.ticketPagePaged(parameters, { ...options, readAfterCommit: commitSequence });
+  }
+
+  public async *ticketPagePagedPages(parameters: TicketPagePagedParams, maxPages: number = 64, options: QueryOptions = {}): AsyncGenerator<TypedQueryResult<TicketPagePagedResult>, void, undefined> {
+    if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1024) throw new RangeError("maxPages must be an integer from 1 through 1024");
+    let currentParameters = parameters;
+    let currentOptions = options;
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const page = await this.ticketPagePaged(currentParameters, currentOptions);
+      yield page;
+      if (page.nextCursor === undefined) return;
+      const { comments_after: _ignoredCursor, ...restParameters } = currentParameters;
+      currentParameters = restParameters as unknown as TicketPagePagedParams;
+      currentOptions = { ...currentOptions, cursor: page.nextCursor };
+    }
+  }
+
   public async ticketQueue(parameters: TicketQueueParams, options: QueryOptions = {}): Promise<TypedQueryResult<TicketQueueResult>> {
+    const effectiveOptions: QueryOptions = this.lastCommitSeq !== undefined && options.readAfterCommit === undefined ? { ...options, readAfterCommit: this.lastCommitSeq } : options;
     const request = ticketQueue(parameters);
-    const result = await this.transport.executeNamedQuery<TicketQueueParams, TicketQueueResult>(request, options);
+    const result = await this.transport.executeNamedQuery<TicketQueueParams, TicketQueueResult>(request, effectiveOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
+  }
+
+  public async ticketQueueAfterCommit(parameters: TicketQueueParams, commitSequence: bigint, options: QueryOptions = {}): Promise<TypedQueryResult<TicketQueueResult>> {
+    return this.ticketQueue(parameters, { ...options, readAfterCommit: commitSequence });
   }
 
   public async addProjectMember(input: AddProjectMemberInput): Promise<TypedCommandResult<AddProjectMemberOutcome>> {
     const result = await this.transport.executeCommand<AddProjectMemberInput, AddProjectMemberOutcome>(addProjectMember(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ADD_PROJECT_MEMBER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -813,6 +1326,9 @@ export class TicketDeskClient {
   public async attachLabel(input: AttachLabelInput): Promise<TypedCommandResult<AttachLabelOutcome>> {
     const result = await this.transport.executeCommand<AttachLabelInput, AttachLabelOutcome>(attachLabel(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== ATTACH_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -836,6 +1352,9 @@ export class TicketDeskClient {
   public async closeTicketWithComment(input: CloseTicketWithCommentInput): Promise<TypedCommandResult<CloseTicketWithCommentOutcome>> {
     const result = await this.transport.executeCommand<CloseTicketWithCommentInput, CloseTicketWithCommentOutcome>(closeTicketWithComment(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CLOSE_TICKET_WITH_COMMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -859,6 +1378,9 @@ export class TicketDeskClient {
   public async createComment(input: CreateCommentInput): Promise<TypedCommandResult<CreateCommentOutcome>> {
     const result = await this.transport.executeCommand<CreateCommentInput, CreateCommentOutcome>(createComment(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_COMMENT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -882,6 +1404,9 @@ export class TicketDeskClient {
   public async createLabel(input: CreateLabelInput): Promise<TypedCommandResult<CreateLabelOutcome>> {
     const result = await this.transport.executeCommand<CreateLabelInput, CreateLabelOutcome>(createLabel(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_LABEL_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -905,6 +1430,9 @@ export class TicketDeskClient {
   public async createOrganization(input: CreateOrganizationInput): Promise<TypedCommandResult<CreateOrganizationOutcome>> {
     const result = await this.transport.executeCommand<CreateOrganizationInput, CreateOrganizationOutcome>(createOrganization(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_ORGANIZATION_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -928,6 +1456,9 @@ export class TicketDeskClient {
   public async createProject(input: CreateProjectInput): Promise<TypedCommandResult<CreateProjectOutcome>> {
     const result = await this.transport.executeCommand<CreateProjectInput, CreateProjectOutcome>(createProject(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_PROJECT_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -951,6 +1482,9 @@ export class TicketDeskClient {
   public async createTicket(input: CreateTicketInput): Promise<TypedCommandResult<CreateTicketOutcome>> {
     const result = await this.transport.executeCommand<CreateTicketInput, CreateTicketOutcome>(createTicket(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_TICKET_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -974,6 +1508,9 @@ export class TicketDeskClient {
   public async createUser(input: CreateUserInput): Promise<TypedCommandResult<CreateUserOutcome>> {
     const result = await this.transport.executeCommand<CreateUserInput, CreateUserOutcome>(createUser(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== CREATE_USER_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -997,6 +1534,9 @@ export class TicketDeskClient {
   public async openTicketWithLabels(input: OpenTicketWithLabelsInput): Promise<TypedCommandResult<OpenTicketWithLabelsOutcome>> {
     const result = await this.transport.executeCommand<OpenTicketWithLabelsInput, OpenTicketWithLabelsOutcome>(openTicketWithLabels(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== OPEN_TICKET_WITH_LABELS_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 
@@ -1020,6 +1560,9 @@ export class TicketDeskClient {
   public async swapMemberRoles(input: SwapMemberRolesInput): Promise<TypedCommandResult<SwapMemberRolesOutcome>> {
     const result = await this.transport.executeCommand<SwapMemberRolesInput, SwapMemberRolesOutcome>(swapMemberRoles(input), this.commandAttemptBudget);
     if (result.contractVersion !== CONTRACT_VERSION || result.planHash !== SWAP_MEMBER_ROLES_PLAN_HASH) throw new Error("RiffDB application identity mismatch");
+    if (this.trackCausalWrites && result.commitSequence !== undefined && result.commitSequence > 0n && (this.lastCommitSeq === undefined || result.commitSequence > this.lastCommitSeq)) {
+      this.lastCommitSeq = result.commitSequence;
+    }
     return result;
   }
 

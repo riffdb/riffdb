@@ -144,6 +144,17 @@ type BoardPage200Found struct {
 }
 
 func (BoardPage200Found) isBoardPage200Result() {}
+func IsBoardPage200Found(value BoardPage200Result) (BoardPage200Found, bool) {
+	branch, ok := value.(BoardPage200Found)
+	return branch, ok
+}
+
+func UnwrapBoardPage200Found(value BoardPage200Result) (BoardPage200Found, error) {
+	if branch, ok := value.(BoardPage200Found); ok {
+		return branch, nil
+	}
+	return BoardPage200Found{}, errors.New("expected BoardPage200 outcome found")
+}
 
 type BoardPage450Params struct {
 	OrganizationId string
@@ -165,6 +176,17 @@ type BoardPage450Found struct {
 }
 
 func (BoardPage450Found) isBoardPage450Result() {}
+func IsBoardPage450Found(value BoardPage450Result) (BoardPage450Found, bool) {
+	branch, ok := value.(BoardPage450Found)
+	return branch, ok
+}
+
+func UnwrapBoardPage450Found(value BoardPage450Result) (BoardPage450Found, error) {
+	if branch, ok := value.(BoardPage450Found); ok {
+		return branch, nil
+	}
+	return BoardPage450Found{}, errors.New("expected BoardPage450 outcome found")
+}
 
 type BoardPage50Params struct {
 	OrganizationId string
@@ -186,6 +208,17 @@ type BoardPage50Found struct {
 }
 
 func (BoardPage50Found) isBoardPage50Result() {}
+func IsBoardPage50Found(value BoardPage50Result) (BoardPage50Found, bool) {
+	branch, ok := value.(BoardPage50Found)
+	return branch, ok
+}
+
+func UnwrapBoardPage50Found(value BoardPage50Result) (BoardPage50Found, error) {
+	if branch, ok := value.(BoardPage50Found); ok {
+		return branch, nil
+	}
+	return BoardPage50Found{}, errors.New("expected BoardPage50 outcome found")
+}
 
 type GetTicketParams struct {
 	OrganizationId string
@@ -206,12 +239,27 @@ type GetTicketFound struct {
 }
 
 func (GetTicketFound) isGetTicketResult() {}
+func IsGetTicketFound(value GetTicketResult) (GetTicketFound, bool) {
+	branch, ok := value.(GetTicketFound)
+	return branch, ok
+}
 
 type GetTicketNotFound struct {
 	Outcome string
 }
 
 func (GetTicketNotFound) isGetTicketResult() {}
+func IsGetTicketNotFound(value GetTicketResult) (GetTicketNotFound, bool) {
+	branch, ok := value.(GetTicketNotFound)
+	return branch, ok
+}
+
+func UnwrapGetTicketFound(value GetTicketResult) (GetTicketFound, error) {
+	if branch, ok := value.(GetTicketFound); ok {
+		return branch, nil
+	}
+	return GetTicketFound{}, errors.New("expected GetTicket outcome found")
+}
 
 type GetUserParams struct {
 	OrganizationId string
@@ -229,12 +277,27 @@ type GetUserFound struct {
 }
 
 func (GetUserFound) isGetUserResult() {}
+func IsGetUserFound(value GetUserResult) (GetUserFound, bool) {
+	branch, ok := value.(GetUserFound)
+	return branch, ok
+}
 
 type GetUserNotFound struct {
 	Outcome string
 }
 
 func (GetUserNotFound) isGetUserResult() {}
+func IsGetUserNotFound(value GetUserResult) (GetUserNotFound, bool) {
+	branch, ok := value.(GetUserNotFound)
+	return branch, ok
+}
+
+func UnwrapGetUserFound(value GetUserResult) (GetUserFound, error) {
+	if branch, ok := value.(GetUserFound); ok {
+		return branch, nil
+	}
+	return GetUserFound{}, errors.New("expected GetUser outcome found")
+}
 
 type ListCommentsParams struct {
 	OrganizationId string
@@ -255,6 +318,17 @@ type ListCommentsFound struct {
 }
 
 func (ListCommentsFound) isListCommentsResult() {}
+func IsListCommentsFound(value ListCommentsResult) (ListCommentsFound, bool) {
+	branch, ok := value.(ListCommentsFound)
+	return branch, ok
+}
+
+func UnwrapListCommentsFound(value ListCommentsResult) (ListCommentsFound, error) {
+	if branch, ok := value.(ListCommentsFound); ok {
+		return branch, nil
+	}
+	return ListCommentsFound{}, errors.New("expected ListComments outcome found")
+}
 
 type ListTicketsParams struct {
 	OrganizationId string
@@ -279,6 +353,17 @@ type ListTicketsFound struct {
 }
 
 func (ListTicketsFound) isListTicketsResult() {}
+func IsListTicketsFound(value ListTicketsResult) (ListTicketsFound, bool) {
+	branch, ok := value.(ListTicketsFound)
+	return branch, ok
+}
+
+func UnwrapListTicketsFound(value ListTicketsResult) (ListTicketsFound, error) {
+	if branch, ok := value.(ListTicketsFound); ok {
+		return branch, nil
+	}
+	return ListTicketsFound{}, errors.New("expected ListTickets outcome found")
+}
 
 type ListTicketsByAssigneeParams struct {
 	OrganizationId string
@@ -303,6 +388,17 @@ type ListTicketsByAssigneeFound struct {
 }
 
 func (ListTicketsByAssigneeFound) isListTicketsByAssigneeResult() {}
+func IsListTicketsByAssigneeFound(value ListTicketsByAssigneeResult) (ListTicketsByAssigneeFound, bool) {
+	branch, ok := value.(ListTicketsByAssigneeFound)
+	return branch, ok
+}
+
+func UnwrapListTicketsByAssigneeFound(value ListTicketsByAssigneeResult) (ListTicketsByAssigneeFound, error) {
+	if branch, ok := value.(ListTicketsByAssigneeFound); ok {
+		return branch, nil
+	}
+	return ListTicketsByAssigneeFound{}, errors.New("expected ListTicketsByAssignee outcome found")
+}
 
 type ProjectMembersParams struct {
 	OrganizationId string
@@ -320,6 +416,17 @@ type ProjectMembersFound struct {
 }
 
 func (ProjectMembersFound) isProjectMembersResult() {}
+func IsProjectMembersFound(value ProjectMembersResult) (ProjectMembersFound, bool) {
+	branch, ok := value.(ProjectMembersFound)
+	return branch, ok
+}
+
+func UnwrapProjectMembersFound(value ProjectMembersResult) (ProjectMembersFound, error) {
+	if branch, ok := value.(ProjectMembersFound); ok {
+		return branch, nil
+	}
+	return ProjectMembersFound{}, errors.New("expected ProjectMembers outcome found")
+}
 
 type ProjectSummaryParams struct {
 	OrganizationId string
@@ -343,12 +450,27 @@ type ProjectSummaryFound struct {
 }
 
 func (ProjectSummaryFound) isProjectSummaryResult() {}
+func IsProjectSummaryFound(value ProjectSummaryResult) (ProjectSummaryFound, bool) {
+	branch, ok := value.(ProjectSummaryFound)
+	return branch, ok
+}
 
 type ProjectSummaryNotFound struct {
 	Outcome string
 }
 
 func (ProjectSummaryNotFound) isProjectSummaryResult() {}
+func IsProjectSummaryNotFound(value ProjectSummaryResult) (ProjectSummaryNotFound, bool) {
+	branch, ok := value.(ProjectSummaryNotFound)
+	return branch, ok
+}
+
+func UnwrapProjectSummaryFound(value ProjectSummaryResult) (ProjectSummaryFound, error) {
+	if branch, ok := value.(ProjectSummaryFound); ok {
+		return branch, nil
+	}
+	return ProjectSummaryFound{}, errors.New("expected ProjectSummary outcome found")
+}
 
 type TicketPageParams struct {
 	OrganizationId string
@@ -395,18 +517,37 @@ type TicketPageFound struct {
 }
 
 func (TicketPageFound) isTicketPageResult() {}
+func IsTicketPageFound(value TicketPageResult) (TicketPageFound, bool) {
+	branch, ok := value.(TicketPageFound)
+	return branch, ok
+}
 
 type TicketPageNotFound struct {
 	Outcome string
 }
 
 func (TicketPageNotFound) isTicketPageResult() {}
+func IsTicketPageNotFound(value TicketPageResult) (TicketPageNotFound, bool) {
+	branch, ok := value.(TicketPageNotFound)
+	return branch, ok
+}
 
 type TicketPageIntegrityFailure struct {
 	Outcome string
 }
 
 func (TicketPageIntegrityFailure) isTicketPageResult() {}
+func IsTicketPageIntegrityFailure(value TicketPageResult) (TicketPageIntegrityFailure, bool) {
+	branch, ok := value.(TicketPageIntegrityFailure)
+	return branch, ok
+}
+
+func UnwrapTicketPageFound(value TicketPageResult) (TicketPageFound, error) {
+	if branch, ok := value.(TicketPageFound); ok {
+		return branch, nil
+	}
+	return TicketPageFound{}, errors.New("expected TicketPage outcome found")
+}
 
 type TicketPagePagedParams struct {
 	OrganizationId string
@@ -454,18 +595,37 @@ type TicketPagePagedFound struct {
 }
 
 func (TicketPagePagedFound) isTicketPagePagedResult() {}
+func IsTicketPagePagedFound(value TicketPagePagedResult) (TicketPagePagedFound, bool) {
+	branch, ok := value.(TicketPagePagedFound)
+	return branch, ok
+}
 
 type TicketPagePagedNotFound struct {
 	Outcome string
 }
 
 func (TicketPagePagedNotFound) isTicketPagePagedResult() {}
+func IsTicketPagePagedNotFound(value TicketPagePagedResult) (TicketPagePagedNotFound, bool) {
+	branch, ok := value.(TicketPagePagedNotFound)
+	return branch, ok
+}
 
 type TicketPagePagedIntegrityFailure struct {
 	Outcome string
 }
 
 func (TicketPagePagedIntegrityFailure) isTicketPagePagedResult() {}
+func IsTicketPagePagedIntegrityFailure(value TicketPagePagedResult) (TicketPagePagedIntegrityFailure, bool) {
+	branch, ok := value.(TicketPagePagedIntegrityFailure)
+	return branch, ok
+}
+
+func UnwrapTicketPagePagedFound(value TicketPagePagedResult) (TicketPagePagedFound, error) {
+	if branch, ok := value.(TicketPagePagedFound); ok {
+		return branch, nil
+	}
+	return TicketPagePagedFound{}, errors.New("expected TicketPagePaged outcome found")
+}
 
 type TicketQueueParams struct {
 	OrganizationId string
@@ -488,6 +648,17 @@ type TicketQueueFound struct {
 }
 
 func (TicketQueueFound) isTicketQueueResult() {}
+func IsTicketQueueFound(value TicketQueueResult) (TicketQueueFound, bool) {
+	branch, ok := value.(TicketQueueFound)
+	return branch, ok
+}
+
+func UnwrapTicketQueueFound(value TicketQueueResult) (TicketQueueFound, error) {
+	if branch, ok := value.(TicketQueueFound); ok {
+		return branch, nil
+	}
+	return TicketQueueFound{}, errors.New("expected TicketQueue outcome found")
+}
 
 type AddProjectMemberInput struct {
 	Role           string
@@ -503,6 +674,10 @@ type AddProjectMemberCreated struct {
 }
 
 func (AddProjectMemberCreated) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberCreated(value AddProjectMemberOutcome) (AddProjectMemberCreated, bool) {
+	branch, ok := value.(AddProjectMemberCreated)
+	return branch, ok
+}
 
 type AddProjectMemberUserMissing struct {
 	Outcome string
@@ -510,6 +685,10 @@ type AddProjectMemberUserMissing struct {
 }
 
 func (AddProjectMemberUserMissing) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberUserMissing(value AddProjectMemberOutcome) (AddProjectMemberUserMissing, bool) {
+	branch, ok := value.(AddProjectMemberUserMissing)
+	return branch, ok
+}
 
 type AddProjectMemberMemberExists struct {
 	Outcome   string
@@ -518,6 +697,10 @@ type AddProjectMemberMemberExists struct {
 }
 
 func (AddProjectMemberMemberExists) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberMemberExists(value AddProjectMemberOutcome) (AddProjectMemberMemberExists, bool) {
+	branch, ok := value.(AddProjectMemberMemberExists)
+	return branch, ok
+}
 
 type AddProjectMemberProjectMissing struct {
 	Outcome   string
@@ -525,6 +708,10 @@ type AddProjectMemberProjectMissing struct {
 }
 
 func (AddProjectMemberProjectMissing) isAddProjectMemberOutcome() {}
+func IsAddProjectMemberProjectMissing(value AddProjectMemberOutcome) (AddProjectMemberProjectMissing, bool) {
+	branch, ok := value.(AddProjectMemberProjectMissing)
+	return branch, ok
+}
 
 type AttachLabelInput struct {
 	LabelId        string
@@ -539,6 +726,10 @@ type AttachLabelCreated struct {
 }
 
 func (AttachLabelCreated) isAttachLabelOutcome() {}
+func IsAttachLabelCreated(value AttachLabelOutcome) (AttachLabelCreated, bool) {
+	branch, ok := value.(AttachLabelCreated)
+	return branch, ok
+}
 
 type AttachLabelLinkExists struct {
 	Outcome  string
@@ -547,6 +738,10 @@ type AttachLabelLinkExists struct {
 }
 
 func (AttachLabelLinkExists) isAttachLabelOutcome() {}
+func IsAttachLabelLinkExists(value AttachLabelOutcome) (AttachLabelLinkExists, bool) {
+	branch, ok := value.(AttachLabelLinkExists)
+	return branch, ok
+}
 
 type AttachLabelLabelMissing struct {
 	Outcome string
@@ -554,6 +749,10 @@ type AttachLabelLabelMissing struct {
 }
 
 func (AttachLabelLabelMissing) isAttachLabelOutcome() {}
+func IsAttachLabelLabelMissing(value AttachLabelOutcome) (AttachLabelLabelMissing, bool) {
+	branch, ok := value.(AttachLabelLabelMissing)
+	return branch, ok
+}
 
 type AttachLabelTicketMissing struct {
 	Outcome  string
@@ -561,6 +760,10 @@ type AttachLabelTicketMissing struct {
 }
 
 func (AttachLabelTicketMissing) isAttachLabelOutcome() {}
+func IsAttachLabelTicketMissing(value AttachLabelOutcome) (AttachLabelTicketMissing, bool) {
+	branch, ok := value.(AttachLabelTicketMissing)
+	return branch, ok
+}
 
 type CloseTicketWithCommentInput struct {
 	Body           string
@@ -578,6 +781,10 @@ type CloseTicketWithCommentClosed struct {
 }
 
 func (CloseTicketWithCommentClosed) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentClosed(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentClosed, bool) {
+	branch, ok := value.(CloseTicketWithCommentClosed)
+	return branch, ok
+}
 
 type CloseTicketWithCommentTicketGone struct {
 	Outcome  string
@@ -585,6 +792,10 @@ type CloseTicketWithCommentTicketGone struct {
 }
 
 func (CloseTicketWithCommentTicketGone) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentTicketGone(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentTicketGone, bool) {
+	branch, ok := value.(CloseTicketWithCommentTicketGone)
+	return branch, ok
+}
 
 type CloseTicketWithCommentAuthorMissing struct {
 	Outcome string
@@ -592,6 +803,10 @@ type CloseTicketWithCommentAuthorMissing struct {
 }
 
 func (CloseTicketWithCommentAuthorMissing) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentAuthorMissing(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentAuthorMissing, bool) {
+	branch, ok := value.(CloseTicketWithCommentAuthorMissing)
+	return branch, ok
+}
 
 type CloseTicketWithCommentCommentExists struct {
 	Outcome   string
@@ -599,6 +814,10 @@ type CloseTicketWithCommentCommentExists struct {
 }
 
 func (CloseTicketWithCommentCommentExists) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentCommentExists(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentCommentExists, bool) {
+	branch, ok := value.(CloseTicketWithCommentCommentExists)
+	return branch, ok
+}
 
 type CloseTicketWithCommentTicketMissing struct {
 	Outcome  string
@@ -606,6 +825,10 @@ type CloseTicketWithCommentTicketMissing struct {
 }
 
 func (CloseTicketWithCommentTicketMissing) isCloseTicketWithCommentOutcome() {}
+func IsCloseTicketWithCommentTicketMissing(value CloseTicketWithCommentOutcome) (CloseTicketWithCommentTicketMissing, bool) {
+	branch, ok := value.(CloseTicketWithCommentTicketMissing)
+	return branch, ok
+}
 
 type CreateCommentInput struct {
 	Body           string
@@ -622,6 +845,10 @@ type CreateCommentCreated struct {
 }
 
 func (CreateCommentCreated) isCreateCommentOutcome() {}
+func IsCreateCommentCreated(value CreateCommentOutcome) (CreateCommentCreated, bool) {
+	branch, ok := value.(CreateCommentCreated)
+	return branch, ok
+}
 
 type CreateCommentAuthorMissing struct {
 	Outcome string
@@ -629,6 +856,10 @@ type CreateCommentAuthorMissing struct {
 }
 
 func (CreateCommentAuthorMissing) isCreateCommentOutcome() {}
+func IsCreateCommentAuthorMissing(value CreateCommentOutcome) (CreateCommentAuthorMissing, bool) {
+	branch, ok := value.(CreateCommentAuthorMissing)
+	return branch, ok
+}
 
 type CreateCommentCommentExists struct {
 	Outcome   string
@@ -636,6 +867,10 @@ type CreateCommentCommentExists struct {
 }
 
 func (CreateCommentCommentExists) isCreateCommentOutcome() {}
+func IsCreateCommentCommentExists(value CreateCommentOutcome) (CreateCommentCommentExists, bool) {
+	branch, ok := value.(CreateCommentCommentExists)
+	return branch, ok
+}
 
 type CreateCommentTicketMissing struct {
 	Outcome  string
@@ -643,6 +878,10 @@ type CreateCommentTicketMissing struct {
 }
 
 func (CreateCommentTicketMissing) isCreateCommentOutcome() {}
+func IsCreateCommentTicketMissing(value CreateCommentOutcome) (CreateCommentTicketMissing, bool) {
+	branch, ok := value.(CreateCommentTicketMissing)
+	return branch, ok
+}
 
 type CreateLabelInput struct {
 	Name           string
@@ -657,6 +896,10 @@ type CreateLabelCreated struct {
 }
 
 func (CreateLabelCreated) isCreateLabelOutcome() {}
+func IsCreateLabelCreated(value CreateLabelOutcome) (CreateLabelCreated, bool) {
+	branch, ok := value.(CreateLabelCreated)
+	return branch, ok
+}
 
 type CreateLabelLabelExists struct {
 	Outcome string
@@ -664,6 +907,10 @@ type CreateLabelLabelExists struct {
 }
 
 func (CreateLabelLabelExists) isCreateLabelOutcome() {}
+func IsCreateLabelLabelExists(value CreateLabelOutcome) (CreateLabelLabelExists, bool) {
+	branch, ok := value.(CreateLabelLabelExists)
+	return branch, ok
+}
 
 type CreateLabelOrganizationMissing struct {
 	Outcome        string
@@ -671,6 +918,10 @@ type CreateLabelOrganizationMissing struct {
 }
 
 func (CreateLabelOrganizationMissing) isCreateLabelOutcome() {}
+func IsCreateLabelOrganizationMissing(value CreateLabelOutcome) (CreateLabelOrganizationMissing, bool) {
+	branch, ok := value.(CreateLabelOrganizationMissing)
+	return branch, ok
+}
 
 type CreateOrganizationInput struct {
 	Name           string
@@ -684,6 +935,10 @@ type CreateOrganizationCreated struct {
 }
 
 func (CreateOrganizationCreated) isCreateOrganizationOutcome() {}
+func IsCreateOrganizationCreated(value CreateOrganizationOutcome) (CreateOrganizationCreated, bool) {
+	branch, ok := value.(CreateOrganizationCreated)
+	return branch, ok
+}
 
 type CreateOrganizationOrganizationExists struct {
 	Outcome        string
@@ -691,6 +946,10 @@ type CreateOrganizationOrganizationExists struct {
 }
 
 func (CreateOrganizationOrganizationExists) isCreateOrganizationOutcome() {}
+func IsCreateOrganizationOrganizationExists(value CreateOrganizationOutcome) (CreateOrganizationOrganizationExists, bool) {
+	branch, ok := value.(CreateOrganizationOrganizationExists)
+	return branch, ok
+}
 
 type CreateProjectInput struct {
 	Name           string
@@ -705,6 +964,10 @@ type CreateProjectCreated struct {
 }
 
 func (CreateProjectCreated) isCreateProjectOutcome() {}
+func IsCreateProjectCreated(value CreateProjectOutcome) (CreateProjectCreated, bool) {
+	branch, ok := value.(CreateProjectCreated)
+	return branch, ok
+}
 
 type CreateProjectProjectExists struct {
 	Outcome   string
@@ -712,6 +975,10 @@ type CreateProjectProjectExists struct {
 }
 
 func (CreateProjectProjectExists) isCreateProjectOutcome() {}
+func IsCreateProjectProjectExists(value CreateProjectOutcome) (CreateProjectProjectExists, bool) {
+	branch, ok := value.(CreateProjectProjectExists)
+	return branch, ok
+}
 
 type CreateProjectOrganizationMissing struct {
 	Outcome        string
@@ -719,6 +986,10 @@ type CreateProjectOrganizationMissing struct {
 }
 
 func (CreateProjectOrganizationMissing) isCreateProjectOutcome() {}
+func IsCreateProjectOrganizationMissing(value CreateProjectOutcome) (CreateProjectOrganizationMissing, bool) {
+	branch, ok := value.(CreateProjectOrganizationMissing)
+	return branch, ok
+}
 
 type CreateTicketInput struct {
 	Title          string
@@ -737,6 +1008,10 @@ type CreateTicketCreated struct {
 }
 
 func (CreateTicketCreated) isCreateTicketOutcome() {}
+func IsCreateTicketCreated(value CreateTicketOutcome) (CreateTicketCreated, bool) {
+	branch, ok := value.(CreateTicketCreated)
+	return branch, ok
+}
 
 type CreateTicketTicketExists struct {
 	Outcome  string
@@ -744,6 +1019,10 @@ type CreateTicketTicketExists struct {
 }
 
 func (CreateTicketTicketExists) isCreateTicketOutcome() {}
+func IsCreateTicketTicketExists(value CreateTicketOutcome) (CreateTicketTicketExists, bool) {
+	branch, ok := value.(CreateTicketTicketExists)
+	return branch, ok
+}
 
 type CreateTicketProjectMissing struct {
 	Outcome   string
@@ -751,6 +1030,10 @@ type CreateTicketProjectMissing struct {
 }
 
 func (CreateTicketProjectMissing) isCreateTicketOutcome() {}
+func IsCreateTicketProjectMissing(value CreateTicketOutcome) (CreateTicketProjectMissing, bool) {
+	branch, ok := value.(CreateTicketProjectMissing)
+	return branch, ok
+}
 
 type CreateTicketAssigneeMissing struct {
 	Outcome string
@@ -758,6 +1041,10 @@ type CreateTicketAssigneeMissing struct {
 }
 
 func (CreateTicketAssigneeMissing) isCreateTicketOutcome() {}
+func IsCreateTicketAssigneeMissing(value CreateTicketOutcome) (CreateTicketAssigneeMissing, bool) {
+	branch, ok := value.(CreateTicketAssigneeMissing)
+	return branch, ok
+}
 
 type CreateTicketReporterMissing struct {
 	Outcome string
@@ -765,6 +1052,10 @@ type CreateTicketReporterMissing struct {
 }
 
 func (CreateTicketReporterMissing) isCreateTicketOutcome() {}
+func IsCreateTicketReporterMissing(value CreateTicketOutcome) (CreateTicketReporterMissing, bool) {
+	branch, ok := value.(CreateTicketReporterMissing)
+	return branch, ok
+}
 
 type CreateUserInput struct {
 	Email          string
@@ -780,6 +1071,10 @@ type CreateUserCreated struct {
 }
 
 func (CreateUserCreated) isCreateUserOutcome() {}
+func IsCreateUserCreated(value CreateUserOutcome) (CreateUserCreated, bool) {
+	branch, ok := value.(CreateUserCreated)
+	return branch, ok
+}
 
 type CreateUserUserExists struct {
 	Outcome string
@@ -787,6 +1082,10 @@ type CreateUserUserExists struct {
 }
 
 func (CreateUserUserExists) isCreateUserOutcome() {}
+func IsCreateUserUserExists(value CreateUserOutcome) (CreateUserUserExists, bool) {
+	branch, ok := value.(CreateUserUserExists)
+	return branch, ok
+}
 
 type CreateUserOrganizationMissing struct {
 	Outcome        string
@@ -794,6 +1093,10 @@ type CreateUserOrganizationMissing struct {
 }
 
 func (CreateUserOrganizationMissing) isCreateUserOutcome() {}
+func IsCreateUserOrganizationMissing(value CreateUserOutcome) (CreateUserOrganizationMissing, bool) {
+	branch, ok := value.(CreateUserOrganizationMissing)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsInput struct {
 	Title          string
@@ -815,6 +1118,10 @@ type OpenTicketWithLabelsCreated struct {
 }
 
 func (OpenTicketWithLabelsCreated) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsCreated(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsCreated, bool) {
+	branch, ok := value.(OpenTicketWithLabelsCreated)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsLinkExists struct {
 	Outcome  string
@@ -823,6 +1130,10 @@ type OpenTicketWithLabelsLinkExists struct {
 }
 
 func (OpenTicketWithLabelsLinkExists) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsLinkExists(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsLinkExists, bool) {
+	branch, ok := value.(OpenTicketWithLabelsLinkExists)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsLabelMissing struct {
 	Outcome string
@@ -830,6 +1141,10 @@ type OpenTicketWithLabelsLabelMissing struct {
 }
 
 func (OpenTicketWithLabelsLabelMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsLabelMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsLabelMissing, bool) {
+	branch, ok := value.(OpenTicketWithLabelsLabelMissing)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsTicketExists struct {
 	Outcome  string
@@ -837,6 +1152,10 @@ type OpenTicketWithLabelsTicketExists struct {
 }
 
 func (OpenTicketWithLabelsTicketExists) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsTicketExists(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsTicketExists, bool) {
+	branch, ok := value.(OpenTicketWithLabelsTicketExists)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsProjectMissing struct {
 	Outcome   string
@@ -844,6 +1163,10 @@ type OpenTicketWithLabelsProjectMissing struct {
 }
 
 func (OpenTicketWithLabelsProjectMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsProjectMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsProjectMissing, bool) {
+	branch, ok := value.(OpenTicketWithLabelsProjectMissing)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsAssigneeMissing struct {
 	Outcome string
@@ -851,6 +1174,10 @@ type OpenTicketWithLabelsAssigneeMissing struct {
 }
 
 func (OpenTicketWithLabelsAssigneeMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsAssigneeMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsAssigneeMissing, bool) {
+	branch, ok := value.(OpenTicketWithLabelsAssigneeMissing)
+	return branch, ok
+}
 
 type OpenTicketWithLabelsReporterMissing struct {
 	Outcome string
@@ -858,6 +1185,10 @@ type OpenTicketWithLabelsReporterMissing struct {
 }
 
 func (OpenTicketWithLabelsReporterMissing) isOpenTicketWithLabelsOutcome() {}
+func IsOpenTicketWithLabelsReporterMissing(value OpenTicketWithLabelsOutcome) (OpenTicketWithLabelsReporterMissing, bool) {
+	branch, ok := value.(OpenTicketWithLabelsReporterMissing)
+	return branch, ok
+}
 
 type SwapMemberRolesInput struct {
 	RoleA          string
@@ -876,6 +1207,10 @@ type SwapMemberRolesSwapped struct {
 }
 
 func (SwapMemberRolesSwapped) isSwapMemberRolesOutcome() {}
+func IsSwapMemberRolesSwapped(value SwapMemberRolesOutcome) (SwapMemberRolesSwapped, bool) {
+	branch, ok := value.(SwapMemberRolesSwapped)
+	return branch, ok
+}
 
 type SwapMemberRolesMemberAMissing struct {
 	Outcome string
@@ -883,6 +1218,10 @@ type SwapMemberRolesMemberAMissing struct {
 }
 
 func (SwapMemberRolesMemberAMissing) isSwapMemberRolesOutcome() {}
+func IsSwapMemberRolesMemberAMissing(value SwapMemberRolesOutcome) (SwapMemberRolesMemberAMissing, bool) {
+	branch, ok := value.(SwapMemberRolesMemberAMissing)
+	return branch, ok
+}
 
 type SwapMemberRolesMemberBMissing struct {
 	Outcome string
@@ -890,17 +1229,57 @@ type SwapMemberRolesMemberBMissing struct {
 }
 
 func (SwapMemberRolesMemberBMissing) isSwapMemberRolesOutcome() {}
-
-type Client struct {
-	session         *riffdb.Session
-	commandAttempts uint32
+func IsSwapMemberRolesMemberBMissing(value SwapMemberRolesOutcome) (SwapMemberRolesMemberBMissing, bool) {
+	branch, ok := value.(SwapMemberRolesMemberBMissing)
+	return branch, ok
 }
 
-func NewClient(session *riffdb.Session, commandAttempts uint32) (*Client, error) {
-	if session == nil || commandAttempts < 1 || commandAttempts > 10 {
+const DefaultCommandAttempts uint32 = 3
+
+type Client struct {
+	session           *riffdb.Session
+	commandAttempts   uint32
+	readAfterCommit   *uint64
+	trackCausalWrites bool
+}
+
+func NewClient(session *riffdb.Session, commandAttempts ...uint32) (*Client, error) {
+	attempts := DefaultCommandAttempts
+	if len(commandAttempts) > 1 {
+		return nil, errors.New("invalid generated RiffDB client configuration")
+	} else if len(commandAttempts) == 1 {
+		attempts = commandAttempts[0]
+	}
+	if session == nil || attempts < 1 || attempts > 10 {
 		return nil, errors.New("invalid generated RiffDB client configuration")
 	}
-	return &Client{session: session, commandAttempts: commandAttempts}, nil
+	return &Client{session: session, commandAttempts: attempts, trackCausalWrites: true}, nil
+}
+func (client *Client) WithReadAfterCommit(commitSequence *uint64) *Client {
+	var copied *uint64
+	if commitSequence != nil {
+		value := *commitSequence
+		copied = &value
+	}
+	return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: client.trackCausalWrites}
+}
+func (client *Client) CausalSession(initialCommitSequence ...uint64) *Client {
+	var copied *uint64
+	if len(initialCommitSequence) > 0 {
+		value := initialCommitSequence[0]
+		copied = &value
+	} else if client.readAfterCommit != nil {
+		value := *client.readAfterCommit
+		copied = &value
+	}
+	return &Client{session: client.session, commandAttempts: client.commandAttempts, readAfterCommit: copied, trackCausalWrites: true}
+}
+func (client *Client) LastCommitSequence() *uint64 {
+	if client.readAfterCommit == nil {
+		return nil
+	}
+	value := *client.readAfterCommit
+	return &value
 }
 
 func encodeLabel(value Label) riffdb.Value {
@@ -1539,7 +1918,17 @@ func decodeBoardPage200Compact(value *riffdb.CompactQueryResult) (BoardPage200Re
 	}
 	return BoardPage200Found{Outcome: "Found", Tickets: rows}, nil
 }
-func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200Params, options QueryOptions) (QueryResult[BoardPage200Result], error) {
+func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200Params, optionsList ...QueryOptions) (QueryResult[BoardPage200Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage200Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
@@ -1563,6 +1952,16 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage200", PlanHash: BoardPage200QueryPlanHash}
 	return QueryResult[BoardPage200Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) BoardPage200AfterCommit(ctx context.Context, parameters BoardPage200Params, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[BoardPage200Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage200Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.BoardPage200(ctx, parameters, options)
 }
 
 const BoardPage450QueryPlanHash = "007055227f3f668176e112feea998644a30246b18109ea01c1f911aae77d3f11"
@@ -1729,7 +2128,17 @@ func decodeBoardPage450Compact(value *riffdb.CompactQueryResult) (BoardPage450Re
 	}
 	return BoardPage450Found{Outcome: "Found", Tickets: rows}, nil
 }
-func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450Params, options QueryOptions) (QueryResult[BoardPage450Result], error) {
+func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450Params, optionsList ...QueryOptions) (QueryResult[BoardPage450Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage450Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
@@ -1753,6 +2162,16 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage450", PlanHash: BoardPage450QueryPlanHash}
 	return QueryResult[BoardPage450Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) BoardPage450AfterCommit(ctx context.Context, parameters BoardPage450Params, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[BoardPage450Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage450Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.BoardPage450(ctx, parameters, options)
 }
 
 const BoardPage50QueryPlanHash = "96b58ab739ce2389ecb8f45e24518943333e062d151cdf41f73066950f0dc25b"
@@ -1919,7 +2338,17 @@ func decodeBoardPage50Compact(value *riffdb.CompactQueryResult) (BoardPage50Resu
 	}
 	return BoardPage50Found{Outcome: "Found", Tickets: rows}, nil
 }
-func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Params, options QueryOptions) (QueryResult[BoardPage50Result], error) {
+func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Params, optionsList ...QueryOptions) (QueryResult[BoardPage50Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage50Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
@@ -1943,6 +2372,16 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage50", PlanHash: BoardPage50QueryPlanHash}
 	return QueryResult[BoardPage50Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) BoardPage50AfterCommit(ctx context.Context, parameters BoardPage50Params, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[BoardPage50Result], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[BoardPage50Result]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.BoardPage50(ctx, parameters, options)
 }
 
 const GetTicketQueryPlanHash = "c5cb3ec127b22f8f3e5067b336efef5f08b6d72da9d4b959c2c81e48d4c76c30"
@@ -2029,7 +2468,17 @@ func decodeGetTicketResult(value riffdb.Value) (GetTicketResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams, options QueryOptions) (QueryResult[GetTicketResult], error) {
+func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams, optionsList ...QueryOptions) (QueryResult[GetTicketResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[GetTicketResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
@@ -2046,6 +2495,16 @@ func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams,
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetTicket", PlanHash: GetTicketQueryPlanHash}
 	return QueryResult[GetTicketResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) GetTicketAfterCommit(ctx context.Context, parameters GetTicketParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetTicketResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[GetTicketResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.GetTicket(ctx, parameters, options)
 }
 
 const GetUserQueryPlanHash = "5069b0cad5bc55091614c38f9da86ce56a524092bb709f2b2a22d5657d3b2d7e"
@@ -2111,7 +2570,17 @@ func decodeGetUserResult(value riffdb.Value) (GetUserResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, options QueryOptions) (QueryResult[GetUserResult], error) {
+func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, optionsList ...QueryOptions) (QueryResult[GetUserResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[GetUserResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["user_id"] = riffdb.UUID(parameters.UserId)
@@ -2128,6 +2597,16 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetUser", PlanHash: GetUserQueryPlanHash}
 	return QueryResult[GetUserResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) GetUserAfterCommit(ctx context.Context, parameters GetUserParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[GetUserResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[GetUserResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.GetUser(ctx, parameters, options)
 }
 
 const ListCommentsQueryPlanHash = "268327ca68f15d0e082c10aca78bead32cb087244b9d6ad0fdc95685222c4d65"
@@ -2202,7 +2681,17 @@ func decodeListCommentsResult(value riffdb.Value) (ListCommentsResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) ListComments(ctx context.Context, parameters ListCommentsParams, options QueryOptions) (QueryResult[ListCommentsResult], error) {
+func (client *Client) ListComments(ctx context.Context, parameters ListCommentsParams, optionsList ...QueryOptions) (QueryResult[ListCommentsResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListCommentsResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
 		return QueryResult[ListCommentsResult]{}, errors.New("limit must be from 1 through 499")
@@ -2231,6 +2720,50 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListComments", PlanHash: ListCommentsQueryPlanHash}
 	return QueryResult[ListCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) ListCommentsAfterCommit(ctx context.Context, parameters ListCommentsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListCommentsResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListCommentsResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.ListComments(ctx, parameters, options)
+}
+func (client *Client) ListCommentsPages(ctx context.Context, parameters ListCommentsParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ListCommentsResult], error) {
+	if maxPages == 0 {
+		maxPages = 64
+	}
+	if maxPages > 1024 {
+		return nil, errors.New("maxPages must be from 1 through 1024")
+	}
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return nil, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return nil, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+		parameters.After = nil
+	}
+	pages := make([]QueryResult[ListCommentsResult], 0, maxPages)
+	for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ {
+		page, err := client.ListComments(ctx, parameters, options)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+	return pages, nil
 }
 
 const ListTicketsQueryPlanHash = "7fed7c289e2486706606f8037b28126600bb0844e3d43a5c5243804de8f5b101"
@@ -2329,7 +2862,17 @@ func decodeListTicketsResult(value riffdb.Value) (ListTicketsResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsParams, options QueryOptions) (QueryResult[ListTicketsResult], error) {
+func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsParams, optionsList ...QueryOptions) (QueryResult[ListTicketsResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListTicketsResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
 		return QueryResult[ListTicketsResult]{}, errors.New("limit must be from 1 through 499")
@@ -2359,6 +2902,50 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListTickets", PlanHash: ListTicketsQueryPlanHash}
 	return QueryResult[ListTicketsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) ListTicketsAfterCommit(ctx context.Context, parameters ListTicketsParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListTicketsResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListTicketsResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.ListTickets(ctx, parameters, options)
+}
+func (client *Client) ListTicketsPages(ctx context.Context, parameters ListTicketsParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ListTicketsResult], error) {
+	if maxPages == 0 {
+		maxPages = 64
+	}
+	if maxPages > 1024 {
+		return nil, errors.New("maxPages must be from 1 through 1024")
+	}
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return nil, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return nil, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+		parameters.After = nil
+	}
+	pages := make([]QueryResult[ListTicketsResult], 0, maxPages)
+	for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ {
+		page, err := client.ListTickets(ctx, parameters, options)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+	return pages, nil
 }
 
 const ListTicketsByAssigneeQueryPlanHash = "f4b6ab2de9ae63b720f94de2f2683ac129d2c23ded3e2d8885b133c9aa77523c"
@@ -2457,7 +3044,17 @@ func decodeListTicketsByAssigneeResult(value riffdb.Value) (ListTicketsByAssigne
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters ListTicketsByAssigneeParams, options QueryOptions) (QueryResult[ListTicketsByAssigneeResult], error) {
+func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters ListTicketsByAssigneeParams, optionsList ...QueryOptions) (QueryResult[ListTicketsByAssigneeResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
 		return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("limit must be from 1 through 499")
@@ -2487,6 +3084,50 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListTicketsByAssignee", PlanHash: ListTicketsByAssigneeQueryPlanHash}
 	return QueryResult[ListTicketsByAssigneeResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) ListTicketsByAssigneeAfterCommit(ctx context.Context, parameters ListTicketsByAssigneeParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ListTicketsByAssigneeResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.ListTicketsByAssignee(ctx, parameters, options)
+}
+func (client *Client) ListTicketsByAssigneePages(ctx context.Context, parameters ListTicketsByAssigneeParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ListTicketsByAssigneeResult], error) {
+	if maxPages == 0 {
+		maxPages = 64
+	}
+	if maxPages > 1024 {
+		return nil, errors.New("maxPages must be from 1 through 1024")
+	}
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return nil, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return nil, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+		parameters.After = nil
+	}
+	pages := make([]QueryResult[ListTicketsByAssigneeResult], 0, maxPages)
+	for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ {
+		page, err := client.ListTicketsByAssignee(ctx, parameters, options)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+	return pages, nil
 }
 
 const ProjectMembersQueryPlanHash = "d815e682a4d5c6430a3058ce49f1a31f9e68a513d589b0d1268c1a5003006050"
@@ -2545,7 +3186,17 @@ func decodeProjectMembersResult(value riffdb.Value) (ProjectMembersResult, error
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMembersParams, options QueryOptions) (QueryResult[ProjectMembersResult], error) {
+func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMembersParams, optionsList ...QueryOptions) (QueryResult[ProjectMembersResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ProjectMembersResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	if parameters.After != nil {
 		if options.Cursor != "" {
@@ -2568,6 +3219,50 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ProjectMembers", PlanHash: ProjectMembersQueryPlanHash}
 	return QueryResult[ProjectMembersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) ProjectMembersAfterCommit(ctx context.Context, parameters ProjectMembersParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ProjectMembersResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ProjectMembersResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.ProjectMembers(ctx, parameters, options)
+}
+func (client *Client) ProjectMembersPages(ctx context.Context, parameters ProjectMembersParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[ProjectMembersResult], error) {
+	if maxPages == 0 {
+		maxPages = 64
+	}
+	if maxPages > 1024 {
+		return nil, errors.New("maxPages must be from 1 through 1024")
+	}
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return nil, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return nil, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+		parameters.After = nil
+	}
+	pages := make([]QueryResult[ProjectMembersResult], 0, maxPages)
+	for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ {
+		page, err := client.ProjectMembers(ctx, parameters, options)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+	return pages, nil
 }
 
 const ProjectSummaryQueryPlanHash = "9c60b3cc6235f177482c0a46e06134c8c5d030e1d35e2b46896608e4e6c58dc8"
@@ -2672,7 +3367,17 @@ func decodeProjectSummaryResult(value riffdb.Value) (ProjectSummaryResult, error
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSummaryParams, options QueryOptions) (QueryResult[ProjectSummaryResult], error) {
+func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSummaryParams, optionsList ...QueryOptions) (QueryResult[ProjectSummaryResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ProjectSummaryResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
@@ -2690,6 +3395,16 @@ func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSumm
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ProjectSummary", PlanHash: ProjectSummaryQueryPlanHash}
 	return QueryResult[ProjectSummaryResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) ProjectSummaryAfterCommit(ctx context.Context, parameters ProjectSummaryParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[ProjectSummaryResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[ProjectSummaryResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.ProjectSummary(ctx, parameters, options)
 }
 
 const TicketPageQueryPlanHash = "ad03fde1180aacccb022d69a610d66b1e5ae62faf5456d5cb264ad134926f884"
@@ -2966,7 +3681,17 @@ func decodeTicketPageResult(value riffdb.Value) (TicketPageResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParams, options QueryOptions) (QueryResult[TicketPageResult], error) {
+func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParams, optionsList ...QueryOptions) (QueryResult[TicketPageResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketPageResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
@@ -2983,6 +3708,16 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketPage", PlanHash: TicketPageQueryPlanHash}
 	return QueryResult[TicketPageResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) TicketPageAfterCommit(ctx context.Context, parameters TicketPageParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[TicketPageResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketPageResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.TicketPage(ctx, parameters, options)
 }
 
 const TicketPagePagedQueryPlanHash = "80162e1d6b005f9a7a27b8a76b54e32107dfee8c2cadc4b1218567c7c74e8925"
@@ -3259,7 +3994,17 @@ func decodeTicketPagePagedResult(value riffdb.Value) (TicketPagePagedResult, err
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPagePagedParams, options QueryOptions) (QueryResult[TicketPagePagedResult], error) {
+func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPagePagedParams, optionsList ...QueryOptions) (QueryResult[TicketPagePagedResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketPagePagedResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	if parameters.CommentsAfter != nil {
 		if options.Cursor != "" {
@@ -3282,6 +4027,50 @@ func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPage
 	}
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketPagePaged", PlanHash: TicketPagePagedQueryPlanHash}
 	return QueryResult[TicketPagePagedResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+}
+func (client *Client) TicketPagePagedAfterCommit(ctx context.Context, parameters TicketPagePagedParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[TicketPagePagedResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketPagePagedResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.TicketPagePaged(ctx, parameters, options)
+}
+func (client *Client) TicketPagePagedPages(ctx context.Context, parameters TicketPagePagedParams, maxPages uint32, optionsList ...QueryOptions) ([]QueryResult[TicketPagePagedResult], error) {
+	if maxPages == 0 {
+		maxPages = 64
+	}
+	if maxPages > 1024 {
+		return nil, errors.New("maxPages must be from 1 through 1024")
+	}
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return nil, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if parameters.CommentsAfter != nil {
+		if options.Cursor != "" {
+			return nil, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.CommentsAfter
+		parameters.CommentsAfter = nil
+	}
+	pages := make([]QueryResult[TicketPagePagedResult], 0, maxPages)
+	for pageIndex := uint32(0); pageIndex < maxPages; pageIndex++ {
+		page, err := client.TicketPagePaged(ctx, parameters, options)
+		if err != nil {
+			return nil, err
+		}
+		pages = append(pages, page)
+		if page.NextCursor == "" {
+			break
+		}
+		options.Cursor = page.NextCursor
+	}
+	return pages, nil
 }
 
 const TicketQueueQueryPlanHash = "a3b9a852c3fe2748e210b6ae4a38be7bd3445f874d0948985c7a4359a3b994c6"
@@ -3388,7 +4177,17 @@ func decodeTicketQueueResult(value riffdb.Value) (TicketQueueResult, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
-func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueueParams, options QueryOptions) (QueryResult[TicketQueueResult], error) {
+func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueueParams, optionsList ...QueryOptions) (QueryResult[TicketQueueResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketQueueResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	if options.ReadAfterCommit == nil && client.readAfterCommit != nil {
+		commitSeq := *client.readAfterCommit
+		options.ReadAfterCommit = &commitSeq
+	}
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
@@ -3406,12 +4205,23 @@ func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueuePar
 	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketQueue", PlanHash: TicketQueueQueryPlanHash}
 	return QueryResult[TicketQueueResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+func (client *Client) TicketQueueAfterCommit(ctx context.Context, parameters TicketQueueParams, commitSequence uint64, optionsList ...QueryOptions) (QueryResult[TicketQueueResult], error) {
+	var options QueryOptions
+	if len(optionsList) > 1 {
+		return QueryResult[TicketQueueResult]{}, errors.New("invalid generated RiffDB query options")
+	} else if len(optionsList) == 1 {
+		options = optionsList[0]
+	}
+	options.ReadAfterCommit = &commitSequence
+	return client.TicketQueue(ctx, parameters, options)
+}
 
 const AddProjectMemberPlanHash = "b5580aa5ee2e33ca210d57241e5b8e070bf7d15c8049ec142bd9e879896a3923"
 
 var AddProjectMemberOperation = riffdb.Operation{Name: "ticketdesk_add_project_member", InputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590"}
 
 func encodeAddProjectMemberInput(input AddProjectMemberInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"role":            riffdb.String(input.Role),
 		"user_id":         riffdb.UUID(input.UserId),
@@ -3500,6 +4310,10 @@ func (client *Client) AddProjectMember(ctx context.Context, input AddProjectMemb
 	if err != nil {
 		return CommandResult[AddProjectMemberOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddProjectMemberInput, concurrency, checkpoint uint32) (BatchResult[AddProjectMemberOutcome], error) {
@@ -3533,6 +4347,7 @@ const AttachLabelPlanHash = "840405fa27f06c0d2193464e5f72f775bb51478ecf7e5e1dfc0
 var AttachLabelOperation = riffdb.Operation{Name: "ticketdesk_attach_label", InputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de"}
 
 func encodeAttachLabelInput(input AttachLabelInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"label_id":        riffdb.UUID(input.LabelId),
 		"ticket_id":       riffdb.UUID(input.TicketId),
@@ -3620,6 +4435,10 @@ func (client *Client) AttachLabel(ctx context.Context, input AttachLabelInput) (
 	if err != nil {
 		return CommandResult[AttachLabelOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabelInput, concurrency, checkpoint uint32) (BatchResult[AttachLabelOutcome], error) {
@@ -3653,6 +4472,7 @@ const CloseTicketWithCommentPlanHash = "9f1621a70ade76a7403f1003ac742af47f1f2af4
 var CloseTicketWithCommentOperation = riffdb.Operation{Name: "ticketdesk_close_ticket_with_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
 func encodeCloseTicketWithCommentInput(input CloseTicketWithCommentInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"body":            riffdb.String(input.Body),
 		"author_id":       riffdb.UUID(input.AuthorId),
@@ -3753,6 +4573,10 @@ func (client *Client) CloseTicketWithComment(ctx context.Context, input CloseTic
 	if err != nil {
 		return CommandResult[CloseTicketWithCommentOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []CloseTicketWithCommentInput, concurrency, checkpoint uint32) (BatchResult[CloseTicketWithCommentOutcome], error) {
@@ -3786,6 +4610,7 @@ const CreateCommentPlanHash = "8405d272b6acafdeeb83fb146fa23da93cf6e9d51f8c0de83
 var CreateCommentOperation = riffdb.Operation{Name: "ticketdesk_create_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
 func encodeCreateCommentInput(input CreateCommentInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"body":            riffdb.String(input.Body),
 		"author_id":       riffdb.UUID(input.AuthorId),
@@ -3867,6 +4692,10 @@ func (client *Client) CreateComment(ctx context.Context, input CreateCommentInpu
 	if err != nil {
 		return CommandResult[CreateCommentOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCommentInput, concurrency, checkpoint uint32) (BatchResult[CreateCommentOutcome], error) {
@@ -3900,6 +4729,7 @@ const CreateLabelPlanHash = "892dab3cb229074f5ebcd0723ccfae3eeaa2a011145b45cedaa
 var CreateLabelOperation = riffdb.Operation{Name: "ticketdesk_create_label", InputSchemaHash: "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6"}
 
 func encodeCreateLabelInput(input CreateLabelInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"name":            riffdb.String(input.Name),
 		"label_id":        riffdb.UUID(input.LabelId),
@@ -3968,6 +4798,10 @@ func (client *Client) CreateLabel(ctx context.Context, input CreateLabelInput) (
 	if err != nil {
 		return CommandResult[CreateLabelOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabelInput, concurrency, checkpoint uint32) (BatchResult[CreateLabelOutcome], error) {
@@ -4001,6 +4835,7 @@ const CreateOrganizationPlanHash = "5a09375e213c58bf4fa696ce35ea457f0015a713a3ec
 var CreateOrganizationOperation = riffdb.Operation{Name: "ticketdesk_create_organization", InputSchemaHash: "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce"}
 
 func encodeCreateOrganizationInput(input CreateOrganizationInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"name":            riffdb.String(input.Name),
 		"idempotency_key": riffdb.String(input.IdempotencyKey),
@@ -4057,6 +4892,10 @@ func (client *Client) CreateOrganization(ctx context.Context, input CreateOrgani
 	if err != nil {
 		return CommandResult[CreateOrganizationOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []CreateOrganizationInput, concurrency, checkpoint uint32) (BatchResult[CreateOrganizationOutcome], error) {
@@ -4090,6 +4929,7 @@ const CreateProjectPlanHash = "370937f4ce5964832f548473cc9064eae04d49ddd973a1457
 var CreateProjectOperation = riffdb.Operation{Name: "ticketdesk_create_project", InputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031"}
 
 func encodeCreateProjectInput(input CreateProjectInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"name":            riffdb.String(input.Name),
 		"project_id":      riffdb.UUID(input.ProjectId),
@@ -4158,6 +4998,10 @@ func (client *Client) CreateProject(ctx context.Context, input CreateProjectInpu
 	if err != nil {
 		return CommandResult[CreateProjectOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreateProjectInput, concurrency, checkpoint uint32) (BatchResult[CreateProjectOutcome], error) {
@@ -4191,6 +5035,7 @@ const CreateTicketPlanHash = "70afcc152fb137e09800f388522834346678cc56b535f05993
 var CreateTicketOperation = riffdb.Operation{Name: "ticketdesk_create_ticket", InputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b"}
 
 func encodeCreateTicketInput(input CreateTicketInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"title":           riffdb.String(input.Title),
 		"status":          riffdb.Enum(string(input.Status)),
@@ -4285,6 +5130,10 @@ func (client *Client) CreateTicket(ctx context.Context, input CreateTicketInput)
 	if err != nil {
 		return CommandResult[CreateTicketOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTicketInput, concurrency, checkpoint uint32) (BatchResult[CreateTicketOutcome], error) {
@@ -4318,6 +5167,7 @@ const CreateUserPlanHash = "747283ef27e6acb8c461b98f99c43921aa664519a226d78012f0
 var CreateUserOperation = riffdb.Operation{Name: "ticketdesk_create_user", InputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4"}
 
 func encodeCreateUserInput(input CreateUserInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"email":           riffdb.String(input.Email),
 		"user_id":         riffdb.UUID(input.UserId),
@@ -4387,6 +5237,10 @@ func (client *Client) CreateUser(ctx context.Context, input CreateUserInput) (Co
 	if err != nil {
 		return CommandResult[CreateUserOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserInput, concurrency, checkpoint uint32) (BatchResult[CreateUserOutcome], error) {
@@ -4420,6 +5274,7 @@ const OpenTicketWithLabelsPlanHash = "7d3897e751406ac440f2a8b4a0b58c1c91a8d2c490
 var OpenTicketWithLabelsOperation = riffdb.Operation{Name: "ticketdesk_open_ticket_with_labels", InputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f"}
 
 func encodeOpenTicketWithLabelsInput(input OpenTicketWithLabelsInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"title":           riffdb.String(input.Title),
 		"label_a":         riffdb.UUID(input.LabelA),
@@ -4561,6 +5416,10 @@ func (client *Client) OpenTicketWithLabels(ctx context.Context, input OpenTicket
 	if err != nil {
 		return CommandResult[OpenTicketWithLabelsOutcome]{}, err
 	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
+	}
 	return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []OpenTicketWithLabelsInput, concurrency, checkpoint uint32) (BatchResult[OpenTicketWithLabelsOutcome], error) {
@@ -4594,6 +5453,7 @@ const SwapMemberRolesPlanHash = "e7cdb24b1e827a4771bd4dba403b4a81691e562a52b0a2c
 var SwapMemberRolesOperation = riffdb.Operation{Name: "ticketdesk_swap_member_roles", InputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445"}
 
 func encodeSwapMemberRolesInput(input SwapMemberRolesInput) map[string]riffdb.Value {
+	input.IdempotencyKey = riffdb.DefaultIdempotencyKey(input.IdempotencyKey)
 	return map[string]riffdb.Value{
 		"role_a":          riffdb.String(input.RoleA),
 		"role_b":          riffdb.String(input.RoleB),
@@ -4672,6 +5532,10 @@ func (client *Client) SwapMemberRoles(ctx context.Context, input SwapMemberRoles
 	outcome, err := decodeSwapMemberRolesOutcome(response.Value)
 	if err != nil {
 		return CommandResult[SwapMemberRolesOutcome]{}, err
+	}
+	if client.trackCausalWrites && response.ApplicationHead != nil && *response.ApplicationHead > 0 && (client.readAfterCommit == nil || *response.ApplicationHead > *client.readAfterCommit) {
+		commitSeq := *response.ApplicationHead
+		client.readAfterCommit = &commitSeq
 	}
 	return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }

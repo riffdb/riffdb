@@ -36,7 +36,7 @@ const driver = await DriverApplicationTransport.connect({
   },
 });
 const transport = new DriverGeneratedApplicationTransport(driver);
-const application = new {{MODULE_CLIENT}}(transport, 3);
+const application = new {{MODULE_CLIENT}}(transport);
 
 const server = createServer(async (request, response) => {
   try {
@@ -50,10 +50,7 @@ const server = createServer(async (request, response) => {
       title: "TypeScript generated web application",
     });
     assertCommandOutcome(command.outcome);
-    const page = await application.itemPage(
-      { item_id: ITEM_ID },
-      command.commitSequence === undefined ? {} : { readAfterCommit: command.commitSequence },
-    );
+    const page = await application.itemPage({ item_id: ITEM_ID });
     assertPage(page.value);
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({

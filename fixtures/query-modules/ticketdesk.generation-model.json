@@ -53,6 +53,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Role)",
@@ -161,6 +162,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.UUID(input.LabelId)",
@@ -263,6 +265,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Body)",
@@ -390,6 +393,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Body)",
@@ -498,6 +502,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Name)",
@@ -581,6 +586,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Name)",
@@ -645,6 +651,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Name)",
@@ -728,6 +735,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Title)",
@@ -861,6 +869,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Email)",
@@ -950,6 +959,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.Title)",
@@ -1133,6 +1143,7 @@
           "facades": [],
           "has_outcome_fields": true,
           "has_validation": false,
+          "idempotency_field": "IdempotencyKey",
           "inputs": [
             {
               "encode": "riffdb.String(input.RoleA)",
@@ -1670,6 +1681,7 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "BoardPage200",
           "operation": "\"ticketdesk_board_page200\"",
@@ -1698,6 +1710,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "BoardPage200Found",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -1798,6 +1811,7 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "BoardPage450",
           "operation": "\"ticketdesk_board_page450\"",
@@ -1826,6 +1840,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "BoardPage450Found",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -1926,6 +1941,7 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "BoardPage50",
           "operation": "\"ticketdesk_board_page50\"",
@@ -1954,6 +1970,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "BoardPage50Found",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -1980,6 +1997,7 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "GetTicket",
           "operation": "\"ticketdesk_get_ticket\"",
@@ -2004,12 +2022,14 @@
                   "wire_name": "\"ticket\""
                 }
               ],
+              "is_found": true,
               "name": "GetTicketFound",
               "redacted": false,
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetTicketNotFound",
               "redacted": false,
               "wire_name": "\"NotFound\""
@@ -2036,6 +2056,7 @@
               "wire_name": "\"user_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "GetUser",
           "operation": "\"ticketdesk_get_user\"",
@@ -2060,12 +2081,14 @@
                   "wire_name": "\"user\""
                 }
               ],
+              "is_found": true,
               "name": "GetUserFound",
               "redacted": false,
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetUserNotFound",
               "redacted": false,
               "wire_name": "\"NotFound\""
@@ -2101,6 +2124,7 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_found": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2140,6 +2164,7 @@
                   "wire_name": "\"comments\""
                 }
               ],
+              "is_found": true,
               "name": "ListCommentsFound",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -2181,6 +2206,7 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_found": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2224,6 +2250,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsFound",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -2265,6 +2292,7 @@
               "wire_name": "\"limit\""
             }
           ],
+          "has_found": true,
           "limit_checks": [
             {
               "defaulted": true,
@@ -2308,6 +2336,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsByAssigneeFound",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -2337,6 +2366,7 @@
               "wire_name": "\"project_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "ProjectMembers",
           "operation": "\"ticketdesk_project_members\"",
@@ -2365,6 +2395,7 @@
                   "wire_name": "\"members\""
                 }
               ],
+              "is_found": true,
               "name": "ProjectMembersFound",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -2397,6 +2428,7 @@
               "wire_name": "\"status\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "ProjectSummary",
           "operation": "\"ticketdesk_project_summary\"",
@@ -2431,12 +2463,14 @@
                   "wire_name": "\"recent_tickets\""
                 }
               ],
+              "is_found": true,
               "name": "ProjectSummaryFound",
               "redacted": false,
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "ProjectSummaryNotFound",
               "redacted": false,
               "wire_name": "\"NotFound\""
@@ -2463,6 +2497,7 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "TicketPage",
           "operation": "\"ticketdesk_ticket_page\"",
@@ -2523,18 +2558,21 @@
                   "wire_name": "\"labels\""
                 }
               ],
+              "is_found": true,
               "name": "TicketPageFound",
               "redacted": false,
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageNotFound",
               "redacted": false,
               "wire_name": "\"NotFound\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageIntegrityFailure",
               "redacted": false,
               "wire_name": "\"IntegrityFailure\""
@@ -2564,6 +2602,7 @@
               "wire_name": "\"ticket_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "TicketPagePaged",
           "operation": "\"ticketdesk_ticket_page_paged\"",
@@ -2628,18 +2667,21 @@
                   "wire_name": "\"labels\""
                 }
               ],
+              "is_found": true,
               "name": "TicketPagePagedFound",
               "redacted": false,
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedNotFound",
               "redacted": false,
               "wire_name": "\"NotFound\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedIntegrityFailure",
               "redacted": false,
               "wire_name": "\"IntegrityFailure\""
@@ -2666,6 +2708,7 @@
               "wire_name": "\"project_id\""
             }
           ],
+          "has_found": true,
           "limit_checks": [],
           "name": "TicketQueue",
           "operation": "\"ticketdesk_ticket_queue\"",
@@ -2690,6 +2733,7 @@
                   "wire_name": "\"tickets\""
                 }
               ],
+              "is_found": true,
               "name": "TicketQueueFound",
               "redacted": false,
               "wire_name": "\"Found\""
@@ -2712,22 +2756,27 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "role",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "user_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "project_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -2744,6 +2793,7 @@
               ],
               "name": "AddProjectMemberCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -2755,6 +2805,7 @@
               ],
               "name": "AddProjectMemberUserMissing",
               "redacted": false,
+              "snake_outcome": "user_missing",
               "wire_name": "\"UserMissing\""
             },
             {
@@ -2770,6 +2821,7 @@
               ],
               "name": "AddProjectMemberMemberExists",
               "redacted": false,
+              "snake_outcome": "member_exists",
               "wire_name": "\"MemberExists\""
             },
             {
@@ -2781,6 +2833,7 @@
               ],
               "name": "AddProjectMemberProjectMissing",
               "redacted": false,
+              "snake_outcome": "project_missing",
               "wire_name": "\"ProjectMissing\""
             }
           ],
@@ -2798,18 +2851,22 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "label_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "ticket_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -2826,6 +2883,7 @@
               ],
               "name": "AttachLabelCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -2841,6 +2899,7 @@
               ],
               "name": "AttachLabelLinkExists",
               "redacted": false,
+              "snake_outcome": "link_exists",
               "wire_name": "\"LinkExists\""
             },
             {
@@ -2852,6 +2911,7 @@
               ],
               "name": "AttachLabelLabelMissing",
               "redacted": false,
+              "snake_outcome": "label_missing",
               "wire_name": "\"LabelMissing\""
             },
             {
@@ -2863,6 +2923,7 @@
               ],
               "name": "AttachLabelTicketMissing",
               "redacted": false,
+              "snake_outcome": "ticket_missing",
               "wire_name": "\"TicketMissing\""
             }
           ],
@@ -2880,26 +2941,32 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "body",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "author_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "ticket_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "comment_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -2920,6 +2987,7 @@
               ],
               "name": "CloseTicketWithCommentClosed",
               "redacted": false,
+              "snake_outcome": "closed",
               "wire_name": "\"Closed\""
             },
             {
@@ -2931,6 +2999,7 @@
               ],
               "name": "CloseTicketWithCommentTicketGone",
               "redacted": false,
+              "snake_outcome": "ticket_gone",
               "wire_name": "\"TicketGone\""
             },
             {
@@ -2942,6 +3011,7 @@
               ],
               "name": "CloseTicketWithCommentAuthorMissing",
               "redacted": false,
+              "snake_outcome": "author_missing",
               "wire_name": "\"AuthorMissing\""
             },
             {
@@ -2953,6 +3023,7 @@
               ],
               "name": "CloseTicketWithCommentCommentExists",
               "redacted": false,
+              "snake_outcome": "comment_exists",
               "wire_name": "\"CommentExists\""
             },
             {
@@ -2964,6 +3035,7 @@
               ],
               "name": "CloseTicketWithCommentTicketMissing",
               "redacted": false,
+              "snake_outcome": "ticket_missing",
               "wire_name": "\"TicketMissing\""
             }
           ],
@@ -2981,26 +3053,32 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "body",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "author_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "ticket_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "comment_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3017,6 +3095,7 @@
               ],
               "name": "CreateCommentCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3028,6 +3107,7 @@
               ],
               "name": "CreateCommentAuthorMissing",
               "redacted": false,
+              "snake_outcome": "author_missing",
               "wire_name": "\"AuthorMissing\""
             },
             {
@@ -3039,6 +3119,7 @@
               ],
               "name": "CreateCommentCommentExists",
               "redacted": false,
+              "snake_outcome": "comment_exists",
               "wire_name": "\"CommentExists\""
             },
             {
@@ -3050,6 +3131,7 @@
               ],
               "name": "CreateCommentTicketMissing",
               "redacted": false,
+              "snake_outcome": "ticket_missing",
               "wire_name": "\"TicketMissing\""
             }
           ],
@@ -3067,18 +3149,22 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "name",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "label_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3095,6 +3181,7 @@
               ],
               "name": "CreateLabelCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3106,6 +3193,7 @@
               ],
               "name": "CreateLabelLabelExists",
               "redacted": false,
+              "snake_outcome": "label_exists",
               "wire_name": "\"LabelExists\""
             },
             {
@@ -3117,6 +3205,7 @@
               ],
               "name": "CreateLabelOrganizationMissing",
               "redacted": false,
+              "snake_outcome": "organization_missing",
               "wire_name": "\"OrganizationMissing\""
             }
           ],
@@ -3134,14 +3223,17 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "name",
               "type": "str"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3158,6 +3250,7 @@
               ],
               "name": "CreateOrganizationCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3169,6 +3262,7 @@
               ],
               "name": "CreateOrganizationOrganizationExists",
               "redacted": false,
+              "snake_outcome": "organization_exists",
               "wire_name": "\"OrganizationExists\""
             }
           ],
@@ -3186,18 +3280,22 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "name",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "project_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3214,6 +3312,7 @@
               ],
               "name": "CreateProjectCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3225,6 +3324,7 @@
               ],
               "name": "CreateProjectProjectExists",
               "redacted": false,
+              "snake_outcome": "project_exists",
               "wire_name": "\"ProjectExists\""
             },
             {
@@ -3236,6 +3336,7 @@
               ],
               "name": "CreateProjectOrganizationMissing",
               "redacted": false,
+              "snake_outcome": "organization_missing",
               "wire_name": "\"OrganizationMissing\""
             }
           ],
@@ -3253,34 +3354,42 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "title",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "status",
               "type": "TicketStatus"
             },
             {
+              "is_idempotency": false,
               "name": "ticket_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "project_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "assignee_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "reporter_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3297,6 +3406,7 @@
               ],
               "name": "CreateTicketCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3308,6 +3418,7 @@
               ],
               "name": "CreateTicketTicketExists",
               "redacted": false,
+              "snake_outcome": "ticket_exists",
               "wire_name": "\"TicketExists\""
             },
             {
@@ -3319,6 +3430,7 @@
               ],
               "name": "CreateTicketProjectMissing",
               "redacted": false,
+              "snake_outcome": "project_missing",
               "wire_name": "\"ProjectMissing\""
             },
             {
@@ -3330,6 +3442,7 @@
               ],
               "name": "CreateTicketAssigneeMissing",
               "redacted": false,
+              "snake_outcome": "assignee_missing",
               "wire_name": "\"AssigneeMissing\""
             },
             {
@@ -3341,6 +3454,7 @@
               ],
               "name": "CreateTicketReporterMissing",
               "redacted": false,
+              "snake_outcome": "reporter_missing",
               "wire_name": "\"ReporterMissing\""
             }
           ],
@@ -3358,22 +3472,27 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "email",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "user_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "display_name",
               "type": "str"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3390,6 +3509,7 @@
               ],
               "name": "CreateUserCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3401,6 +3521,7 @@
               ],
               "name": "CreateUserUserExists",
               "redacted": false,
+              "snake_outcome": "user_exists",
               "wire_name": "\"UserExists\""
             },
             {
@@ -3412,6 +3533,7 @@
               ],
               "name": "CreateUserOrganizationMissing",
               "redacted": false,
+              "snake_outcome": "organization_missing",
               "wire_name": "\"OrganizationMissing\""
             }
           ],
@@ -3429,38 +3551,47 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "title",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "label_a",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "label_b",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "ticket_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "project_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "assignee_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "reporter_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3485,6 +3616,7 @@
               ],
               "name": "OpenTicketWithLabelsCreated",
               "redacted": false,
+              "snake_outcome": "created",
               "wire_name": "\"Created\""
             },
             {
@@ -3500,6 +3632,7 @@
               ],
               "name": "OpenTicketWithLabelsLinkExists",
               "redacted": false,
+              "snake_outcome": "link_exists",
               "wire_name": "\"LinkExists\""
             },
             {
@@ -3511,6 +3644,7 @@
               ],
               "name": "OpenTicketWithLabelsLabelMissing",
               "redacted": false,
+              "snake_outcome": "label_missing",
               "wire_name": "\"LabelMissing\""
             },
             {
@@ -3522,6 +3656,7 @@
               ],
               "name": "OpenTicketWithLabelsTicketExists",
               "redacted": false,
+              "snake_outcome": "ticket_exists",
               "wire_name": "\"TicketExists\""
             },
             {
@@ -3533,6 +3668,7 @@
               ],
               "name": "OpenTicketWithLabelsProjectMissing",
               "redacted": false,
+              "snake_outcome": "project_missing",
               "wire_name": "\"ProjectMissing\""
             },
             {
@@ -3544,6 +3680,7 @@
               ],
               "name": "OpenTicketWithLabelsAssigneeMissing",
               "redacted": false,
+              "snake_outcome": "assignee_missing",
               "wire_name": "\"AssigneeMissing\""
             },
             {
@@ -3555,6 +3692,7 @@
               ],
               "name": "OpenTicketWithLabelsReporterMissing",
               "redacted": false,
+              "snake_outcome": "reporter_missing",
               "wire_name": "\"ReporterMissing\""
             }
           ],
@@ -3572,30 +3710,37 @@
           "facades": [],
           "inputs": [
             {
+              "is_idempotency": false,
               "name": "role_a",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "role_b",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "user_a",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "user_b",
               "type": "UUID"
             },
             {
+              "is_idempotency": false,
               "name": "project_id",
               "type": "UUID"
             },
             {
+              "is_idempotency": true,
               "name": "idempotency_key",
               "type": "str"
             },
             {
+              "is_idempotency": false,
               "name": "organization_id",
               "type": "UUID"
             }
@@ -3616,6 +3761,7 @@
               ],
               "name": "SwapMemberRolesSwapped",
               "redacted": false,
+              "snake_outcome": "swapped",
               "wire_name": "\"Swapped\""
             },
             {
@@ -3627,6 +3773,7 @@
               ],
               "name": "SwapMemberRolesMemberAMissing",
               "redacted": false,
+              "snake_outcome": "member_amissing",
               "wire_name": "\"MemberAMissing\""
             },
             {
@@ -3638,6 +3785,7 @@
               ],
               "name": "SwapMemberRolesMemberBMissing",
               "redacted": false,
+              "snake_outcome": "member_bmissing",
               "wire_name": "\"MemberBMissing\""
             }
           ],
@@ -3920,6 +4068,7 @@
           },
           "constant": "BOARD_PAGE200",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "board_page200",
           "name": "BoardPage200",
@@ -3951,6 +4100,7 @@
                   "type": "tuple[BoardPage200FoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage200Found",
               "nested": [
                 {
@@ -3989,6 +4139,7 @@
                   "name": "BoardPage200FoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4043,6 +4194,7 @@
           },
           "constant": "BOARD_PAGE450",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "board_page450",
           "name": "BoardPage450",
@@ -4074,6 +4226,7 @@
                   "type": "tuple[BoardPage450FoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage450Found",
               "nested": [
                 {
@@ -4112,6 +4265,7 @@
                   "name": "BoardPage450FoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4166,6 +4320,7 @@
           },
           "constant": "BOARD_PAGE50",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "board_page50",
           "name": "BoardPage50",
@@ -4197,6 +4352,7 @@
                   "type": "tuple[BoardPage50FoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage50Found",
               "nested": [
                 {
@@ -4235,6 +4391,7 @@
                   "name": "BoardPage50FoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4245,6 +4402,7 @@
           "compact": null,
           "constant": "GET_TICKET",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "get_ticket",
           "name": "GetTicket",
@@ -4271,6 +4429,7 @@
                   "type": "GetTicketFoundTicket"
                 }
               ],
+              "is_found": true,
               "name": "GetTicketFound",
               "nested": [
                 {
@@ -4309,12 +4468,15 @@
                   "name": "GetTicketFoundTicket"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetTicketNotFound",
               "nested": [],
+              "snake_branch": "not_found",
               "wire_name": "\"NotFound\""
             }
           ],
@@ -4325,6 +4487,7 @@
           "compact": null,
           "constant": "GET_USER",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "get_user",
           "name": "GetUser",
@@ -4351,6 +4514,7 @@
                   "type": "GetUserFoundUser"
                 }
               ],
+              "is_found": true,
               "name": "GetUserFound",
               "nested": [
                 {
@@ -4374,12 +4538,15 @@
                   "name": "GetUserFoundUser"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetUserNotFound",
               "nested": [],
+              "snake_branch": "not_found",
               "wire_name": "\"NotFound\""
             }
           ],
@@ -4393,6 +4560,7 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_found": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4435,6 +4603,7 @@
                   "type": "tuple[ListCommentsFoundComments, ...]"
                 }
               ],
+              "is_found": true,
               "name": "ListCommentsFound",
               "nested": [
                 {
@@ -4463,6 +4632,7 @@
                   "name": "ListCommentsFoundComments"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4476,6 +4646,7 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_found": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4523,6 +4694,7 @@
                   "type": "tuple[ListTicketsFoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsFound",
               "nested": [
                 {
@@ -4566,6 +4738,7 @@
                   "name": "ListTicketsFoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4579,6 +4752,7 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_found": true,
           "limit_checks": [
             {
               "field": "limit",
@@ -4626,6 +4800,7 @@
                   "type": "tuple[ListTicketsByAssigneeFoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsByAssigneeFound",
               "nested": [
                 {
@@ -4669,6 +4844,7 @@
                   "name": "ListTicketsByAssigneeFoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4682,6 +4858,7 @@
             "field": "after",
             "wire_name": "\"after\""
           },
+          "has_found": true,
           "limit_checks": [],
           "method": "project_members",
           "name": "ProjectMembers",
@@ -4713,6 +4890,7 @@
                   "type": "tuple[ProjectMembersFoundMembers, ...]"
                 }
               ],
+              "is_found": true,
               "name": "ProjectMembersFound",
               "nested": [
                 {
@@ -4731,6 +4909,7 @@
                   "name": "ProjectMembersFoundMembers"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -4741,6 +4920,7 @@
           "compact": null,
           "constant": "PROJECT_SUMMARY",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "project_summary",
           "name": "ProjectSummary",
@@ -4777,6 +4957,7 @@
                   "type": "tuple[ProjectSummaryFoundRecentTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "ProjectSummaryFound",
               "nested": [
                 {
@@ -4820,12 +5001,15 @@
                   "name": "ProjectSummaryFoundRecentTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "ProjectSummaryNotFound",
               "nested": [],
+              "snake_branch": "not_found",
               "wire_name": "\"NotFound\""
             }
           ],
@@ -4836,6 +5020,7 @@
           "compact": null,
           "constant": "TICKET_PAGE",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "ticket_page",
           "name": "TicketPage",
@@ -4892,6 +5077,7 @@
                   "type": "tuple[TicketPageFoundLabels, ...]"
                 }
               ],
+              "is_found": true,
               "name": "TicketPageFound",
               "nested": [
                 {
@@ -5030,18 +5216,23 @@
                   "name": "TicketPageFoundLabels"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageNotFound",
               "nested": [],
+              "snake_branch": "not_found",
               "wire_name": "\"NotFound\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageIntegrityFailure",
               "nested": [],
+              "snake_branch": "integrity_failure",
               "wire_name": "\"IntegrityFailure\""
             }
           ],
@@ -5055,6 +5246,7 @@
             "field": "comments_after",
             "wire_name": "\"comments_after\""
           },
+          "has_found": true,
           "limit_checks": [],
           "method": "ticket_page_paged",
           "name": "TicketPagePaged",
@@ -5116,6 +5308,7 @@
                   "type": "tuple[TicketPagePagedFoundLabels, ...]"
                 }
               ],
+              "is_found": true,
               "name": "TicketPagePagedFound",
               "nested": [
                 {
@@ -5254,18 +5447,23 @@
                   "name": "TicketPagePagedFoundLabels"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedNotFound",
               "nested": [],
+              "snake_branch": "not_found",
               "wire_name": "\"NotFound\""
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedIntegrityFailure",
               "nested": [],
+              "snake_branch": "integrity_failure",
               "wire_name": "\"IntegrityFailure\""
             }
           ],
@@ -5276,6 +5474,7 @@
           "compact": null,
           "constant": "TICKET_QUEUE",
           "cursor": null,
+          "has_found": true,
           "limit_checks": [],
           "method": "ticket_queue",
           "name": "TicketQueue",
@@ -5302,6 +5501,7 @@
                   "type": "tuple[TicketQueueFoundTickets, ...]"
                 }
               ],
+              "is_found": true,
               "name": "TicketQueueFound",
               "nested": [
                 {
@@ -5350,6 +5550,7 @@
                   "name": "TicketQueueFoundTickets"
                 }
               ],
+              "snake_branch": "found",
               "wire_name": "\"Found\""
             }
           ],
@@ -5365,54 +5566,82 @@
         "name": "TicketDeskClient",
         "queries": [
           {
+            "cursor": null,
             "function": "board_page200",
             "name": "BoardPage200"
           },
           {
+            "cursor": null,
             "function": "board_page450",
             "name": "BoardPage450"
           },
           {
+            "cursor": null,
             "function": "board_page50",
             "name": "BoardPage50"
           },
           {
+            "cursor": null,
             "function": "get_ticket",
             "name": "GetTicket"
           },
           {
+            "cursor": null,
             "function": "get_user",
             "name": "GetUser"
           },
           {
+            "cursor": {
+              "field": "after",
+              "optional": true
+            },
             "function": "list_comments",
             "name": "ListComments"
           },
           {
+            "cursor": {
+              "field": "after",
+              "optional": true
+            },
             "function": "list_tickets",
             "name": "ListTickets"
           },
           {
+            "cursor": {
+              "field": "after",
+              "optional": true
+            },
             "function": "list_tickets_by_assignee",
             "name": "ListTicketsByAssignee"
           },
           {
+            "cursor": {
+              "field": "after",
+              "optional": true
+            },
             "function": "project_members",
             "name": "ProjectMembers"
           },
           {
+            "cursor": null,
             "function": "project_summary",
             "name": "ProjectSummary"
           },
           {
+            "cursor": null,
             "function": "ticket_page",
             "name": "TicketPage"
           },
           {
+            "cursor": {
+              "field": "comments_after",
+              "optional": true
+            },
             "function": "ticket_page_paged",
             "name": "TicketPagePaged"
           },
           {
+            "cursor": null,
             "function": "ticket_queue",
             "name": "TicketQueue"
           }
@@ -5425,35 +5654,42 @@
           "constant": "ADD_PROJECT_MEMBER",
           "facades": [],
           "function": "add_project_member",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "AddProjectMemberInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.role))",
+              "enum_type": null,
               "name": "role",
               "type": "String",
               "wire_name": "role"
             },
             {
               "encode": "wire_uuid(&self.user_id)?",
+              "enum_type": null,
               "name": "user_id",
               "type": "String",
               "wire_name": "user_id"
             },
             {
               "encode": "wire_uuid(&self.project_id)?",
+              "enum_type": null,
               "name": "project_id",
               "type": "String",
               "wire_name": "project_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5469,6 +5705,7 @@
                   "type": "ProjectMember"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -5480,6 +5717,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "user_missing",
               "variant": "UserMissing",
               "wire_name": "UserMissing"
             },
@@ -5496,6 +5734,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "member_exists",
               "variant": "MemberExists",
               "wire_name": "MemberExists"
             },
@@ -5507,6 +5746,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "project_missing",
               "variant": "ProjectMissing",
               "wire_name": "ProjectMissing"
             }
@@ -5525,29 +5765,35 @@
           "constant": "ATTACH_LABEL",
           "facades": [],
           "function": "attach_label",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "AttachLabelInput",
           "inputs": [
             {
               "encode": "wire_uuid(&self.label_id)?",
+              "enum_type": null,
               "name": "label_id",
               "type": "String",
               "wire_name": "label_id"
             },
             {
               "encode": "wire_uuid(&self.ticket_id)?",
+              "enum_type": null,
               "name": "ticket_id",
               "type": "String",
               "wire_name": "ticket_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5563,6 +5809,7 @@
                   "type": "TicketLabel"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -5579,6 +5826,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "link_exists",
               "variant": "LinkExists",
               "wire_name": "LinkExists"
             },
@@ -5590,6 +5838,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "label_missing",
               "variant": "LabelMissing",
               "wire_name": "LabelMissing"
             },
@@ -5601,6 +5850,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_missing",
               "variant": "TicketMissing",
               "wire_name": "TicketMissing"
             }
@@ -5619,41 +5869,49 @@
           "constant": "CLOSE_TICKET_WITH_COMMENT",
           "facades": [],
           "function": "close_ticket_with_comment",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CloseTicketWithCommentInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.body))",
+              "enum_type": null,
               "name": "body",
               "type": "String",
               "wire_name": "body"
             },
             {
               "encode": "wire_uuid(&self.author_id)?",
+              "enum_type": null,
               "name": "author_id",
               "type": "String",
               "wire_name": "author_id"
             },
             {
               "encode": "wire_uuid(&self.ticket_id)?",
+              "enum_type": null,
               "name": "ticket_id",
               "type": "String",
               "wire_name": "ticket_id"
             },
             {
               "encode": "wire_uuid(&self.comment_id)?",
+              "enum_type": null,
               "name": "comment_id",
               "type": "String",
               "wire_name": "comment_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5674,6 +5932,7 @@
                   "type": "Comment"
                 }
               ],
+              "snake_variant": "closed",
               "variant": "Closed",
               "wire_name": "Closed"
             },
@@ -5685,6 +5944,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_gone",
               "variant": "TicketGone",
               "wire_name": "TicketGone"
             },
@@ -5696,6 +5956,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "author_missing",
               "variant": "AuthorMissing",
               "wire_name": "AuthorMissing"
             },
@@ -5707,6 +5968,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "comment_exists",
               "variant": "CommentExists",
               "wire_name": "CommentExists"
             },
@@ -5718,6 +5980,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_missing",
               "variant": "TicketMissing",
               "wire_name": "TicketMissing"
             }
@@ -5736,41 +5999,49 @@
           "constant": "CREATE_COMMENT",
           "facades": [],
           "function": "create_comment",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateCommentInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.body))",
+              "enum_type": null,
               "name": "body",
               "type": "String",
               "wire_name": "body"
             },
             {
               "encode": "wire_uuid(&self.author_id)?",
+              "enum_type": null,
               "name": "author_id",
               "type": "String",
               "wire_name": "author_id"
             },
             {
               "encode": "wire_uuid(&self.ticket_id)?",
+              "enum_type": null,
               "name": "ticket_id",
               "type": "String",
               "wire_name": "ticket_id"
             },
             {
               "encode": "wire_uuid(&self.comment_id)?",
+              "enum_type": null,
               "name": "comment_id",
               "type": "String",
               "wire_name": "comment_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5786,6 +6057,7 @@
                   "type": "Comment"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -5797,6 +6069,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "author_missing",
               "variant": "AuthorMissing",
               "wire_name": "AuthorMissing"
             },
@@ -5808,6 +6081,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "comment_exists",
               "variant": "CommentExists",
               "wire_name": "CommentExists"
             },
@@ -5819,6 +6093,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_missing",
               "variant": "TicketMissing",
               "wire_name": "TicketMissing"
             }
@@ -5837,29 +6112,35 @@
           "constant": "CREATE_LABEL",
           "facades": [],
           "function": "create_label",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateLabelInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.name))",
+              "enum_type": null,
               "name": "name",
               "type": "String",
               "wire_name": "name"
             },
             {
               "encode": "wire_uuid(&self.label_id)?",
+              "enum_type": null,
               "name": "label_id",
               "type": "String",
               "wire_name": "label_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5875,6 +6156,7 @@
                   "type": "Label"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -5886,6 +6168,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "label_exists",
               "variant": "LabelExists",
               "wire_name": "LabelExists"
             },
@@ -5897,6 +6180,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "organization_missing",
               "variant": "OrganizationMissing",
               "wire_name": "OrganizationMissing"
             }
@@ -5915,23 +6199,28 @@
           "constant": "CREATE_ORGANIZATION",
           "facades": [],
           "function": "create_organization",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateOrganizationInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.name))",
+              "enum_type": null,
               "name": "name",
               "type": "String",
               "wire_name": "name"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -5947,6 +6236,7 @@
                   "type": "Organization"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -5958,6 +6248,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "organization_exists",
               "variant": "OrganizationExists",
               "wire_name": "OrganizationExists"
             }
@@ -5976,29 +6267,35 @@
           "constant": "CREATE_PROJECT",
           "facades": [],
           "function": "create_project",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateProjectInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.name))",
+              "enum_type": null,
               "name": "name",
               "type": "String",
               "wire_name": "name"
             },
             {
               "encode": "wire_uuid(&self.project_id)?",
+              "enum_type": null,
               "name": "project_id",
               "type": "String",
               "wire_name": "project_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -6014,6 +6311,7 @@
                   "type": "Project"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -6025,6 +6323,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "project_exists",
               "variant": "ProjectExists",
               "wire_name": "ProjectExists"
             },
@@ -6036,6 +6335,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "organization_missing",
               "variant": "OrganizationMissing",
               "wire_name": "OrganizationMissing"
             }
@@ -6054,53 +6354,63 @@
           "constant": "CREATE_TICKET",
           "facades": [],
           "function": "create_ticket",
+          "has_enum_inputs": true,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateTicketInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.title))",
+              "enum_type": null,
               "name": "title",
               "type": "String",
               "wire_name": "title"
             },
             {
               "encode": "wire_enum(Clone::clone(&self.status))",
+              "enum_type": "TicketStatus",
               "name": "status",
               "type": "String",
               "wire_name": "status"
             },
             {
               "encode": "wire_uuid(&self.ticket_id)?",
+              "enum_type": null,
               "name": "ticket_id",
               "type": "String",
               "wire_name": "ticket_id"
             },
             {
               "encode": "wire_uuid(&self.project_id)?",
+              "enum_type": null,
               "name": "project_id",
               "type": "String",
               "wire_name": "project_id"
             },
             {
               "encode": "wire_uuid(&self.assignee_id)?",
+              "enum_type": null,
               "name": "assignee_id",
               "type": "String",
               "wire_name": "assignee_id"
             },
             {
               "encode": "wire_uuid(&self.reporter_id)?",
+              "enum_type": null,
               "name": "reporter_id",
               "type": "String",
               "wire_name": "reporter_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -6116,6 +6426,7 @@
                   "type": "Ticket"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -6127,6 +6438,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_exists",
               "variant": "TicketExists",
               "wire_name": "TicketExists"
             },
@@ -6138,6 +6450,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "project_missing",
               "variant": "ProjectMissing",
               "wire_name": "ProjectMissing"
             },
@@ -6149,6 +6462,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "assignee_missing",
               "variant": "AssigneeMissing",
               "wire_name": "AssigneeMissing"
             },
@@ -6160,6 +6474,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "reporter_missing",
               "variant": "ReporterMissing",
               "wire_name": "ReporterMissing"
             }
@@ -6178,35 +6493,42 @@
           "constant": "CREATE_USER",
           "facades": [],
           "function": "create_user",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "CreateUserInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.email))",
+              "enum_type": null,
               "name": "email",
               "type": "String",
               "wire_name": "email"
             },
             {
               "encode": "wire_uuid(&self.user_id)?",
+              "enum_type": null,
               "name": "user_id",
               "type": "String",
               "wire_name": "user_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.display_name))",
+              "enum_type": null,
               "name": "display_name",
               "type": "String",
               "wire_name": "display_name"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -6222,6 +6544,7 @@
                   "type": "AppUser"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -6233,6 +6556,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "user_exists",
               "variant": "UserExists",
               "wire_name": "UserExists"
             },
@@ -6244,6 +6568,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "organization_missing",
               "variant": "OrganizationMissing",
               "wire_name": "OrganizationMissing"
             }
@@ -6262,59 +6587,70 @@
           "constant": "OPEN_TICKET_WITH_LABELS",
           "facades": [],
           "function": "open_ticket_with_labels",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "OpenTicketWithLabelsInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.title))",
+              "enum_type": null,
               "name": "title",
               "type": "String",
               "wire_name": "title"
             },
             {
               "encode": "wire_uuid(&self.label_a)?",
+              "enum_type": null,
               "name": "label_a",
               "type": "String",
               "wire_name": "label_a"
             },
             {
               "encode": "wire_uuid(&self.label_b)?",
+              "enum_type": null,
               "name": "label_b",
               "type": "String",
               "wire_name": "label_b"
             },
             {
               "encode": "wire_uuid(&self.ticket_id)?",
+              "enum_type": null,
               "name": "ticket_id",
               "type": "String",
               "wire_name": "ticket_id"
             },
             {
               "encode": "wire_uuid(&self.project_id)?",
+              "enum_type": null,
               "name": "project_id",
               "type": "String",
               "wire_name": "project_id"
             },
             {
               "encode": "wire_uuid(&self.assignee_id)?",
+              "enum_type": null,
               "name": "assignee_id",
               "type": "String",
               "wire_name": "assignee_id"
             },
             {
               "encode": "wire_uuid(&self.reporter_id)?",
+              "enum_type": null,
               "name": "reporter_id",
               "type": "String",
               "wire_name": "reporter_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -6340,6 +6676,7 @@
                   "type": "TicketLabel"
                 }
               ],
+              "snake_variant": "created",
               "variant": "Created",
               "wire_name": "Created"
             },
@@ -6356,6 +6693,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "link_exists",
               "variant": "LinkExists",
               "wire_name": "LinkExists"
             },
@@ -6367,6 +6705,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "label_missing",
               "variant": "LabelMissing",
               "wire_name": "LabelMissing"
             },
@@ -6378,6 +6717,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "ticket_exists",
               "variant": "TicketExists",
               "wire_name": "TicketExists"
             },
@@ -6389,6 +6729,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "project_missing",
               "variant": "ProjectMissing",
               "wire_name": "ProjectMissing"
             },
@@ -6400,6 +6741,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "assignee_missing",
               "variant": "AssigneeMissing",
               "wire_name": "AssigneeMissing"
             },
@@ -6411,6 +6753,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "reporter_missing",
               "variant": "ReporterMissing",
               "wire_name": "ReporterMissing"
             }
@@ -6429,47 +6772,56 @@
           "constant": "SWAP_MEMBER_ROLES",
           "facades": [],
           "function": "swap_member_roles",
+          "has_enum_inputs": false,
           "idempotency_field": "idempotency_key",
+          "idempotency_string_field": "idempotency_key",
           "input_name": "SwapMemberRolesInput",
           "inputs": [
             {
               "encode": "wire_string(Clone::clone(&self.role_a))",
+              "enum_type": null,
               "name": "role_a",
               "type": "String",
               "wire_name": "role_a"
             },
             {
               "encode": "wire_string(Clone::clone(&self.role_b))",
+              "enum_type": null,
               "name": "role_b",
               "type": "String",
               "wire_name": "role_b"
             },
             {
               "encode": "wire_uuid(&self.user_a)?",
+              "enum_type": null,
               "name": "user_a",
               "type": "String",
               "wire_name": "user_a"
             },
             {
               "encode": "wire_uuid(&self.user_b)?",
+              "enum_type": null,
               "name": "user_b",
               "type": "String",
               "wire_name": "user_b"
             },
             {
               "encode": "wire_uuid(&self.project_id)?",
+              "enum_type": null,
               "name": "project_id",
               "type": "String",
               "wire_name": "project_id"
             },
             {
               "encode": "wire_string(Clone::clone(&self.idempotency_key))",
+              "enum_type": null,
               "name": "idempotency_key",
               "type": "String",
               "wire_name": "idempotency_key"
             },
             {
               "encode": "wire_uuid(&self.organization_id)?",
+              "enum_type": null,
               "name": "organization_id",
               "type": "String",
               "wire_name": "organization_id"
@@ -6490,6 +6842,7 @@
                   "type": "ProjectMember"
                 }
               ],
+              "snake_variant": "swapped",
               "variant": "Swapped",
               "wire_name": "Swapped"
             },
@@ -6501,6 +6854,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "member_a_missing",
               "variant": "MemberAMissing",
               "wire_name": "MemberAMissing"
             },
@@ -6512,6 +6866,7 @@
                   "type": "String"
                 }
               ],
+              "snake_variant": "member_b_missing",
               "variant": "MemberBMissing",
               "wire_name": "MemberBMissing"
             }
@@ -6857,7 +7212,25 @@
           "name": "ProjectMember"
         }
       ],
-      "enums": [],
+      "enums": [
+        {
+          "name": "TicketStatus",
+          "variants": [
+            {
+              "name": "Open",
+              "wire_name": "\"Open\""
+            },
+            {
+              "name": "Closed",
+              "wire_name": "\"Closed\""
+            },
+            {
+              "name": "InProgress",
+              "wire_name": "\"InProgress\""
+            }
+          ]
+        }
+      ],
       "module_hash_bytes": "0x20, 0xbe, 0x75, 0x8e, 0x0f, 0xc9, 0x51, 0x21, 0x55, 0x0c, 0x05, 0x50, 0x5c, 0x53, 0x80, 0xde, 0x8c, 0x14, 0xfb, 0x31, 0x6b, 0xe8, 0x27, 0x0a, 0x45, 0x4e, 0xf0, 0xb3, 0x06, 0x38, 0x0e, 0x16",
       "queries": [
         {
@@ -6929,6 +7302,7 @@
               "wire_name": "status"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "BoardPage200",
           "params": {
@@ -6959,6 +7333,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -6991,6 +7366,11 @@
                   "name": "BoardPage200FoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<BoardPage200FoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7108,6 +7488,7 @@
               "wire_name": "status"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "BoardPage450",
           "params": {
@@ -7138,6 +7519,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7170,6 +7552,11 @@
                   "name": "BoardPage450FoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<BoardPage450FoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7287,6 +7674,7 @@
               "wire_name": "status"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "BoardPage50",
           "params": {
@@ -7317,6 +7705,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7349,6 +7738,11 @@
                   "name": "BoardPage50FoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<BoardPage50FoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7411,6 +7805,7 @@
               "wire_name": "ticket_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "GetTicket",
           "params": {
@@ -7437,6 +7832,7 @@
                   "field": "ticket"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7469,6 +7865,11 @@
                   "name": "GetTicketFoundTicket"
                 }
               ],
+              "single_field": {
+                "name": "ticket",
+                "type": "GetTicketFoundTicket"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7516,7 +7917,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "not_found",
               "struct": {
                 "fields": [],
                 "name": "GetTicketNotFound",
@@ -7543,6 +7947,7 @@
               "wire_name": "user_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "GetUser",
           "params": {
@@ -7569,6 +7974,7 @@
                   "field": "user"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7589,6 +7995,11 @@
                   "name": "GetUserFoundUser"
                 }
               ],
+              "single_field": {
+                "name": "user",
+                "type": "GetUserFoundUser"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7624,7 +8035,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "not_found",
               "struct": {
                 "fields": [],
                 "name": "GetUserNotFound",
@@ -7641,7 +8055,9 @@
           "compact": null,
           "constant": "LIST_COMMENTS",
           "cursor": {
-            "expression": "self.0.after"
+            "expression": "self.0.after",
+            "field": "after",
+            "optional": true
           },
           "encoded_parameters": [
             {
@@ -7657,6 +8073,7 @@
               "wire_name": "limit"
             }
           ],
+          "has_found": false,
           "limit_checks": [
             {
               "field": "limit",
@@ -7696,6 +8113,7 @@
                   "field": "comments"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7720,6 +8138,11 @@
                   "name": "ListCommentsFoundComments"
                 }
               ],
+              "single_field": {
+                "name": "comments",
+                "type": "Vec<ListCommentsFoundComments>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7764,7 +8187,9 @@
           "compact": null,
           "constant": "LIST_TICKETS",
           "cursor": {
-            "expression": "self.0.after"
+            "expression": "self.0.after",
+            "field": "after",
+            "optional": true
           },
           "encoded_parameters": [
             {
@@ -7784,6 +8209,7 @@
               "wire_name": "limit"
             }
           ],
+          "has_found": false,
           "limit_checks": [
             {
               "field": "limit",
@@ -7827,6 +8253,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -7863,6 +8290,11 @@
                   "name": "ListTicketsFoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<ListTicketsFoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -7919,7 +8351,9 @@
           "compact": null,
           "constant": "LIST_TICKETS_BY_ASSIGNEE",
           "cursor": {
-            "expression": "self.0.after"
+            "expression": "self.0.after",
+            "field": "after",
+            "optional": true
           },
           "encoded_parameters": [
             {
@@ -7939,6 +8373,7 @@
               "wire_name": "limit"
             }
           ],
+          "has_found": false,
           "limit_checks": [
             {
               "field": "limit",
@@ -7982,6 +8417,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -8018,6 +8454,11 @@
                   "name": "ListTicketsByAssigneeFoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<ListTicketsByAssigneeFoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -8074,7 +8515,9 @@
           "compact": null,
           "constant": "PROJECT_MEMBERS",
           "cursor": {
-            "expression": "self.0.after"
+            "expression": "self.0.after",
+            "field": "after",
+            "optional": true
           },
           "encoded_parameters": [
             {
@@ -8086,6 +8529,7 @@
               "wire_name": "project_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "ProjectMembers",
           "params": {
@@ -8116,6 +8560,7 @@
                   "field": "members"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -8132,6 +8577,11 @@
                   "name": "ProjectMembersFoundMembers"
                 }
               ],
+              "single_field": {
+                "name": "members",
+                "type": "Vec<ProjectMembersFoundMembers>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -8182,6 +8632,7 @@
               "wire_name": "status"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "ProjectSummary",
           "params": {
@@ -8216,6 +8667,7 @@
                   "field": "recent_tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -8254,6 +8706,8 @@
                   "name": "ProjectSummaryFoundRecentTickets"
                 }
               ],
+              "single_field": null,
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -8311,7 +8765,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "not_found",
               "struct": {
                 "fields": [],
                 "name": "ProjectSummaryNotFound",
@@ -8338,6 +8795,7 @@
               "wire_name": "ticket_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "TicketPage",
           "params": {
@@ -8388,6 +8846,7 @@
                   "field": "labels"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -8512,6 +8971,8 @@
                   "name": "TicketPageFoundLabels"
                 }
               ],
+              "single_field": null,
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -8675,7 +9136,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "not_found",
               "struct": {
                 "fields": [],
                 "name": "TicketPageNotFound",
@@ -8687,7 +9151,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "integrity_failure",
               "struct": {
                 "fields": [],
                 "name": "TicketPageIntegrityFailure",
@@ -8704,7 +9171,9 @@
           "compact": null,
           "constant": "TICKET_PAGE_PAGED",
           "cursor": {
-            "expression": "self.0.comments_after"
+            "expression": "self.0.comments_after",
+            "field": "comments_after",
+            "optional": true
           },
           "encoded_parameters": [
             {
@@ -8716,6 +9185,7 @@
               "wire_name": "ticket_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "TicketPagePaged",
           "params": {
@@ -8770,6 +9240,7 @@
                   "field": "labels"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -8894,6 +9365,8 @@
                   "name": "TicketPagePagedFoundLabels"
                 }
               ],
+              "single_field": null,
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -9057,7 +9530,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "not_found",
               "struct": {
                 "fields": [],
                 "name": "TicketPagePagedNotFound",
@@ -9069,7 +9545,10 @@
             },
             {
               "decodes": [],
+              "is_found": false,
               "record_decoders": [],
+              "single_field": null,
+              "snake_variant": "integrity_failure",
               "struct": {
                 "fields": [],
                 "name": "TicketPagePagedIntegrityFailure",
@@ -9096,6 +9575,7 @@
               "wire_name": "project_id"
             }
           ],
+          "has_found": false,
           "limit_checks": [],
           "name": "TicketQueue",
           "params": {
@@ -9122,6 +9602,7 @@
                   "field": "tickets"
                 }
               ],
+              "is_found": true,
               "record_decoders": [
                 {
                   "fields": [
@@ -9162,6 +9643,11 @@
                   "name": "TicketQueueFoundTickets"
                 }
               ],
+              "single_field": {
+                "name": "tickets",
+                "type": "Vec<TicketQueueFoundTickets>"
+              },
+              "snake_variant": "found",
               "struct": {
                 "fields": [
                   {
@@ -9236,22 +9722,27 @@
           "inputs": [
             {
               "name": "role",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "user_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "project_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9266,7 +9757,8 @@
                   "type": "{ readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9275,7 +9767,8 @@
                   "type": "string"
                 }
               ],
-              "name": "UserMissing"
+              "name": "UserMissing",
+              "pascal_name": "UserMissing"
             },
             {
               "fields": [
@@ -9288,7 +9781,8 @@
                   "type": "string"
                 }
               ],
-              "name": "MemberExists"
+              "name": "MemberExists",
+              "pascal_name": "MemberExists"
             },
             {
               "fields": [
@@ -9297,7 +9791,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ProjectMissing"
+              "name": "ProjectMissing",
+              "pascal_name": "ProjectMissing"
             }
           ],
           "pascal": "AddProjectMember",
@@ -9318,18 +9813,22 @@
           "inputs": [
             {
               "name": "label_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "ticket_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9344,7 +9843,8 @@
                   "type": "{ readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9357,7 +9857,8 @@
                   "type": "string"
                 }
               ],
-              "name": "LinkExists"
+              "name": "LinkExists",
+              "pascal_name": "LinkExists"
             },
             {
               "fields": [
@@ -9366,7 +9867,8 @@
                   "type": "string"
                 }
               ],
-              "name": "LabelMissing"
+              "name": "LabelMissing",
+              "pascal_name": "LabelMissing"
             },
             {
               "fields": [
@@ -9375,7 +9877,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketMissing"
+              "name": "TicketMissing",
+              "pascal_name": "TicketMissing"
             }
           ],
           "pascal": "AttachLabel",
@@ -9396,26 +9899,32 @@
           "inputs": [
             {
               "name": "body",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "author_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "ticket_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "comment_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9434,7 +9943,8 @@
                   "type": "{ readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Closed"
+              "name": "Closed",
+              "pascal_name": "Closed"
             },
             {
               "fields": [
@@ -9443,7 +9953,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketGone"
+              "name": "TicketGone",
+              "pascal_name": "TicketGone"
             },
             {
               "fields": [
@@ -9452,7 +9963,8 @@
                   "type": "string"
                 }
               ],
-              "name": "AuthorMissing"
+              "name": "AuthorMissing",
+              "pascal_name": "AuthorMissing"
             },
             {
               "fields": [
@@ -9461,7 +9973,8 @@
                   "type": "string"
                 }
               ],
-              "name": "CommentExists"
+              "name": "CommentExists",
+              "pascal_name": "CommentExists"
             },
             {
               "fields": [
@@ -9470,7 +9983,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketMissing"
+              "name": "TicketMissing",
+              "pascal_name": "TicketMissing"
             }
           ],
           "pascal": "CloseTicketWithComment",
@@ -9491,26 +10005,32 @@
           "inputs": [
             {
               "name": "body",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "author_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "ticket_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "comment_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9525,7 +10045,8 @@
                   "type": "{ readonly body: string; readonly author_id: string; readonly ticket_id: string; readonly comment_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9534,7 +10055,8 @@
                   "type": "string"
                 }
               ],
-              "name": "AuthorMissing"
+              "name": "AuthorMissing",
+              "pascal_name": "AuthorMissing"
             },
             {
               "fields": [
@@ -9543,7 +10065,8 @@
                   "type": "string"
                 }
               ],
-              "name": "CommentExists"
+              "name": "CommentExists",
+              "pascal_name": "CommentExists"
             },
             {
               "fields": [
@@ -9552,7 +10075,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketMissing"
+              "name": "TicketMissing",
+              "pascal_name": "TicketMissing"
             }
           ],
           "pascal": "CreateComment",
@@ -9573,18 +10097,22 @@
           "inputs": [
             {
               "name": "name",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "label_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9599,7 +10127,8 @@
                   "type": "{ readonly name: string; readonly label_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9608,7 +10137,8 @@
                   "type": "string"
                 }
               ],
-              "name": "LabelExists"
+              "name": "LabelExists",
+              "pascal_name": "LabelExists"
             },
             {
               "fields": [
@@ -9617,7 +10147,8 @@
                   "type": "string"
                 }
               ],
-              "name": "OrganizationMissing"
+              "name": "OrganizationMissing",
+              "pascal_name": "OrganizationMissing"
             }
           ],
           "pascal": "CreateLabel",
@@ -9638,14 +10169,17 @@
           "inputs": [
             {
               "name": "name",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9660,7 +10194,8 @@
                   "type": "{ readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9669,7 +10204,8 @@
                   "type": "string"
                 }
               ],
-              "name": "OrganizationExists"
+              "name": "OrganizationExists",
+              "pascal_name": "OrganizationExists"
             }
           ],
           "pascal": "CreateOrganization",
@@ -9690,18 +10226,22 @@
           "inputs": [
             {
               "name": "name",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "project_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9716,7 +10256,8 @@
                   "type": "{ readonly name: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9725,7 +10266,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ProjectExists"
+              "name": "ProjectExists",
+              "pascal_name": "ProjectExists"
             },
             {
               "fields": [
@@ -9734,7 +10276,8 @@
                   "type": "string"
                 }
               ],
-              "name": "OrganizationMissing"
+              "name": "OrganizationMissing",
+              "pascal_name": "OrganizationMissing"
             }
           ],
           "pascal": "CreateProject",
@@ -9755,34 +10298,42 @@
           "inputs": [
             {
               "name": "title",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "status",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "ticket_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "project_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "assignee_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "reporter_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9797,7 +10348,8 @@
                   "type": "{ readonly title: string; readonly status: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly assignee_id: string; readonly reporter_id: string; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9806,7 +10358,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketExists"
+              "name": "TicketExists",
+              "pascal_name": "TicketExists"
             },
             {
               "fields": [
@@ -9815,7 +10368,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ProjectMissing"
+              "name": "ProjectMissing",
+              "pascal_name": "ProjectMissing"
             },
             {
               "fields": [
@@ -9824,7 +10378,8 @@
                   "type": "string"
                 }
               ],
-              "name": "AssigneeMissing"
+              "name": "AssigneeMissing",
+              "pascal_name": "AssigneeMissing"
             },
             {
               "fields": [
@@ -9833,7 +10388,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ReporterMissing"
+              "name": "ReporterMissing",
+              "pascal_name": "ReporterMissing"
             }
           ],
           "pascal": "CreateTicket",
@@ -9854,22 +10410,27 @@
           "inputs": [
             {
               "name": "email",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "user_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "display_name",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9884,7 +10445,8 @@
                   "type": "{ readonly email: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly display_name: string; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9893,7 +10455,8 @@
                   "type": "string"
                 }
               ],
-              "name": "UserExists"
+              "name": "UserExists",
+              "pascal_name": "UserExists"
             },
             {
               "fields": [
@@ -9902,7 +10465,8 @@
                   "type": "string"
                 }
               ],
-              "name": "OrganizationMissing"
+              "name": "OrganizationMissing",
+              "pascal_name": "OrganizationMissing"
             }
           ],
           "pascal": "CreateUser",
@@ -9923,38 +10487,47 @@
           "inputs": [
             {
               "name": "title",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "label_a",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "label_b",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "ticket_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "project_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "assignee_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "reporter_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -9977,7 +10550,8 @@
                   "type": "{ readonly label_id: string; readonly ticket_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly organization_id: string }"
                 }
               ],
-              "name": "Created"
+              "name": "Created",
+              "pascal_name": "Created"
             },
             {
               "fields": [
@@ -9990,7 +10564,8 @@
                   "type": "string"
                 }
               ],
-              "name": "LinkExists"
+              "name": "LinkExists",
+              "pascal_name": "LinkExists"
             },
             {
               "fields": [
@@ -9999,7 +10574,8 @@
                   "type": "string"
                 }
               ],
-              "name": "LabelMissing"
+              "name": "LabelMissing",
+              "pascal_name": "LabelMissing"
             },
             {
               "fields": [
@@ -10008,7 +10584,8 @@
                   "type": "string"
                 }
               ],
-              "name": "TicketExists"
+              "name": "TicketExists",
+              "pascal_name": "TicketExists"
             },
             {
               "fields": [
@@ -10017,7 +10594,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ProjectMissing"
+              "name": "ProjectMissing",
+              "pascal_name": "ProjectMissing"
             },
             {
               "fields": [
@@ -10026,7 +10604,8 @@
                   "type": "string"
                 }
               ],
-              "name": "AssigneeMissing"
+              "name": "AssigneeMissing",
+              "pascal_name": "AssigneeMissing"
             },
             {
               "fields": [
@@ -10035,7 +10614,8 @@
                   "type": "string"
                 }
               ],
-              "name": "ReporterMissing"
+              "name": "ReporterMissing",
+              "pascal_name": "ReporterMissing"
             }
           ],
           "pascal": "OpenTicketWithLabels",
@@ -10056,30 +10636,37 @@
           "inputs": [
             {
               "name": "role_a",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "role_b",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "user_a",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "user_b",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "project_id",
+              "optional": false,
               "type": "string"
             },
             {
               "name": "idempotency_key",
+              "optional": true,
               "type": "string"
             },
             {
               "name": "organization_id",
+              "optional": false,
               "type": "string"
             }
           ],
@@ -10098,7 +10685,8 @@
                   "type": "{ readonly role: string; readonly user_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number }; readonly project_id: string; readonly organization_id: string }"
                 }
               ],
-              "name": "Swapped"
+              "name": "Swapped",
+              "pascal_name": "Swapped"
             },
             {
               "fields": [
@@ -10107,7 +10695,8 @@
                   "type": "string"
                 }
               ],
-              "name": "MemberAMissing"
+              "name": "MemberAMissing",
+              "pascal_name": "MemberAMissing"
             },
             {
               "fields": [
@@ -10116,7 +10705,8 @@
                   "type": "string"
                 }
               ],
-              "name": "MemberBMissing"
+              "name": "MemberBMissing",
+              "pascal_name": "MemberBMissing"
             }
           ],
           "pascal": "SwapMemberRoles",
@@ -10182,6 +10772,7 @@
           },
           "constant": "BOARD_PAGE200",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "boardPage200",
           "limit_checks": [],
           "name": "BoardPage200",
@@ -10215,8 +10806,10 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage200Found",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
@@ -10268,6 +10861,7 @@
           },
           "constant": "BOARD_PAGE450",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "boardPage450",
           "limit_checks": [],
           "name": "BoardPage450",
@@ -10301,8 +10895,10 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage450Found",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
@@ -10354,6 +10950,7 @@
           },
           "constant": "BOARD_PAGE50",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "boardPage50",
           "limit_checks": [],
           "name": "BoardPage50",
@@ -10387,8 +10984,10 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "BoardPage50Found",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
@@ -10398,6 +10997,7 @@
           "compact": null,
           "constant": "GET_TICKET",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "getTicket",
           "limit_checks": [],
           "name": "GetTicket",
@@ -10426,13 +11026,17 @@
                   "type": "{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly reporter_id: string; readonly assignee_id: string }"
                 }
               ],
+              "is_found": true,
               "name": "GetTicketFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetTicketNotFound",
-              "outcome": "NotFound"
+              "outcome": "NotFound",
+              "pascal_outcome": "NotFound"
             }
           ],
           "schema_hash": "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b",
@@ -10442,6 +11046,7 @@
           "compact": null,
           "constant": "GET_USER",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "getUser",
           "limit_checks": [],
           "name": "GetUser",
@@ -10470,13 +11075,17 @@
                   "type": "{ readonly user_id: string; readonly email: string; readonly display_name: string }"
                 }
               ],
+              "is_found": true,
               "name": "GetUserFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "GetUserNotFound",
-              "outcome": "NotFound"
+              "outcome": "NotFound",
+              "pascal_outcome": "NotFound"
             }
           ],
           "schema_hash": "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60",
@@ -10488,6 +11097,7 @@
           "cursor": {
             "field": "after"
           },
+          "found_outcome": "Found",
           "function": "listComments",
           "limit_checks": [
             {
@@ -10532,8 +11142,10 @@
                   "type": "ReadonlyArray<{ readonly comment_id: string; readonly body: string; readonly author_id: string; readonly created_at: { readonly seconds: bigint; readonly nanos: number } }>"
                 }
               ],
+              "is_found": true,
               "name": "ListCommentsFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "20d05fad284c4121a3b1622a326bfb35aed8821aaad545d0c5add8c5a4ae21bc",
@@ -10545,6 +11157,7 @@
           "cursor": {
             "field": "after"
           },
+          "found_outcome": "Found",
           "function": "listTickets",
           "limit_checks": [
             {
@@ -10594,8 +11207,10 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "2e773748669493c1c19390469c5c3866a2d7a534e7c11b9531af6b8934035b2f",
@@ -10607,6 +11222,7 @@
           "cursor": {
             "field": "after"
           },
+          "found_outcome": "Found",
           "function": "listTicketsByAssignee",
           "limit_checks": [
             {
@@ -10656,8 +11272,10 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "ListTicketsByAssigneeFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "a9f85816c8b408b769438a894cc30c08db18a1abf62ce326bd1a6b824a249063",
@@ -10669,6 +11287,7 @@
           "cursor": {
             "field": "after"
           },
+          "found_outcome": "Found",
           "function": "projectMembers",
           "limit_checks": [],
           "name": "ProjectMembers",
@@ -10702,8 +11321,10 @@
                   "type": "ReadonlyArray<{ readonly user_id: string; readonly role: string }>"
                 }
               ],
+              "is_found": true,
               "name": "ProjectMembersFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "140d0b389b383b0f8616b4b12003f9fcc6233ddb5240913fc25d78a15c9b374e",
@@ -10713,6 +11334,7 @@
           "compact": null,
           "constant": "PROJECT_SUMMARY",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "projectSummary",
           "limit_checks": [],
           "name": "ProjectSummary",
@@ -10750,13 +11372,17 @@
                   "type": "ReadonlyArray<{ readonly ticket_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number } }>"
                 }
               ],
+              "is_found": true,
               "name": "ProjectSummaryFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "ProjectSummaryNotFound",
-              "outcome": "NotFound"
+              "outcome": "NotFound",
+              "pascal_outcome": "NotFound"
             }
           ],
           "schema_hash": "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30",
@@ -10766,6 +11392,7 @@
           "compact": null,
           "constant": "TICKET_PAGE",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "ticketPage",
           "limit_checks": [],
           "name": "TicketPage",
@@ -10818,18 +11445,24 @@
                   "type": "ReadonlyArray<{ readonly label_id: string; readonly name: string }>"
                 }
               ],
+              "is_found": true,
               "name": "TicketPageFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageNotFound",
-              "outcome": "NotFound"
+              "outcome": "NotFound",
+              "pascal_outcome": "NotFound"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPageIntegrityFailure",
-              "outcome": "IntegrityFailure"
+              "outcome": "IntegrityFailure",
+              "pascal_outcome": "IntegrityFailure"
             }
           ],
           "schema_hash": "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b",
@@ -10841,6 +11474,7 @@
           "cursor": {
             "field": "comments_after"
           },
+          "found_outcome": "Found",
           "function": "ticketPagePaged",
           "limit_checks": [],
           "name": "TicketPagePaged",
@@ -10898,18 +11532,24 @@
                   "type": "ReadonlyArray<{ readonly label_id: string; readonly name: string }>"
                 }
               ],
+              "is_found": true,
               "name": "TicketPagePagedFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedNotFound",
-              "outcome": "NotFound"
+              "outcome": "NotFound",
+              "pascal_outcome": "NotFound"
             },
             {
               "fields": [],
+              "is_found": false,
               "name": "TicketPagePagedIntegrityFailure",
-              "outcome": "IntegrityFailure"
+              "outcome": "IntegrityFailure",
+              "pascal_outcome": "IntegrityFailure"
             }
           ],
           "schema_hash": "24e73f5e8fe92707c91f1fea4f5d0b60d49f141e22494ebe7a0f4f8d1eab7166",
@@ -10919,6 +11559,7 @@
           "compact": null,
           "constant": "TICKET_QUEUE",
           "cursor": null,
+          "found_outcome": "Found",
           "function": "ticketQueue",
           "limit_checks": [],
           "name": "TicketQueue",
@@ -10947,8 +11588,10 @@
                   "type": "ReadonlyArray<{ readonly organization_id: string; readonly ticket_id: string; readonly project_id: string; readonly title: string; readonly status: string; readonly updated_at: { readonly seconds: bigint; readonly nanos: number }; readonly reporter_id: string; readonly assignee_id: string }>"
                 }
               ],
+              "is_found": true,
               "name": "TicketQueueFound",
-              "outcome": "Found"
+              "outcome": "Found",
+              "pascal_outcome": "Found"
             }
           ],
           "schema_hash": "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68",

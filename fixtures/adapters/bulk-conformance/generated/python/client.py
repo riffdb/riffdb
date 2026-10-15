@@ -138,9 +138,21 @@ class GetFgaTupleTupleFound:
     tuple: GetFgaTupleTupleFoundTuple
     outcome: Literal["TupleFound"] = field(default="TupleFound", init=False)
 
+    def is_tuple_found(self) -> bool:
+        return True
+
+    def is_tuple_not_found(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFgaTupleTupleNotFound:
     outcome: Literal["TupleNotFound"] = field(default="TupleNotFound", init=False)
+
+    def is_tuple_found(self) -> bool:
+        return False
+
+    def is_tuple_not_found(self) -> bool:
+        return True
 
 GetFgaTupleResult: TypeAlias = GetFgaTupleTupleFound | GetFgaTupleTupleNotFound
 
@@ -154,13 +166,40 @@ CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "fc646a4f5db5bd9683af3a1aa90e0c1a
 class CreateDocumentGraphsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
 
+    def is_document_already_exists(self) -> bool:
+        return True
+
+    def is_document_graphs_created(self) -> bool:
+        return False
+
+    def is_revision_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentGraphsDocumentGraphsCreated:
     outcome: Literal["DocumentGraphsCreated"] = field(default="DocumentGraphsCreated", init=False)
 
+    def is_document_already_exists(self) -> bool:
+        return False
+
+    def is_document_graphs_created(self) -> bool:
+        return True
+
+    def is_revision_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentGraphsRevisionAlreadyExists:
     outcome: Literal["RevisionAlreadyExists"] = field(default="RevisionAlreadyExists", init=False)
+
+    def is_document_already_exists(self) -> bool:
+        return False
+
+    def is_document_graphs_created(self) -> bool:
+        return False
+
+    def is_revision_already_exists(self) -> bool:
+        return True
 
 CreateDocumentGraphsOutcome: TypeAlias = CreateDocumentGraphsDocumentAlreadyExists | CreateDocumentGraphsDocumentGraphsCreated | CreateDocumentGraphsRevisionAlreadyExists
 
@@ -174,13 +213,40 @@ CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "05393691334d1968513e5153f2a
 class CreatePipelinesWithStepsPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
 
+    def is_pipelines_created(self) -> bool:
+        return True
+
+    def is_step_already_exists(self) -> bool:
+        return False
+
+    def is_pipeline_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesWithStepsStepAlreadyExists:
     outcome: Literal["StepAlreadyExists"] = field(default="StepAlreadyExists", init=False)
 
+    def is_pipelines_created(self) -> bool:
+        return False
+
+    def is_step_already_exists(self) -> bool:
+        return True
+
+    def is_pipeline_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesWithStepsPipelineAlreadyExists:
     outcome: Literal["PipelineAlreadyExists"] = field(default="PipelineAlreadyExists", init=False)
+
+    def is_pipelines_created(self) -> bool:
+        return False
+
+    def is_step_already_exists(self) -> bool:
+        return False
+
+    def is_pipeline_already_exists(self) -> bool:
+        return True
 
 CreatePipelinesWithStepsOutcome: TypeAlias = CreatePipelinesWithStepsPipelinesCreated | CreatePipelinesWithStepsStepAlreadyExists | CreatePipelinesWithStepsPipelineAlreadyExists
 
@@ -194,13 +260,40 @@ CREATE_RESTRICT_CHILDREN_PLAN_HASH: Final[str] = "01a982e5aaa6127009c8191dbe6420
 class CreateRestrictChildrenChildAlreadyExists:
     outcome: Literal["ChildAlreadyExists"] = field(default="ChildAlreadyExists", init=False)
 
+    def is_child_already_exists(self) -> bool:
+        return True
+
+    def is_restrict_parent_required(self) -> bool:
+        return False
+
+    def is_restrict_children_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictChildrenRestrictParentRequired:
     outcome: Literal["RestrictParentRequired"] = field(default="RestrictParentRequired", init=False)
 
+    def is_child_already_exists(self) -> bool:
+        return False
+
+    def is_restrict_parent_required(self) -> bool:
+        return True
+
+    def is_restrict_children_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictChildrenRestrictChildrenCreated:
     outcome: Literal["RestrictChildrenCreated"] = field(default="RestrictChildrenCreated", init=False)
+
+    def is_child_already_exists(self) -> bool:
+        return False
+
+    def is_restrict_parent_required(self) -> bool:
+        return False
+
+    def is_restrict_children_created(self) -> bool:
+        return True
 
 CreateRestrictChildrenOutcome: TypeAlias = CreateRestrictChildrenChildAlreadyExists | CreateRestrictChildrenRestrictParentRequired | CreateRestrictChildrenRestrictChildrenCreated
 
@@ -214,9 +307,21 @@ CREATE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "a52db4ec80b4442fa410e0f561567bc
 class CreateRestrictParentsParentAlreadyExists:
     outcome: Literal["ParentAlreadyExists"] = field(default="ParentAlreadyExists", init=False)
 
+    def is_parent_already_exists(self) -> bool:
+        return True
+
+    def is_restrict_parents_created(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictParentsRestrictParentsCreated:
     outcome: Literal["RestrictParentsCreated"] = field(default="RestrictParentsCreated", init=False)
+
+    def is_parent_already_exists(self) -> bool:
+        return False
+
+    def is_restrict_parents_created(self) -> bool:
+        return True
 
 CreateRestrictParentsOutcome: TypeAlias = CreateRestrictParentsParentAlreadyExists | CreateRestrictParentsRestrictParentsCreated
 
@@ -231,13 +336,40 @@ DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "eb1c87ff834b675b1d248ca145913e2
 class DeleteRestrictParentsParentMissing:
     outcome: Literal["ParentMissing"] = field(default="ParentMissing", init=False)
 
+    def is_parent_missing(self) -> bool:
+        return True
+
+    def is_parent_referenced(self) -> bool:
+        return False
+
+    def is_restrict_parents_deleted(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsParentReferenced:
     outcome: Literal["ParentReferenced"] = field(default="ParentReferenced", init=False)
 
+    def is_parent_missing(self) -> bool:
+        return False
+
+    def is_parent_referenced(self) -> bool:
+        return True
+
+    def is_restrict_parents_deleted(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsRestrictParentsDeleted:
     outcome: Literal["RestrictParentsDeleted"] = field(default="RestrictParentsDeleted", init=False)
+
+    def is_parent_missing(self) -> bool:
+        return False
+
+    def is_parent_referenced(self) -> bool:
+        return False
+
+    def is_restrict_parents_deleted(self) -> bool:
+        return True
 
 DeleteRestrictParentsOutcome: TypeAlias = DeleteRestrictParentsParentMissing | DeleteRestrictParentsParentReferenced | DeleteRestrictParentsRestrictParentsDeleted
 
@@ -253,9 +385,21 @@ class LogMetricsMetricsLogged:
     revision: Annotated[int, "u64"]
     outcome: Literal["MetricsLogged"] = field(default="MetricsLogged", init=False)
 
+    def is_metrics_logged(self) -> bool:
+        return True
+
+    def is_metric_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricAlreadyExists:
     outcome: Literal["MetricAlreadyExists"] = field(default="MetricAlreadyExists", init=False)
+
+    def is_metrics_logged(self) -> bool:
+        return False
+
+    def is_metric_already_exists(self) -> bool:
+        return True
 
 LogMetricsOutcome: TypeAlias = LogMetricsMetricsLogged | LogMetricsMetricAlreadyExists
 
@@ -269,9 +413,21 @@ WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "b1e8abbd14d897069fdcb322f3ad39c2
 class WritePolicyMutationsPolicyMutationExists:
     outcome: Literal["PolicyMutationExists"] = field(default="PolicyMutationExists", init=False)
 
+    def is_policy_mutation_exists(self) -> bool:
+        return True
+
+    def is_policy_mutations_written(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WritePolicyMutationsPolicyMutationsWritten:
     outcome: Literal["PolicyMutationsWritten"] = field(default="PolicyMutationsWritten", init=False)
+
+    def is_policy_mutation_exists(self) -> bool:
+        return False
+
+    def is_policy_mutations_written(self) -> bool:
+        return True
 
 WritePolicyMutationsOutcome: TypeAlias = WritePolicyMutationsPolicyMutationExists | WritePolicyMutationsPolicyMutationsWritten
 
@@ -285,18 +441,48 @@ WRITE_TUPLES_PLAN_HASH: Final[str] = "e78d8361f05ae0574e887e38d00efb731569f70fa2
 class WriteTuplesTuplesWritten:
     outcome: Literal["TuplesWritten"] = field(default="TuplesWritten", init=False)
 
+    def is_tuples_written(self) -> bool:
+        return True
+
+    def is_tuple_already_exists(self) -> bool:
+        return False
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesTupleAlreadyExists:
     outcome: Literal["TupleAlreadyExists"] = field(default="TupleAlreadyExists", init=False)
 
+    def is_tuples_written(self) -> bool:
+        return False
+
+    def is_tuple_already_exists(self) -> bool:
+        return True
+
 WriteTuplesOutcome: TypeAlias = WriteTuplesTuplesWritten | WriteTuplesTupleAlreadyExists
 
 class AdapterBulkConformanceClient:
-    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: SyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AdapterBulkConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AdapterBulkConformanceClient:
+        return AdapterBulkConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AdapterBulkConformanceClient:
+        return AdapterBulkConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     def get_fga_tuple(self, parameters: GetFgaTupleParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetFgaTupleResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -308,6 +494,9 @@ class AdapterBulkConformanceClient:
             "TupleNotFound": GetFgaTupleTupleNotFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def get_fga_tuple_after_commit(self, parameters: GetFgaTupleParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetFgaTupleResult]:
+        return self.get_fga_tuple(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     def create_document_graphs(self, input: CreateDocumentGraphsInput) -> TypedCommandResult[CreateDocumentGraphsOutcome]:
         if not 1 <= len(input.documents) <= 64:
@@ -322,7 +511,10 @@ class AdapterBulkConformanceClient:
             "DocumentGraphsCreated": CreateDocumentGraphsDocumentGraphsCreated,
             "RevisionAlreadyExists": CreateDocumentGraphsRevisionAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentGraphsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_document_graphs_batch(
         self, inputs: Sequence[CreateDocumentGraphsInput], options: CommandBatchOptions,
@@ -346,7 +538,10 @@ class AdapterBulkConformanceClient:
             "StepAlreadyExists": CreatePipelinesWithStepsStepAlreadyExists,
             "PipelineAlreadyExists": CreatePipelinesWithStepsPipelineAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreatePipelinesWithStepsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_pipelines_with_steps_batch(
         self, inputs: Sequence[CreatePipelinesWithStepsInput], options: CommandBatchOptions,
@@ -370,7 +565,10 @@ class AdapterBulkConformanceClient:
             "RestrictParentRequired": CreateRestrictChildrenRestrictParentRequired,
             "RestrictChildrenCreated": CreateRestrictChildrenRestrictChildrenCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRestrictChildrenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_restrict_children_batch(
         self, inputs: Sequence[CreateRestrictChildrenInput], options: CommandBatchOptions,
@@ -393,7 +591,10 @@ class AdapterBulkConformanceClient:
             "ParentAlreadyExists": CreateRestrictParentsParentAlreadyExists,
             "RestrictParentsCreated": CreateRestrictParentsRestrictParentsCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRestrictParentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def create_restrict_parents_batch(
         self, inputs: Sequence[CreateRestrictParentsInput], options: CommandBatchOptions,
@@ -417,7 +618,10 @@ class AdapterBulkConformanceClient:
             "ParentReferenced": DeleteRestrictParentsParentReferenced,
             "RestrictParentsDeleted": DeleteRestrictParentsRestrictParentsDeleted,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[DeleteRestrictParentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def delete_restrict_parents_batch(
         self, inputs: Sequence[DeleteRestrictParentsInput], options: CommandBatchOptions,
@@ -446,7 +650,10 @@ class AdapterBulkConformanceClient:
             "MetricsLogged": LogMetricsMetricsLogged,
             "MetricAlreadyExists": LogMetricsMetricAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def log_metrics_batch(
         self, inputs: Sequence[LogMetricsInput], options: CommandBatchOptions,
@@ -484,7 +691,10 @@ class AdapterBulkConformanceClient:
             "PolicyMutationExists": WritePolicyMutationsPolicyMutationExists,
             "PolicyMutationsWritten": WritePolicyMutationsPolicyMutationsWritten,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WritePolicyMutationsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def write_policy_mutations_batch(
         self, inputs: Sequence[WritePolicyMutationsInput], options: CommandBatchOptions,
@@ -516,7 +726,10 @@ class AdapterBulkConformanceClient:
             "TuplesWritten": WriteTuplesTuplesWritten,
             "TupleAlreadyExists": WriteTuplesTupleAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WriteTuplesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     def write_tuples_batch(
         self, inputs: Sequence[WriteTuplesInput], options: CommandBatchOptions,
@@ -528,11 +741,29 @@ class AdapterBulkConformanceClient:
         return self._transport._command_batch(inputs, options, self.write_tuples, progress)
 
 class AsyncAdapterBulkConformanceClient:
-    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
+    def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3), *, read_after_commit: int | None = None, track_causal_writes: bool = True) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+        self._read_after_commit = read_after_commit
+        self._track_causal_writes = track_causal_writes
+
+    @classmethod
+    def from_transport(cls, transport: AsyncApplicationTransport, command_attempts: AttemptBudget = AttemptBudget(3)) -> AsyncAdapterBulkConformanceClient:
+        return cls(transport, command_attempts)
+
+    def with_read_after_commit(self, commit_sequence: int | None) -> AsyncAdapterBulkConformanceClient:
+        return AsyncAdapterBulkConformanceClient(self._transport, self._command_attempts, read_after_commit=commit_sequence, track_causal_writes=self._track_causal_writes)
+
+    def causal_session(self, initial_commit_sequence: int | None = None) -> AsyncAdapterBulkConformanceClient:
+        return AsyncAdapterBulkConformanceClient(self._transport, self._command_attempts, read_after_commit=initial_commit_sequence if initial_commit_sequence is not None else self._read_after_commit, track_causal_writes=True)
+
+    @property
+    def last_commit_sequence(self) -> int | None:
+        return self._read_after_commit
 
     async def get_fga_tuple(self, parameters: GetFgaTupleParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetFgaTupleResult]:
+        if options.read_after_commit is None and self._read_after_commit is not None:
+            options = QueryOptions(cursor=options.cursor, read_after_commit=self._read_after_commit, consistency=options.consistency)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -544,6 +775,9 @@ class AsyncAdapterBulkConformanceClient:
             "TupleNotFound": GetFgaTupleTupleNotFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def get_fga_tuple_after_commit(self, parameters: GetFgaTupleParams, commit_sequence: int, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetFgaTupleResult]:
+        return await self.get_fga_tuple(parameters, QueryOptions(cursor=options.cursor, read_after_commit=commit_sequence, consistency=options.consistency))
 
     async def create_document_graphs(self, input: CreateDocumentGraphsInput) -> TypedCommandResult[CreateDocumentGraphsOutcome]:
         if not 1 <= len(input.documents) <= 64:
@@ -558,7 +792,10 @@ class AsyncAdapterBulkConformanceClient:
             "DocumentGraphsCreated": CreateDocumentGraphsDocumentGraphsCreated,
             "RevisionAlreadyExists": CreateDocumentGraphsRevisionAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateDocumentGraphsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_document_graphs_batch(
         self, inputs: Sequence[CreateDocumentGraphsInput], options: CommandBatchOptions,
@@ -582,7 +819,10 @@ class AsyncAdapterBulkConformanceClient:
             "StepAlreadyExists": CreatePipelinesWithStepsStepAlreadyExists,
             "PipelineAlreadyExists": CreatePipelinesWithStepsPipelineAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreatePipelinesWithStepsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_pipelines_with_steps_batch(
         self, inputs: Sequence[CreatePipelinesWithStepsInput], options: CommandBatchOptions,
@@ -606,7 +846,10 @@ class AsyncAdapterBulkConformanceClient:
             "RestrictParentRequired": CreateRestrictChildrenRestrictParentRequired,
             "RestrictChildrenCreated": CreateRestrictChildrenRestrictChildrenCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRestrictChildrenOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_restrict_children_batch(
         self, inputs: Sequence[CreateRestrictChildrenInput], options: CommandBatchOptions,
@@ -629,7 +872,10 @@ class AsyncAdapterBulkConformanceClient:
             "ParentAlreadyExists": CreateRestrictParentsParentAlreadyExists,
             "RestrictParentsCreated": CreateRestrictParentsRestrictParentsCreated,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[CreateRestrictParentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def create_restrict_parents_batch(
         self, inputs: Sequence[CreateRestrictParentsInput], options: CommandBatchOptions,
@@ -653,7 +899,10 @@ class AsyncAdapterBulkConformanceClient:
             "ParentReferenced": DeleteRestrictParentsParentReferenced,
             "RestrictParentsDeleted": DeleteRestrictParentsRestrictParentsDeleted,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[DeleteRestrictParentsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def delete_restrict_parents_batch(
         self, inputs: Sequence[DeleteRestrictParentsInput], options: CommandBatchOptions,
@@ -682,7 +931,10 @@ class AsyncAdapterBulkConformanceClient:
             "MetricsLogged": LogMetricsMetricsLogged,
             "MetricAlreadyExists": LogMetricsMetricAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[LogMetricsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def log_metrics_batch(
         self, inputs: Sequence[LogMetricsInput], options: CommandBatchOptions,
@@ -720,7 +972,10 @@ class AsyncAdapterBulkConformanceClient:
             "PolicyMutationExists": WritePolicyMutationsPolicyMutationExists,
             "PolicyMutationsWritten": WritePolicyMutationsPolicyMutationsWritten,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WritePolicyMutationsOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def write_policy_mutations_batch(
         self, inputs: Sequence[WritePolicyMutationsInput], options: CommandBatchOptions,
@@ -752,7 +1007,10 @@ class AsyncAdapterBulkConformanceClient:
             "TuplesWritten": WriteTuplesTuplesWritten,
             "TupleAlreadyExists": WriteTuplesTupleAlreadyExists,
         }
-        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        result: TypedCommandResult[WriteTuplesOutcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))
+        if self._track_causal_writes and result.commit_sequence is not None and result.commit_sequence > 0:
+            self._read_after_commit = result.commit_sequence if self._read_after_commit is None or result.commit_sequence > self._read_after_commit else self._read_after_commit
+        return result
 
     async def write_tuples_batch(
         self, inputs: Sequence[WriteTuplesInput], options: CommandBatchOptions,
