@@ -31082,3 +31082,115 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-852
+  name: Ergonomic CLI command execution and symbolic entity get
+  tier: surface
+  depends_on: [WP-842]
+  objective: Implement ADR-0308 Decisions 1 and 2. Extend .riffdb/dev/session.json
+    and workspace riffdb.application.json discovery to riffdb command run,
+    command outcome, query check, query explain, and query describe; add
+    repeatable --arg <KEY=VALUE> and --input-json <JSON_OBJECT> flags with
+    automatic UUIDv7 idempotency minting to riffdb command run; and support
+    symbolic entity names, --key <FIELD=VALUE> / --key-json <JSON_OBJECT>, and
+    symbolic field names in riffdb entity get.
+  requirements: [DX-004, DX-005, DX-014, DX-046]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0305]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Extended dev-session and workspace application discovery in apply_dev_inspection_defaults
+  - --arg <KEY=VALUE>, --input-json <JSON_OBJECT>, and automatic UUIDv7 idempotency field injection in riffdb command run
+  - Symbolic entity name, --key / --key-json primary-key encoding, and symbolic field name projection/rendering in riffdb entity get
+  - Unit and integration tests for inline command run and symbolic entity get
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-852
+  exit_gate: Developers and agents can execute riffdb command run with inline
+    --arg / --input-json flags (auto-minting UUIDv7 idempotency keys) and
+    inspect records via riffdb entity get <EntityName> --key <field=value>
+    against a local workspace without manual base64 encoding or numeric IDs.
+  standing_design_tests:
+    interface_safety: Command execution and entity lookup continue to use compiled contract types, explicit idempotency fields, exact primary-key encoding, and bearer authorization.
+    scale: Bounded CLI input argument parsing and single-entity point lookup.
+  human_review_triggers:
+  - CLI command execution bypasses contract-compiled command dispatch, bearer authorization, or explicit idempotency payload encoding.
+  - Symbolic entity get permits unbounded scans instead of exact primary-key lookup or alters wire encoding.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-853
+  name: Inline and named query explain/check with coverage attribution and one-command migrate up
+  tier: surface
+  depends_on: [WP-851, WP-852]
+  objective: Implement ADR-0308 Decision 3. Support --inline <RIFFQL> and bare
+    query-name resolution in riffdb query explain and riffdb query check with
+    explicit covered=true|false plan attribution, and add riffdb migrate up
+    plus riffdb push --migrate for one-command preflight check and confirmed
+    schema migration application.
+  requirements: [DX-004, DX-005, DX-016, DX-017]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0305, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - --inline <RIFFQL> and workspace query-name resolution in riffdb query explain and riffdb query check
+  - Explicit covered=true|false index-coverage attribution in query_explain_lines
+  - riffdb migrate up subcommand and riffdb push --migrate flag performing plan + check_migration + confirmed apply_migration
+  - Unit and integration tests for inline/named query explain/check and migrate up / push --migrate
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-853
+  exit_gate: riffdb query explain and check accept --inline or bare query names
+    and report covered=true|false index execution, and riffdb migrate up /
+    riffdb push --migrate safely check and apply schema migrations in one step.
+  standing_design_tests:
+    interface_safety: One-command migration always executes server check_migration first and passes the verified migration_hash as confirm_apply.
+    scale: Bounded RiffQL compilation and single-lineage migration check/apply RPCs.
+  human_review_triggers:
+  - One-command schema migration skips server preflight migration check or confirmation hash verification.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-854
+  name: Single-command ephemeral test runner (riffdb dev --exec) and CLI handbook updates
+  tier: surface
+  depends_on: [WP-852, WP-853]
+  objective: Implement ADR-0308 Decision 4. Add --exec <COMMAND> to riffdb dev
+    and scripts/riffdb-dev so developers and CI pipelines can boot an ephemeral
+    local RiffDB instance, run a test command with RIFFDB_* environment
+    variables populated, and cleanly tear down child processes while
+    propagating the command exit code, and update docs/reference/CLI.md.
+  requirements: [DX-004, DX-005, DX-014, DX-016, DX-017, DX-046]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0304, ADR-0305, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - --exec <COMMAND> flag on riffdb dev in crates/riffdb-cli and scripts/riffdb-dev with clean child-process teardown and exit-code propagation
+  - Updated CLI reference documentation in docs/reference/CLI.md
+  - End-to-end tests for riffdb dev --exec and ADR-0308 CLI workflows
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-854
+  exit_gate: riffdb dev --exec boots an ephemeral local RiffDB environment,
+    runs the target command with RIFFDB_* variables exported, tears down
+    cleanly, and propagates the command exit status, and docs/reference/CLI.md
+    documents all ADR-0308 CLI capabilities.
+  standing_design_tests:
+    interface_safety: --exec is mutually exclusive with --watch, --run, and --acceptance and always cleans up child server and driver-host processes on exit.
+    scale: Ephemeral dev session uses temporary state and exits immediately after the child command completes.
+  human_review_triggers:
+  - Ephemeral dev --exec leaks orphan server or driver-host child processes on command exit.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
