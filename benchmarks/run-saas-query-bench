@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Head-to-head RiffDB vs PostgreSQL SaaS complex-query & aggregation benchmark runner.
+#
+# Usage:
+#   ./benchmarks/run-saas-query-bench --self-test
+#   ./benchmarks/run-saas-query-bench --smoke [--json-out <path>] [--markdown-out <path>]
+#   ./benchmarks/run-saas-query-bench --full  [--json-out <path>] [--markdown-out <path>]
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT}"
+
+MODE="smoke"
+JSON_OUT=""
+MARKDOWN_OUT=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --self-test)
+            MODE="self-test"
+            shift
+            ;;
+        --smoke)
+            MODE="smoke"
+            shift
+            ;;
+        --full)
+            MODE="full"
+            shift
+            ;;
+        --json-out)
+            JSON_OUT="${2:?missing --json-out path}"
+            shift 2
+            ;;
+        --markdown-out)
+            MARKDOWN_OUT="${2:?missing --markdown-out path}"
+            shift 2
+            ;;
+        *)
+            echo "error: unknown argument '$1'" >&2
+            echo "usage: $0 [--self-test|--smoke|--full] [--json-out <path>] [--markdown-out <path>]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+BENCH_MANIFEST="${ROOT}/benchmarks/saas-query-bench/Cargo.toml"
+
+BENCH_TARGET_DIR="${ROOT}/target/saas-query-bench"
+
+if [[ "${MODE}" == "self-test" ]]; then
+    cargo run --quiet --manifest-path "${BENCH_MANIFEST}" --target-dir "${BENCH_TARGET_DIR}" -- self-test
+    exit 0
+fi
+
+pick_free_port() {
+    python3 - <<'PY'
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])
+PY
+}
+
+wait_for_tcp() {
+    local host="$1"
+    local port="$2"
+    local timeout_s="${3:-20}"
+    python3 - "$host" "$port" "$timeout_s" <<'PY'
+import socket, sys, time
+host = sys.argv[1]
+port = int(sys.argv[2])
+deadline = time.time() + float(sys.argv[3])
+while time.time() < deadline:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            sys.exit(0)
+    except OSError:
+        time.sleep(0.05)
+sys.exit(1)
+PY
+}
+
+DB_ROOT="${RIFFDB_BENCH_DB_ROOT:-${ROOT}/target/perf-db/saas-query-bench}"
+mkdir -p "${DB_ROOT}"
+WORKDIR="$(mktemp -d "${DB_ROOT}/run.XXXXXX")"
+PG_LOCAL_DATA=""
+PG_CONTAINER=""
+
+cleanup() {
+    if [[ -n "${PG_LOCAL_DATA}" && -d "${PG_LOCAL_DATA}" ]]; then
+        pg_ctl -D "${PG_LOCAL_DATA}" -m immediate stop >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${PG_CONTAINER}" ]]; then
+        docker rm -f "${PG_CONTAINER}" >/dev/null 2>&1 || true
+    fi
+    rm -rf "${WORKDIR}"
+}
+trap cleanup EXIT
+
+RIFFDBD_BIN="${RIFFDBD_BIN:-${ROOT}/target/release/riffdbd}"
+echo "==> Building release binaries (riffdbd + riffdb-saas-query-bench)..." >&2
+if [[ ! -x "${RIFFDBD_BIN}" || "${FORCE_REBUILD_RIFFDBD:-0}" == "1" ]]; then
+    cargo build --release --bin riffdbd >&2
+fi
+cargo build --release --manifest-path "${BENCH_MANIFEST}" --target-dir "${BENCH_TARGET_DIR}" >&2
+
+BENCH_BIN="${BENCH_TARGET_DIR}/release/riffdb-saas-query-bench"
+
+RIFFDB_WORKDIR="${WORKDIR}/riffdb"
+mkdir -p "${RIFFDB_WORKDIR}"
+
+POSTGRES_URL="${POSTGRES_URL:-}"
+if [[ -z "${POSTGRES_URL}" ]]; then
+    PG_PORT="$(pick_free_port)"
+    if command -v initdb >/dev/null 2>&1 && command -v pg_ctl >/dev/null 2>&1; then
+        PG_LOCAL_DATA="${WORKDIR}/pgdata"
+        PG_SOCKET_DIR="${WORKDIR}/pgsock"
+        mkdir -p "${PG_SOCKET_DIR}"
+        initdb -D "${PG_LOCAL_DATA}" -U postgres --auth=trust --no-instructions >/dev/null 2>&1
+        cat >>"${PG_LOCAL_DATA}/postgresql.conf" <<EOF
+listen_addresses = '127.0.0.1'
+port = ${PG_PORT}
+unix_socket_directories = '${PG_SOCKET_DIR}'
+fsync = on
+synchronous_commit = on
+full_page_writes = on
+shared_buffers = 256MB
+work_mem = 16MB
+max_connections = 128
+EOF
+        pg_ctl -D "${PG_LOCAL_DATA}" -l "${WORKDIR}/postgres.log" -w start >/dev/null 2>&1
+        POSTGRES_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres"
+    elif command -v docker >/dev/null 2>&1; then
+        PG_CONTAINER="riffdb-saas-pg-$$"
+        docker run -d --rm \
+            --name "${PG_CONTAINER}" \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p "127.0.0.1:${PG_PORT}:5432" \
+            postgres:18 \
+            postgres \
+            -c fsync=on \
+            -c synchronous_commit=on \
+            -c full_page_writes=on \
+            -c shared_buffers=256MB \
+            -c max_connections=128 >/dev/null
+        wait_for_tcp "127.0.0.1" "${PG_PORT}" 30
+        POSTGRES_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/postgres"
+    else
+        echo "error: neither local PostgreSQL (initdb/pg_ctl) nor docker is available, and POSTGRES_URL is unset" >&2
+        exit 1
+    fi
+fi
+
+RUN_ARGS=(
+    run
+    --riffdbd-bin "${RIFFDBD_BIN}"
+    --work-dir "${RIFFDB_WORKDIR}"
+    --postgres-url "${POSTGRES_URL}"
+    --scale "${MODE}"
+)
+
+if [[ -n "${JSON_OUT}" ]]; then
+    RUN_ARGS+=(--json-out "${JSON_OUT}")
+fi
+if [[ -n "${MARKDOWN_OUT}" ]]; then
+    RUN_ARGS+=(--markdown-out "${MARKDOWN_OUT}")
+fi
+
+"${BENCH_BIN}" "${RUN_ARGS[@]}"
