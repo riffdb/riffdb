@@ -11,6 +11,7 @@ use riffdb_query_module::ExactTextResultSetBindingV1;
 use riffdb_riffql_syntax::Span;
 use riffdb_types::{FieldId, ProjectionProviderPolicyModeV1, QueryOperationName};
 
+// req: OQ-026, OQ-029
 #[test]
 fn complete_family_and_runtime_bounds_are_one_strict_named_binding() {
     let family =

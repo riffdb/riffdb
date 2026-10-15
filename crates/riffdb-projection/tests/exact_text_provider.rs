@@ -17,7 +17,7 @@ const CHECKPOINT_FIXTURE: &str =
 const CHECKPOINT_FIXTURE_V2: &str =
     include_str!("../../../fixtures/projection/exact-text-provider-state-v2.txt");
 
-// req: PRJ-001, PRJ-002, PRJ-004
+// req: OQ-025, PRJ-001, PRJ-002, PRJ-004
 #[test]
 fn filtered_text_incremental_replacement_removal_and_nulls_match_full_rebuild() {
     use riffdb_projection::ExactTextIndexMutationV3 as Mutation;

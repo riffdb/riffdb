@@ -34,6 +34,7 @@ fn output(value: u64) -> CanonicalRecord {
     CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(value))]).unwrap()
 }
 
+// req: OQ-026, OQ-027, OQ-028, OQ-029
 #[test]
 fn count_page_and_epoch_identity_are_one_atomic_result_contract() {
     let family =

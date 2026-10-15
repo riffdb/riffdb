@@ -85,6 +85,7 @@ fn predecessor_is_classified_for_one_exact_offline_upgrade_without_mutation() {
     assert_eq!(inventory(&root), before, "preflight must be read-only");
 }
 
+// req: AFC-005
 #[test]
 fn future_epoch_refuses_before_mutating_any_inventory_member() {
     let root = case_root("future");

@@ -24309,6 +24309,21 @@ work_packages:
     ordinary ADR-0124 behavior resumes once the array is nonempty; the manifest reports one version
     per family; an epoch-1 database is refused in place and crosses only through the ceremony with
     reconciled counts and hashes; no deleted field number or enum value is reused.
+  closure:
+    status: complete
+    completed_at: "2026-10-14"
+    evidence: Snapshot-bound export of command-owned outbox, provenance, and commit-record evidence
+      reads through command-owned storage snapshots without replaying authoritative changelog frames,
+      proven by application_export_reads_command_owned_snapshot_without_changelog_replay,
+      application_export_fails_closed_on_missing_or_corrupt_snapshot_evidence, and
+      application_export_ceremony_reconciles_without_changelog_frame_decode (OBL-0217-1..3). The
+      eighteen stranded destructive Epoch-2 reset obligations from ADR-0181, ADR-0192, ADR-0204,
+      ADR-0207, ADR-0209, ADR-0216, ADR-0219, and ADR-0224 are retired under accepted ADR-0302 while
+      retaining live OBL-0207-2 (authoritative_changelog_v1_v2_decoders_are_test_only_compatibility_evidence).
+      Every WP-757 requirement is proven by req-tagged tests and scripts.
+    decision: Retain Alpha Format Epoch 1 writer-upgrade compatibility, exact-provider V2/V3/V4
+      registries, and contract-era fixtures on main per ADR-0231, ADR-0263, ADR-0266, ADR-0276, and
+      accepted ADR-0302 while completing ADR-0217 command-owned snapshot export.
   standing_design_tests:
     interface_safety: No application or agent surface gains an operation; the ceremony is
       operator-only, refuses before mutation, and applications cannot select an epoch, decoder, or
@@ -26076,6 +26091,19 @@ work_packages:
     every bounded full-schema hosted page through the terminal cursor; all owner, key, ID, hash,
     metadata, authority, collision, order, page, cursor, dependency, artifact, and lock mismatches
     fail closed; compact watching stays separate; and no hosted runtime semantic changes.
+  closure:
+    status: complete
+    completed_at: "2026-10-14"
+    evidence: Strict riffdb-generated-application-operations/v6 composition, trusted MCP descriptor
+      projection classification, and full-schema hosted discovery parity are proven by
+      generated_mcp_command_catalog_v6_composes_authoritative_schemas,
+      generated_mcp_catalog_matches_complete_hosted_descriptor_pages,
+      generated_mcp_catalog_v6_topology_and_lock_migration_are_exact,
+      trusted_mcp_descriptor_projection_classification_is_complete, and
+      trusted_mcp_descriptor_projection_remains_inert_presentation (OBL-0198-1..3, OBL-0211-1..2),
+      with the shared OBL-0216-2 obligation retired under accepted ADR-0302.
+    decision: Retain V2-V5 predecessor compatibility alongside strict V6 nonempty-command catalog
+      generation on main per ADR-0198, ADR-0211, and accepted ADR-0302.
   standing_design_tests:
     interface_safety: Generated catalogs are deterministic expectation evidence only; no application,
       agent, SDK, transport, role, or configuration can supply a schema or envelope, alter descriptor
