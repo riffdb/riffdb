@@ -30933,3 +30933,153 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-848
+  name: Combined optional-presence and caller-selected order families plus operational candidate predicates
+  tier: surface
+  depends_on: []
+  objective: Implement ADR-0307 Decisions 1 and 2. Extend OrderQueryFamilyV1 and
+    OrderFamilyMemberV1 with optional presence parameters, aggregates, and
+    per-member presence_mask; expand Cartesian (presence_mask, order_variant)
+    plan members up to MAX_OPERATIONAL_PLAN_MEMBERS (256) in
+    riffdb-query-compiler; wire runtime selection in riffdb-query-module and
+    riffdb-service; and admit operational predicates (ranges, in, prefix, is
+    null / is not null) in ordinary candidates sources.
+  requirements: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0134, ADR-0174]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Extended OrderQueryFamilyV1 and OrderFamilyMemberV1 in crates/riffdb-query-ir/src/order_family.rs carrying presence_parameters, aggregates, and presence_mask
+  - Cartesian (presence_mask, order_variant) expansion and validation in crates/riffdb-query-compiler/src/lib.rs
+  - Operational predicate support (ranges, in, prefix, is null / is not null) in ordinary candidates sources in crates/riffdb-query-compiler and crates/riffdb-query-executor
+  - Runtime (presence, order_variant) selection in crates/riffdb-query-module and crates/riffdb-service
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-848
+  exit_gate: Queries combining when $param optional filters with order by $order
+    families compile and execute all valid (presence_mask, order_variant)
+    combinations within the 256-member ceiling, and ordinary candidates sources
+    accept operational range, in, prefix, and nullability predicates.
+  standing_design_tests:
+    interface_safety: Every (presence_mask, order_variant) member and candidate source is statically index-proven before execution; member counts exceeding 256 fail closed at compile time.
+    scale: Plan family expansion is capped at MAX_OPERATIONAL_PLAN_MEMBERS (256) and candidate sources remain bounded by within <MAX>.
+  human_review_triggers:
+  - Combined optional-presence and order-family compilation admits more than 256 total plan members or skips per-member index validation.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-849
+  name: Non-partition bounded-set k-way merge and single-partition mixed ordering
+  tier: surface
+  depends_on: [WP-848]
+  objective: Implement ADR-0307 Decision 3. Allow one bounded field in $set
+    (set<T, MAX>) on a non-partition index prefix component followed by equality
+    predicates and an order by suffix matching the remaining index columns, and
+    allow mixed asc/desc order directions on single-partition bounded index
+    scans, executing via bounded k-way merge and canonical continuation markers.
+  requirements: [RQL-002, RQL-003, QRY-001, QRY-002]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0175]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Non-partition field in $set prefix + trailing order by planning and cost accounting in crates/riffdb-query-compiler/src/lib.rs
+  - Single-partition mixed asc/desc index ordering admission under MAX_OPERATIONAL_SCAN_ROWS in crates/riffdb-query-compiler/src/lib.rs
+  - Multi-prefix k-way merge, trailing equality schedule encoding after In, and single-partition mixed-order execution with cursor continuation in crates/riffdb-query-executor/src/lib.rs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-849
+  exit_gate: Queries with non-partition field in $set followed by order by on
+    trailing index columns and single-partition queries with mixed asc/desc
+    order terms compile and execute in one snapshot with deterministic cursor
+    pagination.
+  standing_design_tests:
+    interface_safety: Only bounded set<T, MAX> parameters or bounded literal sets are admitted for k-way merge order suffixes, and every scan remains bounded by static scan_ceiling.
+    scale: K-way merge fan-in is bounded by MAX_BOUNDED_SET_ITEMS_V1 (64) and mixed-order scans are bounded by MAX_OPERATIONAL_SCAN_ROWS (10,000).
+  human_review_triggers:
+  - Non-partition bounded-set k-way merge or single-partition mixed ordering executes an unbounded index scan without a static scan ceiling.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-850
+  name: Generalized per-step covering index execution and zero-point-read cost accounting
+  tier: surface
+  depends_on: [WP-849]
+  objective: Implement ADR-0307 Decision 4. Generalize CoveredResultLayoutV1
+    attachment in riffdb-query-compiler to any QueryAccessKind::Index step
+    without a read row policy whose index (key + primary_key + cover) covers all
+    step-required fields (including multi-binding steps, one/maybe unique-index
+    lookups, and aggregate source steps), charge 0 point_reads in
+    QueryCostAccumulator for covered steps, and keep compact positional wire
+    carriage restricted to single-step Many queries.
+  requirements: [RQL-003, RQL-004, QRY-001, QRY-007]
+  required_adrs: [ADR-0307, ADR-0133]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Aggregate group-key and measure input field inclusion in source binding predicate_fields and cover_required_fields in crates/riffdb-query-compiler/src/lib.rs
+  - Generalized CoveredResultLayoutV1 attachment and zero-point-read QueryCostAccumulator accounting in crates/riffdb-query-compiler/src/lib.rs
+  - Single-step Many gating for compact positional wire carriage in crates/riffdb-query-module and crates/riffdb-query-executor
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-850
+  exit_gate: Covered index steps in multi-binding queries, singular one/maybe
+    unique-index lookups, and operational aggregate queries compile with
+    covered_result_layout and execute via scan_covered with zero entity point
+    reads while preserving existing wire representations.
+  standing_design_tests:
+    interface_safety: Covered execution is enabled only when key + primary_key + cover contains every predicate, dependency, ordering, aggregate, and selected field of the step and no read row policy applies.
+    scale: Eliminates O(rows) entity point reads for covered multi-binding, singular, and aggregate index steps.
+  human_review_triggers:
+  - Covered-index step execution alters negotiated compact wire carriage for multi-step, singular, or aggregate queries.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-851
+  name: Real-world RiffQL integration tests and handbook reference updates
+  tier: surface
+  depends_on: [WP-850]
+  objective: Complete ADR-0307 verification and documentation. Add end-to-end
+    compiler, module, executor, and service tests covering combined when +
+    order by $order, non-partition in $set k-way merge with pagination,
+    operational predicates in candidates sources, per-step covered index
+    execution, and single-partition mixed asc/desc ordering, and update the
+    RiffQL handbook reference.
+  requirements: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0133, ADR-0134, ADR-0174, ADR-0175]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - End-to-end tests in crates/riffdb-query-compiler, crates/riffdb-query-module, crates/riffdb-query-executor, and crates/riffdb-service
+  - Updated RiffQL reference documentation in docs/reference/riffql.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-851
+  exit_gate: All five ADR-0307 RiffQL planner and executor capabilities are
+    proven by automated tests across compiler, module, executor, and service
+    boundaries, and docs/reference/riffql.md is updated and passes handbook
+    checks.
+  standing_design_tests:
+    interface_safety: Public RiffQL handbook examples match exact compiled and executed semantics.
+    scale: All tested real-world query shapes execute within static scan, merge, and fuel bounds.
+  human_review_triggers:
+  - Handbook examples describe unimplemented or unbounded query shapes.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+

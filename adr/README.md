@@ -341,6 +341,7 @@ record with no front matter.
 | [0304](0304-offline-sdk-generation-role-coverage-diagnostics-and-dev-loop-ergonomics.md) | Offline SDK Generation Role Coverage Diagnostics And Dev Loop Ergonomics | Accepted | surface |
 | [0305](0305-zero-ceremony-dev-inspection-manifest-sync-and-tenant-dev-ergonomics.md) | Zero Ceremony Dev Inspection Manifest Sync And Tenant Dev Ergonomics | Accepted | surface |
 | [0306](0306-prometheus-otel-metrics-exposition-and-soak-flight-recorder.md) | Prometheus OTel Metrics Exposition And Soak Flight Recorder | Accepted | surface |
+| [0307](0307-real-world-riffql-planner-composition-k-way-merge-and-covering-generalization.md) | Real-World RiffQL Planner Composition K-Way Merge And Covering Generalization | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
