@@ -336,7 +336,7 @@ record with no front matter.
 | [0299](0299-native-restore-borrows-sealed-history-from-one-owned-backup.md) | Native Restore Borrows Sealed History From One Owned Backup | Accepted | guarantee |
 | [0300](0300-bounded-owned-backup-validation-read-intervals.md) | Bounded Owned Backup Validation Read Intervals | Accepted | guarantee |
 | [0301](0301-read-only-source-byte-accounting-independent-of-deletion-proofs.md) | Read Only Source Byte Accounting Independent Of Deletion Proofs | Accepted | guarantee |
-| [0302](0302-retire-stranded-epoch-two-reset-obligations.md) | Retire Stranded Epoch-Two Reset Obligations | Proposed | guarantee |
+| [0302](0302-retire-stranded-epoch-two-reset-obligations.md) | Retire Stranded Epoch-Two Reset Obligations | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

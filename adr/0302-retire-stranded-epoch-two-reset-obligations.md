@@ -1,9 +1,11 @@
 ---
 adr: "0302"
 title: Retire Stranded Epoch-Two Reset Obligations
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-10-14
+accepted: '2026-10-14'
+acceptance: 'maintainer, in session, 2026-10-14: "i accept"'
 requires: [ADR-0181, ADR-0190, ADR-0192, ADR-0198, ADR-0204, ADR-0207, ADR-0209, ADR-0211, ADR-0215, ADR-0216, ADR-0217, ADR-0219, ADR-0223, ADR-0224, ADR-0258, ADR-0263, ADR-0266, ADR-0276]
 amends: [ADR-0181, ADR-0190, ADR-0192, ADR-0204, ADR-0207, ADR-0209, ADR-0215, ADR-0216, ADR-0219, ADR-0223, ADR-0224]
 supersedes: []
