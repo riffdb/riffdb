@@ -1706,6 +1706,46 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
     lines
 }
 
+/// Summarizes index coverage (`covered=true|false`, `point_reads`, `scanned_index_rows`)
+/// from compiled query explain lines without altering canonical module encoding.
+#[must_use]
+pub fn explain_coverage_summary(plan_lines: &[String]) -> Option<(bool, u64, u64, String)> {
+    let mut saw_cost = false;
+    let mut max_scans = 0_u64;
+    let mut max_points = 0_u64;
+    for line in plan_lines {
+        let trimmed = line.trim_start();
+        let cost_tail = trimmed
+            .strip_prefix("cost ")
+            .or_else(|| trimmed.split_once(".cost ").map(|(_, tail)| tail));
+        let Some(cost_tail) = cost_tail else {
+            continue;
+        };
+        let mut scans = None;
+        let mut points = None;
+        for token in cost_tail.split_whitespace() {
+            if let Some(value) = token.strip_prefix("scans=") {
+                scans = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("points=") {
+                points = value.parse::<u64>().ok();
+            }
+        }
+        if let (Some(scans), Some(points)) = (scans, points) {
+            saw_cost = true;
+            max_scans = max_scans.max(scans);
+            max_points = max_points.max(points);
+        }
+    }
+    if !saw_cost {
+        return None;
+    }
+    let covered = max_scans > 0 && max_points == 0;
+    let summary = format!(
+        "  index_coverage: covered={covered} point_reads={max_points} scanned_index_rows={max_scans}"
+    );
+    Some((covered, max_points, max_scans, summary))
+}
+
 fn encode_module(
     name: &QueryModuleName,
     version: QueryModuleVersion,

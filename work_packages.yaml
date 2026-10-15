@@ -31114,11 +31114,11 @@ work_packages:
   - CLI command execution bypasses contract-compiled command dispatch, bearer authorization, or explicit idempotency payload encoding.
   - Symbolic entity get permits unbounded scans instead of exact primary-key lookup or alters wire encoding.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-014, DX-046]
+    evidence: command_run_inline_args_and_dev_session_defaults_are_deterministic and entity_get_symbolic_key_encoding_and_field_decoding_match_contract in crates/riffdb-cli/src/generated/app.rs
+    decision: Extended dev-session and workspace contract defaults to command run, command outcome, query check, query explain, and query describe; added repeatable --arg and --input-json with automatic UUIDv7 idempotency minting and schema-aware scalar coercion to command run; and added symbolic entity name, --key / --key-json primary-key encoding, and symbolic field name resolution/rendering to entity get.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31150,11 +31150,11 @@ work_packages:
   human_review_triggers:
   - One-command schema migration skips server preflight migration check or confirmation hash verification.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-016, DX-017]
+    evidence: query_explain_and_migrate_up_preserve_exact_hashes_and_coverage in crates/riffdb-cli/src/generated/app.rs; explain_coverage_summary in crates/riffdb-query-module/src/lib.rs
+    decision: Added --inline and workspace query-name resolution to query check and query explain, surfaced covered/point_reads/scanned_index_rows in explain output, and implemented migrate up / migration up / push --migrate with preflight check and confirmed apply.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31186,11 +31186,11 @@ work_packages:
   human_review_triggers:
   - Ephemeral dev --exec leaks orphan server or driver-host child processes on command exit.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-014, DX-016, DX-017, DX-046]
+    evidence: dev_exec_runs_command_against_ephemeral_session_and_propagates_exit_code in crates/riffdb-cli/src/generated/app.rs; scripts/riffdb-dev; docs/reference/CLI.md
+    decision: Added --exec <COMMAND> to riffdb dev and scripts/riffdb-dev with RIFFDB_* environment export, clean EXIT trap teardown, and exit-code propagation, and regenerated docs/reference/CLI.md.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

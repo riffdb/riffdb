@@ -159,6 +159,8 @@ Options:
           Regenerates configured SDK targets in the same invocation
       --database <DATABASE>
 
+      --migrate
+          Runs staged contract migration check and confirmed apply when the successor requires migration
       --output <human|json>
           [possible values: human, json]
       --max-attempts <1..10>
@@ -262,6 +264,7 @@ Commands:
   plan       Prints the exact read-only migration plan for the project lock
   check      Runs one read-only server preflight for the exact project migration
   apply      Applies one exact project migration after hash confirmation
+  up         Runs server preflight check and confirmed apply in one step for the exact project migration
   operation  Observes one caller-stable project migration operation
 
 Options:
@@ -345,6 +348,7 @@ Commands:
   plan       Prints the exact read-only migration plan for a locked application
   check      Runs one read-only server preflight for the exact locked migration
   apply      Applies one exact locked migration after explicit hash confirmation
+  up         Runs server preflight check and confirmed apply in one step for the exact locked migration
   operation  Observes one caller-stable migration operation after the database reopens
 
 Options:
@@ -381,12 +385,14 @@ Options:
           [possible values: human, json]
       --run
           Runs the repository's generated application against the local server
-      --go-runner-package <PATH>
-          Repository-relative Go main-package directory used by `--run`
+      --exec <COMMAND>
+          Runs an arbitrary command against the ephemeral local server and tears down on exit
       --max-attempts <1..10>
 
       --credential-file <PATH>
 
+      --go-runner-package <PATH>
+          Repository-relative Go main-package directory used by `--run`
       --seed
 
       --seed-dir <DIRECTORY>
@@ -904,6 +910,24 @@ Options:
   -h, --help                                   Print help
 ```
 
+#### `riffdb migrate up`
+
+```text
+Runs server preflight check and confirmed apply in one step for the exact project migration
+
+Usage: riffdb migrate up [OPTIONS]
+
+Options:
+      --config <PATH>
+      --operation-id <UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 #### `riffdb migrate operation`
 
 ```text
@@ -1262,6 +1286,26 @@ Options:
   -h, --help                                   Print help
 ```
 
+#### `riffdb migration up`
+
+```text
+Runs server preflight check and confirmed apply in one step for the exact locked migration
+
+Usage: riffdb migration up [OPTIONS]
+
+Options:
+      --application <APPLICATION_SOURCE>   [default: riffdb.application.json]
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --operation-id <UUIDV7>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 #### `riffdb migration operation`
 
 ```text
@@ -1384,7 +1428,7 @@ Options:
 #### `riffdb command run`
 
 ```text
-Usage: riffdb command run [OPTIONS] --input <JSON_INPUT> <COMMAND_NAME>
+Usage: riffdb command run [OPTIONS] <COMMAND_NAME>
 
 Arguments:
   <COMMAND_NAME>
@@ -1394,16 +1438,20 @@ Options:
 
       --input <JSON_INPUT>
 
+      --arg <KEY=VALUE>
+          Inline command input field as KEY=JSON_OR_STRING_VALUE (repeatable)
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
-      --expected-version <VERSION>
-
-      --application <RIFFDB.APPLICATION.JSON>
-          Exact application source used to preflight compiled collection bounds
       --database <DATABASE>
+
+      --input-json <JSON_OBJECT>
+          Inline command input fields as a JSON object string
+      --expected-version <VERSION>
 
       --output <human|json>
           [possible values: human, json]
+      --application <RIFFDB.APPLICATION.JSON>
+          Exact application source used to preflight compiled collection bounds
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -1456,23 +1504,40 @@ Options:
 #### `riffdb entity get`
 
 ```text
-Usage: riffdb entity get [OPTIONS] --entity-key <BASE64_ENTITY_KEY> <ENTITY_TYPE_ID>
+Usage: riffdb entity get [OPTIONS] <ENTITY_TYPE_ID_OR_NAME>
 
 Arguments:
-  <ENTITY_TYPE_ID>
+  <ENTITY_TYPE_ID_OR_NAME>
 
 Options:
       --config <PATH>
+
       --entity-key <BASE64_ENTITY_KEY>
-      --contract-lineage <LINEAGE>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
-      --contract-version <VERSION>
+
+      --key <FIELD=VALUE>
+          Symbolic primary-key field as FIELD=JSON_OR_STRING_VALUE (repeatable)
       --database <DATABASE>
-      --field <FIELD_ID>
-      --output <human|json>                [possible values: human, json]
+
+      --key-json <JSON_OBJECT>
+          Symbolic primary-key fields as a JSON object string
+      --contract-source <PATH>
+          Contract or application source used to resolve symbolic entity, key, and field names
+      --output <human|json>
+          [possible values: human, json]
+      --contract-lineage <LINEAGE>
+
       --max-attempts <1..10>
+
+      --contract-version <VERSION>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+      --field <FIELD_ID_OR_NAME>
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb commit show`
@@ -1891,16 +1956,17 @@ Options:
 #### `riffdb query check`
 
 ```text
-Usage: riffdb query check [OPTIONS] <RIFFQL_SOURCE>
+Usage: riffdb query check [OPTIONS] [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Arguments:
-  <RIFFQL_SOURCE>
+  [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Options:
       --config <PATH>
+      --inline <RIFFQL>                    Checks an inline read-only RiffQL query string
       --contract-lineage <LINEAGE>
-      --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --contract-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1911,16 +1977,17 @@ Options:
 #### `riffdb query explain`
 
 ```text
-Usage: riffdb query explain [OPTIONS] <RIFFQL_SOURCE>
+Usage: riffdb query explain [OPTIONS] [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Arguments:
-  <RIFFQL_SOURCE>
+  [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Options:
       --config <PATH>
+      --inline <RIFFQL>                    Explains an inline read-only RiffQL query string
       --contract-lineage <LINEAGE>
-      --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --contract-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>

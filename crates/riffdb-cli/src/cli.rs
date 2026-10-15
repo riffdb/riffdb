@@ -55,6 +55,9 @@ pub(crate) enum TopLevel {
         /// Regenerates configured SDK targets in the same invocation.
         #[arg(long)]
         generate: bool,
+        /// Runs staged contract migration check and confirmed apply when the successor requires migration.
+        #[arg(long)]
+        migrate: bool,
     },
     /// Regenerates configured SDK targets from the exact project lock.
     Generate {
@@ -113,8 +116,11 @@ pub(crate) enum TopLevel {
         #[arg(long)]
         watch: bool,
         /// Runs the repository's generated application against the local server.
-        #[arg(long, conflicts_with_all = ["watch", "acceptance"])]
+        #[arg(long, conflicts_with_all = ["watch", "exec", "acceptance"])]
         run: bool,
+        /// Runs an arbitrary command against the ephemeral local server and tears down on exit.
+        #[arg(long, value_name = "COMMAND", conflicts_with_all = ["watch", "run", "acceptance"])]
+        exec: Option<String>,
         /// Repository-relative Go main-package directory used by `--run`.
         #[arg(long, value_name = "PATH", requires = "run")]
         go_runner_package: Option<OsString>,
@@ -241,6 +247,11 @@ pub(crate) enum ProjectMigrationCommand {
         operation_id: String,
         #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
         confirm_apply: String,
+    },
+    /// Runs server preflight check and confirmed apply in one step for the exact project migration.
+    Up {
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: Option<String>,
     },
     /// Observes one caller-stable project migration operation.
     Operation {
@@ -419,6 +430,23 @@ pub(crate) enum MigrationCommand {
         operation_id: String,
         #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
         confirm_apply: String,
+    },
+    /// Runs server preflight check and confirmed apply in one step for the exact locked migration.
+    Up {
+        #[arg(
+            long,
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        application: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: Option<String>,
     },
     /// Observes one caller-stable migration operation after the database reopens.
     Operation {
@@ -732,14 +760,28 @@ pub(crate) enum QueryCommand {
         contract: ContractSelectionArgs,
     },
     Check {
-        #[arg(value_name = "RIFFQL_SOURCE")]
-        source: OsString,
+        #[arg(
+            value_name = "RIFFQL_SOURCE_OR_QUERY_NAME",
+            required_unless_present = "inline",
+            conflicts_with = "inline"
+        )]
+        source: Option<OsString>,
+        /// Checks an inline read-only RiffQL query string.
+        #[arg(long, value_name = "RIFFQL", conflicts_with = "source")]
+        inline: Option<String>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
     Explain {
-        #[arg(value_name = "RIFFQL_SOURCE")]
-        source: OsString,
+        #[arg(
+            value_name = "RIFFQL_SOURCE_OR_QUERY_NAME",
+            required_unless_present = "inline",
+            conflicts_with = "inline"
+        )]
+        source: Option<OsString>,
+        /// Explains an inline read-only RiffQL query string.
+        #[arg(long, value_name = "RIFFQL", conflicts_with = "source")]
+        inline: Option<String>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
@@ -954,8 +996,18 @@ pub(crate) enum CommandCommand {
     Run {
         #[arg(value_name = "COMMAND_NAME")]
         command_name: String,
-        #[arg(long, value_name = "JSON_INPUT")]
-        input: OsString,
+        #[arg(
+            long,
+            value_name = "JSON_INPUT",
+            required_unless_present_any = ["arg", "input_json"]
+        )]
+        input: Option<OsString>,
+        /// Inline command input field as KEY=JSON_OR_STRING_VALUE (repeatable).
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        arg: Vec<String>,
+        /// Inline command input fields as a JSON object string.
+        #[arg(long = "input-json", value_name = "JSON_OBJECT")]
+        input_json: Option<String>,
         #[arg(long, value_name = "VERSION")]
         expected_version: Option<String>,
         /// Exact application source used to preflight compiled collection bounds.
@@ -993,13 +1045,35 @@ pub(crate) struct ContractSelectionArgs {
 #[derive(Debug, Subcommand)]
 pub(crate) enum EntityCommand {
     Get {
-        #[arg(value_name = "ENTITY_TYPE_ID")]
+        #[arg(value_name = "ENTITY_TYPE_ID_OR_NAME")]
         entity_type_id: String,
-        #[arg(long, value_name = "BASE64_ENTITY_KEY")]
-        entity_key: String,
+        #[arg(
+            long,
+            value_name = "BASE64_ENTITY_KEY",
+            required_unless_present_any = ["key", "key_json"],
+            conflicts_with_all = ["key", "key_json"]
+        )]
+        entity_key: Option<String>,
+        /// Symbolic primary-key field as FIELD=JSON_OR_STRING_VALUE (repeatable).
+        #[arg(
+            long = "key",
+            value_name = "FIELD=VALUE",
+            conflicts_with = "entity_key"
+        )]
+        key: Vec<String>,
+        /// Symbolic primary-key fields as a JSON object string.
+        #[arg(
+            long = "key-json",
+            value_name = "JSON_OBJECT",
+            conflicts_with = "entity_key"
+        )]
+        key_json: Option<String>,
+        /// Contract or application source used to resolve symbolic entity, key, and field names.
+        #[arg(long = "contract-source", value_name = "PATH")]
+        contract_source: Option<OsString>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
-        #[arg(long = "field", value_name = "FIELD_ID")]
+        #[arg(long = "field", value_name = "FIELD_ID_OR_NAME")]
         fields: Vec<String>,
     },
 }
@@ -2090,6 +2164,7 @@ mod tests {
             TopLevel::Push {
                 accept_lock: Some(hash),
                 generate: true,
+                migrate: false,
             } if hash == accepted
         ));
         assert!(matches!(

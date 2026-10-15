@@ -14,6 +14,8 @@ sync_manifest=0
 sync_role=
 watch=0
 run=0
+exec_command=
+exec_set=0
 go_runner_package=.
 go_runner_package_set=0
 acceptance=0
@@ -48,6 +50,11 @@ while (($#)); do
             ;;
         --watch) watch=1; shift ;;
         --run) run=1; shift ;;
+        --exec)
+            exec_command="${2:-}"
+            exec_set=1
+            shift 2
+            ;;
         --go-runner-package)
             go_runner_package="${2-}"
             go_runner_package_set=1
@@ -66,14 +73,22 @@ while (($#)); do
             ;;
         --reset) reset_dev=1; shift ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--tenant TENANT_ID] [--sync-manifest] [--sync-role ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--reset] [--acceptance] [--debug]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--tenant TENANT_ID] [--sync-manifest] [--sync-role ROLE] [--watch|--run|--exec COMMAND] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--reset] [--acceptance] [--debug]" >&2
             exit 2
             ;;
     esac
 done
 
-if ((run && (watch || acceptance))); then
-    echo "--run cannot be combined with --watch or --acceptance" >&2
+if ((run && (watch || acceptance || exec_set))); then
+    echo "--run cannot be combined with --watch, --exec, or --acceptance" >&2
+    exit 2
+fi
+if ((exec_set && (watch || acceptance))); then
+    echo "--exec cannot be combined with --watch, --run, or --acceptance" >&2
+    exit 2
+fi
+if ((exec_set)) && [[ -z "$exec_command" || ${#exec_command} -gt 4096 ]]; then
+    echo "--exec requires a non-empty command of at most 4096 bytes" >&2
     exit 2
 fi
 if ((go_runner_package_set && !run)); then
@@ -232,7 +247,7 @@ if [[ "$profile" == debug ]] &&
 fi
 build_packages=(-p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb)
 driver_runner=0
-if ((generic_application && run)) \
+if ((generic_application && (run || exec_set))) \
     && [[ -f "$application_root/package.json" || -f "$application_root/go.mod" ]]; then
     driver_runner=1
     build_packages+=(-p riffdb-driver-host --bin riffdb-driverd)
@@ -956,6 +971,24 @@ printf 'riffdb-dev-context-v1\tdatabase=%s\trole=%s\n' \
     "default" "$reported_role"
 printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
     "$endpoint" "$work_root/profile.credential" "$reported_role"
+
+if ((exec_set)); then
+    exec_root="${application_root:-$repo_root}"
+    set +e
+    (
+        cd "$exec_root"
+        RIFFDB_DEV_ROOT="$work_root" \
+            RIFFDB_ENDPOINT="$endpoint" \
+            RIFFDB_DATABASE=default \
+            RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+            RIFFDB_DRIVER_SOCKET="$driver_socket" \
+            RIFFDB_TENANT="$effective_tenant" \
+            sh -c "$exec_command"
+    )
+    exec_status=$?
+    set -e
+    exit "$exec_status"
+fi
 
 if ((run)); then
     driver_arguments=()
