@@ -88,18 +88,16 @@ current facts before the coordinator commits.
 
 Old audit generations retain their bytes. Use matching updated clients for the
 new RPCs; see [compatibility](../compatibility.md). Automatic registry migration
-is not provided. The experimental fencing and promotion path below has recovery
-and under-load proofs and a completed CI battery. Its
-[implementation and fixture review](../architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
-was accepted on 2026-09-21. Full multi-consumer release qualification
-remains separate.
+is not provided. The fencing and promotion path below has recovery and under-load
+proofs, a completed CI battery, and receipted replication acceptance evidence.
+Its [implementation and fixture review](../architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
+was accepted on 2026-09-21.
 
-## Experimental fencing and promotion
+## Primary fencing and promotion
 
 RiffDB exposes `riffdb follower fence-primary` and `riffdb follower promote`
-through the same checked Rust client, gRPC service and policy owner. Correctness
-and human review are complete; this remains a POC path pending full release
-qualification.
+through the same checked Rust client, gRPC service and policy owner. Automatic
+election, quorum durability, and cascading followers remain outside the POC scope.
 
 Fencing requires the distinct global, all-partition
 `fence_replication_primary` permission and a currently attached registration.

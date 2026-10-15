@@ -512,6 +512,40 @@ fn replication_acceptance_campaign_meets_every_adr_0093_criterion() {
         run_seeded_simulator_follower_cell(seed, receipts_per_seed);
     }
 
+    // Verify PERF-008 emitter disclosure published beside the receipt binds the same identities.
+    let disclosure_path = root.join("release/evidence/replication/perf-008-emitter-disclosure.md");
+    let disclosure =
+        std::fs::read_to_string(&disclosure_path).expect("read perf-008-emitter-disclosure.md");
+    let src_id = &doc["source_identity"];
+    for id_key in ["git_commit", "cargo_lock_sha256"] {
+        let val = src_id[id_key].as_str().expect(id_key);
+        assert!(
+            disclosure.contains(val),
+            "perf-008-emitter-disclosure.md must contain {id_key} {val}"
+        );
+    }
+    for bin_key in ["riffdbd_sha256", "riffdb_sha256"] {
+        let val = src_id["binary_identities"][bin_key]
+            .as_str()
+            .expect(bin_key);
+        assert!(
+            disclosure.contains(val),
+            "perf-008-emitter-disclosure.md must contain {bin_key} {val}"
+        );
+    }
+
+    // Verify docs/known-limitations.md no longer states that replication, failover, or incremental backup are absent.
+    let known_limitations = std::fs::read_to_string(root.join("docs/known-limitations.md"))
+        .expect("read docs/known-limitations.md");
+    assert!(
+        !known_limitations.contains("no replication, failover, or consensus"),
+        "docs/known-limitations.md must not state that replication and failover are absent"
+    );
+    assert!(
+        !known_limitations.contains("pending full multi-consumer release qualification"),
+        "docs/known-limitations.md must retire the pending replication qualification caveat"
+    );
+
     // Verify scripts/replication-acceptance --self-test passes (including 10 negative cases).
     let status = Command::new(root.join("scripts/replication-acceptance"))
         .arg("--self-test")

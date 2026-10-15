@@ -23816,6 +23816,42 @@ work_packages:
       and existing application reads and writes only.
     scale: Evidence is collected per database on one primary and N followers and makes no claim
       about sharding or quorum durability.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-008, REP-009, PERF-008, END-003]
+    evidence: >-
+      scripts/replication-acceptance and tests/replication_acceptance.rs
+      (replication_acceptance_campaign_meets_every_adr_0093_criterion, OBL-0178-7)
+      validate release/evidence/replication/replication-acceptance-v1.json and
+      release/evidence/replication/perf-008-emitter-disclosure.md across all six
+      ADR-0093 acceptance criteria (prefix_exactness, gap_free_resume,
+      promotion_drill, retention_fence, follower_reads, no_hot_path_regression),
+      the 12-iteration primary/follower/stream/archive_sink kill loop, the
+      archive_restore_drill, the PERF-008 emitter-enabled vs emitter-disabled
+      interactive_c32 and write_only_c32 cells on both PERF-018 profiles within
+      the ADR-0171 five-repetition stability rule, the post-WP-810 8 vCPU AMD
+      EPYC 9B14 archive qualification (release/evidence/wp-749/archive-qualification-20261015/),
+      and the seeded deterministic simulator follower and archive-sink fault
+      campaign across four seeds; docs/known-limitations.md,
+      docs/operations/FOLLOWER-ADMINISTRATION.md, and release/RELEASE_NOTES.md
+      retire the single-node availability statement while preserving the
+      sealed pre-freeze WP-750 definition under ADR-0199.
+    decisions_taken:
+    - Bound release/evidence/replication/replication-acceptance-v1.json to the
+      completed WP-749 source commit (f237964998a4fd47141b7dc3f72bb5e653f72bd3),
+      Cargo.lock SHA-256, and release riffdbd/riffdb binary SHA-256 digests, and
+      published release/evidence/replication/perf-008-emitter-disclosure.md beside
+      the receipt.
+    - Updated docs/known-limitations.md, docs/operations/FOLLOWER-ADMINISTRATION.md,
+      and release/RELEASE_NOTES.md to retire the single-node availability and
+      offline-only backup statements while documenting the remaining single-primary,
+      explicit-promotion, and commit-sequence archive granularity boundaries.
+    known_limitations: >-
+      Quorum durability, automatic failover election, cascading followers,
+      multi-primary writes, built-in archive encryption, and wall-clock
+      point-in-time recovery remain outside the POC scope.
+    follow_ups: []
   human_review_triggers: *id0178
 
 - id: WP-751

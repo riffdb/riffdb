@@ -61,6 +61,19 @@ reaction helpers across Rust, TypeScript, Python, and MCP. Reactive delivery is
 at least once and partition ordered; it is not raw CDC or exactly-once external
 effect delivery.
 
+## Replicated Availability and Archive Backup
+
+`riffdbd --mode follower` provides asynchronous authoritative-changelog
+shipping (`riffdb.changelog-frame/v3`), gap-free resume, follower reads under
+the existing `Causal`, `Bounded`, and `Available` freshness vocabulary,
+audited follower registration and retirement with sequence hold budgets,
+explicit incarnation-fenced primary promotion (`riffdb follower fence-primary`
+and `riffdb follower promote`), and changelog-derived incremental archive
+backup and sequence-targeted restore (`riffdb storage restore-archive`).
+Single-node-only availability is retired; quorum durability, automatic
+failover, cascading followers, and multi-primary writes remain outside the POC
+scope.
+
 ## License
 
 RiffDB is offered under either the MIT License or the Apache License, Version
@@ -92,6 +105,11 @@ idempotency assumption after destructive restore.
 - WP-190 inventories 38 crash boundaries, executes the 18 required
   process-matrix cases, consumes named owner-package evidence for the
   remainder, and records zero production synchronization gaps.
+- WP-750 records the receipted six-criterion ADR-0093 replication and
+  archive-restore acceptance campaign under
+  `release/evidence/replication/replication-acceptance-v1.json` and the
+  `PERF-008` emitter stability disclosure under
+  `release/evidence/replication/perf-008-emitter-disclosure.md`.
 - The bundle includes an installed-binary demo. It is distinct from the full
   source-checkout POC acceptance run and uses no Cargo or test harness.
 - POC exit remains unsigned until the three acceptance commands pass at the

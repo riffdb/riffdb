@@ -15,11 +15,11 @@
     "END-003"
   ],
   "source_identity": {
-    "git_commit": "71ae34a7c9c210e24b13726c2d3fa25ff1db3f86",
-    "cargo_lock_sha256": "4b9c8e1a2d5f70318a6c4e9b0f2d1a3c5e7b9d0f1a2c3e4b5d6f7a8b9c0d1e2f",
+    "git_commit": "f237964998a4fd47141b7dc3f72bb5e653f72bd3",
+    "cargo_lock_sha256": "f77c8d916167f97fa8f8a2e35b8790e4b6f1ffb8668fbd076dd5067851a8a32a",
     "binary_identities": {
-      "riffdbd_sha256": "9a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789abcdef",
-      "riffdb_sha256": "1f2e3d4c5b6a7980123456789abcdef0fedcba9876543210abcdef0123456789"
+      "riffdbd_sha256": "92ff6aa48c71052d586a31ac7b0febf633162a57de2493dca34c5926cf28a4e4",
+      "riffdb_sha256": "e9fc075bfb80e261f5ad9c6d7fc55f8def2a57a919327a88ec7bbce67acf0c99"
     }
   },
   "provider_and_performance_gate": {
