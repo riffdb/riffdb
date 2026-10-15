@@ -30854,11 +30854,11 @@ work_packages:
   - Exposition emits unbounded tenant, entity, request, or error-message labels.
   - riffdb-observability adds dependencies outside riffdb-types, riffdb-errors, and tracing.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [ID-005, PERF-001, END-007]
+    evidence: crates/riffdb-observability/src/exposition.rs
+    decision: Implemented pure-Rust Prometheus v0.0.4 text exposition (encode_prometheus_v1), OTLP JSON ExportMetricsServiceRequest exposition (encode_otel_json_v1), single-line NDJSON flight-recorder snapshot encoding (encode_flight_record_ndjson_v1), and histogram percentile upper-bound approximations in riffdb-observability with zero new crate dependencies.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30890,11 +30890,11 @@ work_packages:
   - --metrics-listen allows non-loopback binding or mutating HTTP methods.
   - Flight-recorder path overlaps authoritative database, backup, or key files.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [ID-005, PERF-001, END-007, END-008]
+    evidence: crates/riffdb-server/src/telemetry_exporter.rs
+    decision: Added --metrics-listen (RIFFDB_METRICS_LISTEN / server.metrics_listen), --telemetry-flight-recorder (RIFFDB_TELEMETRY_FLIGHT_RECORDER / server.telemetry_flight_recorder), and --telemetry-flight-interval-ms (RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS / server.telemetry_flight_interval_ms) to riffdbd with loopback-only HTTP GET /metrics and GET /v1/metrics exposition and periodic NDJSON flight recording.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30925,11 +30925,11 @@ work_packages:
   human_review_triggers:
   - Telemetry summary reads unbounded files into memory without a size ceiling.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PERF-001, END-007, END-008, DX-014]
+    evidence: crates/riffdb-cli/src/telemetry.rs
+    decision: Added riffdb telemetry summarize <PATH> in crates/riffdb-cli with bounded 64 MiB streaming NDJSON aggregation in human and JSON output modes, wired --telemetry-flight-recorder into the TicketDesk lifecycle rehearsal and campaign runtime, updated docs/configuration.md and docs/known-limitations.md, and regenerated docs/reference/cli.md.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30964,11 +30964,11 @@ work_packages:
   human_review_triggers:
   - Combined optional-presence and order-family compilation admits more than 256 total plan members or skips per-member index validation.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002]
+    evidence: crates/riffdb-query-compiler/src/lib.rs
+    decision: Extended OrderQueryFamilyV1 and OrderFamilyMemberV1 with optional presence parameters, aggregates, and presence_mask; expanded Cartesian (presence_mask, order_variant) plan families up to 256 members in riffdb-query-compiler; admitted operational range, membership, prefix, and nullability predicates in ordinary candidates sources; and wired runtime presence + order selection across riffdb-query-module, riffdb-query-executor, and riffdb-service.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

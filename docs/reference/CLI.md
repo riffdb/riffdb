@@ -14,6 +14,7 @@ Usage: riffdb [OPTIONS] <COMMAND>
 Commands:
   lsp          Starts the bounded compiler-backed Language Server Protocol service on stdio
   outbox       Inspects the stopped server's protected local outbox destination
+  telemetry    Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
@@ -80,6 +81,26 @@ Usage: riffdb outbox [OPTIONS] <COMMAND>
 
 Commands:
   archive
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb telemetry`
+
+```text
+Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs
+
+Usage: riffdb telemetry [OPTIONS] <COMMAND>
+
+Commands:
+  summarize  Aggregates a bounded flight-recorder NDJSON file into throughput, latency, and byte growth metrics
 
 Options:
       --config <PATH>
@@ -780,6 +801,26 @@ Usage: riffdb outbox archive [OPTIONS] <COMMAND>
 
 Commands:
   inspect  Validates bounded pages without exposing event payloads. Requires exclusive archive custody
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb telemetry summarize`
+
+```text
+Aggregates a bounded flight-recorder NDJSON file into throughput, latency, and byte growth metrics
+
+Usage: riffdb telemetry summarize [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
 
 Options:
       --config <PATH>

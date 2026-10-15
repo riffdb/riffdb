@@ -113,12 +113,14 @@ pub(crate) enum CommandIdentity {
     RetentionProjectionReattach,
     RetentionPrune,
     DemoBudget,
+    TelemetrySummarize,
 }
 
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::LocalArchiveInspect => "outbox.archive.inspect",
+            Self::TelemetrySummarize => "telemetry.summarize",
             Self::ProjectInit => "project.init",
             Self::ProjectPush => "project.push",
             Self::ProjectGenerate => "project.generate",

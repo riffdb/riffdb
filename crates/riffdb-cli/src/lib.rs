@@ -16,6 +16,7 @@ mod output;
 mod project;
 mod runner;
 mod scaffold;
+mod telemetry;
 mod value;
 
 pub use app::run;

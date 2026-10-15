@@ -30,6 +30,11 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: OutboxCommand,
     },
+    /// Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs.
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
     /// Initializes RiffDB schema files in a new or existing project.
     Init {
         #[arg(value_name = "APPLICATION")]
@@ -2925,7 +2930,25 @@ mod tests {
                 ..
             } if role == "tenant-member" && tenant == "acme-corp"
         ));
+        let telemetry_summary =
+            Cli::try_parse_from(["riffdb", "telemetry", "summarize", "flight.ndjson"])
+                .expect("telemetry summarize");
+        assert!(matches!(
+            telemetry_summary.command,
+            TopLevel::Telemetry {
+                command: TelemetryCommand::Summarize { path }
+            } if path == "flight.ndjson"
+        ));
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TelemetryCommand {
+    /// Aggregates a bounded flight-recorder NDJSON file into throughput, latency, and byte growth metrics.
+    Summarize {
+        #[arg(value_name = "PATH")]
+        path: OsString,
+    },
 }
 
 #[derive(Debug, Subcommand)]

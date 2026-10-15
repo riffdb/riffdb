@@ -51,6 +51,9 @@ const DEFAULT_AUDIENCE: &str = "riffdb-grpc-loopback";
 const DEFAULT_CAPABILITY_KEY_PATH: &str = "config/capability.keys";
 const DEFAULT_IDEMPOTENCY_KEY_PATH: &str = "config/idempotency.keys";
 const DEFAULT_REDB_COMMIT_PROFILE: &str = "standard";
+const DEFAULT_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 10_000;
+const MIN_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 100;
+const MAX_TELEMETRY_FLIGHT_INTERVAL_MS: u64 = 3_600_000;
 
 const CONFIG_ENVIRONMENT: &str = "RIFFDB_CONFIG";
 const DATABASE_ENVIRONMENT: &str = "RIFFDB_DATABASE";
@@ -59,6 +62,9 @@ const ENVIRONMENT_ENVIRONMENT: &str = "RIFFDB_ENVIRONMENT";
 const AUDIENCE_ENVIRONMENT: &str = "RIFFDB_AUDIENCE";
 const MCP_LISTEN_ENVIRONMENT: &str = "RIFFDB_MCP_LISTEN";
 const MCP_ORIGINS_ENVIRONMENT: &str = "RIFFDB_MCP_ORIGINS";
+const METRICS_LISTEN_ENVIRONMENT: &str = "RIFFDB_METRICS_LISTEN";
+const TELEMETRY_FLIGHT_RECORDER_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_RECORDER";
+const TELEMETRY_FLIGHT_INTERVAL_MS_ENVIRONMENT: &str = "RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS";
 const BACKUP_ROOT_ENVIRONMENT: &str = "RIFFDB_BACKUP_ROOT";
 const PROJECTIONS_ROOT_ENVIRONMENT: &str = "RIFFDB_PROJECTIONS_ROOT";
 const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
@@ -78,6 +84,9 @@ pub(crate) struct ServerConfig {
     mcp_listen_address: Option<SocketAddr>,
     mcp_origins: Vec<String>,
     mcp_audience: Option<Audience>,
+    metrics_listen_address: Option<SocketAddr>,
+    telemetry_flight_recorder_path: Option<PathBuf>,
+    telemetry_flight_interval: Duration,
     capability_key_path: PathBuf,
     idempotency_key_path: PathBuf,
     redb_commit_profile: RedbCommitProfile,
@@ -377,6 +386,28 @@ impl ServerConfig {
             environment.value(MCP_ORIGINS_ENVIRONMENT),
             server.mcp_origins,
         )?;
+        let metrics_listen_address = select_optional_os(
+            arguments.metrics_listen.as_ref(),
+            environment.value(METRICS_LISTEN_ENVIRONMENT),
+            server.metrics_listen.map(OsString::from),
+        )?
+        .map(|value| parse_metrics_loopback_address(&value))
+        .transpose()?;
+        let telemetry_flight_recorder_path = select_optional_os(
+            arguments.telemetry_flight_recorder.as_ref(),
+            environment.value(TELEMETRY_FLIGHT_RECORDER_ENVIRONMENT),
+            server.telemetry_flight_recorder.map(OsString::from),
+        )?
+        .map(bounded_path)
+        .transpose()?;
+        let telemetry_flight_interval = parse_telemetry_flight_interval(select_os(
+            arguments.telemetry_flight_interval_ms.as_ref(),
+            environment.value(TELEMETRY_FLIGHT_INTERVAL_MS_ENVIRONMENT),
+            server
+                .telemetry_flight_interval_ms
+                .map(|ms| OsString::from(ms.to_string())),
+            OsString::from(DEFAULT_TELEMETRY_FLIGHT_INTERVAL_MS.to_string()),
+        )?)?;
         let capability_key_path = bounded_path(select_os(
             arguments.capability_keys.as_ref(),
             environment.value(CAPABILITY_KEYS_ENVIRONMENT),
@@ -406,6 +437,17 @@ impl ServerConfig {
         if mcp_audience.as_ref() == Some(&audience) {
             return Err(ServerConfigError::InvalidMcpConfiguration);
         }
+        if let Some(metrics_addr) = metrics_listen_address {
+            if mcp_listen_address == Some(metrics_addr) {
+                return Err(ServerConfigError::InvalidListenAddress);
+            }
+            if let ApplicationListenerConfig::LoopbackCleartext(listener) = &application_listener
+                && listener.listen_address().port() != 0
+                && listener.listen_address() == metrics_addr
+            {
+                return Err(ServerConfigError::InvalidListenAddress);
+            }
+        }
 
         let config = Self {
             mode,
@@ -415,6 +457,9 @@ impl ServerConfig {
             mcp_listen_address,
             mcp_origins,
             mcp_audience,
+            metrics_listen_address,
+            telemetry_flight_recorder_path,
+            telemetry_flight_interval,
             capability_key_path,
             idempotency_key_path,
             redb_commit_profile,
@@ -424,7 +469,7 @@ impl ServerConfig {
     }
 
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
-        let mut paths = Vec::with_capacity(self.databases.len() * 6 + 2);
+        let mut paths = Vec::with_capacity(self.databases.len() * 6 + 3);
         for database in &self.databases {
             if let Some(outbox) = database.outbox() {
                 paths.push((
@@ -470,6 +515,12 @@ impl ServerConfig {
             ConfiguredPathRole::IdempotencyKeys,
             lexical_absolute(&self.idempotency_key_path, current_directory)?,
         ));
+        if let Some(flight_recorder_path) = &self.telemetry_flight_recorder_path {
+            paths.push((
+                ConfiguredPathRole::TelemetryFlightRecorder,
+                lexical_absolute(flight_recorder_path, current_directory)?,
+            ));
+        }
         for database in &self.databases {
             if let Some(source) = &database.follower {
                 for file in [
@@ -548,6 +599,18 @@ impl ServerConfig {
         self.mcp_audience.as_ref()
     }
 
+    pub(crate) const fn metrics_listen_address(&self) -> Option<SocketAddr> {
+        self.metrics_listen_address
+    }
+
+    pub(crate) fn telemetry_flight_recorder_path(&self) -> Option<&Path> {
+        self.telemetry_flight_recorder_path.as_deref()
+    }
+
+    pub(crate) const fn telemetry_flight_interval(&self) -> Duration {
+        self.telemetry_flight_interval
+    }
+
     pub(crate) fn backup_root(&self) -> &Path {
         self.databases[0].backup_root()
     }
@@ -586,6 +649,15 @@ impl fmt::Debug for ServerConfig {
             .field("mcp_listen_address", &self.mcp_listen_address)
             .field("mcp_origins", &"[CONFIGURED]")
             .field("mcp_audience", &"[DERIVED]")
+            .field("metrics_listen_address", &self.metrics_listen_address)
+            .field(
+                "telemetry_flight_recorder_path",
+                &self
+                    .telemetry_flight_recorder_path
+                    .as_ref()
+                    .map(|_| "[CONFIGURED]"),
+            )
+            .field("telemetry_flight_interval", &self.telemetry_flight_interval)
             .field("capability_key_path", &"[CONFIGURED]")
             .field("idempotency_key_path", &"[CONFIGURED]")
             .field("redb_commit_profile", &self.redb_commit_profile)
@@ -603,6 +675,9 @@ struct ArgumentValues {
     audience: Option<OsString>,
     mcp_listen: Option<OsString>,
     mcp_origins: Vec<OsString>,
+    metrics_listen: Option<OsString>,
+    telemetry_flight_recorder: Option<OsString>,
+    telemetry_flight_interval_ms: Option<OsString>,
     backup_root: Option<OsString>,
     projections_root: Option<OsString>,
     capability_keys: Option<OsString>,
@@ -627,6 +702,13 @@ impl ArgumentValues {
                 Some("--audience") => set_once(&mut values.audience, value)?,
                 Some("--mcp-listen") => set_once(&mut values.mcp_listen, value)?,
                 Some("--mcp-origin") => values.mcp_origins.push(value),
+                Some("--metrics-listen") => set_once(&mut values.metrics_listen, value)?,
+                Some("--telemetry-flight-recorder") => {
+                    set_once(&mut values.telemetry_flight_recorder, value)?;
+                }
+                Some("--telemetry-flight-interval-ms") => {
+                    set_once(&mut values.telemetry_flight_interval_ms, value)?;
+                }
                 Some("--backup-root") => set_once(&mut values.backup_root, value)?,
                 Some("--projections-root") => set_once(&mut values.projections_root, value)?,
                 Some("--capability-keys") => set_once(&mut values.capability_keys, value)?,
@@ -691,6 +773,9 @@ struct ServerDocument {
     audience: Option<String>,
     mcp_listen: Option<String>,
     mcp_origins: Option<Vec<String>>,
+    metrics_listen: Option<String>,
+    telemetry_flight_recorder: Option<String>,
+    telemetry_flight_interval_ms: Option<u64>,
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
     redb_commit_profile: Option<String>,
@@ -1114,6 +1199,27 @@ fn parse_mcp_loopback_address(value: &OsStr) -> Result<SocketAddr, ServerConfigE
     Ok(address)
 }
 
+fn parse_metrics_loopback_address(value: &OsStr) -> Result<SocketAddr, ServerConfigError> {
+    let address = parse_loopback_address(value)?;
+    if address.port() == 0 {
+        return Err(ServerConfigError::InvalidListenAddress);
+    }
+    Ok(address)
+}
+
+fn parse_telemetry_flight_interval(value: OsString) -> Result<Duration, ServerConfigError> {
+    let raw = value
+        .to_str()
+        .ok_or(ServerConfigError::InvalidConfiguredValue)?;
+    let ms = raw
+        .parse::<u64>()
+        .map_err(|_| ServerConfigError::InvalidConfiguredValue)?;
+    if !(MIN_TELEMETRY_FLIGHT_INTERVAL_MS..=MAX_TELEMETRY_FLIGHT_INTERVAL_MS).contains(&ms) {
+        return Err(ServerConfigError::InvalidConfiguredValue);
+    }
+    Ok(Duration::from_millis(ms))
+}
+
 fn parse_mcp_origin(value: OsString) -> Result<String, ServerConfigError> {
     let value = value
         .into_string()
@@ -1163,6 +1269,7 @@ pub(crate) enum ConfiguredPathRole {
     ReceiverRoot(DatabaseAlias),
     CapabilityKeys,
     IdempotencyKeys,
+    TelemetryFlightRecorder,
 }
 
 impl fmt::Display for ConfiguredPathRole {
@@ -1181,6 +1288,7 @@ impl fmt::Display for ConfiguredPathRole {
             }
             Self::CapabilityKeys => formatter.write_str("capability key path"),
             Self::IdempotencyKeys => formatter.write_str("idempotency key path"),
+            Self::TelemetryFlightRecorder => formatter.write_str("telemetry flight recorder path"),
         }
     }
 }
@@ -1872,5 +1980,81 @@ mcp_origins = ["http://127.0.0.1:3000"]
             ServerConfig::resolve(duplicate, &EmptyEnvironment, &root.0).unwrap_err(),
             ServerConfigError::InvalidMcpConfiguration
         );
+    }
+
+    #[test]
+    // req: ID-005, PERF-001, END-007, END-008
+    fn metrics_listener_and_telemetry_flight_recorder_validate_loopback_interval_and_disjoint_paths()
+     {
+        let root = TestRoot::new();
+        let document = root.write(
+            br#"
+[server]
+metrics_listen = "127.0.0.1:9464"
+telemetry_flight_recorder = "telemetry/flight.ndjson"
+telemetry_flight_interval_ms = 5000
+"#,
+        );
+        let config = ServerConfig::resolve(
+            [OsString::from("--config"), document.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("valid metrics and flight-recorder config");
+        assert_eq!(
+            config.metrics_listen_address(),
+            Some("127.0.0.1:9464".parse().expect("loopback socket"))
+        );
+        assert_eq!(
+            config.telemetry_flight_recorder_path(),
+            Some(Path::new("telemetry/flight.ndjson"))
+        );
+        assert_eq!(
+            config.telemetry_flight_interval(),
+            Duration::from_millis(5_000)
+        );
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("telemetry/flight.ndjson"),
+            "Debug formatting must redact telemetry flight recorder paths: {debug}"
+        );
+
+        // Non-loopback metrics listener fails closed.
+        assert_eq!(
+            ServerConfig::parse(["--metrics-listen", "0.0.0.0:9464"].map(OsString::from))
+                .unwrap_err(),
+            ServerConfigError::NonLoopbackListenAddress
+        );
+        // Port 0 fails closed.
+        assert_eq!(
+            ServerConfig::parse(["--metrics-listen", "127.0.0.1:0"].map(OsString::from))
+                .unwrap_err(),
+            ServerConfigError::InvalidListenAddress
+        );
+        // Interval below 100ms or above 3_600_000ms fails closed.
+        assert_eq!(
+            ServerConfig::parse(["--telemetry-flight-interval-ms", "50"].map(OsString::from))
+                .unwrap_err(),
+            ServerConfigError::InvalidConfiguredValue
+        );
+        assert_eq!(
+            ServerConfig::parse(["--telemetry-flight-interval-ms", "3600001"].map(OsString::from))
+                .unwrap_err(),
+            ServerConfigError::InvalidConfiguredValue
+        );
+        // Overlapping flight recorder path with database path fails closed.
+        assert!(matches!(
+            ServerConfig::parse(
+                [
+                    "--database",
+                    "shared.redb",
+                    "--telemetry-flight-recorder",
+                    "shared.redb",
+                ]
+                .map(OsString::from)
+            )
+            .unwrap_err(),
+            ServerConfigError::OverlappingPaths { .. }
+        ));
     }
 }

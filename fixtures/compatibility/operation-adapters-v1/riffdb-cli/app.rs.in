@@ -472,6 +472,12 @@ pub async fn run() -> ExitCode {
             &mut io::stdout().lock(), &mut io::stderr().lock(),
         );
     }
+    if let TopLevel::Telemetry { command } = &cli.command {
+        return crate::telemetry::summarize(command).emit(
+            cli.output.unwrap_or(OutputMode::Human),
+            &mut io::stdout().lock(), &mut io::stderr().lock(),
+        );
+    }
     if matches!(cli.command, TopLevel::Lsp) {
         return crate::lsp::run_stdio();
     }
@@ -1723,6 +1729,10 @@ async fn dispatch(
         TopLevel::Outbox { .. } => local_error(
             CommandIdentity::LocalArchiveInspect, "local_dispatch_invalid",
             "local archive inspection reached network dispatch",
+        ),
+        TopLevel::Telemetry { .. } => local_error(
+            CommandIdentity::TelemetrySummarize, "local_dispatch_invalid",
+            "local telemetry summary reached network dispatch",
         ),
         TopLevel::Lsp => local_error(
             CommandIdentity::ServerHealth,
@@ -11960,6 +11970,7 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
         TopLevel::Outbox { .. } => CommandIdentity::LocalArchiveInspect,
+        TopLevel::Telemetry { .. } => CommandIdentity::TelemetrySummarize,
         TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,

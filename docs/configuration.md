@@ -54,6 +54,9 @@ with alias `default`. A process may instead define 1 through 32
 | gRPC audience | `--audience` | `RIFFDB_AUDIENCE` | `server.audience` | `riffdb-grpc-loopback` | Yes | Capability authentication compatibility |
 | Hosted MCP listen | `--mcp-listen` | `RIFFDB_MCP_LISTEN` | `server.mcp_listen` | absent | Yes | Availability, security |
 | Hosted MCP origins | repeatable `--mcp-origin` | `RIFFDB_MCP_ORIGINS` | `server.mcp_origins` | empty | Yes | Browser-origin security |
+| Metrics listen | `--metrics-listen` | `RIFFDB_METRICS_LISTEN` | `server.metrics_listen` | absent | Yes | Observability, loopback security |
+| Telemetry flight recorder | `--telemetry-flight-recorder` | `RIFFDB_TELEMETRY_FLIGHT_RECORDER` | `server.telemetry_flight_recorder` | absent | Yes | Observability, disk usage |
+| Telemetry flight interval | `--telemetry-flight-interval-ms` | `RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS` | `server.telemetry_flight_interval_ms` | `10000` | Yes | Observability sampling cadence |
 | Backup root | `--backup-root` | `RIFFDB_BACKUP_ROOT` | `maintenance.backup_root` | `$CWD/backups` | Yes | Correctness, recovery, security |
 | Capability key path | `--capability-keys` | `RIFFDB_CAPABILITY_KEYS` | `server.capability_keys` | `config/capability.keys` | Yes | Authentication and key compatibility |
 | Idempotency key path | `--idempotency-keys` | `RIFFDB_IDEMPOTENCY_KEYS` | `server.idempotency_keys` | `config/idempotency.keys` | Yes | Same-key recovery compatibility |
@@ -70,10 +73,35 @@ capability_keys = "/etc/riffdb/capability.keys"
 idempotency_keys = "/etc/riffdb/idempotency.keys"
 # mcp_listen = "127.0.0.1:7444"
 # mcp_origins = ["http://127.0.0.1:3000"]
+# metrics_listen = "127.0.0.1:9464"
+# telemetry_flight_recorder = "/var/lib/riffdb/telemetry/flight.ndjson"
+# telemetry_flight_interval_ms = 10000
 
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
 ```
+
+### Loopback metrics and telemetry flight recorder
+
+When `--metrics-listen` (`RIFFDB_METRICS_LISTEN` or `server.metrics_listen`) is
+configured, `riffdbd` binds a literal IPv4 or IPv6 loopback address with a
+non-zero port and serves read-only HTTP/1 `GET /metrics` in Prometheus text
+format (`text/plain; version=0.0.4; charset=utf-8`) and `GET /v1/metrics` in
+OpenTelemetry JSON `ExportMetricsServiceRequest` format (`application/json`).
+Non-loopback addresses, zero ports, non-`GET` methods, and other request paths
+fail closed. All exported counters, gauges, and stage histograms use closed
+compile-time label vocabularies and numeric identifiers; raw tenant, entity,
+request, and secret values are never emitted.
+
+When `--telemetry-flight-recorder <PATH>` (`RIFFDB_TELEMETRY_FLIGHT_RECORDER` or
+`server.telemetry_flight_recorder`) is configured, `riffdbd` appends one bounded
+`riffdb.telemetry.flight-record.v1` NDJSON line at startup, every
+`--telemetry-flight-interval-ms` (`100..=3600000`, default `10000`), and after
+graceful drain on shutdown. Operators can aggregate a recorded flight file
+offline with `riffdb telemetry summarize <PATH>` (in human or `--output json`
+mode) to inspect throughput deltas, stage latency `p50`/`p95`/`p99` high-water
+marks, writer busy saturation, health transitions, and storage/journal byte
+growth across 24-hour and 72-hour soak runs.
 
 ### Named archive directories
 
