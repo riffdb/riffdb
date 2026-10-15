@@ -1,0 +1,13 @@
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":0,"kind":"start","operation":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":7457,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":69227,"kind":"package_install","operation":"cargo.check.offline.locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":256201,"kind":"tool","operation":"riffdb.application.check.source_only"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":275488,"kind":"identity_change_ceremony","operation":"riffdb.application.lock.write"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":275516,"kind":"tool","operation":"riffdb.application.check"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":386039,"kind":"tool","operation":"cargo.check.offline.locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":432921,"kind":"first_write","operation":"AddComment"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":432922,"kind":"first_page_read","operation":"PostDetailPage"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":434064,"kind":"tool","operation":"riffdb.dev.seed.run"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":480710,"kind":"tool","operation":"check_application_boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":480810,"kind":"rating","operation":"self_assessment"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":480910,"kind":"complete","operation":"complete"}

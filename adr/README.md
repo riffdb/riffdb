@@ -339,6 +339,7 @@ record with no front matter.
 | [0302](0302-retire-stranded-epoch-two-reset-obligations.md) | Retire Stranded Epoch-Two Reset Obligations | Accepted | guarantee |
 | [0303](0303-ergonomic-generated-sdk-connection-outcome-helpers-and-causal-sessions.md) | Ergonomic Generated SDK Connection Outcome Helpers And Causal Sessions | Accepted | surface |
 | [0304](0304-offline-sdk-generation-role-coverage-diagnostics-and-dev-loop-ergonomics.md) | Offline SDK Generation Role Coverage Diagnostics And Dev Loop Ergonomics | Accepted | surface |
+| [0305](0305-zero-ceremony-dev-inspection-manifest-sync-and-tenant-dev-ergonomics.md) | Zero Ceremony Dev Inspection Manifest Sync And Tenant Dev Ergonomics | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -47,13 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             title: "Generated application client".to_owned(),
         })
         .await?;
-    let found = application
+    let result = application
         .item_page(ItemPageParams {
             item_id: ITEM_ID.to_owned(),
         })
-        .await?
-        .unwrap_found()
-        .ok_or("generated page query did not find the generated item")?;
+        .await?;
+    let found = result.unwrap_found()?;
     println!("{}", found.item.title);
     Ok(())
 }

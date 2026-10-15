@@ -1956,6 +1956,19 @@ fn materialize_value(
                 .map(CanonicalValue::Decimal)
                 .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))
         }
+        (ValueTypeTag::Decimal, SubmittedValue::String(actual)) => {
+            let spec = value_type
+                .decimal_spec()
+                .ok_or(MaterializationError::Integrity)?;
+            let (coefficient, scale) = parse_natural_decimal(actual.as_str())
+                .ok_or_else(|| public_materialization(ValidationCode::InvalidValue, path))?;
+            if scale != spec.scale() {
+                return Err(public_materialization(ValidationCode::OutOfRange, path));
+            }
+            Decimal::new(spec, coefficient)
+                .map(CanonicalValue::Decimal)
+                .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))
+        }
         (ValueTypeTag::Money, SubmittedValue::Money(actual)) => {
             let currency = value_type
                 .currency()
@@ -1974,6 +1987,21 @@ fn materialize_value(
                 return Err(public_materialization(ValidationCode::OutOfRange, path));
             }
             let amount = Decimal::new(spec, actual.amount().coefficient())
+                .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))?;
+            Ok(CanonicalValue::Money(Money::new(currency, amount)))
+        }
+        (ValueTypeTag::Money, SubmittedValue::String(actual)) => {
+            let currency = value_type
+                .currency()
+                .ok_or(MaterializationError::Integrity)?;
+            let (coefficient, scale) = parse_natural_money(actual.as_str(), currency)
+                .ok_or_else(|| public_materialization(ValidationCode::InvalidValue, path))?;
+            let spec = DecimalSpec::new(MAX_DECIMAL_PRECISION, 2)
+                .map_err(|_| MaterializationError::Integrity)?;
+            if scale != spec.scale() {
+                return Err(public_materialization(ValidationCode::OutOfRange, path));
+            }
+            let amount = Decimal::new(spec, coefficient)
                 .map_err(|_| public_materialization(ValidationCode::OutOfRange, path))?;
             Ok(CanonicalValue::Money(Money::new(currency, amount)))
         }
@@ -2126,6 +2154,53 @@ pub(crate) fn parse_natural_uuid(text: &str) -> Option<[u8; 16]> {
         }
     }
     (output == bytes.len() && high.is_none()).then_some(bytes)
+}
+
+pub(crate) fn parse_natural_decimal(text: &str) -> Option<(i128, u8)> {
+    if text.is_empty() || text.len() > 40 || text.starts_with('+') {
+        return None;
+    }
+    let (negative, unsigned) = text
+        .strip_prefix('-')
+        .map_or((false, text), |value| (true, value));
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (!fraction.is_empty() && !fraction.bytes().all(|byte| byte.is_ascii_digit()))
+        || unsigned.ends_with('.')
+        || (whole.len() > 1 && whole.starts_with('0'))
+    {
+        return None;
+    }
+    let digit_count = whole.len().saturating_add(fraction.len());
+    if digit_count == 0 || digit_count > 38 || fraction.len() > 38 {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let magnitude = digits.parse::<i128>().ok()?;
+    if negative && magnitude == 0 {
+        return None;
+    }
+    let coefficient = if negative {
+        magnitude.checked_neg()?
+    } else {
+        magnitude
+    };
+    let scale = u8::try_from(fraction.len()).ok()?;
+    Some((coefficient, scale))
+}
+
+pub(crate) fn parse_natural_money(
+    text: &str,
+    expected_currency: riffdb_types::CurrencyCode,
+) -> Option<(i128, u8)> {
+    let code = expected_currency.to_string();
+    let amount = if let Some(rest) = text.strip_prefix(code.as_str()) {
+        rest.strip_prefix(' ').or_else(|| rest.strip_prefix(':'))?
+    } else {
+        text
+    };
+    parse_natural_decimal(amount)
 }
 
 fn materialize_exact_record(
@@ -3805,6 +3880,65 @@ contract EmbeddingInput version 1 {
             let materialization_issue = issue(
                 normalize_command_input(plan, bundle.schema(), plan, &submitted)
                     .expect_err("invalid exact numeric type rejects"),
+            );
+            assert_eq!(materialization_issue.code(), expected_code);
+            assert_eq!(
+                materialization_issue.path().segments(),
+                &[ValidationPathSegment::Field(field)]
+            );
+        }
+
+        let natural_decimal = replace_submitted_value(
+            &valid,
+            amount,
+            SubmittedValue::String(
+                riffdb_types::CanonicalString::new("12.34").expect("decimal string"),
+            ),
+        );
+        let natural_money = replace_submitted_value(
+            &natural_decimal,
+            price,
+            SubmittedValue::String(
+                riffdb_types::CanonicalString::new("56.78").expect("money string"),
+            ),
+        );
+        let expected_canonical = normalize_command_input(plan, bundle.schema(), plan, &valid)
+            .unwrap_or_else(|_| panic!("canonical valid input"));
+        assert_eq!(
+            normalize_command_input(plan, bundle.schema(), plan, &natural_money)
+                .unwrap_or_else(|_| panic!("natural decimal and money strings materialize")),
+            expected_canonical,
+        );
+
+        let prefixed_money = replace_submitted_value(
+            &natural_decimal,
+            price,
+            SubmittedValue::String(
+                riffdb_types::CanonicalString::new("USD 56.78").expect("prefixed money string"),
+            ),
+        );
+        assert_eq!(
+            normalize_command_input(plan, bundle.schema(), plan, &prefixed_money)
+                .unwrap_or_else(|_| panic!("currency-prefixed money string materializes")),
+            expected_canonical,
+        );
+
+        for (field, bad_string, expected_code) in [
+            (amount, "12.345", ValidationCode::OutOfRange),
+            (amount, "01.25", ValidationCode::InvalidValue),
+            (price, "EUR 56.78", ValidationCode::InvalidValue),
+            (price, "56.789", ValidationCode::OutOfRange),
+        ] {
+            let submitted = replace_submitted_value(
+                &valid,
+                field,
+                SubmittedValue::String(
+                    riffdb_types::CanonicalString::new(bad_string).expect("string"),
+                ),
+            );
+            let materialization_issue = issue(
+                normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                    .expect_err("invalid natural numeric string rejects"),
             );
             assert_eq!(materialization_issue.code(), expected_code);
             assert_eq!(

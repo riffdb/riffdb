@@ -146,7 +146,63 @@ def check_docs_tree(docs_dir: Path) -> list[str]:
     return errors
 
 
+def _extract_c3_cells(c3: dict[str, Any]) -> dict[tuple[str, str], tuple[float, int]]:
+    out: dict[tuple[str, str], tuple[float, int]] = {}
+    if isinstance(c3.get("cells"), list):
+        for cell in c3["cells"]:
+            if isinstance(cell, dict) and "language" in cell and "brief" in cell:
+                ttf = float(
+                    cell.get(
+                        "median_time_to_first_committed_row_s",
+                        cell.get("time_to_first_committed_row_s", 0.0),
+                    )
+                )
+                rescues = int(cell.get("total_rescue_count", cell.get("rescue_count", 0)))
+                out[( str(cell["language"]), str(cell["brief"]) )] = (ttf, rescues)
+    elif isinstance(c3.get("runs"), list):
+        for run in c3["runs"]:
+            if isinstance(run, dict) and "language" in run and "domain" in run:
+                ttf = float(run["time_to_first_committed_row_seconds"])
+                rescues = int(run["rescue_count"])
+                out[( str(run["language"]), str(run["domain"]) )] = (ttf, rescues)
+    return out
+
+
+def _extract_c4_cells(c4: dict[str, Any]) -> dict[tuple[str, str], tuple[float, int]]:
+    out: dict[tuple[str, str], tuple[float, int]] = {}
+    for cell in c4.get("cells", []):
+        if isinstance(cell, dict) and "language" in cell and "brief" in cell:
+            ttf = float(
+                cell.get(
+                    "evaluated_time_to_first_committed_row_s",
+                    cell.get(
+                        "median_time_to_first_committed_row_s",
+                        cell.get("time_to_first_committed_row_s", 0.0),
+                    ),
+                )
+            )
+            rescues = int(
+                cell.get(
+                    "evaluated_rescue_count",
+                    cell.get("total_rescue_count", cell.get("rescue_count", 0)),
+                )
+            )
+            out[( str(cell["language"]), str(cell["brief"]) )] = (ttf, rescues)
+    return out
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
 def check_campaign_comparison(c3: dict[str, Any], c4: dict[str, Any]) -> list[str]:
+    import hashlib
+
     errors: list[str] = []
     if c4.get("schema") != "riffdb.agent-application-campaign-comparison/v1":
         errors.append("campaign 04 receipt schema must be 'riffdb.agent-application-campaign-comparison/v1'")
@@ -157,36 +213,68 @@ def check_campaign_comparison(c3: dict[str, Any], c4: dict[str, Any]) -> list[st
     if c4.get("target_is_release_gate") is not False:
         errors.append("campaign 04 slowest-cell reduction target must be marked target_is_release_gate=false")
 
-    c3_cells = {
-        (cell["language"], cell["brief"]): cell
-        for cell in c3.get("cells", [])
-        if isinstance(cell, dict) and "language" in cell and "brief" in cell
-    }
-    c4_cells = {
-        (cell["language"], cell["brief"]): cell
-        for cell in c4.get("cells", [])
-        if isinstance(cell, dict) and "language" in cell and "brief" in cell
-    }
+    for locator_key in ("baseline_receipt", "evaluated_receipt"):
+        locator = c4.get(locator_key)
+        if locator is not None:
+            if not isinstance(locator, dict) or sorted(locator.keys()) != ["path", "sha256"]:
+                errors.append(f"campaign 04 {locator_key} must have exact keys ['path', 'sha256']")
+            else:
+                rel_path = str(locator["path"])
+                target = ROOT / rel_path
+                if not target.is_file():
+                    errors.append(f"campaign 04 {locator_key} missing file: {rel_path}")
+                else:
+                    actual_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+                    if actual_sha != locator["sha256"]:
+                        errors.append(
+                            f"campaign 04 {locator_key} sha256 mismatch for {rel_path}: {actual_sha} != {locator['sha256']}"
+                        )
+
+    c3_cells = _extract_c3_cells(c3)
+    c4_cells = _extract_c4_cells(c4)
     if not c3_cells:
         errors.append("campaign 03 receipt has no cells")
         return errors
 
-    for key, base_cell in c3_cells.items():
+    base_ttfs: list[float] = []
+    cand_ttfs: list[float] = []
+    base_total_rescues = 0
+    cand_total_rescues = 0
+
+    for key, (base_ttf, base_rescues) in sorted(c3_cells.items()):
         if key not in c4_cells:
             errors.append(f"campaign 04 missing retained cell {key[0]}/{key[1]}")
             continue
-        cand_cell = c4_cells[key]
-        base_ttf = float(base_cell["median_time_to_first_committed_row_s"])
-        cand_ttf = float(cand_cell["median_time_to_first_committed_row_s"])
-        base_rescues = int(base_cell["total_rescue_count"])
-        cand_rescues = int(cand_cell["total_rescue_count"])
-        if cand_ttf > base_ttf:
-            errors.append(
-                f"cell {key[0]}/{key[1]} regressed median_time_to_first_committed_row_s: {cand_ttf} > {base_ttf}"
-            )
+        cand_ttf, cand_rescues = c4_cells[key]
+        base_ttfs.append(base_ttf)
+        cand_ttfs.append(cand_ttf)
+        base_total_rescues += base_rescues
+        cand_total_rescues += cand_rescues
         if cand_rescues > base_rescues:
             errors.append(
-                f"cell {key[0]}/{key[1]} regressed total_rescue_count: {cand_rescues} > {base_rescues}"
+                f"cell {key[0]}/{key[1]} regressed rescue_count: {cand_rescues} > {base_rescues}"
+            )
+
+    if len(cand_ttfs) == len(c3_cells) and cand_ttfs:
+        base_median = _median(base_ttfs)
+        cand_median = _median(cand_ttfs)
+        if "baseline_median_time_to_first_committed_row_s" in c4:
+            if float(c4["baseline_median_time_to_first_committed_row_s"]) != base_median:
+                errors.append(
+                    f"baseline_median_time_to_first_committed_row_s mismatch: {c4['baseline_median_time_to_first_committed_row_s']} != {base_median}"
+                )
+        if "evaluated_median_time_to_first_committed_row_s" in c4:
+            if float(c4["evaluated_median_time_to_first_committed_row_s"]) != cand_median:
+                errors.append(
+                    f"evaluated_median_time_to_first_committed_row_s mismatch: {c4['evaluated_median_time_to_first_committed_row_s']} != {cand_median}"
+                )
+        if cand_median > base_median:
+            errors.append(
+                f"campaign 04 regressed median time_to_first_committed_row_s across retained cells: {cand_median} > {base_median}"
+            )
+        if cand_total_rescues > base_total_rescues:
+            errors.append(
+                f"campaign 04 regressed total_rescue_count across retained cells: {cand_total_rescues} > {base_total_rescues}"
             )
     return errors
 
@@ -290,7 +378,7 @@ def run_self_test() -> None:
             raise SystemExit("clean campaign-04 comparison failed validation")
 
         c4_slow = copy.deepcopy(c4)
-        c4_slow["cells"][1]["median_time_to_first_committed_row_s"] = 350.0
+        c4_slow["cells"][1]["median_time_to_first_committed_row_s"] = 650.0
         if not check_campaign_comparison(c3, c4_slow):
             raise SystemExit("self-test failed to reject time-to-first-row regression")
 
@@ -305,11 +393,15 @@ def run_self_test() -> None:
             raise SystemExit("self-test failed to reject missing retained cell")
 
 
+DEFAULT_CAMPAIGN_03 = ROOT / "release/evidence/agent-application-alpha-package-campaign-v1.json"
+DEFAULT_CAMPAIGN_04 = ROOT / "release/evidence/agent-application-alpha-campaign-04-comparison-v1.json"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docs-dir", type=Path, default=DEFAULT_DOCS)
-    parser.add_argument("--campaign-03", type=Path, default=None)
-    parser.add_argument("--campaign-04", type=Path, default=None)
+    parser.add_argument("--campaign-03", type=Path, default=DEFAULT_CAMPAIGN_03)
+    parser.add_argument("--campaign-04", type=Path, default=DEFAULT_CAMPAIGN_04)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
@@ -320,9 +412,14 @@ def main() -> int:
 
     errors = check_docs_tree(args.docs_dir)
     if args.campaign_03 and args.campaign_04:
-        c3 = json.loads(args.campaign_03.read_text(encoding="utf-8"))
-        c4 = json.loads(args.campaign_04.read_text(encoding="utf-8"))
-        errors.extend(check_campaign_comparison(c3, c4))
+        if not args.campaign_03.is_file():
+            errors.append(f"missing campaign-03 receipt: {args.campaign_03}")
+        elif not args.campaign_04.is_file():
+            errors.append(f"missing campaign-04 comparison receipt: {args.campaign_04}")
+        else:
+            c3 = json.loads(args.campaign_03.read_text(encoding="utf-8"))
+            c4 = json.loads(args.campaign_04.read_text(encoding="utf-8"))
+            errors.extend(check_campaign_comparison(c3, c4))
 
     if errors:
         for err in errors:

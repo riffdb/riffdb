@@ -57,8 +57,8 @@ def main() -> int:
     destination.add_argument("--output", type=Path)
     destination.add_argument("--check", type=Path)
     arguments = parser.parse_args()
-    if arguments.campaign != "campaign-03":
-        fail("only the package-first campaign-03 receipt is defined")
+    if arguments.campaign not in ("campaign-03", "campaign-04"):
+        fail("only the package-first campaign-03 and campaign-04 receipts are defined")
     manifest_path = (
         ROOT / "evaluations/agent-application-alpha/campaigns" / f"{arguments.campaign}.json"
     )
@@ -138,8 +138,12 @@ def main() -> int:
     runs.sort(key=lambda run: (run["domain"], run["language"]))
     receipt = {
         "schema": "riffdb-agent-application-alpha-package-campaign-receipt/v1",
-        "work_package": "WP-604",
-        "requirements": ["DX-031", "DX-032"],
+        "work_package": "WP-604" if arguments.campaign == "campaign-03" else "WP-759",
+        "requirements": (
+            ["DX-031", "DX-032"]
+            if arguments.campaign == "campaign-03"
+            else ["GOV-006", "HBK-002", "HBK-005", "HBK-011"]
+        ),
         "campaign_id": arguments.campaign,
         "campaign_manifest": {
             "path": str(manifest_path.relative_to(ROOT)),

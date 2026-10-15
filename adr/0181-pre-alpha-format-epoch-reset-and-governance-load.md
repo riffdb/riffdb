@@ -133,7 +133,7 @@ manifest reports one version per family.
 
 ### 4. The obligations ledger is closed and cannot reopen
 
-Every entry in `adr/obligations-outstanding.yaml` is discharged by declaring it
+Every entry in `adr/obligations-outstanding.yaml` (removed by WP-758) is discharged by declaring it
 in its ADR header with a proof that exists, or struck with a one-line reason
 recorded in the discharging change. The ledger reaches zero and the file is
 removed. `scripts/check-adr-obligations` then rejects any ledger file or entry,

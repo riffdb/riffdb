@@ -1,0 +1,14 @@
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":0,"kind":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":42104,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":105711,"kind":"package_install","operation":"cargo.check.offline.locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":247700,"kind":"compiler_failure","code":"RDB-C048","operation":"riffdb.application.check.source_only"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":279484,"kind":"compiler_failure","code":"RDB-MCP-SURFACE","operation":"riffdb.application.check.source_only"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":371445,"kind":"tool","operation":"riffdb.contract.explain"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":403118,"kind":"tool","operation":"riffdb.application.check.source_only"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":422898,"kind":"identity_change_ceremony","operation":"riffdb.application.lock.write"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":667563,"kind":"runtime_failure","code":"RDB-INPUT-0101","operation":"riffdb.dev.seed.run"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":733926,"kind":"first_write","operation":"ReserveInventory"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":733926,"kind":"first_page_read","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":775109,"kind":"tool","operation":"cargo.test.offline.locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":780000,"kind":"rating"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":780000,"kind":"complete"}
