@@ -30827,3 +30827,109 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-845
+  name: Pure-Rust Prometheus and OTLP JSON exposition in riffdb-observability
+  tier: surface
+  depends_on: [WP-180, WP-755]
+  objective: Implement ADR-0306 Decision 1. Add deterministic, allocation-bounded
+    encode_prometheus_v1, encode_otel_json_v1, and encode_flight_record_ndjson_v1
+    methods to MetricRegistry and Observability in riffdb-observability using
+    std::fmt::Write without adding third-party crate dependencies.
+  requirements: [ID-005, PERF-001, END-007]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0086, ADR-0250]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Prometheus v0.0.4 text exposition encoder across all 40 required metric families, closed pipeline stage histograms, completion-lane counters, and health status
+  - OTLP JSON ExportMetricsServiceRequest v1 encoder and single-line NDJSON flight-recorder snapshot encoder with histogram percentile approximations (p50, p95, p99)
+  - Unit tests verifying cumulative histogram bucket invariants, canonical ordering, redaction canary exclusion, and leaf-crate dependency invariance
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-845
+  exit_gate: MetricRegistry and Observability deterministically encode Prometheus
+    text, OTLP JSON, and flight-recorder NDJSON snapshots with closed-vocabulary
+    labels and zero new dependencies in riffdb-observability.
+  standing_design_tests:
+    interface_safety: Only closed enum labels and bounded numeric IDs can be rendered; raw business keys, tenant IDs, and secrets are structurally unrepresentable.
+    scale: Bounded series cardinality (MAX_COMMAND_METRIC_SERIES = 1024) and single-pass std::fmt::Write formatting.
+  human_review_triggers:
+  - Exposition emits unbounded tenant, entity, request, or error-message labels.
+  - riffdb-observability adds dependencies outside riffdb-types, riffdb-errors, and tracing.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-846
+  name: Loopback metrics HTTP listener and periodic NDJSON flight recorder in riffdbd
+  tier: surface
+  depends_on: [WP-845]
+  objective: Implement ADR-0306 Decision 2. Add optional --metrics-listen
+    <LOOPBACK_ADDR> (serving GET /metrics and GET /v1/metrics) and
+    --telemetry-flight-recorder <PATH> / --telemetry-flight-interval-ms <MS>
+    to riffdbd configuration and server runtime.
+  requirements: [ID-005, PERF-001, END-007, END-008]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0111, ADR-0184]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Loopback-validated --metrics-listen / RIFFDB_METRICS_LISTEN / server.metrics_listen and flight-recorder settings in crates/riffdb-server/src/config.rs
+  - Read-only HTTP/1 loopback listener serving GET /metrics (Prometheus) and GET /v1/metrics (OTLP JSON) with graceful shutdown
+  - Periodic background flight-recorder writer appending bounded NDJSON snapshots including live storage and journal byte totals
+  - Config and server integration tests for loopback enforcement, HTTP scraping, and flight-recorder output
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-846
+  exit_gate: riffdbd serves Prometheus and OTLP JSON metrics over literal
+    loopback HTTP when configured, rejects non-loopback addresses fail-closed,
+    and writes periodic NDJSON flight-recorder snapshots during runtime and drain.
+  standing_design_tests:
+    interface_safety: --metrics-listen rejects non-loopback addresses and non-GET requests fail closed; flight-recorder paths are validated and disjoint from database and key paths.
+    scale: Bounded read-only in-memory snapshot formatting and configurable interval bounded to 100..=3_600_000 ms.
+  human_review_triggers:
+  - --metrics-listen allows non-loopback binding or mutating HTTP methods.
+  - Flight-recorder path overlaps authoritative database, backup, or key files.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-847
+  name: CLI flight-recorder summary and 24/72-hour soak rehearsal integration
+  tier: surface
+  depends_on: [WP-846]
+  objective: Implement ADR-0306 Decision 3. Add riffdb telemetry summarize <PATH>
+    to riffdb-cli for human and JSON aggregation of flight-recorder NDJSON logs,
+    integrate flight-recorder capture into the TicketDesk lifecycle/soak harness,
+    and update the public handbook and generated CLI references.
+  requirements: [PERF-001, END-007, END-008, DX-014]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0111]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - riffdb telemetry summarize <PATH> command in crates/riffdb-cli with human and --output json modes
+  - Flight-recorder telemetry wiring in examples/ticketdesk/src/bin/lifecycle.rs for 24/72-hour stress and soak runs
+  - Handbook documentation updates and regenerated CLI reference fixtures
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-847
+  exit_gate: riffdb telemetry summarize reports window throughput, latency
+    percentile high-water marks, writer saturation, and storage growth from
+    flight-recorder NDJSON files, and TicketDesk lifecycle runs emit flight
+    recordings when an artifact directory is configured.
+  standing_design_tests:
+    interface_safety: CLI summary reads bounded NDJSON lines without network or database mutation; JSON output uses a stable versioned schema.
+    scale: Streaming line-by-line NDJSON aggregation bounded to 64 MiB input files.
+  human_review_triggers:
+  - Telemetry summary reads unbounded files into memory without a size ceiling.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
