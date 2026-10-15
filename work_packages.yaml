@@ -31194,3 +31194,134 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-855
+  name: Optional and Money aggregate inputs and per-measure conditional where filters
+  tier: surface
+  depends_on: [WP-851]
+  objective: Implement ADR-0309 Decision 1. Allow sum and mean over optional
+    numeric fields and fixed-currency money/optional-money fields, allow any and
+    all over optional bool fields, and support per-measure conditional where
+    predicates across parser, formatter, resolver, compiler, and executor.
+  requirements: [RQL-002, RQL-003, RQL-008, QRY-001, QRY-002]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Optional numeric, money, and boolean input support in Resolver and evaluate_aggregate_measure
+  - Per-measure where predicate syntax, IR, field-projection/covering/auth inclusion, and runtime evaluation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-855
+  exit_gate: sum, mean, any, and all accept optional and money fields, per-measure
+    where filters compile and execute, and existing V1/V11 plan hashes remain
+    unchanged.
+  standing_design_tests:
+    interface_safety: Per-measure filters use the same typed conjunctive predicate validation and authorization union as binding predicates.
+    scale: Per-measure filters add no extra storage scans and evaluate within the aggregate's checked operation budget.
+  human_review_triggers:
+  - Money sums mix distinct currencies or lose fixed-scale precision.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-856
+  name: Grouped aggregate UTC temporal bucketing, having predicates, order by, and top-N truncation
+  tier: surface
+  depends_on: [WP-855]
+  objective: Implement ADR-0309 Decision 2. Support deterministic UTC temporal
+    bucketing (hour, day, week, month, year) and aliases in group by, field
+    aliases in aggregate result selections, and having predicates, order by
+    over group keys and measures, and top-N take truncation on grouped
+    aggregates.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Deterministic UTC temporal bucket functions (hour, day, week, month, year) and group-key/selection aliases
+  - Grouped aggregate having predicates, order by over measures and keys, and top-N take truncation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-856
+  exit_gate: Grouped aggregates support UTC temporal buckets, having predicates,
+    order by over measures and keys, and top-N take truncation deterministically.
+  standing_design_tests:
+    interface_safety: Temporal bucketing is pure UTC integer arithmetic with no operating-system timezone or clock access.
+    scale: Pre-truncation group state remains bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1 (256) and MAX_AGGREGATE_STATE_BYTES_V1.
+  human_review_triggers:
+  - Group state exceeds MAX_AGGREGATE_DISTINCT_VALUES_V1 without failing closed.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-857
+  name: Exact quantiles, positional selectors, fixed-scale stddev, bounded collections, and per-parent rollups
+  tier: surface
+  depends_on: [WP-856]
+  objective: Implement ADR-0309 Decision 3. Add median/p50, p90, p95, p99,
+    first, last, stddev/variance, collect, and collect_distinct operational
+    measures, and support per-parent nested rollup aggregates over for each ...
+    in ... expanded child bindings.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Exact quantile (median, p90, p95, p99), positional (first, last), fixed-scale stddev, and bounded collection (collect, collect_distinct) measures
+  - Per-parent nested rollup aggregates (aggregate ... from child per parent) over expanded bindings
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-857
+  exit_gate: Quantile, positional, stddev, and collection measures and
+    per-parent nested rollups compile and execute within static bounds with
+    zero floating-point arithmetic.
+  standing_design_tests:
+    interface_safety: Quantiles use exact nearest-rank selection and stddev uses checked integer square root at the input decimal scale.
+    scale: Collected value lists and per-parent rollup states are bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1 and MAX_AGGREGATE_STATE_BYTES_V1.
+  human_review_triggers:
+  - Any statistical measure uses floating-point arithmetic or unbounded collection buffers.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-858
+  name: End-to-end SaaS aggregation test suite and RiffQL handbook reference updates
+  tier: surface
+  depends_on: [WP-857]
+  objective: Complete ADR-0309 verification and documentation. Add end-to-end
+    compiler, module, executor, and service tests covering all six SaaS
+    aggregation capabilities and update docs/riffql/LANGUAGE.md and
+    docs/riffql/PLANNING.md.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - End-to-end SaaS aggregation tests in crates/riffdb-query-executor and crates/riffdb-query-compiler
+  - Updated RiffQL aggregation reference in docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-858
+  exit_gate: All four ADR-0309 obligations are proven by automated tests and
+    docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md pass handbook checks.
+  standing_design_tests:
+    interface_safety: Handbook examples match exact compiled and executed RiffQL aggregate semantics.
+    scale: All tested SaaS dashboard queries execute within static scan, state, and fuel bounds.
+  human_review_triggers:
+  - Handbook documents unimplemented or approximate aggregate behavior.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
