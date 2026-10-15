@@ -172,6 +172,19 @@ bounds. The reference and columnar evaluators consume those resources across
 the whole result, apply row policy before contribution, and withhold every
 aggregate cell if any dimension is exhausted.
 
+When an operational aggregate declares per-measure `where` filters, UTC
+temporal grouping buckets (`hour`, `day`, `week`, `month`, `year`), `having`
+post-aggregation predicates, `order by` sorting with optional top-N `take`,
+exact quantiles (`median`/`p50`, `p90`, `p95`, `p99`), `first`/`last`, fixed-scale
+`stddev` (`variance` alias), bounded `collect`/`collect_distinct` lists, or a
+`per <parent>` nested rollup over a `for each` expanded binding, the compiler
+includes every referenced source, filter, and grouping field in the step's
+selected fields and whole-query authorization union, scales projected cells and
+encoded result bytes by the parent driver maximum for `per <parent>` rollups and
+by the 256-element distinct ceiling for `collect`/`collect_distinct`, and
+encodes all additional clauses as backward-compatible trailing tags so existing
+version-2 and version-8 plan hashes remain unchanged.
+
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
 dependent-key batch. It cannot infer colocation, omit a partition predicate,

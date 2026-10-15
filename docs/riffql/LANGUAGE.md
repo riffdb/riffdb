@@ -785,26 +785,55 @@ language version 8 is selected when a query uses any of:
 - `count_distinct(field)`, which includes `NoValue` as one exact typed value;
 - `count_distinct_present(field)`, which excludes `NoValue`;
 - `mean(field)`, which returns `ExactMeanV1 { total, count }` without division,
-  rounding, or floating point; or
-- `any(field)` and `all(field)` over required Boolean fields.
+  rounding, or floating point;
+- `any(field)` and `all(field)` over required or optional Boolean fields (`bool`
+  and `bool?`, skipping `NoValue`);
+- `sum(field)` and `mean(field)` over optional numeric fields (`i64?`, `u64?`,
+  `decimal<P,S>?`) and fixed-currency `money<C>` / `money<C>?` fields (widened
+  to `decimal<39,2>` at fixed scale 2, skipping `NoValue`);
+- conditional per-measure `where <predicate>` filters (`count() where status ==
+  TicketStatus.Open as open_count`, `sum(amount) where ... as ...`);
+- deterministic UTC temporal grouping buckets `hour(ts)`, `day(ts)`, `week(ts)`
+  (ISO Monday 00:00:00 UTC), `month(ts)`, and `year(ts)` in `group by` with
+  optional `as <alias>`, plus `as <alias>` on plain group keys and aggregate
+  `return` field selections;
+- post-aggregation `having <predicate>` filters over group keys and measures,
+  `order by <key_or_measure> asc|desc [nulls first|last]` sorting, and top-N
+  `take <N>` truncation when `order by` is declared;
+- exact nearest-rank order statistics `median(field)` (or `p50(field)`),
+  `p90(field)`, `p95(field)`, and `p99(field)` over non-null ordered scalars;
+- source-order positional selectors `first(field)` and `last(field)` over
+  non-null scalars;
+- exact fixed-scale population standard deviation `stddev(field)` (or parser
+  alias `variance(field)`) over numeric and `money<C>` fields via checked
+  integer square root (`u128::isqrt`) without floating point;
+- bounded scalar collections `collect(field)` and `collect_distinct(field)`
+  returning `List<T>` capped by the 256-element per-measure budget; or
+- per-parent nested rollups `aggregate <name> from <child_binding> per <parent>`
+  folding a `for each <item> in <parent>` expanded binding per parent row and
+  nesting the rollup inside `<parent> { ... }` in `return`.
 
 Function names, input fields, aliases, grouping keys, and the source binding
 are source declarations; callers cannot submit any of them at runtime.
 
-This syntax and its version-3 query-module representation are executable for
-named queries. Finite-family compilation resolves every grouping and
-measure field, derives result types, includes all source fields in the
-authorization union, clamps grouped output to the source row limit, and seals
-the descriptors and cost ceiling into module identity. The ordinary version-1
-compiler still rejects aggregate declarations with `RDB-QP008`.
+This syntax and its version-3/version-11 query-module representations are
+executable for named queries. Finite-family compilation resolves every grouping,
+filter, `having`, `order by`, and measure field, derives result types, includes
+all source fields in the authorization union, clamps grouped output to the
+source row limit, and seals the descriptors and cost ceiling into module
+identity. The ordinary version-1 compiler still rejects aggregate declarations
+with `RDB-QP008`.
 
 The selected source access and every aggregate fold run inside the same
 authoritative read snapshot. `count` and `sum` return zero for an empty whole
-set; `min` and `max` return absence. Integer sums and fixed-decimal sums use a
-checked signed 128-bit accumulator and cross the public boundary as a decimal
-with the source scale and no false precision assertion. Overflow, group-bound
-exhaustion, fuel exhaustion, or a malformed backend row withholds the complete
-query result—there is no partial aggregate response.
+set (or an empty per-parent rollup); `min`, `max`, `median`/`p50`..`p99`,
+`first`, and `last` return absence; `collect` and `collect_distinct` return an
+empty list. Integer, fixed-decimal, and `money<C>` sums and `stddev` use
+checked 128-bit integer arithmetic and cross the public boundary as an exact
+decimal with the source scale (`2` for `money<C>`) and no floating-point
+approximation. Overflow, group-bound exhaustion, fuel exhaustion, or a
+malformed backend row withholds the complete query result—there is no partial
+aggregate response.
 
 The exact aggregate core independently bounds admitted rows, groups, distinct
 values per measure/group, partial-state bytes, checked arithmetic operations,
@@ -812,18 +841,18 @@ scans, result cells, and encoded output. Empty distinct and present counts are
 zero; empty `mean` is `{ total: 0, count: 0 }`; empty `any` is `false`; and
 empty `all` is `true`. A bound or arithmetic failure refuses the whole query.
 
-Grouped rows are ordered by the canonical encoded group key and their count is
-clamped by the source `take` value (including a submitted `Limit`), by the
-product of the grouping keys' finite `enum`/`bool`/`optional` domains when the
-source `take` exceeds 256, or by an explicit `group by field1, field2 take <N>`
-cap when grouping over higher-cardinality fields on a large source bound.
-Exceeding an explicit `group by ... take <N>` cap at runtime withholds the
-complete aggregate result rather than silently truncating groups. Version 1
-requires aggregate result names and selected aggregate field names to remain
-the declaration names; renaming either is rejected at compile time rather than
-accepted without a sealed projection mapping. Aggregate live watches remain a
-separate future surface: current reactive compilation accepts only an ordinary
-single access program and cannot substitute one operational-family member.
+Grouped rows are ordered by the declared `order by` clause (with canonical
+group-key tie-breaking) or by the canonical encoded group key when `order by` is
+omitted. Their count is clamped by the source `take` value (including a
+submitted `Limit`), by the product of the grouping keys' finite
+`enum`/`bool`/`optional` domains when the source `take` exceeds 256, or by an
+explicit `group by ... take <N>` cap. When `group by` is paired with `order by`,
+`take <N>` truncates the sorted groups (after `having`) to the top `N`; without
+`order by`, exceeding an explicit `group by ... take <N>` cap at runtime
+withholds the complete aggregate result rather than silently truncating
+unordered groups. Aggregate live watches remain a separate future surface:
+current reactive compilation accepts only an ordinary single access program and
+cannot substitute one operational-family member.
 
 ## Symbolic catalog schema
 

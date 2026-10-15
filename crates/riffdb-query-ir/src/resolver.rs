@@ -3,11 +3,12 @@ use std::num::NonZeroU32;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
-    BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality, Document, Expression,
-    FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1, RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1,
-    Selection, Span, TypeReference, format_query,
+    AggregateTimeBucket, BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality,
+    Direction, Document, Expression, FieldSelection, Literal, NullPlacement, Path,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1,
+    RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1, Selection, Span, TypeReference, UnaryOperator,
+    format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -18,17 +19,19 @@ use riffdb_types::{
 };
 
 use crate::{
-    AggregateExecutionBudgetV1, CandidateBindingV1, CandidateSetOperatorV1, CandidateSourceV1,
-    EntitySymbol, LongPatternCandidateV1, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
-    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES,
-    MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
-    NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
-    OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
+    AccessDirection, AggregateExecutionBudgetV1, CandidateBindingV1, CandidateSetOperatorV1,
+    CandidateSourceV1, EntitySymbol, LongPatternCandidateV1,
+    MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
+    MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES,
+    NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
+    NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1,
+    OperationalAggregateMeasureV1, OperationalAggregateTimeBucketV1, OperationalAggregateV1,
     PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_PARTITION_SET_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
     QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
-    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
+    QueryDiagnosticStage, QueryDiagnostics, QueryLiteral, QueryPredicate, QueryPredicateOperator,
+    QueryPredicateValue, QueryRootOrderTermV1, SymbolicCatalog, page_take_within_scan_bound,
     source_aggregate_semantic_identity,
 };
 
@@ -419,6 +422,17 @@ impl ResolvedQueryV1 {
                         | AggregateSemanticIdentityV1::Mean
                         | AggregateSemanticIdentityV1::Any
                         | AggregateSemanticIdentityV1::All
+                ) || matches!(
+                    measure.function(),
+                    OperationalAggregateFunctionV1::Median
+                        | OperationalAggregateFunctionV1::P90
+                        | OperationalAggregateFunctionV1::P95
+                        | OperationalAggregateFunctionV1::P99
+                        | OperationalAggregateFunctionV1::First
+                        | OperationalAggregateFunctionV1::Last
+                        | OperationalAggregateFunctionV1::Stddev
+                        | OperationalAggregateFunctionV1::Collect
+                        | OperationalAggregateFunctionV1::CollectDistinct
                 )
             })
         })
@@ -499,6 +513,7 @@ struct ResolvedAggregateSelection {
     fields: BTreeMap<String, NamedTypeSchema>,
     grouped: bool,
     maximum_groups: PageBound,
+    parent_binding: Option<String>,
 }
 
 /// Which source clause supplied a page bound, so its diagnostics name the
@@ -919,6 +934,60 @@ impl<'a> Resolver<'a> {
                 ));
             }
 
+            let (parent_binding, parent_child_fields, parent_driver_fields) = if let Some(
+                parent_ident,
+            ) =
+                &aggregate.parent
+            {
+                let parent_name = parent_ident.value.as_str();
+                if self.expansion_drivers.get(source_name).map(String::as_str) != Some(parent_name)
+                {
+                    return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            parent_ident.span,
+                            vec![source_name.to_owned(), parent_name.to_owned()],
+                            "per-parent aggregate source must be an expanded binding driven by the named parent",
+                        ));
+                }
+                let source_binding_ast = document
+                    .body
+                    .bindings
+                    .iter()
+                    .find(|b| b.name.value.as_str() == source_name)
+                    .ok_or_else(|| self.aggregate_invariant(aggregate.source.span))?;
+                let item_name = source_binding_ast
+                    .expansion
+                    .as_ref()
+                    .map(|exp| exp.item.value.as_str())
+                    .unwrap_or(parent_name);
+                let mut child_fields = Vec::new();
+                let mut driver_fields = Vec::new();
+                collect_parent_join_fields(
+                    &source_binding_ast.predicate.value,
+                    source_name,
+                    item_name,
+                    parent_name,
+                    &mut child_fields,
+                    &mut driver_fields,
+                );
+                if child_fields.is_empty() {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        parent_ident.span,
+                        vec![source_name.to_owned(), parent_name.to_owned()],
+                        "per-parent aggregate source must join against at least one parent field",
+                    ));
+                }
+                self.push_map(
+                    parent_ident.span,
+                    SourceSymbolKind::Binding,
+                    vec![parent_name.to_owned()],
+                )?;
+                (Some(parent_name.to_owned()), child_fields, driver_fields)
+            } else {
+                (None, Vec::new(), Vec::new())
+            };
+
             self.push_map(
                 aggregate.name.span,
                 SourceSymbolKind::Aggregate,
@@ -934,26 +1003,105 @@ impl<'a> Resolver<'a> {
             let mut result_fields = BTreeMap::new();
             let mut group_keys = Vec::with_capacity(aggregate.group_by.len());
             let mut domain_groups: Option<u64> = (!aggregate.group_by.is_empty()).then_some(1_u64);
-            for group in &aggregate.group_by {
-                let (field_name, field_type) =
-                    self.resolve_aggregate_field(&source, source_name, &group.value, group.span)?;
-                if !result_names.insert(field_name.clone()) {
-                    return Err(self.diagnostic(
-                        QueryDiagnosticCode::DuplicateName,
-                        group.span,
-                        vec![name.to_owned(), field_name],
-                        "duplicate aggregate result field",
-                    ));
+            if !aggregate.group_keys.is_empty() {
+                for key in &aggregate.group_keys {
+                    let (source_field, field_type) = self.resolve_aggregate_field(
+                        &source,
+                        source_name,
+                        &key.path.value,
+                        key.path.span,
+                    )?;
+                    let time_bucket = if let Some(bucket) = &key.bucket {
+                        let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                        let valid_temporal = match bucket.value {
+                            AggregateTimeBucket::Hour => base_type.tag() == ValueTypeTag::Timestamp,
+                            AggregateTimeBucket::Day
+                            | AggregateTimeBucket::Week
+                            | AggregateTimeBucket::Month
+                            | AggregateTimeBucket::Year => {
+                                matches!(
+                                    base_type.tag(),
+                                    ValueTypeTag::Timestamp | ValueTypeTag::Date
+                                )
+                            }
+                        };
+                        if !valid_temporal {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                bucket.span,
+                                vec![source.entity.name().to_owned(), source_field],
+                                "temporal group by bucket requires a timestamp or date field",
+                            ));
+                        }
+                        Some(match bucket.value {
+                            AggregateTimeBucket::Hour => OperationalAggregateTimeBucketV1::Hour,
+                            AggregateTimeBucket::Day => OperationalAggregateTimeBucketV1::Day,
+                            AggregateTimeBucket::Week => OperationalAggregateTimeBucketV1::Week,
+                            AggregateTimeBucket::Month => OperationalAggregateTimeBucketV1::Month,
+                            AggregateTimeBucket::Year => OperationalAggregateTimeBucketV1::Year,
+                        })
+                    } else {
+                        None
+                    };
+                    let output_name = key.alias.as_ref().map_or_else(
+                        || source_field.clone(),
+                        |alias| alias.value.as_str().to_owned(),
+                    );
+                    let duplicate_span =
+                        key.alias.as_ref().map_or(key.path.span, |alias| alias.span);
+                    if !result_names.insert(output_name.clone()) {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::DuplicateName,
+                            duplicate_span,
+                            vec![name.to_owned(), output_name],
+                            "duplicate aggregate result field",
+                        ));
+                    }
+                    domain_groups = if time_bucket.is_some() {
+                        None
+                    } else {
+                        domain_groups
+                            .zip(self.group_key_domain_cardinality(&field_type))
+                            .and_then(|(acc, card)| acc.checked_mul(card))
+                    };
+                    let named = self.named_type(&field_type, key.path.span)?;
+                    result_fields.insert(output_name.clone(), named.clone());
+                    group_keys.push(
+                        OperationalAggregateGroupKeyV1::checked_with_bucket_and_alias(
+                            output_name,
+                            source_field,
+                            time_bucket,
+                            named,
+                        )
+                        .ok_or_else(|| self.aggregate_invariant(key.path.span))?,
+                    );
                 }
-                domain_groups = domain_groups
-                    .zip(self.group_key_domain_cardinality(&field_type))
-                    .and_then(|(acc, card)| acc.checked_mul(card));
-                let named = self.named_type(&field_type, group.span)?;
-                result_fields.insert(field_name.clone(), named.clone());
-                group_keys.push(
-                    OperationalAggregateGroupKeyV1::checked(field_name, named)
-                        .ok_or_else(|| self.aggregate_invariant(group.span))?,
-                );
+            } else {
+                for group in &aggregate.group_by {
+                    let (field_name, field_type) = self.resolve_aggregate_field(
+                        &source,
+                        source_name,
+                        &group.value,
+                        group.span,
+                    )?;
+                    if !result_names.insert(field_name.clone()) {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::DuplicateName,
+                            group.span,
+                            vec![name.to_owned(), field_name],
+                            "duplicate aggregate result field",
+                        ));
+                    }
+                    domain_groups = domain_groups
+                        .zip(self.group_key_domain_cardinality(&field_type))
+                        .and_then(|(acc, card)| acc.checked_mul(card));
+                    let named = self.named_type(&field_type, group.span)?;
+                    result_fields.insert(field_name.clone(), named.clone());
+                    group_keys.push(
+                        OperationalAggregateGroupKeyV1::checked(field_name, named)
+                            .ok_or_else(|| self.aggregate_invariant(group.span))?,
+                    );
+                }
             }
 
             let mut measures = Vec::with_capacity(aggregate.measures.len());
@@ -968,19 +1116,87 @@ impl<'a> Resolver<'a> {
                     ));
                 }
                 let semantic = source_aggregate_semantic_identity(measure.function.value);
-                let (function, input_field, result_type) = match semantic {
-                    // `exact_count` has the same public scalar schema as the
-                    // bounded operational count. Its whole-population
-                    // semantics are retained by the exact result-set plan;
-                    // the ordinary operational compiler rejects it before
-                    // member lowering.
-                    AggregateSemanticIdentityV1::Count
-                    | AggregateSemanticIdentityV1::ExactCount => (
-                        OperationalAggregateFunctionV1::Count,
-                        None,
-                        NamedTypeSchema::Scalar("u64".to_owned()),
-                    ),
-                    AggregateSemanticIdentityV1::Sum => {
+                let (function, input_field, result_type) = match measure.function.value {
+                    riffdb_riffql_syntax::AggregateFunction::Median
+                    | riffdb_riffql_syntax::AggregateFunction::P90
+                    | riffdb_riffql_syntax::AggregateFunction::P95
+                    | riffdb_riffql_syntax::AggregateFunction::P99 => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                        if matches!(
+                            base_type.tag(),
+                            ValueTypeTag::List | ValueTypeTag::Record | ValueTypeTag::Vector
+                        ) {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                field.span,
+                                vec![source.entity.name().to_owned(), field_name],
+                                "quantile input must be an ordered scalar field",
+                            ));
+                        }
+                        let function = match measure.function.value {
+                            riffdb_riffql_syntax::AggregateFunction::Median => {
+                                OperationalAggregateFunctionV1::Median
+                            }
+                            riffdb_riffql_syntax::AggregateFunction::P90 => {
+                                OperationalAggregateFunctionV1::P90
+                            }
+                            riffdb_riffql_syntax::AggregateFunction::P95 => {
+                                OperationalAggregateFunctionV1::P95
+                            }
+                            riffdb_riffql_syntax::AggregateFunction::P99 => {
+                                OperationalAggregateFunctionV1::P99
+                            }
+                            _ => return Err(self.aggregate_invariant(measure.function.span)),
+                        };
+                        let result = NamedTypeSchema::Optional(Box::new(
+                            self.named_type(base_type, field.span)?,
+                        ));
+                        (function, Some(field_name), result)
+                    }
+                    riffdb_riffql_syntax::AggregateFunction::First
+                    | riffdb_riffql_syntax::AggregateFunction::Last => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                        if matches!(base_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                field.span,
+                                vec![source.entity.name().to_owned(), field_name],
+                                "first/last input must be a scalar field",
+                            ));
+                        }
+                        let function = if measure.function.value
+                            == riffdb_riffql_syntax::AggregateFunction::First
+                        {
+                            OperationalAggregateFunctionV1::First
+                        } else {
+                            OperationalAggregateFunctionV1::Last
+                        };
+                        let result = NamedTypeSchema::Optional(Box::new(
+                            self.named_type(base_type, field.span)?,
+                        ));
+                        (function, Some(field_name), result)
+                    }
+                    riffdb_riffql_syntax::AggregateFunction::Stddev => {
                         let field = measure
                             .field
                             .as_ref()
@@ -992,12 +1208,13 @@ impl<'a> Resolver<'a> {
                             field.span,
                         )?;
                         (
-                            OperationalAggregateFunctionV1::Sum,
+                            OperationalAggregateFunctionV1::Stddev,
                             Some(field_name),
                             self.aggregate_sum_type(&field_type, field.span)?,
                         )
                     }
-                    AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
+                    riffdb_riffql_syntax::AggregateFunction::Collect
+                    | riffdb_riffql_syntax::AggregateFunction::CollectDistinct => {
                         let field = measure
                             .field
                             .as_ref()
@@ -1008,116 +1225,196 @@ impl<'a> Resolver<'a> {
                             &field.value,
                             field.span,
                         )?;
-                        if matches!(field_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
+                        let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                        if matches!(base_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
                             return Err(self.diagnostic(
                                 QueryDiagnosticCode::InvalidType,
                                 field.span,
                                 vec![source.entity.name().to_owned(), field_name],
-                                "min/max input must be an ordered scalar field",
+                                "collect input must be a scalar field",
                             ));
                         }
-                        let function = if semantic == AggregateSemanticIdentityV1::Min {
-                            OperationalAggregateFunctionV1::Min
+                        let function = if measure.function.value
+                            == riffdb_riffql_syntax::AggregateFunction::Collect
+                        {
+                            OperationalAggregateFunctionV1::Collect
                         } else {
-                            OperationalAggregateFunctionV1::Max
+                            OperationalAggregateFunctionV1::CollectDistinct
                         };
-                        let result = NamedTypeSchema::Optional(Box::new(
-                            self.named_type(&field_type, field.span)?,
-                        ));
+                        let result = NamedTypeSchema::List {
+                            element: Box::new(self.named_type(base_type, field.span)?),
+                            maximum: PageBound::Literal(u64::from(
+                                MAX_AGGREGATE_DISTINCT_VALUES_V1,
+                            )),
+                        };
                         (function, Some(field_name), result)
                     }
-                    AggregateSemanticIdentityV1::CountPresent
-                    | AggregateSemanticIdentityV1::CountDistinct
-                    | AggregateSemanticIdentityV1::CountDistinctPresent => {
-                        let field = measure
-                            .field
-                            .as_ref()
-                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
-                        let (field_name, field_type) = self.resolve_aggregate_field(
-                            &source,
-                            source_name,
-                            &field.value,
-                            field.span,
-                        )?;
-                        if matches!(field_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
-                            return Err(self.diagnostic(
-                                QueryDiagnosticCode::InvalidType,
-                                field.span,
-                                vec![source.entity.name().to_owned(), field_name],
-                                "count_present/distinct input must be a canonical scalar field",
-                            ));
-                        }
-                        let function = match semantic {
-                            AggregateSemanticIdentityV1::CountPresent => {
-                                OperationalAggregateFunctionV1::CountPresent
-                            }
-                            AggregateSemanticIdentityV1::CountDistinct => {
-                                OperationalAggregateFunctionV1::CountDistinct
-                            }
-                            AggregateSemanticIdentityV1::CountDistinctPresent => {
-                                OperationalAggregateFunctionV1::CountDistinctPresent
-                            }
-                            _ => return Err(self.aggregate_invariant(measure.function.span)),
-                        };
-                        (
-                            function,
-                            Some(field_name),
+                    _ => match semantic {
+                        // `exact_count` has the same public scalar schema as the
+                        // bounded operational count. Its whole-population
+                        // semantics are retained by the exact result-set plan;
+                        // the ordinary operational compiler rejects it before
+                        // member lowering.
+                        AggregateSemanticIdentityV1::Count
+                        | AggregateSemanticIdentityV1::ExactCount => (
+                            OperationalAggregateFunctionV1::Count,
+                            None,
                             NamedTypeSchema::Scalar("u64".to_owned()),
-                        )
-                    }
-                    AggregateSemanticIdentityV1::Mean => {
-                        let field = measure
-                            .field
-                            .as_ref()
-                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
-                        let (field_name, field_type) = self.resolve_aggregate_field(
-                            &source,
-                            source_name,
-                            &field.value,
-                            field.span,
-                        )?;
-                        let total = self.aggregate_sum_type(&field_type, field.span)?;
-                        (
-                            OperationalAggregateFunctionV1::Mean,
-                            Some(field_name),
-                            NamedTypeSchema::Record(vec![
-                                NamedFieldSchema::new("total".to_owned(), total),
-                                NamedFieldSchema::new(
-                                    "count".to_owned(),
-                                    NamedTypeSchema::Scalar("u64".to_owned()),
-                                ),
-                            ]),
-                        )
-                    }
-                    AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
-                        let field = measure
-                            .field
-                            .as_ref()
-                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
-                        let (field_name, field_type) = self.resolve_aggregate_field(
-                            &source,
-                            source_name,
-                            &field.value,
-                            field.span,
-                        )?;
-                        if field_type.tag() != ValueTypeTag::Bool {
-                            return Err(self.diagnostic(
-                                QueryDiagnosticCode::InvalidType,
+                        ),
+                        AggregateSemanticIdentityV1::Sum => {
+                            let field = measure
+                                .field
+                                .as_ref()
+                                .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                            let (field_name, field_type) = self.resolve_aggregate_field(
+                                &source,
+                                source_name,
+                                &field.value,
                                 field.span,
-                                vec![source.entity.name().to_owned(), field_name],
-                                "any/all input must be a required bool field",
-                            ));
+                            )?;
+                            (
+                                OperationalAggregateFunctionV1::Sum,
+                                Some(field_name),
+                                self.aggregate_sum_type(&field_type, field.span)?,
+                            )
                         }
-                        (
-                            if semantic == AggregateSemanticIdentityV1::Any {
-                                OperationalAggregateFunctionV1::Any
+                        AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
+                            let field = measure
+                                .field
+                                .as_ref()
+                                .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                            let (field_name, field_type) = self.resolve_aggregate_field(
+                                &source,
+                                source_name,
+                                &field.value,
+                                field.span,
+                            )?;
+                            let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                            if matches!(base_type.tag(), ValueTypeTag::List | ValueTypeTag::Record)
+                            {
+                                return Err(self.diagnostic(
+                                    QueryDiagnosticCode::InvalidType,
+                                    field.span,
+                                    vec![source.entity.name().to_owned(), field_name],
+                                    "min/max input must be an ordered scalar field",
+                                ));
+                            }
+                            let function = if semantic == AggregateSemanticIdentityV1::Min {
+                                OperationalAggregateFunctionV1::Min
                             } else {
-                                OperationalAggregateFunctionV1::All
-                            },
-                            Some(field_name),
-                            NamedTypeSchema::Scalar("bool".to_owned()),
-                        )
-                    }
+                                OperationalAggregateFunctionV1::Max
+                            };
+                            let result = NamedTypeSchema::Optional(Box::new(
+                                self.named_type(&field_type, field.span)?,
+                            ));
+                            (function, Some(field_name), result)
+                        }
+                        AggregateSemanticIdentityV1::CountPresent
+                        | AggregateSemanticIdentityV1::CountDistinct
+                        | AggregateSemanticIdentityV1::CountDistinctPresent => {
+                            let field = measure
+                                .field
+                                .as_ref()
+                                .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                            let (field_name, field_type) = self.resolve_aggregate_field(
+                                &source,
+                                source_name,
+                                &field.value,
+                                field.span,
+                            )?;
+                            if matches!(field_type.tag(), ValueTypeTag::List | ValueTypeTag::Record)
+                            {
+                                return Err(self.diagnostic(
+                                    QueryDiagnosticCode::InvalidType,
+                                    field.span,
+                                    vec![source.entity.name().to_owned(), field_name],
+                                    "count_present/distinct input must be a canonical scalar field",
+                                ));
+                            }
+                            let function = match semantic {
+                                AggregateSemanticIdentityV1::CountPresent => {
+                                    OperationalAggregateFunctionV1::CountPresent
+                                }
+                                AggregateSemanticIdentityV1::CountDistinct => {
+                                    OperationalAggregateFunctionV1::CountDistinct
+                                }
+                                AggregateSemanticIdentityV1::CountDistinctPresent => {
+                                    OperationalAggregateFunctionV1::CountDistinctPresent
+                                }
+                                _ => return Err(self.aggregate_invariant(measure.function.span)),
+                            };
+                            (
+                                function,
+                                Some(field_name),
+                                NamedTypeSchema::Scalar("u64".to_owned()),
+                            )
+                        }
+                        AggregateSemanticIdentityV1::Mean => {
+                            let field = measure
+                                .field
+                                .as_ref()
+                                .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                            let (field_name, field_type) = self.resolve_aggregate_field(
+                                &source,
+                                source_name,
+                                &field.value,
+                                field.span,
+                            )?;
+                            let total = self.aggregate_sum_type(&field_type, field.span)?;
+                            (
+                                OperationalAggregateFunctionV1::Mean,
+                                Some(field_name),
+                                NamedTypeSchema::Record(vec![
+                                    NamedFieldSchema::new("total".to_owned(), total),
+                                    NamedFieldSchema::new(
+                                        "count".to_owned(),
+                                        NamedTypeSchema::Scalar("u64".to_owned()),
+                                    ),
+                                ]),
+                            )
+                        }
+                        AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
+                            let field = measure
+                                .field
+                                .as_ref()
+                                .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                            let (field_name, field_type) = self.resolve_aggregate_field(
+                                &source,
+                                source_name,
+                                &field.value,
+                                field.span,
+                            )?;
+                            let base_type = field_type.optional_inner().unwrap_or(&field_type);
+                            if base_type.tag() != ValueTypeTag::Bool {
+                                return Err(self.diagnostic(
+                                    QueryDiagnosticCode::InvalidType,
+                                    field.span,
+                                    vec![source.entity.name().to_owned(), field_name],
+                                    "any/all input must be a required bool field",
+                                ));
+                            }
+                            (
+                                if semantic == AggregateSemanticIdentityV1::Any {
+                                    OperationalAggregateFunctionV1::Any
+                                } else {
+                                    OperationalAggregateFunctionV1::All
+                                },
+                                Some(field_name),
+                                NamedTypeSchema::Scalar("bool".to_owned()),
+                            )
+                        }
+                    },
+                };
+                let filter = if let Some(filter_expr) = &measure.filter {
+                    self.resolve_expression(&filter_expr.value, filter_expr.span, source.entity)?;
+                    self.lower_aggregate_predicates(
+                        &filter_expr.value,
+                        filter_expr.span,
+                        source.entity,
+                        source_name,
+                    )?
+                } else {
+                    Vec::new()
                 };
                 result_fields.insert(alias.clone(), result_type.clone());
                 self.push_map(
@@ -1126,13 +1423,79 @@ impl<'a> Resolver<'a> {
                     vec![name.to_owned(), alias.clone()],
                 )?;
                 measures.push(
-                    OperationalAggregateMeasureV1::checked(
+                    OperationalAggregateMeasureV1::checked_with_filter(
                         alias,
                         function,
                         input_field,
+                        filter,
                         result_type,
                     )
                     .ok_or_else(|| self.aggregate_invariant(measure.alias.span))?,
+                );
+            }
+
+            let having = if let Some(having_expr) = &aggregate.having {
+                self.resolve_having_predicates(
+                    &having_expr.value,
+                    having_expr.span,
+                    name,
+                    &result_fields,
+                )?
+            } else {
+                Vec::new()
+            };
+
+            let mut order_by = Vec::with_capacity(aggregate.order_by.len());
+            for term in &aggregate.order_by {
+                let segments = names(&term.path.value);
+                let field_name = match segments.as_slice() {
+                    [field] => field,
+                    [agg_name, field] if agg_name == name => field,
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            term.path.span,
+                            segments,
+                            "aggregate order by field must reference a declared group key or measure",
+                        ));
+                    }
+                };
+                let Some(field_schema) = result_fields.get(field_name) else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        term.path.span,
+                        vec![name.to_owned(), field_name.clone()],
+                        "unknown aggregate order by field",
+                    ));
+                };
+                if matches!(
+                    field_schema,
+                    NamedTypeSchema::List { .. } | NamedTypeSchema::Record(_)
+                ) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidType,
+                        term.path.span,
+                        vec![name.to_owned(), field_name.clone()],
+                        "aggregate order by field must be an ordered scalar or optional scalar",
+                    ));
+                }
+                self.push_map(
+                    term.path.span,
+                    SourceSymbolKind::ResultField,
+                    vec![name.to_owned(), field_name.clone()],
+                )?;
+                let direction = match term.direction.value {
+                    Direction::Ascending => AccessDirection::Forward,
+                    Direction::Descending => AccessDirection::Reverse,
+                };
+                let nulls_first = match term.null_placement.as_ref().map(|p| p.value) {
+                    Some(NullPlacement::First) => true,
+                    Some(NullPlacement::Last) => false,
+                    None => term.direction.value == Direction::Ascending,
+                };
+                order_by.push(
+                    QueryRootOrderTermV1::checked(field_name.clone(), direction, nulls_first)
+                        .ok_or_else(|| self.aggregate_invariant(term.path.span))?,
                 );
             }
 
@@ -1200,6 +1563,15 @@ impl<'a> Resolver<'a> {
                 maximum_groups.clone(),
                 execution_budget,
             )
+            .and_then(|agg| {
+                agg.with_saas_extensions(
+                    parent_binding.clone(),
+                    parent_child_fields,
+                    parent_driver_fields,
+                    having,
+                    order_by,
+                )
+            })
             .ok_or_else(|| self.aggregate_invariant(aggregate.name.span))?;
             self.aggregates.insert(
                 name.to_owned(),
@@ -1207,6 +1579,7 @@ impl<'a> Resolver<'a> {
                     fields: result_fields,
                     grouped: !resolved.group_keys().is_empty(),
                     maximum_groups,
+                    parent_binding,
                 },
             );
             aggregate_symbols.push(resolved);
@@ -1327,12 +1700,13 @@ impl<'a> Resolver<'a> {
         span: Span,
     ) -> Result<NamedTypeSchema, QueryDiagnostics> {
         let widened_precision = u16::from(MAX_DECIMAL_PRECISION) + 1;
-        match value_type.tag() {
+        let base_type = value_type.optional_inner().unwrap_or(value_type);
+        match base_type.tag() {
             ValueTypeTag::I64 | ValueTypeTag::U64 => Ok(NamedTypeSchema::Scalar(format!(
                 "decimal<{widened_precision},0>"
             ))),
             ValueTypeTag::Decimal => {
-                let Some(spec) = value_type.decimal_spec() else {
+                let Some(spec) = base_type.decimal_spec() else {
                     return Err(self.diagnostic(
                         QueryDiagnosticCode::InvalidType,
                         span,
@@ -1345,11 +1719,356 @@ impl<'a> Resolver<'a> {
                     "decimal<{widened_precision},{scale}>"
                 )))
             }
+            ValueTypeTag::Money => Ok(NamedTypeSchema::Scalar(format!(
+                "decimal<{widened_precision},2>"
+            ))),
             _ => Err(self.diagnostic(
                 QueryDiagnosticCode::InvalidType,
                 span,
                 Vec::new(),
                 "sum input must be i64, u64, or decimal; money sums require an explicit currency rule",
+            )),
+        }
+    }
+
+    fn lower_aggregate_predicates(
+        &self,
+        expression: &Expression,
+        span: Span,
+        entity: &EntitySymbol,
+        source_name: &str,
+    ) -> Result<Vec<QueryPredicate>, QueryDiagnostics> {
+        match expression {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } if operator.value == BinaryOperator::And => {
+                let mut predicates =
+                    self.lower_aggregate_predicates(&left.value, left.span, entity, source_name)?;
+                predicates.extend(self.lower_aggregate_predicates(
+                    &right.value,
+                    right.span,
+                    entity,
+                    source_name,
+                )?);
+                Ok(predicates)
+            }
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let Expression::Path(left_path) = &left.value else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        left.span,
+                        Vec::new(),
+                        "aggregate measure filter left operand must be a source field",
+                    ));
+                };
+                let segments = names(left_path);
+                let field_name = match segments.as_slice() {
+                    [field] => field,
+                    [binding, field] if binding == source_name => field,
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            left.span,
+                            segments,
+                            "aggregate measure filter field must belong to the aggregate source",
+                        ));
+                    }
+                };
+                if entity.field(field_name).is_none() {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        left.span,
+                        vec![entity.name().to_owned(), field_name.clone()],
+                        "unknown aggregate filter field",
+                    ));
+                }
+                let op = self.lower_predicate_operator(operator.value, operator.span)?;
+                let rhs = self.lower_predicate_value(&right.value, right.span)?;
+                let pred = QueryPredicate::checked(field_name.clone(), op, rhs)
+                    .ok_or_else(|| self.aggregate_invariant(span))?;
+                Ok(vec![pred])
+            }
+            Expression::Unary { operator, operand } => {
+                let Expression::Path(operand_path) = &operand.value else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        operand.span,
+                        Vec::new(),
+                        "aggregate measure filter unary operand must be a source field",
+                    ));
+                };
+                let segments = names(operand_path);
+                let field_name = match segments.as_slice() {
+                    [field] => field,
+                    [binding, field] if binding == source_name => field,
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            operand.span,
+                            segments,
+                            "aggregate measure filter field must belong to the aggregate source",
+                        ));
+                    }
+                };
+                if entity.field(field_name).is_none() {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        operand.span,
+                        vec![entity.name().to_owned(), field_name.clone()],
+                        "unknown aggregate filter field",
+                    ));
+                }
+                let op = match operator.value {
+                    UnaryOperator::IsNull => QueryPredicateOperator::IsNull,
+                    UnaryOperator::IsNotNull => QueryPredicateOperator::IsNotNull,
+                    UnaryOperator::Exists => QueryPredicateOperator::Exists,
+                };
+                let pred = QueryPredicate::checked(
+                    field_name.clone(),
+                    op,
+                    QueryPredicateValue::Literal(QueryLiteral::Null),
+                )
+                .ok_or_else(|| self.aggregate_invariant(span))?;
+                Ok(vec![pred])
+            }
+            _ => Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                span,
+                Vec::new(),
+                "aggregate measure filter requires conjunctive field comparisons",
+            )),
+        }
+    }
+
+    fn resolve_having_predicates(
+        &mut self,
+        expression: &Expression,
+        span: Span,
+        aggregate_name: &str,
+        result_fields: &BTreeMap<String, NamedTypeSchema>,
+    ) -> Result<Vec<QueryPredicate>, QueryDiagnostics> {
+        match expression {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } if operator.value == BinaryOperator::And => {
+                let mut predicates = self.resolve_having_predicates(
+                    &left.value,
+                    left.span,
+                    aggregate_name,
+                    result_fields,
+                )?;
+                predicates.extend(self.resolve_having_predicates(
+                    &right.value,
+                    right.span,
+                    aggregate_name,
+                    result_fields,
+                )?);
+                Ok(predicates)
+            }
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let Expression::Path(left_path) = &left.value else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        left.span,
+                        Vec::new(),
+                        "having left operand must be a declared group key or measure",
+                    ));
+                };
+                let segments = names(left_path);
+                let field_name = match segments.as_slice() {
+                    [field] => field,
+                    [agg, field] if agg == aggregate_name => field,
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            left.span,
+                            segments,
+                            "having field must belong to the enclosing aggregate",
+                        ));
+                    }
+                };
+                if !result_fields.contains_key(field_name) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        left.span,
+                        vec![aggregate_name.to_owned(), field_name.clone()],
+                        "unknown aggregate having field",
+                    ));
+                }
+                self.push_map(
+                    left.span,
+                    SourceSymbolKind::ResultField,
+                    vec![aggregate_name.to_owned(), field_name.clone()],
+                )?;
+                if let Expression::Parameter(param) = &right.value {
+                    let pname = param.value.as_str();
+                    if !self.parameters.contains_key(pname) {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::UnknownSymbol,
+                            param.span,
+                            vec![pname.to_owned()],
+                            "unknown query parameter",
+                        ));
+                    }
+                    self.push_map(
+                        param.span,
+                        SourceSymbolKind::Parameter,
+                        vec![pname.to_owned()],
+                    )?;
+                } else if let Expression::Path(rpath) = &right.value {
+                    self.resolve_value_path(rpath, right.span, None)?;
+                }
+                let op = self.lower_predicate_operator(operator.value, operator.span)?;
+                let rhs = self.lower_predicate_value(&right.value, right.span)?;
+                let pred = QueryPredicate::checked(field_name.clone(), op, rhs)
+                    .ok_or_else(|| self.aggregate_invariant(span))?;
+                Ok(vec![pred])
+            }
+            Expression::Unary { operator, operand } => {
+                let Expression::Path(operand_path) = &operand.value else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        operand.span,
+                        Vec::new(),
+                        "having unary operand must be a declared group key or measure",
+                    ));
+                };
+                let segments = names(operand_path);
+                let field_name = match segments.as_slice() {
+                    [field] => field,
+                    [agg, field] if agg == aggregate_name => field,
+                    _ => {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            operand.span,
+                            segments,
+                            "having field must belong to the enclosing aggregate",
+                        ));
+                    }
+                };
+                if !result_fields.contains_key(field_name) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::UnknownSymbol,
+                        operand.span,
+                        vec![aggregate_name.to_owned(), field_name.clone()],
+                        "unknown aggregate having field",
+                    ));
+                }
+                self.push_map(
+                    operand.span,
+                    SourceSymbolKind::ResultField,
+                    vec![aggregate_name.to_owned(), field_name.clone()],
+                )?;
+                let op = match operator.value {
+                    UnaryOperator::IsNull => QueryPredicateOperator::IsNull,
+                    UnaryOperator::IsNotNull => QueryPredicateOperator::IsNotNull,
+                    UnaryOperator::Exists => QueryPredicateOperator::Exists,
+                };
+                let pred = QueryPredicate::checked(
+                    field_name.clone(),
+                    op,
+                    QueryPredicateValue::Literal(QueryLiteral::Null),
+                )
+                .ok_or_else(|| self.aggregate_invariant(span))?;
+                Ok(vec![pred])
+            }
+            _ => Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                span,
+                Vec::new(),
+                "having clause requires conjunctive group-key or measure comparisons",
+            )),
+        }
+    }
+
+    fn lower_predicate_operator(
+        &self,
+        operator: BinaryOperator,
+        span: Span,
+    ) -> Result<QueryPredicateOperator, QueryDiagnostics> {
+        match operator {
+            BinaryOperator::Equal => Ok(QueryPredicateOperator::Equal),
+            BinaryOperator::NotEqual => Ok(QueryPredicateOperator::NotEqual),
+            BinaryOperator::Less => Ok(QueryPredicateOperator::Less),
+            BinaryOperator::LessEqual => Ok(QueryPredicateOperator::LessEqual),
+            BinaryOperator::Greater => Ok(QueryPredicateOperator::Greater),
+            BinaryOperator::GreaterEqual => Ok(QueryPredicateOperator::GreaterEqual),
+            BinaryOperator::In => Ok(QueryPredicateOperator::In),
+            BinaryOperator::Prefix => Ok(QueryPredicateOperator::Prefix),
+            _ => Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                span,
+                Vec::new(),
+                "unsupported operator in aggregate predicate",
+            )),
+        }
+    }
+
+    fn lower_predicate_value(
+        &self,
+        expression: &Expression,
+        span: Span,
+    ) -> Result<QueryPredicateValue, QueryDiagnostics> {
+        match expression {
+            Expression::Parameter(parameter) => Ok(QueryPredicateValue::Parameter(
+                parameter.value.as_str().to_owned(),
+            )),
+            Expression::Literal(literal) => Ok(QueryPredicateValue::Literal(match literal {
+                Literal::Unsigned(value) => QueryLiteral::Unsigned(value.clone()),
+                Literal::String(value) => QueryLiteral::String(value.clone()),
+                Literal::Boolean(value) => QueryLiteral::Boolean(*value),
+                Literal::Null => QueryLiteral::Null,
+            })),
+            Expression::Path(path) => {
+                let segments = names(path);
+                let [first, second] = segments.as_slice() else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        span,
+                        segments,
+                        "aggregate predicate right operand must be a parameter, literal, or enum variant",
+                    ));
+                };
+                if let Some(enumeration) = self.catalog.enumeration(first)
+                    && let Some(variant) = enumeration.variant(second)
+                {
+                    return Ok(QueryPredicateValue::EnumVariant {
+                        enumeration: first.clone(),
+                        variant: second.clone(),
+                        type_id: enumeration.internal_id(),
+                        variant_id: variant,
+                    });
+                }
+                if self.bindings.contains_key(first) {
+                    return Ok(QueryPredicateValue::BindingField {
+                        binding: first.clone(),
+                        field: second.clone(),
+                    });
+                }
+                Err(self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    span,
+                    segments,
+                    "unknown enum variant or binding field in aggregate predicate",
+                ))
+            }
+            _ => Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                span,
+                Vec::new(),
+                "aggregate predicate right operand must be a parameter, literal, or enum variant",
             )),
         }
     }
@@ -1969,7 +2688,25 @@ impl<'a> Resolver<'a> {
                 }
             };
             if let Some(aggregate) = self.aggregates.get(binding_name).cloned() {
-                if let Some(alias) = &field.alias
+                if let Some(expected_parent) = &aggregate.parent_binding {
+                    if context.map(|parent| parent.symbol.name.as_str())
+                        != Some(expected_parent.as_str())
+                    {
+                        return Err(self.diagnostic(
+                            QueryDiagnosticCode::InvalidPath,
+                            field.source.span,
+                            vec![expected_parent.clone(), binding_name.clone()],
+                            "per-parent aggregate must be nested directly under its declared parent binding",
+                        ));
+                    }
+                } else if context.is_some() {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        field.source.span,
+                        vec![binding_name.clone()],
+                        "top-level aggregate cannot be nested under an entity binding without per <parent>",
+                    ));
+                } else if let Some(alias) = &field.alias
                     && alias.value.as_str() != binding_name
                 {
                     return Err(self.diagnostic(
@@ -2168,14 +2905,6 @@ impl<'a> Resolver<'a> {
                     reveal.span,
                     names(&reveal.value),
                     "aggregate results cannot declare secret stored-field outputs",
-                ));
-            }
-            if let Some(alias) = &field.alias {
-                return Err(self.diagnostic(
-                    QueryDiagnosticCode::InvalidPath,
-                    alias.span,
-                    vec![aggregate_name.to_owned()],
-                    "operational aggregate field aliases are not available in v1",
                 ));
             }
             if field.nested.is_some() || field.source.value.0.len() != 1 {
@@ -2465,6 +3194,89 @@ impl<'a> Resolver<'a> {
     }
 }
 
+fn collect_parent_join_fields(
+    expression: &Expression,
+    source_name: &str,
+    item_name: &str,
+    parent_name: &str,
+    child_fields: &mut Vec<String>,
+    driver_fields: &mut Vec<String>,
+) {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::And => {
+            collect_parent_join_fields(
+                &left.value,
+                source_name,
+                item_name,
+                parent_name,
+                child_fields,
+                driver_fields,
+            );
+            collect_parent_join_fields(
+                &right.value,
+                source_name,
+                item_name,
+                parent_name,
+                child_fields,
+                driver_fields,
+            );
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::Equal => {
+            if let (Expression::Path(lpath), Expression::Path(rpath)) = (&left.value, &right.value)
+            {
+                let lsegs = names(lpath);
+                let rsegs = names(rpath);
+                let child_left = match lsegs.as_slice() {
+                    [f] => Some(f),
+                    [b, f] if b == source_name => Some(f),
+                    _ => None,
+                };
+                let parent_right = match rsegs.as_slice() {
+                    [b, f] if b == item_name || b == parent_name => Some(f),
+                    _ => None,
+                };
+                if let (Some(cf), Some(pf)) = (child_left, parent_right) {
+                    child_fields.push(cf.clone());
+                    driver_fields.push(pf.clone());
+                } else {
+                    let parent_left = match lsegs.as_slice() {
+                        [b, f] if b == item_name || b == parent_name => Some(f),
+                        _ => None,
+                    };
+                    let child_right = match rsegs.as_slice() {
+                        [f] => Some(f),
+                        [b, f] if b == source_name => Some(f),
+                        _ => None,
+                    };
+                    if let (Some(pf), Some(cf)) = (parent_left, child_right) {
+                        child_fields.push(cf.clone());
+                        driver_fields.push(pf.clone());
+                    }
+                }
+            }
+        }
+        Expression::PresenceGuard { predicate, .. } => {
+            collect_parent_join_fields(
+                &predicate.value,
+                source_name,
+                item_name,
+                parent_name,
+                child_fields,
+                driver_fields,
+            );
+        }
+        _ => {}
+    }
+}
+
 fn names(path: &Path) -> Vec<String> {
     path.0
         .iter()
@@ -2635,6 +3447,68 @@ fn canonical_surface(
                         .maximum_arithmetic_operations()
                         .to_be_bytes(),
                 );
+            }
+        }
+        let has_saas_extensions = aggregates.iter().any(|aggregate| {
+            aggregate.parent_binding().is_some()
+                || !aggregate.having().is_empty()
+                || !aggregate.order_by().is_empty()
+                || aggregate
+                    .group_keys()
+                    .iter()
+                    .any(|key| key.time_bucket().is_some() || key.field() != key.source_field())
+                || aggregate
+                    .measures()
+                    .iter()
+                    .any(|measure| !measure.filter().is_empty())
+        });
+        if has_saas_extensions {
+            bytes.extend_from_slice(b"SAAS-AGGREGATE-EXTENSIONS-V1\0");
+            push_count(&mut bytes, aggregates.len())?;
+            for aggregate in aggregates {
+                match aggregate.parent_binding() {
+                    Some(parent) => {
+                        bytes.push(1);
+                        push_bytes(&mut bytes, parent.as_bytes())?;
+                        push_count(&mut bytes, aggregate.parent_child_fields().len())?;
+                        for (cf, pf) in aggregate
+                            .parent_child_fields()
+                            .iter()
+                            .zip(aggregate.parent_driver_fields())
+                        {
+                            push_bytes(&mut bytes, cf.as_bytes())?;
+                            push_bytes(&mut bytes, pf.as_bytes())?;
+                        }
+                    }
+                    None => bytes.push(0),
+                }
+                push_count(&mut bytes, aggregate.group_keys().len())?;
+                for key in aggregate.group_keys() {
+                    push_bytes(&mut bytes, key.source_field().as_bytes())?;
+                    bytes.push(key.time_bucket().map_or(0, |b| b.durable_tag()));
+                }
+                push_count(&mut bytes, aggregate.measures().len())?;
+                for measure in aggregate.measures() {
+                    push_count(&mut bytes, measure.filter().len())?;
+                    for pred in measure.filter() {
+                        push_bytes(&mut bytes, pred.field().as_bytes())?;
+                        bytes.push(pred.operator() as u8);
+                    }
+                }
+                push_count(&mut bytes, aggregate.having().len())?;
+                for pred in aggregate.having() {
+                    push_bytes(&mut bytes, pred.field().as_bytes())?;
+                    bytes.push(pred.operator() as u8);
+                }
+                push_count(&mut bytes, aggregate.order_by().len())?;
+                for term in aggregate.order_by() {
+                    push_bytes(&mut bytes, term.field().as_bytes())?;
+                    bytes.push(match term.direction() {
+                        AccessDirection::Forward => 1,
+                        AccessDirection::Reverse => 2,
+                    });
+                    bytes.push(u8::from(term.nulls_first()));
+                }
             }
         }
     }

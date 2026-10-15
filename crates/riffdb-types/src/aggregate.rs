@@ -45,6 +45,7 @@ impl AggregateSemanticIdentityV1 {
     pub fn from_source_spelling(spelling: &str) -> Option<Self> {
         aggregate_semantic_registry_v1()
             .iter()
+            .chain(SAAS_OPERATIONAL_AGGREGATE_REGISTRY_V1.iter())
             .find(|descriptor| descriptor.source_spelling == spelling)
             .map(|descriptor| descriptor.identity)
     }
@@ -117,18 +118,18 @@ impl AggregateSemanticSetV1 {
 }
 
 const fn semantic_bit(identity: AggregateSemanticIdentityV1) -> u16 {
-    1 << match identity {
-        AggregateSemanticIdentityV1::Count => 0,
-        AggregateSemanticIdentityV1::ExactCount => 1,
-        AggregateSemanticIdentityV1::Sum => 2,
-        AggregateSemanticIdentityV1::Min => 3,
-        AggregateSemanticIdentityV1::Max => 4,
-        AggregateSemanticIdentityV1::CountPresent => 5,
-        AggregateSemanticIdentityV1::CountDistinct => 6,
-        AggregateSemanticIdentityV1::CountDistinctPresent => 7,
-        AggregateSemanticIdentityV1::Mean => 8,
-        AggregateSemanticIdentityV1::Any => 9,
-        AggregateSemanticIdentityV1::All => 10,
+    match identity {
+        AggregateSemanticIdentityV1::Count => 1 << 0,
+        AggregateSemanticIdentityV1::ExactCount => 1 << 1,
+        AggregateSemanticIdentityV1::Sum => 1 << 2,
+        AggregateSemanticIdentityV1::Min => 1 << 3,
+        AggregateSemanticIdentityV1::Max => 1 << 4,
+        AggregateSemanticIdentityV1::CountPresent => 1 << 5,
+        AggregateSemanticIdentityV1::CountDistinct => 1 << 6,
+        AggregateSemanticIdentityV1::CountDistinctPresent => 1 << 7,
+        AggregateSemanticIdentityV1::Mean => 1 << 8,
+        AggregateSemanticIdentityV1::Any => 1 << 9,
+        AggregateSemanticIdentityV1::All => 1 << 10,
     }
 }
 
@@ -192,6 +193,8 @@ pub enum AggregateResultSchemaV1 {
     ExactMeanV1,
     /// Required Boolean scalar.
     Bool,
+    /// Bounded list of the compiler-resolved non-optional input scalar type.
+    BoundedInputScalarList,
 }
 
 /// Mergeable partial-state family admitted by an exact provider.
@@ -668,6 +671,141 @@ const AGGREGATE_SEMANTIC_REGISTRY_V1: [AggregateSemanticDescriptorV1; 11] = [
         operational_ir_tag: Some(10),
         eligibility: BOUNDED_AND_PROVIDER,
         budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+];
+
+const BOUNDED_FOLD_ONLY: AggregateEligibilityV1 = AggregateEligibilityV1 {
+    ordinary_bounded_fold: true,
+    grouped_bounded_fold: true,
+    whole_result_provider: false,
+};
+
+const SAAS_OPERATIONAL_AGGREGATE_REGISTRY_V1: [AggregateSemanticDescriptorV1; 9] = [
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Min,
+        source_spelling: "median",
+        input_class: AggregateInputClassV1::OrderedScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(11),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Min,
+        source_spelling: "p90",
+        input_class: AggregateInputClassV1::OrderedScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(12),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Min,
+        source_spelling: "p95",
+        input_class: AggregateInputClassV1::OrderedScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(13),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Min,
+        source_spelling: "p99",
+        input_class: AggregateInputClassV1::OrderedScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(14),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Min,
+        source_spelling: "first",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(15),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Max,
+        source_spelling: "last",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::Absent,
+        result_schema: AggregateResultSchemaV1::OptionalInputScalar,
+        partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
+        arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
+        operational_ir_tag: Some(16),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Sum,
+        source_spelling: "stddev",
+        input_class: AggregateInputClassV1::ExactNumericField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::ExactNumericZero,
+        result_schema: AggregateResultSchemaV1::ExactDecimalAtInputScale,
+        partial_state: AggregatePartialStateV1::CheckedI128AtInputScale,
+        arithmetic: AggregateArithmeticV1::CheckedI128,
+        operational_ir_tag: Some(17),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::CountPresent,
+        source_spelling: "collect",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::UnsignedZero,
+        result_schema: AggregateResultSchemaV1::BoundedInputScalarList,
+        partial_state: AggregatePartialStateV1::BoundedCanonicalSet,
+        arithmetic: AggregateArithmeticV1::CanonicalDistinctSet,
+        operational_ir_tag: Some(18),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_DISTINCT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::CountDistinctPresent,
+        source_spelling: "collect_distinct",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::UnsignedZero,
+        result_schema: AggregateResultSchemaV1::BoundedInputScalarList,
+        partial_state: AggregatePartialStateV1::BoundedCanonicalSet,
+        arithmetic: AggregateArithmeticV1::CanonicalDistinctSet,
+        operational_ir_tag: Some(19),
+        eligibility: BOUNDED_FOLD_ONLY,
+        budgets: EXACT_DISTINCT_BUDGETS,
         policy: EXACT_POLICY,
     },
 ];

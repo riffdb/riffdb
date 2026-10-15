@@ -13,19 +13,19 @@ requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
 packages: [WP-855, WP-856, WP-857, WP-858]
 obligations:
   - id: OBL-0309-1
-    owner: WP-855
+    package: WP-855
     summary: Optional numeric, money, and boolean fields and per-measure where filters compile and execute in operational aggregates
     proof: optional_money_and_filtered_aggregate_measures_execute
   - id: OBL-0309-2
-    owner: WP-856
+    package: WP-856
     summary: Grouped aggregates support UTC temporal bucketing, having predicates, order by over measures and keys, and top-N take truncation
     proof: grouped_aggregate_temporal_buckets_having_and_order_by_execute
   - id: OBL-0309-3
-    owner: WP-857
+    package: WP-857
     summary: Quantile, positional, stddev, and bounded collection measures and per-parent nested rollups over expanded bindings compile and execute
     proof: saas_quantiles_collections_and_per_parent_rollups_execute
   - id: OBL-0309-4
-    owner: WP-858
+    package: WP-858
     summary: End-to-end SaaS dashboard queries combining all six aggregation capabilities execute across compiler, module, executor, and service boundaries
     proof: saas_complete_aggregations_compile_and_execute_end_to_end
 review_triggers:

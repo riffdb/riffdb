@@ -16,7 +16,8 @@ pub use riffdb_types::{
 use crate::{
     AuthorizationEntityAccess, MAX_QUERY_ARTIFACT_BYTES, NamedTypeSchema, PageBound,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QueryAccessProgramV1, ResolvedQueryV1,
+    QUERY_IR_VERSION_OPERATIONAL_V1, QueryAccessProgramV1, QueryPredicate, QueryRootOrderTermV1,
+    ResolvedQueryV1,
 };
 
 const FAMILY_MAGIC: &[u8] = b"RIFFDB-OPERATIONAL-QUERY-FAMILY\0";
@@ -33,17 +34,51 @@ pub const fn source_aggregate_semantic_identity(
     match function {
         AggregateFunction::Count => AggregateSemanticIdentityV1::Count,
         AggregateFunction::ExactCount => AggregateSemanticIdentityV1::ExactCount,
-        AggregateFunction::Sum => AggregateSemanticIdentityV1::Sum,
-        AggregateFunction::Min => AggregateSemanticIdentityV1::Min,
-        AggregateFunction::Max => AggregateSemanticIdentityV1::Max,
-        AggregateFunction::CountPresent => AggregateSemanticIdentityV1::CountPresent,
+        AggregateFunction::Sum | AggregateFunction::Stddev => AggregateSemanticIdentityV1::Sum,
+        AggregateFunction::Min
+        | AggregateFunction::Median
+        | AggregateFunction::P90
+        | AggregateFunction::P95
+        | AggregateFunction::P99
+        | AggregateFunction::First => AggregateSemanticIdentityV1::Min,
+        AggregateFunction::Max | AggregateFunction::Last => AggregateSemanticIdentityV1::Max,
+        AggregateFunction::CountPresent | AggregateFunction::Collect => {
+            AggregateSemanticIdentityV1::CountPresent
+        }
         AggregateFunction::CountDistinct => AggregateSemanticIdentityV1::CountDistinct,
-        AggregateFunction::CountDistinctPresent => {
+        AggregateFunction::CountDistinctPresent | AggregateFunction::CollectDistinct => {
             AggregateSemanticIdentityV1::CountDistinctPresent
         }
         AggregateFunction::Mean => AggregateSemanticIdentityV1::Mean,
         AggregateFunction::Any => AggregateSemanticIdentityV1::Any,
         AggregateFunction::All => AggregateSemanticIdentityV1::All,
+    }
+}
+
+/// Deterministic UTC temporal truncation bucket for `group by`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationalAggregateTimeBucketV1 {
+    /// Truncate timestamp to UTC hour start (`YYYY-MM-DDTHH:00:00Z`).
+    Hour,
+    /// Truncate timestamp or date to UTC day start (`YYYY-MM-DDT00:00:00Z` or `Date`).
+    Day,
+    /// Truncate timestamp or date to ISO-8601 Monday UTC week start.
+    Week,
+    /// Truncate timestamp or date to first day of UTC month (`YYYY-MM-01`).
+    Month,
+    /// Truncate timestamp or date to first day of UTC year (`YYYY-01-01`).
+    Year,
+}
+
+impl OperationalAggregateTimeBucketV1 {
+    pub(crate) const fn durable_tag(self) -> u8 {
+        match self {
+            Self::Hour => 1,
+            Self::Day => 2,
+            Self::Week => 3,
+            Self::Month => 4,
+            Self::Year => 5,
+        }
     }
 }
 
@@ -70,6 +105,24 @@ pub enum OperationalAggregateFunctionV1 {
     Any,
     /// Boolean conjunction.
     All,
+    /// Exact nearest-rank 50th order statistic over non-null ordered scalars.
+    Median,
+    /// Exact nearest-rank 90th order statistic over non-null ordered scalars.
+    P90,
+    /// Exact nearest-rank 95th order statistic over non-null ordered scalars.
+    P95,
+    /// Exact nearest-rank 99th order statistic over non-null ordered scalars.
+    P99,
+    /// First non-null scalar in source order.
+    First,
+    /// Last non-null scalar in source order.
+    Last,
+    /// Exact fixed-scale population standard deviation.
+    Stddev,
+    /// Bounded list of non-null scalar values in source order.
+    Collect,
+    /// Bounded list of distinct non-null scalar values in canonical order.
+    CollectDistinct,
 }
 
 impl OperationalAggregateFunctionV1 {
@@ -78,12 +131,16 @@ impl OperationalAggregateFunctionV1 {
     pub const fn semantic_identity(self) -> AggregateSemanticIdentityV1 {
         match self {
             Self::Count => AggregateSemanticIdentityV1::Count,
-            Self::Sum => AggregateSemanticIdentityV1::Sum,
-            Self::Min => AggregateSemanticIdentityV1::Min,
-            Self::Max => AggregateSemanticIdentityV1::Max,
-            Self::CountPresent => AggregateSemanticIdentityV1::CountPresent,
+            Self::Sum | Self::Stddev => AggregateSemanticIdentityV1::Sum,
+            Self::Min | Self::Median | Self::P90 | Self::P95 | Self::P99 | Self::First => {
+                AggregateSemanticIdentityV1::Min
+            }
+            Self::Max | Self::Last => AggregateSemanticIdentityV1::Max,
+            Self::CountPresent | Self::Collect => AggregateSemanticIdentityV1::CountPresent,
             Self::CountDistinct => AggregateSemanticIdentityV1::CountDistinct,
-            Self::CountDistinctPresent => AggregateSemanticIdentityV1::CountDistinctPresent,
+            Self::CountDistinctPresent | Self::CollectDistinct => {
+                AggregateSemanticIdentityV1::CountDistinctPresent
+            }
             Self::Mean => AggregateSemanticIdentityV1::Mean,
             Self::Any => AggregateSemanticIdentityV1::Any,
             Self::All => AggregateSemanticIdentityV1::All,
@@ -91,10 +148,22 @@ impl OperationalAggregateFunctionV1 {
     }
 
     pub(crate) fn durable_tag(self) -> u8 {
-        self.semantic_identity()
-            .descriptor()
-            .operational_ir_tag()
-            .expect("every operational aggregate has its frozen v1 tag")
+        match self {
+            Self::Median => 11,
+            Self::P90 => 12,
+            Self::P95 => 13,
+            Self::P99 => 14,
+            Self::First => 15,
+            Self::Last => 16,
+            Self::Stddev => 17,
+            Self::Collect => 18,
+            Self::CollectDistinct => 19,
+            _ => self
+                .semantic_identity()
+                .descriptor()
+                .operational_ir_tag()
+                .expect("every operational aggregate has its frozen v1 tag"),
+        }
     }
 }
 
@@ -102,14 +171,28 @@ impl OperationalAggregateFunctionV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationalAggregateGroupKeyV1 {
     field: String,
+    source_field: String,
+    time_bucket: Option<OperationalAggregateTimeBucketV1>,
     value_type: NamedTypeSchema,
 }
 
 impl OperationalAggregateGroupKeyV1 {
-    /// Exact source field name.
+    /// Output field name in the aggregate result record.
     #[must_use]
     pub fn field(&self) -> &str {
         &self.field
+    }
+
+    /// Underlying source entity field name.
+    #[must_use]
+    pub fn source_field(&self) -> &str {
+        &self.source_field
+    }
+
+    /// Optional deterministic UTC temporal truncation bucket.
+    #[must_use]
+    pub const fn time_bucket(&self) -> Option<OperationalAggregateTimeBucketV1> {
+        self.time_bucket
     }
 
     /// Name-addressed result type.
@@ -121,7 +204,28 @@ impl OperationalAggregateGroupKeyV1 {
     #[doc(hidden)]
     #[must_use]
     pub fn checked(field: String, value_type: NamedTypeSchema) -> Option<Self> {
-        (!field.is_empty()).then_some(Self { field, value_type })
+        (!field.is_empty()).then_some(Self {
+            source_field: field.clone(),
+            field,
+            time_bucket: None,
+            value_type,
+        })
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked_with_bucket_and_alias(
+        field: String,
+        source_field: String,
+        time_bucket: Option<OperationalAggregateTimeBucketV1>,
+        value_type: NamedTypeSchema,
+    ) -> Option<Self> {
+        (!field.is_empty() && !source_field.is_empty()).then_some(Self {
+            field,
+            source_field,
+            time_bucket,
+            value_type,
+        })
     }
 }
 
@@ -131,6 +235,7 @@ pub struct OperationalAggregateMeasureV1 {
     alias: String,
     function: OperationalAggregateFunctionV1,
     input_field: Option<String>,
+    filter: Vec<QueryPredicate>,
     result_type: NamedTypeSchema,
 }
 
@@ -153,6 +258,12 @@ impl OperationalAggregateMeasureV1 {
         self.input_field.as_deref()
     }
 
+    /// Optional conjunctive per-measure row filter (`where <predicate>`).
+    #[must_use]
+    pub fn filter(&self) -> &[QueryPredicate] {
+        &self.filter
+    }
+
     /// Name-addressed result type.
     #[must_use]
     pub const fn result_type(&self) -> &NamedTypeSchema {
@@ -165,6 +276,18 @@ impl OperationalAggregateMeasureV1 {
         alias: String,
         function: OperationalAggregateFunctionV1,
         input_field: Option<String>,
+        result_type: NamedTypeSchema,
+    ) -> Option<Self> {
+        Self::checked_with_filter(alias, function, input_field, Vec::new(), result_type)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked_with_filter(
+        alias: String,
+        function: OperationalAggregateFunctionV1,
+        input_field: Option<String>,
+        filter: Vec<QueryPredicate>,
         result_type: NamedTypeSchema,
     ) -> Option<Self> {
         let input_is_valid = match function.semantic_identity().descriptor().input_class() {
@@ -180,6 +303,7 @@ impl OperationalAggregateMeasureV1 {
             alias,
             function,
             input_field,
+            filter,
             result_type,
         })
     }
@@ -191,8 +315,13 @@ pub struct OperationalAggregateV1 {
     name: String,
     source_binding: String,
     source_entity: String,
+    parent_binding: Option<String>,
+    parent_child_fields: Vec<String>,
+    parent_driver_fields: Vec<String>,
     group_keys: Vec<OperationalAggregateGroupKeyV1>,
     measures: Vec<OperationalAggregateMeasureV1>,
+    having: Vec<QueryPredicate>,
+    order_by: Vec<QueryRootOrderTermV1>,
     maximum_groups: PageBound,
     execution_budget: AggregateExecutionBudgetV1,
 }
@@ -267,6 +396,24 @@ impl OperationalAggregateV1 {
         &self.source_entity
     }
 
+    /// Optional parent binding when this aggregate is a per-parent rollup (`per <parent>`).
+    #[must_use]
+    pub fn parent_binding(&self) -> Option<&str> {
+        self.parent_binding.as_deref()
+    }
+
+    /// Child-entity join fields pairing with `parent_driver_fields()` for per-parent rollups.
+    #[must_use]
+    pub fn parent_child_fields(&self) -> &[String] {
+        &self.parent_child_fields
+    }
+
+    /// Parent-entity join fields pairing with `parent_child_fields()` for per-parent rollups.
+    #[must_use]
+    pub fn parent_driver_fields(&self) -> &[String] {
+        &self.parent_driver_fields
+    }
+
     /// Grouping keys in declaration/result order.
     #[must_use]
     pub fn group_keys(&self) -> &[OperationalAggregateGroupKeyV1] {
@@ -277,6 +424,18 @@ impl OperationalAggregateV1 {
     #[must_use]
     pub fn measures(&self) -> &[OperationalAggregateMeasureV1] {
         &self.measures
+    }
+
+    /// Post-aggregation group predicates (`having <predicate>`).
+    #[must_use]
+    pub fn having(&self) -> &[QueryPredicate] {
+        &self.having
+    }
+
+    /// Post-aggregation group ordering (`order by ...`).
+    #[must_use]
+    pub fn order_by(&self) -> &[QueryRootOrderTermV1] {
+        &self.order_by
     }
 
     /// Compiler-proven maximum returned group count.
@@ -327,11 +486,40 @@ impl OperationalAggregateV1 {
             name,
             source_binding,
             source_entity,
+            parent_binding: None,
+            parent_child_fields: Vec::new(),
+            parent_driver_fields: Vec::new(),
             group_keys,
             measures,
+            having: Vec::new(),
+            order_by: Vec::new(),
             maximum_groups,
             execution_budget,
         })
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_saas_extensions(
+        mut self,
+        parent_binding: Option<String>,
+        parent_child_fields: Vec<String>,
+        parent_driver_fields: Vec<String>,
+        having: Vec<QueryPredicate>,
+        order_by: Vec<QueryRootOrderTermV1>,
+    ) -> Option<Self> {
+        if parent_child_fields.len() != parent_driver_fields.len() {
+            return None;
+        }
+        if parent_binding.is_some() && parent_child_fields.is_empty() {
+            return None;
+        }
+        self.parent_binding = parent_binding;
+        self.parent_child_fields = parent_child_fields;
+        self.parent_driver_fields = parent_driver_fields;
+        self.having = having;
+        self.order_by = order_by;
+        Some(self)
     }
 }
 
@@ -644,22 +832,29 @@ riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateV1 {
         name,
         source_binding,
         source_entity,
+        parent_binding,
+        parent_child_fields,
+        parent_driver_fields,
         group_keys,
         measures,
+        having,
+        order_by,
         maximum_groups
     ],
     inline: [execution_budget]
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateGroupKeyV1 {
-    owned: [field, value_type],
-    inline: []
+    owned: [field, source_field, value_type],
+    inline: [time_bucket]
 });
 
 riffdb_types::inspect_owned_capacity_struct_v1!(OperationalAggregateMeasureV1 {
-    owned: [alias, input_field, result_type],
+    owned: [alias, input_field, filter, result_type],
     inline: [function]
 });
+
+riffdb_types::inspect_owned_capacity_copy_v1!(OperationalAggregateTimeBucketV1);
 
 riffdb_types::inspect_owned_capacity_copy_v1!(OperationalAggregateFunctionV1);
 

@@ -31219,11 +31219,11 @@ work_packages:
   human_review_triggers:
   - Money sums mix distinct currencies or lose fixed-scale precision.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-008, QRY-001, QRY-002]
+    evidence: cargo test -p riffdb-query-executor optional_money_and_filtered_aggregate_measures_execute --all-features
+    decision: Enabled sum and mean on optional numeric and fixed-currency money/optional-money fields, any and all on optional bool fields, and per-measure where filter predicates across syntax, IR, compiler, and executor.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31252,11 +31252,11 @@ work_packages:
   human_review_triggers:
   - Group state exceeds MAX_AGGREGATE_DISTINCT_VALUES_V1 without failing closed.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor grouped_aggregate_temporal_buckets_having_and_order_by_execute --all-features
+    decision: Added deterministic UTC temporal bucketing (hour, day, week, month, year), group-key/selection aliases, having predicates, order by over measures and keys, and top-N take truncation.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31285,11 +31285,11 @@ work_packages:
   human_review_triggers:
   - Any statistical measure uses floating-point arithmetic or unbounded collection buffers.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor saas_quantiles_collections_and_per_parent_rollups_execute --all-features
+    decision: Added exact nearest-rank quantiles (median/p50, p90, p95, p99), positional selectors (first, last), fixed-scale stddev via u128::isqrt, bounded collections (collect, collect_distinct), and per-parent nested rollups.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31317,11 +31317,11 @@ work_packages:
   human_review_triggers:
   - Handbook documents unimplemented or approximate aggregate behavior.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor saas_complete_aggregations_compile_and_execute_end_to_end --all-features
+    decision: Verified all 6 SaaS aggregation capabilities end-to-end and updated docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

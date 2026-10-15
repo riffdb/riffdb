@@ -1,10 +1,10 @@
 use std::fmt::Write;
 
 use crate::{
-    AggregateFunction, BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality,
-    Direction, Document, Expression, FieldSelection, Literal, NullPlacement, Path,
-    ProjectedFreshness, Selection, TokenizedMatchKind, TokenizedRanking, TypeReference,
-    UnaryOperator,
+    AggregateFunction, AggregateTimeBucket, BinaryOperator, CandidateSetExpression,
+    CandidateSource, Cardinality, Direction, Document, Expression, FieldSelection, Literal,
+    NullPlacement, Path, ProjectedFreshness, Selection, TokenizedMatchKind, TokenizedRanking,
+    TypeReference, UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL source spelling for the document version.
@@ -257,14 +257,47 @@ pub fn format_query(document: &Document) -> String {
         output.push('\n');
     }
     for aggregate in &document.body.aggregates {
-        writeln!(
+        write!(
             output,
-            "    aggregate {} from {} {{",
+            "    aggregate {} from {}",
             aggregate.name.value.as_str(),
             aggregate.source.value.as_str()
         )
         .expect("String writes cannot fail");
-        if !aggregate.group_by.is_empty() {
+        if let Some(parent) = &aggregate.parent {
+            write!(output, " per {}", parent.value.as_str()).expect("String writes cannot fail");
+        }
+        output.push_str(" {\n");
+        let trailing_take = aggregate.having.is_some() || !aggregate.order_by.is_empty();
+        if !aggregate.group_keys.is_empty() {
+            output.push_str("        group by ");
+            for (index, key) in aggregate.group_keys.iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                if let Some(bucket) = &key.bucket {
+                    let bucket_name = match bucket.value {
+                        AggregateTimeBucket::Hour => "hour",
+                        AggregateTimeBucket::Day => "day",
+                        AggregateTimeBucket::Week => "week",
+                        AggregateTimeBucket::Month => "month",
+                        AggregateTimeBucket::Year => "year",
+                    };
+                    write!(output, "{bucket_name}({})", format_path(&key.path.value))
+                        .expect("String writes cannot fail");
+                } else {
+                    output.push_str(&format_path(&key.path.value));
+                }
+                if let Some(alias) = &key.alias {
+                    write!(output, " as {}", alias.value.as_str())
+                        .expect("String writes cannot fail");
+                }
+            }
+            if !trailing_take && let Some(limit) = &aggregate.group_limit {
+                write!(output, " take {}", limit.value).expect("String writes cannot fail");
+            }
+            output.push('\n');
+        } else if !aggregate.group_by.is_empty() {
             output.push_str("        group by ");
             for (index, field) in aggregate.group_by.iter().enumerate() {
                 if index > 0 {
@@ -272,7 +305,7 @@ pub fn format_query(document: &Document) -> String {
                 }
                 output.push_str(&format_path(&field.value));
             }
-            if let Some(limit) = &aggregate.group_limit {
+            if !trailing_take && let Some(limit) = &aggregate.group_limit {
                 write!(output, " take {}", limit.value).expect("String writes cannot fail");
             }
             output.push('\n');
@@ -291,12 +324,58 @@ pub fn format_query(document: &Document) -> String {
                 AggregateFunction::Mean => "mean(",
                 AggregateFunction::Any => "any(",
                 AggregateFunction::All => "all(",
+                AggregateFunction::Median => "median(",
+                AggregateFunction::P90 => "p90(",
+                AggregateFunction::P95 => "p95(",
+                AggregateFunction::P99 => "p99(",
+                AggregateFunction::First => "first(",
+                AggregateFunction::Last => "last(",
+                AggregateFunction::Stddev => "stddev(",
+                AggregateFunction::Collect => "collect(",
+                AggregateFunction::CollectDistinct => "collect_distinct(",
             });
             if let Some(field) = &measure.field {
                 output.push_str(&format_path(&field.value));
             }
-            writeln!(output, ") as {}", measure.alias.value.as_str())
+            output.push(')');
+            if let Some(filter) = &measure.filter {
+                write!(output, " where {}", format_expression(&filter.value, 0))
+                    .expect("String writes cannot fail");
+            }
+            writeln!(output, " as {}", measure.alias.value.as_str())
                 .expect("String writes cannot fail");
+        }
+        if let Some(having) = &aggregate.having {
+            writeln!(
+                output,
+                "        having {}",
+                format_expression(&having.value, 0)
+            )
+            .expect("String writes cannot fail");
+        }
+        if !aggregate.order_by.is_empty() {
+            output.push_str("        order by ");
+            for (index, term) in aggregate.order_by.iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&format_path(&term.path.value));
+                output.push(' ');
+                output.push_str(match term.direction.value {
+                    Direction::Ascending => "asc",
+                    Direction::Descending => "desc",
+                });
+                if let Some(placement) = &term.null_placement {
+                    output.push_str(match placement.value {
+                        NullPlacement::First => " nulls first",
+                        NullPlacement::Last => " nulls last",
+                    });
+                }
+            }
+            output.push('\n');
+        }
+        if trailing_take && let Some(limit) = &aggregate.group_limit {
+            writeln!(output, "        take {}", limit.value).expect("String writes cannot fail");
         }
         output.push_str("    }\n\n");
     }

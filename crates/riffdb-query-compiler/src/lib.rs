@@ -3199,7 +3199,11 @@ impl<'a> Planner<'a> {
             .into_values()
             .map(AuthAccumulator::finish)
             .collect::<Result<Vec<_>, _>>()?;
-        cost.add_aggregates(surface.aggregates(), self.catalog)?;
+        cost.add_aggregates(
+            surface.aggregates(),
+            self.catalog,
+            &self.binding_maximum_rows,
+        )?;
         let cost = cost.finish(steps.len())?;
         let name = self
             .document
@@ -4116,16 +4120,25 @@ impl QueryCostAccumulator {
         &mut self,
         aggregates: &[riffdb_query_ir::OperationalAggregateV1],
         catalog: &SymbolicCatalog,
+        binding_maximum_rows: &BTreeMap<&str, u64>,
     ) -> Result<(), PlannerDiagnostics> {
         for aggregate in aggregates {
             let entity = catalog
                 .entity(aggregate.source_entity())
                 .ok_or_else(internal)?;
-            let groups = match aggregate.maximum_groups() {
+            let base_groups = match aggregate.maximum_groups() {
                 riffdb_query_ir::PageBound::Literal(value) => *value,
                 riffdb_query_ir::PageBound::Parameter(_) => riffdb_query_ir::max_query_page_take(),
                 riffdb_query_ir::PageBound::BoundedParameter { maximum, .. } => *maximum,
             };
+            let parent_factor = if let Some(parent_binding) = aggregate.parent_binding() {
+                *binding_maximum_rows
+                    .get(parent_binding)
+                    .ok_or_else(internal)?
+            } else {
+                1
+            };
+            let groups = checked_cost_product(base_groups, parent_factor, self.primary_span)?;
             let cells = u64::try_from(aggregate.group_keys().len() + aggregate.measures().len())
                 .map_err(|_| internal())?;
             self.projected_values = checked_cost_add(
@@ -4135,10 +4148,24 @@ impl QueryCostAccumulator {
             )?;
 
             let mut group_bytes = 192_u64;
+            let max_list_items = u64::from(
+                aggregate
+                    .execution_budget()
+                    .maximum_distinct_values_per_measure(),
+            )
+            .min(
+                *binding_maximum_rows
+                    .get(aggregate.source_binding())
+                    .unwrap_or(&u64::from(
+                        aggregate
+                            .execution_budget()
+                            .maximum_distinct_values_per_measure(),
+                    )),
+            );
             for key in aggregate.group_keys() {
                 group_bytes = checked_cost_add(
                     group_bytes,
-                    aggregate_field_bytes(entity, key.field())?,
+                    aggregate_field_bytes(entity, key.source_field())?,
                     self.primary_span,
                 )?;
             }
@@ -4156,6 +4183,11 @@ impl QueryCostAccumulator {
                     AggregateResultSchemaV1::OptionalInputScalar => {
                         aggregate_field_bytes(entity, measure.input_field().ok_or_else(internal)?)?
                     }
+                    AggregateResultSchemaV1::BoundedInputScalarList => checked_cost_product(
+                        max_list_items,
+                        aggregate_field_bytes(entity, measure.input_field().ok_or_else(internal)?)?,
+                        self.primary_span,
+                    )?,
                 };
                 group_bytes = checked_cost_add(
                     group_bytes,
@@ -5429,9 +5461,8 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
         collect_selected(selection, &mut output);
     }
     for aggregate in &document.body.aggregates {
-        let fields = output
-            .entry(aggregate.source.value.as_str().to_owned())
-            .or_default();
+        let source = aggregate.source.value.as_str();
+        let fields = output.entry(source.to_owned()).or_default();
         fields.extend(
             aggregate
                 .group_by
@@ -5447,12 +5478,52 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
                 .filter_map(|field| path_field(&field.value))
                 .map(str::to_owned),
         );
+        for measure in &aggregate.measures {
+            if let Some(filter) = &measure.filter {
+                collect_aggregate_filter_source_fields(&filter.value, source, fields);
+            }
+        }
     }
     output
 }
 
+fn collect_aggregate_filter_source_fields(
+    expression: &Expression,
+    source_binding: &str,
+    fields: &mut BTreeSet<String>,
+) {
+    match expression {
+        Expression::Path(path) => match path.0.as_slice() {
+            [field] => {
+                fields.insert(field.value.as_str().to_owned());
+            }
+            [binding, field] if binding.value.as_str() == source_binding => {
+                fields.insert(field.value.as_str().to_owned());
+            }
+            _ => {}
+        },
+        Expression::Binary { left, right, .. } => {
+            collect_aggregate_filter_source_fields(&left.value, source_binding, fields);
+            collect_aggregate_filter_source_fields(&right.value, source_binding, fields);
+        }
+        Expression::PresenceGuard { predicate, .. } => {
+            collect_aggregate_filter_source_fields(&predicate.value, source_binding, fields);
+        }
+        Expression::Unary { operand, .. } => {
+            collect_aggregate_filter_source_fields(&operand.value, source_binding, fields);
+        }
+        Expression::Parameter(_) | Expression::Literal(_) => {}
+    }
+}
+
 fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
     let mut output = BTreeMap::new();
+    let known_bindings = document
+        .body
+        .bindings
+        .iter()
+        .map(|binding| binding.name.value.as_str())
+        .collect::<BTreeSet<_>>();
     for binding in &document.body.bindings {
         let expansion = binding.expansion.as_ref().map(|expansion| {
             (
@@ -5461,6 +5532,20 @@ fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> 
             )
         });
         collect_dependency_fields(&binding.predicate.value, expansion, &mut output);
+    }
+    for aggregate in &document.body.aggregates {
+        let source_binding = aggregate.source.value.as_str();
+        let mut agg_deps = BTreeMap::new();
+        for measure in &aggregate.measures {
+            if let Some(filter) = &measure.filter {
+                collect_dependency_fields(&filter.value, None, &mut agg_deps);
+            }
+        }
+        for (binding, fields) in agg_deps {
+            if binding != source_binding && known_bindings.contains(binding.as_str()) {
+                output.entry(binding).or_default().extend(fields);
+            }
+        }
     }
     output
 }

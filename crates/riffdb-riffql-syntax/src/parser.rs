@@ -1,13 +1,13 @@
 use crate::lexer::{Token, TokenKind, lex};
 use crate::{
-    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding,
-    CandidateBinding, CandidateSetExpression, CandidateSource, Cardinality, DiagnosticCode,
-    Direction, Document, ExpansionDriver, Expression, FieldSelection, Identifier, Literal,
-    MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
-    MAX_CANDIDATE_SOURCES, MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS,
-    MAX_PROJECTED_LAG_MS, MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic,
-    ParseDiagnostics, Path, ProjectedFreshness, ProjectedSource, QueryBody,
-    RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    AggregateBinding, AggregateFunction, AggregateGroupKey, AggregateMeasure, AggregateTimeBucket,
+    BinaryOperator, Binding, CandidateBinding, CandidateSetExpression, CandidateSource,
+    Cardinality, DiagnosticCode, Direction, Document, ExpansionDriver, Expression, FieldSelection,
+    Identifier, Literal, MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES,
+    MAX_BINDINGS, MAX_CANDIDATE_SOURCES, MAX_COLLECTION_ITEMS, MAX_NESTING,
+    MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS, MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm,
+    Parameter, ParseDiagnostic, ParseDiagnostics, Path, ProjectedFreshness, ProjectedSource,
+    QueryBody, RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
     RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
     RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
@@ -943,9 +943,15 @@ impl Parser {
         let name = self.identifier()?;
         self.expect_word("from")?;
         let source = self.identifier()?;
+        let parent = if self.take_word("per").is_some() {
+            Some(self.identifier()?)
+        } else {
+            None
+        };
         self.enter_nesting()?;
         self.expect(TokenKind::LeftBrace)?;
         let mut group_by = Vec::new();
+        let mut group_keys = Vec::new();
         let mut group_limit = None;
         if self.take_word("group").is_some() {
             self.expect_word("by")?;
@@ -957,42 +963,23 @@ impl Parser {
                         Some("reduce grouping dimensions or split the operation"),
                     ));
                 }
-                group_by.push(self.spanned_path()?);
+                let key = self.aggregate_group_key()?;
+                group_by.push(key.path.clone());
+                group_keys.push(key);
                 if self.take(TokenKind::Comma).is_none() {
                     break;
                 }
             }
             if self.take_word("take").is_some() {
-                let limit_lit = self.literal()?;
-                let limit_span = limit_lit.span;
-                let Literal::Unsigned(raw) = limit_lit.value else {
-                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
-                        DiagnosticCode::UnexpectedToken,
-                        limit_span,
-                        "group by take requires a positive integer literal",
-                        Some("use a positive integer literal such as `group by status take 16`"),
-                    )));
-                };
-                let value = raw
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|&value| value >= 1)
-                    .ok_or_else(|| {
-                        ParseDiagnostics::one(ParseDiagnostic::new(
-                            DiagnosticCode::InvalidToken,
-                            limit_span,
-                            "group by take must be a positive 64-bit integer literal",
-                            Some("use a positive integer literal between 1 and 256"),
-                        ))
-                    })?;
-                group_limit = Some(Spanned {
-                    value,
-                    span: limit_span,
-                });
+                group_limit = Some(self.aggregate_group_limit()?);
             }
         }
         let mut measures = Vec::new();
-        while !self.peek(TokenKind::RightBrace) {
+        while !self.peek(TokenKind::RightBrace)
+            && !self.peek_word("having")
+            && !self.peek_word("order")
+            && !self.peek_word("take")
+        {
             if measures.len() == MAX_AGGREGATE_MEASURES {
                 return Err(self.error(
                     DiagnosticCode::TooManyItems,
@@ -1010,15 +997,131 @@ impl Parser {
                 Some("add count(), sum(field), min(field), or max(field)"),
             ));
         }
+        let having = if self.take_word("having").is_some() {
+            Some(self.expression(0)?)
+        } else {
+            None
+        };
+        let mut order_by = Vec::new();
+        if self.take_word("order").is_some() {
+            self.expect_word("by")?;
+            loop {
+                if order_by.len() == MAX_COLLECTION_ITEMS {
+                    return Err(self.too_many());
+                }
+                order_by.push(self.order_term()?);
+                if self.take(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        if self.take_word("take").is_some() {
+            if group_limit.is_some() {
+                return Err(self.error(
+                    DiagnosticCode::UnexpectedToken,
+                    "duplicate take clause in aggregate declaration",
+                    Some("specify take either on group by or after measures/order by, not both"),
+                ));
+            }
+            group_limit = Some(self.aggregate_group_limit()?);
+        }
         self.expect(TokenKind::RightBrace)?;
         self.leave_nesting();
         self.node()?;
         Ok(AggregateBinding {
             name,
             source,
+            parent,
             group_by,
+            group_keys,
             group_limit,
             measures,
+            having,
+            order_by,
+        })
+    }
+
+    fn aggregate_group_key(&mut self) -> Result<AggregateGroupKey, ParseDiagnostics> {
+        let bucket = match (
+            self.tokens.get(self.index),
+            self.tokens.get(self.index + 1).map(|token| &token.kind),
+        ) {
+            (
+                Some(Token {
+                    kind: TokenKind::Ident(word),
+                    span,
+                }),
+                Some(TokenKind::LeftParen),
+            ) => {
+                let kind = match word.as_str() {
+                    "hour" => Some(AggregateTimeBucket::Hour),
+                    "day" => Some(AggregateTimeBucket::Day),
+                    "week" => Some(AggregateTimeBucket::Week),
+                    "month" => Some(AggregateTimeBucket::Month),
+                    "year" => Some(AggregateTimeBucket::Year),
+                    _ => None,
+                };
+                if let Some(bucket_kind) = kind {
+                    let bucket_span = *span;
+                    self.index += 1;
+                    Some(Spanned {
+                        value: bucket_kind,
+                        span: bucket_span,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let path = if bucket.is_some() {
+            self.enter_nesting()?;
+            self.expect(TokenKind::LeftParen)?;
+            let inner = self.spanned_path()?;
+            self.expect(TokenKind::RightParen)?;
+            self.leave_nesting();
+            inner
+        } else {
+            self.spanned_path()?
+        };
+        let alias = if self.take_word("as").is_some() {
+            Some(self.identifier()?)
+        } else {
+            None
+        };
+        Ok(AggregateGroupKey {
+            bucket,
+            path,
+            alias,
+        })
+    }
+
+    fn aggregate_group_limit(&mut self) -> Result<Spanned<u64>, ParseDiagnostics> {
+        let limit_lit = self.literal()?;
+        let limit_span = limit_lit.span;
+        let Literal::Unsigned(raw) = limit_lit.value else {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnexpectedToken,
+                limit_span,
+                "group by take requires a positive integer literal",
+                Some("use a positive integer literal such as `group by status take 16`"),
+            )));
+        };
+        let value = raw
+            .parse::<u64>()
+            .ok()
+            .filter(|&value| value >= 1)
+            .ok_or_else(|| {
+                ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    limit_span,
+                    "group by take must be a positive 64-bit integer literal",
+                    Some("use a positive integer literal between 1 and 256"),
+                ))
+            })?;
+        Ok(Spanned {
+            value,
+            span: limit_span,
         })
     }
 
@@ -1044,6 +1147,21 @@ impl Parser {
             TokenKind::Ident(value) if value == "mean" => (AggregateFunction::Mean, true),
             TokenKind::Ident(value) if value == "any" => (AggregateFunction::Any, true),
             TokenKind::Ident(value) if value == "all" => (AggregateFunction::All, true),
+            TokenKind::Ident(value) if value == "median" || value == "p50" => {
+                (AggregateFunction::Median, true)
+            }
+            TokenKind::Ident(value) if value == "p90" => (AggregateFunction::P90, true),
+            TokenKind::Ident(value) if value == "p95" => (AggregateFunction::P95, true),
+            TokenKind::Ident(value) if value == "p99" => (AggregateFunction::P99, true),
+            TokenKind::Ident(value) if value == "first" => (AggregateFunction::First, true),
+            TokenKind::Ident(value) if value == "last" => (AggregateFunction::Last, true),
+            TokenKind::Ident(value) if value == "stddev" || value == "variance" => {
+                (AggregateFunction::Stddev, true)
+            }
+            TokenKind::Ident(value) if value == "collect" => (AggregateFunction::Collect, true),
+            TokenKind::Ident(value) if value == "collect_distinct" => {
+                (AggregateFunction::CollectDistinct, true)
+            }
             _ => {
                 return Err(ParseDiagnostics::one(ParseDiagnostic::new(
                     DiagnosticCode::UnexpectedToken,
@@ -1060,6 +1178,11 @@ impl Parser {
             None
         };
         self.expect(TokenKind::RightParen)?;
+        let filter = if self.take_word("where").is_some() {
+            Some(self.expression(0)?)
+        } else {
+            None
+        };
         self.expect_word("as")?;
         let alias = self.identifier()?;
         self.node()?;
@@ -1069,6 +1192,7 @@ impl Parser {
                 span: token.span,
             },
             field,
+            filter,
             alias,
         })
     }
@@ -1959,17 +2083,34 @@ fn body_uses_exact_result_set(body: &QueryBody) -> bool {
 
 fn body_uses_exact_aggregate_core(body: &QueryBody) -> bool {
     body.aggregates.iter().any(|aggregate| {
-        aggregate.measures.iter().any(|measure| {
-            matches!(
-                measure.function.value,
-                AggregateFunction::CountPresent
-                    | AggregateFunction::CountDistinct
-                    | AggregateFunction::CountDistinctPresent
-                    | AggregateFunction::Mean
-                    | AggregateFunction::Any
-                    | AggregateFunction::All
-            )
-        })
+        aggregate.parent.is_some()
+            || aggregate.having.is_some()
+            || !aggregate.order_by.is_empty()
+            || aggregate
+                .group_keys
+                .iter()
+                .any(|key| key.bucket.is_some() || key.alias.is_some())
+            || aggregate.measures.iter().any(|measure| {
+                measure.filter.is_some()
+                    || matches!(
+                        measure.function.value,
+                        AggregateFunction::CountPresent
+                            | AggregateFunction::CountDistinct
+                            | AggregateFunction::CountDistinctPresent
+                            | AggregateFunction::Mean
+                            | AggregateFunction::Any
+                            | AggregateFunction::All
+                            | AggregateFunction::Median
+                            | AggregateFunction::P90
+                            | AggregateFunction::P95
+                            | AggregateFunction::P99
+                            | AggregateFunction::First
+                            | AggregateFunction::Last
+                            | AggregateFunction::Stddev
+                            | AggregateFunction::Collect
+                            | AggregateFunction::CollectDistinct
+                    )
+            })
     })
 }
 

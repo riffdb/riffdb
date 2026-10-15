@@ -248,6 +248,32 @@ pub struct CandidateSource {
     pub span: Span,
 }
 
+/// Deterministic UTC temporal truncation bucket for `group by`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AggregateTimeBucket {
+    /// Truncate timestamp to UTC hour start (`YYYY-MM-DDTHH:00:00Z`).
+    Hour,
+    /// Truncate timestamp or date to UTC day start (`YYYY-MM-DDT00:00:00Z` or `Date`).
+    Day,
+    /// Truncate timestamp or date to ISO-8601 Monday UTC week start.
+    Week,
+    /// Truncate timestamp or date to first day of UTC month (`YYYY-MM-01`).
+    Month,
+    /// Truncate timestamp or date to first day of UTC year (`YYYY-01-01`).
+    Year,
+}
+
+/// One declared grouping dimension in an `aggregate` block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AggregateGroupKey {
+    /// Optional deterministic UTC temporal bucket function (`hour`, `day`, `week`, `month`, `year`).
+    pub bucket: Option<Spanned<AggregateTimeBucket>>,
+    /// Source field path being grouped.
+    pub path: Spanned<Path>,
+    /// Optional output field alias (`as <ident>`).
+    pub alias: Option<Spanned<Identifier>>,
+}
+
 /// One bounded aggregate result derived from a prior collection binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AggregateBinding {
@@ -255,12 +281,20 @@ pub struct AggregateBinding {
     pub name: Spanned<Identifier>,
     /// Earlier collection binding being folded.
     pub source: Spanned<Identifier>,
+    /// Optional parent binding for per-parent rollup (`aggregate <name> from <child> per <parent>`).
+    pub parent: Option<Spanned<Identifier>>,
     /// Declared grouping fields, empty for one whole-set result.
     pub group_by: Vec<Spanned<Path>>,
+    /// Declared grouping keys with optional UTC temporal bucket and alias.
+    pub group_keys: Vec<AggregateGroupKey>,
     /// Optional explicit upper bound on distinct group combinations.
     pub group_limit: Option<Spanned<u64>>,
     /// Closed exact measures.
     pub measures: Vec<AggregateMeasure>,
+    /// Optional post-aggregation group filter (`having <predicate>`).
+    pub having: Option<Spanned<Expression>>,
+    /// Optional post-aggregation group ordering (`order by ...`).
+    pub order_by: Vec<OrderTerm>,
 }
 
 /// One named exact aggregate measure.
@@ -268,8 +302,10 @@ pub struct AggregateBinding {
 pub struct AggregateMeasure {
     /// Closed aggregate function.
     pub function: Spanned<AggregateFunction>,
-    /// Input field for `sum`, `min`, and `max`; absent for `count`.
+    /// Input field for field-bearing functions; absent for `count` and `exact_count`.
     pub field: Option<Spanned<Path>>,
+    /// Optional per-measure row filter (`where <predicate>`).
+    pub filter: Option<Spanned<Expression>>,
     /// Returned field name.
     pub alias: Spanned<Identifier>,
 }
@@ -295,10 +331,28 @@ pub enum AggregateFunction {
     CountDistinctPresent,
     /// Exact mergeable total and contributing-row count.
     Mean,
-    /// Boolean disjunction over a required field.
+    /// Boolean disjunction over a boolean field.
     Any,
-    /// Boolean conjunction over a required field.
+    /// Boolean conjunction over a boolean field.
     All,
+    /// Exact nearest-rank 50th order statistic over non-null ordered scalars.
+    Median,
+    /// Exact nearest-rank 90th order statistic over non-null ordered scalars.
+    P90,
+    /// Exact nearest-rank 95th order statistic over non-null ordered scalars.
+    P95,
+    /// Exact nearest-rank 99th order statistic over non-null ordered scalars.
+    P99,
+    /// First non-null scalar in source order.
+    First,
+    /// Last non-null scalar in source order.
+    Last,
+    /// Exact fixed-scale population standard deviation over non-null numeric fields.
+    Stddev,
+    /// Bounded list of non-null scalar values in source order.
+    Collect,
+    /// Bounded list of distinct non-null scalar values in canonical order.
+    CollectDistinct,
 }
 
 /// Expected binding cardinality.
