@@ -78,7 +78,7 @@ observed="$(find evaluations/agent-application-alpha/runs -name events.jsonl -pr
           and .refusal_class == null
         )) | length)
       }' | jq --argjson transcripts "$transcripts" '. + {transcripts: $transcripts}')"
-jq -e --argjson observed "$observed" '
+if ! jq -e --argjson observed "$observed" '
   .schema == "riffdb-operator-refusal-ranking/v1"
   and .campaign_inventory == $observed
   and [.next_operator_candidates[].rank] == [1, 2, 3]
@@ -87,7 +87,13 @@ jq -e --argjson observed "$observed" '
   and all(.next_operator_candidates[];
       .classified_observations == 0
       and (.refusal_class | keys | sort) == ["cardinality", "operator", "partition"])
-' "$ranking" >/dev/null
+' "$ranking" >/dev/null; then
+    echo "operator refusal ranking inventory or candidate policy mismatch: $ranking" >&2
+    jq -c --argjson observed "$observed" \
+        '{recorded_inventory: .campaign_inventory, observed_inventory: $observed}' \
+        "$ranking" >&2
+    exit 1
+fi
 
 ./scripts/check-version-topology
 ./scripts/refused_shapes_are_recorded_as_anonymized_refusal_classes

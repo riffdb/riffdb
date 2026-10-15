@@ -13,8 +13,27 @@ The evidence checker is preparatory acceptance code.
 WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
 has started. Native recovery and the scaffold test correction are committed as
 `4ae2070f`. Merge `f176342b` adds seven main commits through `13342b206`, including
-money/decimal, authoring, scaffold and MCP fixes. New shipping binaries and
-complete CI for that combined source remain pending.
+money/decimal, authoring, scaffold and MCP fixes. Merge `6f2a60b7` also brings in
+main's ADR-0305 implementation through `a2939370`. New shipping binaries and
+complete CI for that latest combined source remain pending.
+
+At the preceding integrated revision `aee503eb`, all 7,136 workspace tests and
+workspace Clippy pass. Full CI then stops in operator acceptance: the retained
+ranking inventory describes 23 transcripts while the current corpus has 29.
+The failure occurs before that check's binding execution, so neither full CI
+nor the remaining independent checks are qualified by the workspace result.
+The existing native full recovery matrix passes at that revision.
+Regenerating the inventory from the retained corpus resolves the closest
+operator-acceptance check, including its original binding execution. Its
+classification policy and candidate ordering remain unchanged, and a stale
+inventory now produces an explicit diagnostic while still refusing acceptance.
+
+Ordinary shipping binaries at `aee503eb` also pass the saved primary-loss
+component: original acknowledgement replay and all 65,536 tickets reconcile
+at **39.736167 seconds**, the first write finishes at **45.115389 seconds**,
+and complete replay and reconciliation finish at **48.056256 seconds**.
+Backup creation takes **16.352934 seconds** before loss. These results precede
+the latest two main commits and do not prove the real scheduled restore.
 
 A discovery sweep on the earlier `c148a8bf` base ran all independent checks.
 Of 7,131 workspace tests, 7,129 pass and two fail; 25 remain skipped under the
@@ -81,8 +100,9 @@ the independent fixes, before either measured campaign starts.
 | --- | --- | --- |
 | Native recovery admission | Storage implementation | Committed; closest memory and remote correlated loopback/crash tests pass. Include the correction in new combined-source CI. |
 | Scaffold checksum expectation | CLI implementation | Committed; `scaffold::tests::scaffold_is_deterministic_and_compiled` passes. Include it in new combined-source CI. |
-| Integrated acceptance and CI | Integration | Validate the B4 evidence integration and latest main merge; run complete `scripts/ci-all`, including generated surfaces and language/package checks. |
-| Current shipping restore and accounting | Runtime qualification | Saved restore and a 300-second normal window pass on pre-merge binaries. Freeze new shipping binaries, then recheck restore and loaded native accounting/latency. |
+| Operator ranking inventory | Acceptance maintenance | Correct the stale corpus inventory while preserving strict equality, classification policy and candidate ordering; return directly to operator acceptance. |
+| Integrated acceptance and CI | Integration | All 7,136 workspace tests pass at the preceding integrated revision. Check independent CI tail failures, then run complete `scripts/ci-all` on the latest combined source. |
+| Current shipping restore and accounting | Runtime qualification | Saved restore passes in 48.056256 seconds at the preceding integrated revision; a 300-second normal baseline passes on earlier native-fix binaries. Freeze latest shipping binaries and recheck affected components. |
 | Final raw qualification join | Controller/evidence | Assembler implemented; five producer-to-checker synthetic tests and all 415 lifecycle tests pass. Join actual seven-fault evidence, 19 predicates and twelve frozen prerequisites after the real controller exits. |
 | Starting free space | Host operations | Reclaimed 29.059 GiB of idle temporary output; prove the unchanged 134-GiB starting gate after final artifact freezing and cache cleanup. |
 | Eight-hour then 24-hour qualification | Campaign owner | All preceding gates pass; execute the actual schedule, close and merge WP-825, then run WP-826 against its merged dependency. |
