@@ -1,11 +1,11 @@
 ---
 adr: "0274"
 title: Shared Immutable Declared Outcome Values
-status: proposed
+status: accepted
 tier: surface
 date: 2026-10-06
-accepted: null
-acceptance: null
+accepted: "2026-10-14"
+acceptance: "maintainer, in session, 2026-10-14: Keep going (ADR-0274 implementation already merged in ad7efb995)"
 requires: []
 amends: []
 supersedes: []

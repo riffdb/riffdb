@@ -308,7 +308,7 @@ record with no front matter.
 | [0271](0271-fair-bounded-native-source-reclamation-admission.md) | Fair Bounded Native Source-Reclamation Admission | Accepted | guarantee |
 | [0272](0272-source-progress-aware-maintenance-rechecks.md) | Source Progress Aware Maintenance Rechecks | Accepted | guarantee |
 | [0273](0273-bounded-native-outbox-completion-groups.md) | Bounded Native Outbox Completion Groups | Accepted | guarantee |
-| [0274](0274-shared-immutable-declared-outcome-values.md) | Shared Immutable Declared Outcome Values | Proposed | surface |
+| [0274](0274-shared-immutable-declared-outcome-values.md) | Shared Immutable Declared Outcome Values | Accepted | surface |
 | [0275](0275-retention-independent-bounded-startup-eligibility.md) | Retention Independent Bounded Startup Eligibility | Accepted | guarantee |
 | [0276](0276-registry-completion-writer-compatibility-edge.md) | Registry Completion Writer Compatibility Edge | Accepted | guarantee |
 | [0277](0277-native-offline-upgrade-free-space-admission.md) | Native Offline Upgrade Free Space Admission | Accepted | guarantee |
