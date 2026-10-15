@@ -5312,6 +5312,18 @@ work_packages:
       encoded records retain their byte ceilings, concrete derivation is paid once per attempt,
       storage work is linear in the sealed set, and no path scans data or history.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - ./scripts/correlated-index-work-qualification --self-test
+    - ./scripts/correlated-index-work-qualification
+    - cargo +1.97.0 clippy -p riffdb-testkit -p riffdb-testkit-server --all-targets --all-features -- -D warnings
+    - ./scripts/check-allowed-paths --wp WP-684
+    - ./scripts/check-requirement-coverage
+    - ./scripts/handbook check
+    decisions_taken:
+    - Proved OBL-0212-1 (correlated_index_work_matches_independent_authoritative_model), OBL-0212-2 (correlated_index_work_model_rejects_target_divergence), OBL-0212-3 (correlated_index_work_redb_crash_reopen_is_complete_or_absent), OBL-0212-4 (correlated_index_work_remote_redb_loopback_matches_model), and OBL-0212-5 (scripts/correlated-index-work-qualification) across 1-, 9-, 19-, and 100-element correlated index batches with canonical 256-target stopped-snapshot redb page comparison.
 - id: WP-474
   name: Sealed entity post-image materialization
   depends_on: [WP-060, WP-065, WP-367, WP-458, WP-459, WP-472]
