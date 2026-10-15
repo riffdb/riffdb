@@ -210,11 +210,13 @@ class CampaignRuntime:
 
     def start_server(self):
         directory = self.root/("server-"+str(self.server_number).zfill(3)); self.server_number += 1
-        child = self.launch("server", [str(self.artifacts/"riffdbd"), "--config", str(self.root/"server.toml")], directory)
+        flight = directory/"telemetry-flight.ndjson"
+        child = self.launch("server", [str(self.artifacts/"riffdbd"), "--config", str(self.root/"server.toml"),
+                                       "--telemetry-flight-recorder", str(flight)], directory)
         output = WorkerOutput(child, directory, "server")
         self.outputs["server"] = output
         self.server_log = directory/"server.stderr"
-        self.server_logs.append(dict(path=self.server_log, incarnation=self.incarnation, killed=False))
+        self.server_logs.append(dict(path=self.server_log, flight=flight, incarnation=self.incarnation, killed=False))
         return output
 
     def wait_recovery_admission(self, deadline_ns):

@@ -25,16 +25,17 @@ use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyC
 use riffdb_projection::ResultSetEpochProofV1;
 use riffdb_query_ir::{
     AccessDirection, CandidateBindingV1, CoveredResultLayoutV1, NamedTypeSchema,
-    OperationalAggregateV1, PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryLiteral, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
-    candidate_source_binding_name, evaluate_candidate_set_v1,
+    OperationalAggregateFunctionV1, OperationalAggregateTimeBucketV1, OperationalAggregateV1,
+    PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
+    QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1,
+    QueryRowLimit, candidate_source_binding_name, evaluate_candidate_set_v1,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
     AggregateSemanticIdentityV1, ApplicationRoleHash, CanonicalList, CanonicalValue,
-    CommitSequence, CompiledLongPatternV1, ContractLineage, EmbeddingMetadata, EntityKey,
+    CommitSequence, CompiledLongPatternV1, ContractLineage, Date, EmbeddingMetadata, EntityKey,
     EntityTypeId, FieldId, PartitionKey, PartitionKeyHash, ProjectionGeneration,
-    ProjectionProviderDescriptorHash, QueryCostVectorV1, canonical_value_encoded_len,
+    ProjectionProviderDescriptorHash, QueryCostVectorV1, Timestamp, canonical_value_encoded_len,
     decode_canonical_value, encode_canonical_value, hash_partition_key,
     hash_partition_set_observation,
 };
@@ -440,6 +441,7 @@ pub struct QueryRow {
     entity: Arc<str>,
     fields: BTreeMap<Arc<str>, CanonicalValue>,
     nested: BTreeMap<Arc<str>, Vec<QueryRow>>,
+    nested_aggregates: BTreeMap<Arc<str>, Vec<QueryAggregateRow>>,
 }
 
 /// Move-only components of one projected query row, including nested expansion rows.
@@ -491,6 +493,7 @@ impl QueryRow {
             entity,
             fields,
             nested: BTreeMap::new(),
+            nested_aggregates: BTreeMap::new(),
         })
     }
 
@@ -526,6 +529,20 @@ impl QueryRow {
             .map(|(name, rows)| (name.as_ref(), rows.as_slice()))
     }
 
+    /// Resolves one compiler-sealed per-parent ungrouped aggregate record.
+    #[must_use]
+    pub fn nested_aggregate(&self, name: &str) -> Option<&QueryAggregateRow> {
+        self.nested_aggregates
+            .get(name)
+            .and_then(|rows| rows.first())
+    }
+
+    /// Resolves compiler-sealed per-parent aggregate rows (single record or grouped rows).
+    #[must_use]
+    pub fn nested_aggregate_rows(&self, name: &str) -> Option<&[QueryAggregateRow]> {
+        self.nested_aggregates.get(name).map(Vec::as_slice)
+    }
+
     /// Consumes the row into entity name and fields.
     #[must_use]
     pub fn into_parts(self) -> QueryRowParts {
@@ -540,6 +557,20 @@ impl QueryRow {
         if name.is_empty()
             || rows.len() > MAX_QUERY_SCANNED_ROWS as usize
             || self.nested.insert(name, rows).is_some()
+        {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        Ok(())
+    }
+
+    fn attach_nested_aggregate(
+        &mut self,
+        name: Arc<str>,
+        rows: Vec<QueryAggregateRow>,
+    ) -> Result<(), QueryExecutionError> {
+        if name.is_empty()
+            || rows.len() > MAX_QUERY_SCANNED_ROWS as usize
+            || self.nested_aggregates.insert(name, rows).is_some()
         {
             return Err(QueryExecutionError::InvalidProgram);
         }
@@ -561,6 +592,7 @@ impl QueryRow {
         let mut projected =
             Self::from_shared(self.entity, fields).ok_or(QueryExecutionError::BoundExceeded)?;
         projected.nested = self.nested;
+        projected.nested_aggregates = self.nested_aggregates;
         Ok(projected)
     }
 
@@ -581,6 +613,7 @@ impl QueryRow {
         let mut projected = Self::from_shared(Arc::clone(&self.entity), fields)
             .ok_or(QueryExecutionError::BoundExceeded)?;
         projected.nested = self.nested.clone();
+        projected.nested_aggregates = self.nested_aggregates.clone();
         Ok(projected)
     }
 }
@@ -895,10 +928,7 @@ pub fn bound_index_range_schedule_v1(
                         leading.push(expanded);
                     }
                 }
-                if consumed + 1 != predicates.len() {
-                    return Err(QueryExecutionError::InvalidProgram);
-                }
-                return encode_prefix_schedule(schema, leading, *direction);
+                consumed += 1;
             }
             QueryPredicateOperator::IsNull => {
                 for values in &mut leading {
@@ -2032,6 +2062,7 @@ impl CoveredQueryResultV1 {
                 entity: Arc::clone(&self.entity),
                 fields: self.fields.iter().cloned().zip(values).collect(),
                 nested: BTreeMap::new(),
+                nested_aggregates: BTreeMap::new(),
             })
             .collect::<Vec<_>>();
         (self.result_name, QueryResultValue::Many(rows))
@@ -2401,7 +2432,13 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     if aggregates != program.surface().aggregates() {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    if program.steps().len() == 1 && program.steps()[0].covered_result_layout().is_some() {
+    if program.steps().len() == 1
+        && aggregates.is_empty()
+        && program.steps()[0].covered_result_layout().is_some()
+        && program.steps()[0].cardinality() == Cardinality::Many
+        && program.steps()[0].result_names().len() == 1
+        && program.steps()[0].dependencies().is_empty()
+    {
         return execute_covered_page_in_snapshot(program, parameters, prior, view, policy);
     }
     let mut fuel = QueryExecutionFuel::from_cost(program.cost());
@@ -2435,6 +2472,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
         if matches!(step.access(), QueryAccessKind::ExpansionIndex { .. }) {
             execute_expansion_step(
                 program,
+                aggregates,
                 step,
                 parameters,
                 after,
@@ -2496,28 +2534,30 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
                 )?;
                 if observations.iter().any(Option::is_none) {
-                    let outcome = step
-                        .absence_outcome()
-                        .ok_or(QueryExecutionError::InvalidProgram)?
-                        .to_owned();
-                    return finish_snapshot(
-                        &mut fuel,
-                        QueryOwnedSnapshot {
-                            application_head: view.application_head(),
-                            index_epochs,
-                            outcome,
-                            fields: BTreeMap::new(),
-                            covered_result: None,
-                            continuation_binding: None,
-                            continuation: None,
-                        },
-                    );
+                    if let Some(outcome) = step.absence_outcome() {
+                        let outcome = outcome.to_owned();
+                        return finish_snapshot(
+                            &mut fuel,
+                            QueryOwnedSnapshot {
+                                application_head: view.application_head(),
+                                index_epochs,
+                                outcome,
+                                fields: BTreeMap::new(),
+                                covered_result: None,
+                                continuation_binding: None,
+                                continuation: None,
+                            },
+                        );
+                    }
+                    if !step.distinct_dependent_keys() {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
                 }
                 let rows = observations
                     .into_iter()
                     .zip(&predicates)
+                    .filter_map(|(row, predicates)| row.map(|row| (row, predicates)))
                     .map(|(row, predicates)| {
-                        let row = row.ok_or(QueryExecutionError::InvalidProgram)?;
                         if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
                             return Err(QueryExecutionError::InvalidProgram);
                         }
@@ -2542,7 +2582,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let local = partition_local_predicates(
                         step,
                         &predicates,
-                        program.partition_parameter(),
+                        Some(program.partition_parameter()),
                         route,
                     )?;
                     let page = view
@@ -2652,6 +2692,11 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 if complete_candidate_source && page.continuation.is_some() {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
+                if step.cardinality() != Cardinality::Many && page.continuation.is_some() {
+                    return Err(QueryExecutionError::UnexpectedCardinality {
+                        binding: step.binding().to_owned(),
+                    });
+                }
                 fuel.scans(page.scanned_rows)?;
                 fuel.points(page.point_reads)?;
                 // Borrow entity/index names into one key; avoid format! per scan step.
@@ -2686,7 +2731,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
-                let routes = partition_set_routes(program, parameters)?;
+                let (route_field, route_parameter, routes) =
+                    partition_set_step_routes(program, step, fields, parameters, &predicates)?;
                 let prior_marker = after
                     .map(|lower| {
                         decode_partition_set_marker(lower, order.len() + 1 + key_fields.len())
@@ -2701,7 +2747,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         &mut fuel,
                         step,
                         &predicates,
-                        program.partition_parameter(),
+                        route_field,
+                        route_parameter,
                         routes,
                         fields,
                         order,
@@ -2716,17 +2763,14 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let mut has_more = false;
                     let mut observations = Vec::new();
                     for route in routes {
-                        let local_predicates = partition_local_predicates(
-                            step,
-                            &predicates,
-                            program.partition_parameter(),
-                            route,
-                        )?;
+                        let local_predicates =
+                            partition_local_predicates(step, &predicates, route_parameter, route)?;
                         let (stream, epoch, stream_has_more) = execute_partition_set_stream(
                             view,
                             &mut fuel,
                             step,
                             &local_predicates,
+                            route_field,
                             route,
                             fields,
                             order,
@@ -2742,7 +2786,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         streams.push(stream);
                     }
                     let (merged, discarded) =
-                        merge_partition_runs(streams, merge_limit, fields, order, key_fields)?;
+                        merge_partition_runs(streams, merge_limit, route_field, order, key_fields)?;
                     has_more |= discarded;
                     (merged, observations, has_more)
                 };
@@ -2756,7 +2800,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let lower = merged
                         .last()
                         .ok_or(QueryExecutionError::InvalidProgram)
-                        .and_then(|row| partition_set_marker(row, fields, order, key_fields))?;
+                        .and_then(|row| {
+                            partition_set_marker(row, route_field, order, key_fields)
+                        })?;
                     if lower.len() > MAX_QUERY_CONTINUATION_BYTES || continuation.is_some() {
                         return Err(QueryExecutionError::BoundExceeded);
                     }
@@ -2910,17 +2956,29 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     u64::try_from(observations.len())
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
                 )?;
-                let mut hydrated = observations
+                let mut hydrated = Vec::with_capacity(observations.len());
+                for (row, predicates) in observations
                     .into_iter()
                     .zip(&predicates)
                     .filter_map(|(row, predicates)| row.map(|row| (row, predicates)))
-                    .map(|(row, predicates)| {
-                        if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
-                            return Err(QueryExecutionError::InvalidProgram);
-                        }
-                        Ok(row)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                {
+                    let key_predicates_match = predicates
+                        .iter()
+                        .filter(|predicate| key_fields.iter().any(|key| key == predicate.field()))
+                        .all(|predicate| {
+                            predicate_values_match(
+                                step.entity(),
+                                std::slice::from_ref(predicate),
+                                |field| row.field(field),
+                            ) == Ok(true)
+                        });
+                    if row.entity() != step.entity() || !key_predicates_match {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
+                    if predicates_match(&row, predicates)? {
+                        hydrated.push(row);
+                    }
+                }
                 fuel.intermediates(
                     u64::try_from(hydrated.len())
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
@@ -3000,15 +3058,16 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 },
             );
         }
-        for aggregate in aggregates
-            .iter()
-            .filter(|aggregate| aggregate.source_binding() == step.binding())
-        {
+        for aggregate in aggregates.iter().filter(|aggregate| {
+            aggregate.source_binding() == step.binding() && aggregate.parent_binding().is_none()
+        }) {
             let selected = selected_aggregate_fields(program, aggregate)?;
             if selected.is_empty() {
                 continue;
             }
-            let value = evaluate_operational_aggregate(aggregate, &selected, &rows, parameters)?;
+            let value = evaluate_operational_aggregate(
+                program, aggregate, &selected, &rows, parameters, &bindings, None,
+            )?;
             let groups = match &value {
                 QueryResultValue::AggregateOne(_) => 1,
                 QueryResultValue::AggregateMany(rows) => rows.len(),
@@ -3243,22 +3302,49 @@ fn execute_covered_page_in_snapshot<V: QueryReadView>(
     )
 }
 
+fn find_aggregate_result_field<'a>(
+    fields: &'a [riffdb_query_ir::NamedFieldSchema],
+    aggregate: &OperationalAggregateV1,
+) -> Option<&'a riffdb_query_ir::NamedFieldSchema> {
+    if aggregate.parent_binding().is_none() {
+        return fields.iter().find(|field| field.name() == aggregate.name());
+    }
+    for field in fields {
+        let nested_fields = match field.value_type() {
+            NamedTypeSchema::Record(nested) => Some(nested.as_slice()),
+            NamedTypeSchema::Optional(inner) => match inner.as_ref() {
+                NamedTypeSchema::Record(nested) => Some(nested.as_slice()),
+                _ => None,
+            },
+            NamedTypeSchema::List { element, .. } => match element.as_ref() {
+                NamedTypeSchema::Record(nested) => Some(nested.as_slice()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(nested_fields) = nested_fields
+            && let Some(found) = nested_fields
+                .iter()
+                .find(|candidate| candidate.name() == aggregate.name())
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn selected_aggregate_fields(
     program: &QueryAccessProgramV1,
     aggregate: &OperationalAggregateV1,
-) -> Result<BTreeSet<String>, QueryExecutionError> {
+) -> Result<BTreeMap<String, String>, QueryExecutionError> {
     let branch = program
         .surface()
         .schemas()
         .results()
         .first()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let Some(field) = branch
-        .fields()
-        .iter()
-        .find(|field| field.name() == aggregate.name())
-    else {
-        return Ok(BTreeSet::new());
+    let Some(field) = find_aggregate_result_field(branch.fields(), aggregate) else {
+        return Ok(BTreeMap::new());
     };
     let record = match field.value_type() {
         NamedTypeSchema::Record(fields) => fields,
@@ -3268,33 +3354,63 @@ fn selected_aggregate_fields(
         },
         _ => return Err(QueryExecutionError::InvalidProgram),
     };
-    let available = aggregate
+    let mut available = aggregate
         .group_keys()
         .iter()
-        .map(|key| key.field())
-        .chain(aggregate.measures().iter().map(|measure| measure.alias()))
-        .collect::<BTreeSet<_>>();
-    let selected = record
-        .iter()
-        .map(|field| field.name().to_owned())
-        .collect::<BTreeSet<_>>();
-    if selected.len() != record.len()
-        || selected
-            .iter()
-            .any(|name| !available.contains(name.as_str()))
-    {
-        return Err(QueryExecutionError::InvalidProgram);
+        .map(|key| (key.field(), key.value_type(), false))
+        .chain(
+            aggregate
+                .measures()
+                .iter()
+                .map(|measure| (measure.alias(), measure.result_type(), false)),
+        )
+        .collect::<Vec<_>>();
+    let mut output_names = BTreeSet::new();
+    let mut selected = BTreeMap::new();
+    let mut unmatched = Vec::new();
+    for field in record {
+        if !output_names.insert(field.name()) {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        if let Some((source_name, _, used)) = available
+            .iter_mut()
+            .find(|(name, ty, used)| !*used && *name == field.name() && *ty == field.value_type())
+        {
+            *used = true;
+            selected.insert((*source_name).to_owned(), field.name().to_owned());
+        } else {
+            unmatched.push(field);
+        }
+    }
+    for field in unmatched {
+        let Some((source_name, _, used)) = available
+            .iter_mut()
+            .find(|(_, ty, used)| !*used && *ty == field.value_type())
+        else {
+            return Err(QueryExecutionError::InvalidProgram);
+        };
+        *used = true;
+        selected.insert((*source_name).to_owned(), field.name().to_owned());
     }
     Ok(selected)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_operational_aggregate(
+    program: &QueryAccessProgramV1,
     aggregate: &OperationalAggregateV1,
-    selected: &BTreeSet<String>,
+    selected: &BTreeMap<String, String>,
     rows: &[QueryRow],
     parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    driver: Option<(&str, &QueryRow)>,
 ) -> Result<QueryResultValue, QueryExecutionError> {
     let maximum_groups = resolve_page_bound(aggregate.maximum_groups(), parameters)?;
+    let accumulation_ceiling = if aggregate.having().is_empty() && aggregate.order_by().is_empty() {
+        maximum_groups
+    } else {
+        u64::from(riffdb_types::MAX_AGGREGATE_DISTINCT_VALUES_V1)
+    };
     let mut fuel = AggregateExecutionFuel::new(aggregate);
     let mut groups = BTreeMap::<Vec<u8>, (Vec<CanonicalValue>, Vec<&QueryRow>)>::new();
     if aggregate.group_keys().is_empty() {
@@ -3306,12 +3422,13 @@ fn evaluate_operational_aggregate(
                 .group_keys()
                 .iter()
                 .map(|key| {
-                    row.field(key.field()).cloned().ok_or_else(|| {
+                    let raw = row.field(key.source_field()).ok_or_else(|| {
                         QueryExecutionError::MissingField {
                             entity: aggregate.source_entity().to_owned(),
-                            field: key.field().to_owned(),
+                            field: key.source_field().to_owned(),
                         }
-                    })
+                    })?;
+                    truncate_temporal_group_key(raw, key.time_bucket())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let encoded = encode_group_key(&keys)?;
@@ -3329,30 +3446,102 @@ fn evaluate_operational_aggregate(
                     entry.get_mut().1.push(row);
                 }
             }
-            if groups.len() as u64 > maximum_groups {
+            if groups.len() as u64 > accumulation_ceiling {
                 return Err(QueryExecutionError::BoundExceeded);
             }
         }
     }
 
-    let mut output = Vec::with_capacity(groups.len());
-    for (_, (keys, grouped_rows)) in groups {
-        let mut fields = BTreeMap::new();
+    let required_fields = selected
+        .keys()
+        .map(String::as_str)
+        .chain(aggregate.having().iter().map(|pred| pred.field()))
+        .chain(aggregate.order_by().iter().map(|term| term.field()))
+        .collect::<BTreeSet<_>>();
+    let bound_having = if aggregate.having().is_empty() {
+        Vec::new()
+    } else {
+        bind_aggregate_predicates(
+            aggregate.having(),
+            parameters,
+            bindings,
+            program.surface().candidates(),
+            driver,
+        )?
+    };
+
+    let mut surviving = Vec::with_capacity(groups.len());
+    for (encoded_key, (keys, grouped_rows)) in groups {
+        let mut all_fields = BTreeMap::new();
         for (descriptor, value) in aggregate.group_keys().iter().zip(keys) {
-            if selected.contains(descriptor.field()) {
-                fields.insert(
+            if required_fields.contains(descriptor.field()) {
+                all_fields.insert(
                     Arc::<str>::from(descriptor.field()),
                     QueryAggregateCell::Canonical(value),
                 );
             }
         }
         for measure in aggregate.measures() {
-            if !selected.contains(measure.alias()) {
+            if !required_fields.contains(measure.alias()) {
                 continue;
             }
-            let cell = evaluate_aggregate_measure(aggregate, measure, &grouped_rows, &mut fuel)?;
+            let cell = evaluate_aggregate_measure(
+                program,
+                aggregate,
+                measure,
+                &grouped_rows,
+                parameters,
+                bindings,
+                driver,
+                &mut fuel,
+            )?;
             if let Some(cell) = cell {
-                fields.insert(Arc::<str>::from(measure.alias()), cell);
+                all_fields.insert(Arc::<str>::from(measure.alias()), cell);
+            }
+        }
+        if !bound_having.is_empty()
+            && !aggregate_row_matches_having(aggregate.name(), &all_fields, &bound_having)?
+        {
+            continue;
+        }
+        surviving.push((encoded_key, all_fields));
+    }
+
+    if !aggregate.order_by().is_empty() {
+        let mut sort_error = None;
+        surviving.sort_by(|(left_key, left_fields), (right_key, right_fields)| {
+            match compare_aggregate_group_rows(
+                left_fields,
+                right_fields,
+                aggregate.order_by(),
+                left_key,
+                right_key,
+            ) {
+                Ok(ordering) => ordering,
+                Err(error) => {
+                    if sort_error.is_none() {
+                        sort_error = Some(error);
+                    }
+                    Ordering::Equal
+                }
+            }
+        });
+        if let Some(error) = sort_error {
+            return Err(error);
+        }
+    }
+    if !aggregate.having().is_empty() || !aggregate.order_by().is_empty() {
+        let limit =
+            usize::try_from(maximum_groups).map_err(|_| QueryExecutionError::BoundExceeded)?;
+        surviving.truncate(limit);
+    }
+
+    let mut output = Vec::with_capacity(surviving.len());
+    for (_, mut all_fields) in surviving {
+        let mut fields = BTreeMap::new();
+        for (source_name, output_name) in selected {
+            if let Some(cell) = all_fields.remove(source_name.as_str()) {
+                fields.insert(Arc::<str>::from(output_name.as_str()), cell);
             }
         }
         output.push(QueryAggregateRow {
@@ -3369,6 +3558,418 @@ fn evaluate_operational_aggregate(
     } else {
         Ok(QueryResultValue::AggregateMany(output))
     }
+}
+
+const fn civil_from_days_utc(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
+const fn days_from_civil_utc(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let m = month as u64;
+    let d = day as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + (doe as i64) - 719_468
+}
+
+fn truncate_days_bucket(
+    days: i64,
+    bucket: OperationalAggregateTimeBucketV1,
+) -> Result<i64, QueryExecutionError> {
+    match bucket {
+        OperationalAggregateTimeBucketV1::Hour => Err(QueryExecutionError::InvalidProgram),
+        OperationalAggregateTimeBucketV1::Day => Ok(days),
+        OperationalAggregateTimeBucketV1::Week => Ok(days - (days + 3).rem_euclid(7)),
+        OperationalAggregateTimeBucketV1::Month => {
+            let (year, month, _) = civil_from_days_utc(days);
+            Ok(days_from_civil_utc(year, month, 1))
+        }
+        OperationalAggregateTimeBucketV1::Year => {
+            let (year, _, _) = civil_from_days_utc(days);
+            Ok(days_from_civil_utc(year, 1, 1))
+        }
+    }
+}
+
+fn truncate_temporal_group_key(
+    value: &CanonicalValue,
+    bucket: Option<OperationalAggregateTimeBucketV1>,
+) -> Result<CanonicalValue, QueryExecutionError> {
+    let Some(bucket) = bucket else {
+        return Ok(value.clone());
+    };
+    match value {
+        CanonicalValue::Null => Ok(CanonicalValue::Null),
+        CanonicalValue::Timestamp(ts) => {
+            let bucket_seconds = match bucket {
+                OperationalAggregateTimeBucketV1::Hour => {
+                    ts.seconds() - ts.seconds().rem_euclid(3_600)
+                }
+                _ => {
+                    let days = ts.seconds().div_euclid(86_400);
+                    let bucket_days = truncate_days_bucket(days, bucket)?;
+                    bucket_days
+                        .checked_mul(86_400)
+                        .ok_or(QueryExecutionError::AggregateOverflow)?
+                }
+            };
+            Timestamp::new(bucket_seconds, 0)
+                .map(CanonicalValue::Timestamp)
+                .map_err(|_| QueryExecutionError::InvalidProgram)
+        }
+        CanonicalValue::Date(date) => {
+            let days = i64::from(date.days_since_unix_epoch());
+            let bucket_days = truncate_days_bucket(days, bucket)?;
+            let bucket_days_i32 =
+                i32::try_from(bucket_days).map_err(|_| QueryExecutionError::AggregateOverflow)?;
+            Ok(CanonicalValue::Date(Date::new(bucket_days_i32)))
+        }
+        _ => Err(QueryExecutionError::InvalidProgram),
+    }
+}
+
+fn bind_aggregate_predicates(
+    predicates: &[QueryPredicate],
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    candidates: &[CandidateBindingV1],
+    driver: Option<(&str, &QueryRow)>,
+) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
+    predicates
+        .iter()
+        .map(|predicate| {
+            let value = match predicate.value() {
+                QueryPredicateValue::Parameter(name) => {
+                    parameters.get(name).cloned().ok_or_else(|| {
+                        QueryExecutionError::MissingParameter {
+                            parameter: name.clone(),
+                        }
+                    })?
+                }
+                QueryPredicateValue::BindingField { binding, field } => driver
+                    .filter(|(driver_binding, _)| *driver_binding == binding)
+                    .map(|(_, row)| row)
+                    .or_else(|| bindings.get(binding).and_then(|rows| rows.first()))
+                    .and_then(|row| row.field(field))
+                    .cloned()
+                    .unwrap_or(CanonicalValue::Null),
+                QueryPredicateValue::BindingFieldSet { .. } => {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                QueryPredicateValue::CandidateBinding { name } => {
+                    bind_candidate_value(name, candidates, bindings)?
+                }
+                QueryPredicateValue::Literal(literal) => literal_value(literal)?,
+                QueryPredicateValue::EnumVariant {
+                    type_id,
+                    variant_id,
+                    ..
+                } => CanonicalValue::Enum {
+                    type_id: *type_id,
+                    variant_id: *variant_id,
+                },
+            };
+            if predicate.operator() == QueryPredicateOperator::In {
+                match predicate.value() {
+                    QueryPredicateValue::Parameter(parameter) => {
+                        validate_canonical_set(&value).map_err(|()| {
+                            QueryExecutionError::InvalidParameter {
+                                parameter: parameter.clone(),
+                            }
+                        })?;
+                    }
+                    QueryPredicateValue::CandidateBinding { .. } => {}
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                }
+            }
+            Ok(BoundPredicate {
+                field: predicate.field().to_owned(),
+                operator: predicate.operator(),
+                value,
+            })
+        })
+        .collect()
+}
+
+fn compare_exact_decimal_with_canonical(
+    coefficient: i128,
+    scale: u8,
+    rhs: &CanonicalValue,
+) -> Option<Ordering> {
+    match rhs {
+        CanonicalValue::Decimal(decimal) => {
+            let rhs_scale = decimal.spec().scale();
+            if scale == rhs_scale {
+                Some(coefficient.cmp(&decimal.coefficient()))
+            } else if scale > rhs_scale {
+                let factor = 10_i128.checked_pow(u32::from(scale - rhs_scale))?;
+                let scaled = decimal.coefficient().checked_mul(factor)?;
+                Some(coefficient.cmp(&scaled))
+            } else {
+                let factor = 10_i128.checked_pow(u32::from(rhs_scale - scale))?;
+                let scaled = coefficient.checked_mul(factor)?;
+                Some(scaled.cmp(&decimal.coefficient()))
+            }
+        }
+        CanonicalValue::Money(money) => {
+            let rhs_scale = money.amount().spec().scale();
+            if scale == rhs_scale {
+                Some(coefficient.cmp(&money.amount().coefficient()))
+            } else if scale > rhs_scale {
+                let factor = 10_i128.checked_pow(u32::from(scale - rhs_scale))?;
+                let scaled = money.amount().coefficient().checked_mul(factor)?;
+                Some(coefficient.cmp(&scaled))
+            } else {
+                let factor = 10_i128.checked_pow(u32::from(rhs_scale - scale))?;
+                let scaled = coefficient.checked_mul(factor)?;
+                Some(scaled.cmp(&money.amount().coefficient()))
+            }
+        }
+        CanonicalValue::U64(value) => {
+            let factor = 10_i128.checked_pow(u32::from(scale))?;
+            let scaled = i128::from(*value).checked_mul(factor)?;
+            Some(coefficient.cmp(&scaled))
+        }
+        CanonicalValue::I64(value) => {
+            let factor = 10_i128.checked_pow(u32::from(scale))?;
+            let scaled = i128::from(*value).checked_mul(factor)?;
+            Some(coefficient.cmp(&scaled))
+        }
+        _ => None,
+    }
+}
+
+fn aggregate_row_matches_having(
+    aggregate_name: &str,
+    fields: &BTreeMap<Arc<str>, QueryAggregateCell>,
+    predicates: &[BoundPredicate],
+) -> Result<bool, QueryExecutionError> {
+    for predicate in predicates {
+        let cell = fields.get(predicate.field.as_str());
+        let is_null = matches!(
+            cell,
+            None | Some(QueryAggregateCell::Canonical(CanonicalValue::Null))
+        );
+        let unary = match predicate.operator {
+            QueryPredicateOperator::IsNull => Some(is_null),
+            QueryPredicateOperator::IsNotNull => Some(!is_null),
+            QueryPredicateOperator::Exists => Some(cell.is_some()),
+            _ => None,
+        };
+        if let Some(matches) = unary {
+            if !matches {
+                return Ok(false);
+            }
+            continue;
+        }
+        let Some(cell) = cell else {
+            return Err(QueryExecutionError::MissingField {
+                entity: aggregate_name.to_owned(),
+                field: predicate.field.clone(),
+            });
+        };
+        let matches = match cell {
+            QueryAggregateCell::Canonical(actual) => match predicate.operator {
+                QueryPredicateOperator::Equal => {
+                    actual == &predicate.value
+                        || matches!(
+                            (actual, &predicate.value),
+                            (CanonicalValue::I64(i), CanonicalValue::U64(u))
+                                if *i >= 0 && (*i as u64) == *u
+                        )
+                }
+                QueryPredicateOperator::NotEqual => {
+                    actual != &predicate.value
+                        && !matches!(
+                            (actual, &predicate.value),
+                            (CanonicalValue::I64(i), CanonicalValue::U64(u))
+                                if *i >= 0 && (*i as u64) == *u
+                        )
+                }
+                QueryPredicateOperator::In => match &predicate.value {
+                    CanonicalValue::List(values) => {
+                        values.values().iter().any(|value| value == actual)
+                    }
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                },
+                QueryPredicateOperator::Prefix => match (actual, &predicate.value) {
+                    (CanonicalValue::String(actual), CanonicalValue::String(prefix)) => {
+                        actual.as_str().starts_with(prefix.as_str())
+                    }
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                },
+                operator => {
+                    let ordering = scalar_order(actual, &predicate.value)
+                        .or_else(|| match (actual, &predicate.value) {
+                            (CanonicalValue::I64(i), CanonicalValue::U64(u)) => {
+                                if *i < 0 {
+                                    Some(Ordering::Less)
+                                } else {
+                                    Some((*i as u64).cmp(u))
+                                }
+                            }
+                            (CanonicalValue::Decimal(d), rhs) => {
+                                compare_exact_decimal_with_canonical(
+                                    d.coefficient(),
+                                    d.spec().scale(),
+                                    rhs,
+                                )
+                            }
+                            (CanonicalValue::Money(m), rhs) => {
+                                compare_exact_decimal_with_canonical(
+                                    m.amount().coefficient(),
+                                    m.amount().spec().scale(),
+                                    rhs,
+                                )
+                            }
+                            _ => None,
+                        })
+                        .ok_or(QueryExecutionError::UnsupportedPredicate)?;
+                    match operator {
+                        QueryPredicateOperator::Less => ordering == Ordering::Less,
+                        QueryPredicateOperator::LessEqual => ordering != Ordering::Greater,
+                        QueryPredicateOperator::Greater => ordering == Ordering::Greater,
+                        QueryPredicateOperator::GreaterEqual => ordering != Ordering::Less,
+                        _ => unreachable!(),
+                    }
+                }
+            },
+            QueryAggregateCell::ExactDecimal { coefficient, scale } => {
+                let ordering =
+                    compare_exact_decimal_with_canonical(*coefficient, *scale, &predicate.value)
+                        .ok_or(QueryExecutionError::UnsupportedPredicate)?;
+                match predicate.operator {
+                    QueryPredicateOperator::Equal => ordering == Ordering::Equal,
+                    QueryPredicateOperator::NotEqual => ordering != Ordering::Equal,
+                    QueryPredicateOperator::Less => ordering == Ordering::Less,
+                    QueryPredicateOperator::LessEqual => ordering != Ordering::Greater,
+                    QueryPredicateOperator::Greater => ordering == Ordering::Greater,
+                    QueryPredicateOperator::GreaterEqual => ordering != Ordering::Less,
+                    _ => return Err(QueryExecutionError::UnsupportedPredicate),
+                }
+            }
+            QueryAggregateCell::ExactMean { .. } => {
+                return Err(QueryExecutionError::UnsupportedPredicate);
+            }
+        };
+        if !matches {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn compare_aggregate_cells(
+    left: &QueryAggregateCell,
+    right: &QueryAggregateCell,
+) -> Result<Ordering, QueryExecutionError> {
+    match (left, right) {
+        (QueryAggregateCell::Canonical(l), QueryAggregateCell::Canonical(r)) => {
+            aggregate_scalar_order(l, r)
+        }
+        (
+            QueryAggregateCell::ExactDecimal {
+                coefficient: l,
+                scale: ls,
+            },
+            QueryAggregateCell::ExactDecimal {
+                coefficient: r,
+                scale: rs,
+            },
+        ) if ls == rs => Ok(l.cmp(r)),
+        (
+            QueryAggregateCell::ExactMean {
+                coefficient: l,
+                scale: ls,
+                count: lc,
+            },
+            QueryAggregateCell::ExactMean {
+                coefficient: r,
+                scale: rs,
+                count: rc,
+            },
+        ) if ls == rs => match (*lc, *rc) {
+            (0, 0) => Ok(Ordering::Equal),
+            (0, _) => Ok(Ordering::Less),
+            (_, 0) => Ok(Ordering::Greater),
+            (lc, rc) => {
+                let lhs = l
+                    .checked_mul(i128::from(rc))
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                let rhs = r
+                    .checked_mul(i128::from(lc))
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                Ok(lhs.cmp(&rhs))
+            }
+        },
+        _ => Err(QueryExecutionError::InvalidProgram),
+    }
+}
+
+fn compare_aggregate_group_rows(
+    left_fields: &BTreeMap<Arc<str>, QueryAggregateCell>,
+    right_fields: &BTreeMap<Arc<str>, QueryAggregateCell>,
+    order_by: &[QueryRootOrderTermV1],
+    left_key: &[u8],
+    right_key: &[u8],
+) -> Result<Ordering, QueryExecutionError> {
+    for term in order_by {
+        let left = left_fields.get(term.field());
+        let right = right_fields.get(term.field());
+        let left_null = matches!(
+            left,
+            None | Some(QueryAggregateCell::Canonical(CanonicalValue::Null))
+        );
+        let right_null = matches!(
+            right,
+            None | Some(QueryAggregateCell::Canonical(CanonicalValue::Null))
+        );
+        let ordering = match (left_null, right_null) {
+            (true, true) => Ordering::Equal,
+            (true, false) => {
+                if term.nulls_first() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, true) => {
+                if term.nulls_first() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, false) => {
+                let left = left.expect("non-null checked");
+                let right = right.expect("non-null checked");
+                let ord = compare_aggregate_cells(left, right)?;
+                if term.direction() == AccessDirection::Reverse {
+                    ord.reverse()
+                } else {
+                    ord
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(left_key.cmp(right_key))
 }
 
 struct AggregateExecutionFuel {
@@ -3406,14 +4007,230 @@ impl AggregateExecutionFuel {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_aggregate_measure(
+    program: &QueryAccessProgramV1,
     aggregate: &OperationalAggregateV1,
     measure: &riffdb_query_ir::OperationalAggregateMeasureV1,
     rows: &[&QueryRow],
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    driver: Option<(&str, &QueryRow)>,
     fuel: &mut AggregateExecutionFuel,
 ) -> Result<Option<QueryAggregateCell>, QueryExecutionError> {
     let semantic = measure.function().semantic_identity();
     fuel.consume_operations(rows.len())?;
+    let filtered_storage: Vec<&QueryRow>;
+    let rows: &[&QueryRow] = if measure.filter().is_empty() {
+        rows
+    } else {
+        let bound_filter = bind_aggregate_predicates(
+            measure.filter(),
+            parameters,
+            bindings,
+            program.surface().candidates(),
+            driver,
+        )?;
+        let mut matched = Vec::with_capacity(rows.len());
+        for row in rows {
+            if predicates_match(row, &bound_filter)? {
+                matched.push(*row);
+            }
+        }
+        filtered_storage = matched;
+        &filtered_storage
+    };
+    match measure.function() {
+        OperationalAggregateFunctionV1::Median
+        | OperationalAggregateFunctionV1::P90
+        | OperationalAggregateFunctionV1::P95
+        | OperationalAggregateFunctionV1::P99 => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let mut values = Vec::with_capacity(rows.len());
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                if matches!(value, CanonicalValue::Null) {
+                    continue;
+                }
+                fuel.consume_state(
+                    canonical_value_encoded_len(value)
+                        .map_err(|_| QueryExecutionError::InvalidProgram)?,
+                )?;
+                values.push(value);
+            }
+            if values.is_empty() {
+                return if matches!(
+                    measure.result_type(),
+                    NamedTypeSchema::Optional(inner)
+                        if matches!(inner.as_ref(), NamedTypeSchema::Optional(_))
+                ) {
+                    Ok(None)
+                } else {
+                    Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::Null)))
+                };
+            }
+            let mut order_err = None;
+            values.sort_by(|left, right| match aggregate_scalar_order(left, right) {
+                Ok(ord) => ord,
+                Err(err) => {
+                    if order_err.is_none() {
+                        order_err = Some(err);
+                    }
+                    Ordering::Equal
+                }
+            });
+            if let Some(err) = order_err {
+                return Err(err);
+            }
+            let percentile: usize = match measure.function() {
+                OperationalAggregateFunctionV1::Median => 50,
+                OperationalAggregateFunctionV1::P90 => 90,
+                OperationalAggregateFunctionV1::P95 => 95,
+                OperationalAggregateFunctionV1::P99 => 99,
+                _ => unreachable!(),
+            };
+            let rank = (percentile * values.len()).div_ceil(100);
+            let index = rank.saturating_sub(1).min(values.len() - 1);
+            return Ok(Some(QueryAggregateCell::Canonical(values[index].clone())));
+        }
+        OperationalAggregateFunctionV1::First | OperationalAggregateFunctionV1::Last => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let selected_value = if measure.function() == OperationalAggregateFunctionV1::First {
+                let mut found = None;
+                for row in rows {
+                    let value = aggregate_input_value(aggregate, row, field)?;
+                    if !matches!(value, CanonicalValue::Null) {
+                        found = Some(value);
+                        break;
+                    }
+                }
+                found
+            } else {
+                let mut found = None;
+                for row in rows.iter().rev() {
+                    let value = aggregate_input_value(aggregate, row, field)?;
+                    if !matches!(value, CanonicalValue::Null) {
+                        found = Some(value);
+                        break;
+                    }
+                }
+                found
+            };
+            if let Some(value) = selected_value {
+                fuel.consume_state(
+                    canonical_value_encoded_len(value)
+                        .map_err(|_| QueryExecutionError::InvalidProgram)?,
+                )?;
+                return Ok(Some(QueryAggregateCell::Canonical(value.clone())));
+            }
+            return if matches!(
+                measure.result_type(),
+                NamedTypeSchema::Optional(inner)
+                    if matches!(inner.as_ref(), NamedTypeSchema::Optional(_))
+            ) {
+                Ok(None)
+            } else {
+                Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::Null)))
+            };
+        }
+        OperationalAggregateFunctionV1::Stddev => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let scale = aggregate_sum_scale(measure.result_type())?;
+            let mut sum = 0_i128;
+            let mut sum_sq = 0_u128;
+            let mut count = 0_u128;
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                let contribution = match value {
+                    CanonicalValue::Null => continue,
+                    CanonicalValue::I64(value) => i128::from(*value),
+                    CanonicalValue::U64(value) => i128::from(*value),
+                    CanonicalValue::Decimal(value) if value.spec().scale() == scale => {
+                        value.coefficient()
+                    }
+                    CanonicalValue::Money(value) if value.amount().spec().scale() == scale => {
+                        value.amount().coefficient()
+                    }
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                };
+                sum = sum
+                    .checked_add(contribution)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                let abs = contribution.unsigned_abs();
+                let sq = abs
+                    .checked_mul(abs)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                sum_sq = sum_sq
+                    .checked_add(sq)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                count = count
+                    .checked_add(1)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+            }
+            fuel.consume_state(std::mem::size_of::<i128>() * 2 + std::mem::size_of::<u64>())?;
+            let coefficient = if count <= 1 {
+                0_i128
+            } else {
+                let n_sum_sq = count
+                    .checked_mul(sum_sq)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                let sum_abs = sum.unsigned_abs();
+                let sum_sq_total = sum_abs
+                    .checked_mul(sum_abs)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                let numerator = n_sum_sq.saturating_sub(sum_sq_total);
+                let std_coeff = numerator.isqrt() / count;
+                i128::try_from(std_coeff).map_err(|_| QueryExecutionError::AggregateOverflow)?
+            };
+            return Ok(Some(QueryAggregateCell::ExactDecimal {
+                coefficient,
+                scale,
+            }));
+        }
+        OperationalAggregateFunctionV1::Collect
+        | OperationalAggregateFunctionV1::CollectDistinct => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let distinct_only =
+                measure.function() == OperationalAggregateFunctionV1::CollectDistinct;
+            let mut seen = BTreeSet::new();
+            let mut values = Vec::new();
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                if matches!(value, CanonicalValue::Null) {
+                    continue;
+                }
+                let encoded = encode_canonical_value(value)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                if distinct_only && !seen.insert(encoded.clone()) {
+                    continue;
+                }
+                if values.len() >= fuel.maximum_distinct_values_per_measure {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                fuel.consume_state(
+                    encoded
+                        .len()
+                        .checked_add(32)
+                        .ok_or(QueryExecutionError::BoundExceeded)?,
+                )?;
+                values.push(value.clone());
+            }
+            let list =
+                CanonicalList::new(values).map_err(|_| QueryExecutionError::BoundExceeded)?;
+            return Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::List(
+                list,
+            ))));
+        }
+        _ => {}
+    }
     match semantic {
         AggregateSemanticIdentityV1::Count => {
             fuel.consume_state(std::mem::size_of::<u64>())?;
@@ -3435,10 +4252,14 @@ fn evaluate_aggregate_measure(
                         field: field.to_owned(),
                     })?;
                 let contribution = match value {
+                    CanonicalValue::Null => continue,
                     CanonicalValue::I64(value) => i128::from(*value),
                     CanonicalValue::U64(value) => i128::from(*value),
                     CanonicalValue::Decimal(value) if value.spec().scale() == scale => {
                         value.coefficient()
+                    }
+                    CanonicalValue::Money(value) if value.amount().spec().scale() == scale => {
+                        value.amount().coefficient()
                     }
                     _ => return Err(QueryExecutionError::InvalidProgram),
                 };
@@ -3566,10 +4387,14 @@ fn evaluate_aggregate_measure(
             for row in rows {
                 let value = aggregate_input_value(aggregate, row, field)?;
                 let contribution = match value {
+                    CanonicalValue::Null => continue,
                     CanonicalValue::I64(value) => i128::from(*value),
                     CanonicalValue::U64(value) => i128::from(*value),
                     CanonicalValue::Decimal(value) if value.spec().scale() == scale => {
                         value.coefficient()
+                    }
+                    CanonicalValue::Money(value) if value.amount().spec().scale() == scale => {
+                        value.amount().coefficient()
                     }
                     _ => return Err(QueryExecutionError::InvalidProgram),
                 };
@@ -3597,14 +4422,15 @@ fn evaluate_aggregate_measure(
                 .ok_or(QueryExecutionError::InvalidProgram)?;
             let mut result = semantic == AggregateSemanticIdentityV1::All;
             for row in rows {
-                let CanonicalValue::Bool(value) = aggregate_input_value(aggregate, row, field)?
-                else {
-                    return Err(QueryExecutionError::InvalidProgram);
+                let value = match aggregate_input_value(aggregate, row, field)? {
+                    CanonicalValue::Null => continue,
+                    CanonicalValue::Bool(value) => *value,
+                    _ => return Err(QueryExecutionError::InvalidProgram),
                 };
                 if semantic == AggregateSemanticIdentityV1::Any {
-                    result |= *value;
+                    result |= value;
                 } else {
-                    result &= *value;
+                    result &= value;
                 }
             }
             fuel.consume_state(std::mem::size_of::<bool>())?;
@@ -3767,6 +4593,34 @@ fn binding_referenced_later(
                     | QueryPredicateValue::Literal(_)
                     | QueryPredicateValue::EnumVariant { .. } => false,
                 })
+            || program
+                .surface()
+                .aggregates()
+                .iter()
+                .filter(|agg| agg.source_binding() == later.binding())
+                .any(|agg| {
+                    agg.parent_binding() == Some(binding)
+                        || agg.having().iter().any(|pred| {
+                            matches!(
+                                pred.value(),
+                                QueryPredicateValue::BindingField {
+                                    binding: source,
+                                    ..
+                                } if source == binding
+                            )
+                        })
+                        || agg.measures().iter().any(|measure| {
+                            measure.filter().iter().any(|pred| {
+                                matches!(
+                                    pred.value(),
+                                    QueryPredicateValue::BindingField {
+                                        binding: source,
+                                        ..
+                                    } if source == binding
+                                )
+                            })
+                        })
+                })
     })
 }
 
@@ -3860,6 +4714,9 @@ fn encoded_query_rows(mut bytes: u64, rows: &[QueryRow]) -> Result<u64, QueryExe
                 .and_then(|value| value.checked_add(96))
                 .ok_or(QueryExecutionError::BoundExceeded)?;
             bytes = encoded_query_rows(bytes, nested)?;
+        }
+        for nested in row.nested_aggregates.values() {
+            bytes = encoded_aggregate_rows(bytes, nested)?;
         }
     }
     Ok(bytes)
@@ -3963,6 +4820,7 @@ fn resolve_row_limit(
 #[allow(clippy::too_many_arguments)]
 fn execute_expansion_step<V: QueryReadView>(
     program: &QueryAccessProgramV1,
+    aggregates: &[OperationalAggregateV1],
     step: &QueryAccessStep,
     parameters: &QueryParameters,
     after: Option<&[u8]>,
@@ -3985,10 +4843,21 @@ fn execute_expansion_step<V: QueryReadView>(
     else {
         return Err(QueryExecutionError::InvalidProgram);
     };
+    let parent_aggregates = aggregates
+        .iter()
+        .filter(|aggregate| {
+            aggregate.source_binding() == step.binding()
+                && aggregate.parent_binding() == Some(driver_binding.as_str())
+        })
+        .map(|aggregate| {
+            let selected = selected_aggregate_fields(program, aggregate)?;
+            Ok((aggregate, selected))
+        })
+        .collect::<Result<Vec<_>, QueryExecutionError>>()?;
     if after.is_some()
         || limit != u64::from(*per_driver_maximum)
         || *product_maximum != step.maximum_rows()
-        || step.result_names().is_empty()
+        || (step.result_names().is_empty() && parent_aggregates.is_empty())
     {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -4004,6 +4873,7 @@ fn execute_expansion_step<V: QueryReadView>(
     }
 
     let mut groups = Vec::with_capacity(drivers.len());
+    let mut per_driver_aggregates = Vec::with_capacity(drivers.len());
     let mut total_rows = 0_u64;
     let mut observed_epoch = None;
     for driver in drivers {
@@ -4041,6 +4911,35 @@ fn execute_expansion_step<V: QueryReadView>(
         if total_rows > *product_maximum {
             return Err(QueryExecutionError::BoundExceeded);
         }
+        let mut driver_agg_entries = Vec::with_capacity(parent_aggregates.len());
+        for (aggregate, selected) in &parent_aggregates {
+            if selected.is_empty() {
+                continue;
+            }
+            let value = evaluate_operational_aggregate(
+                program,
+                aggregate,
+                selected,
+                &page.rows,
+                parameters,
+                bindings,
+                Some((driver_binding.as_str(), driver)),
+            )?;
+            let agg_rows = match value {
+                QueryResultValue::AggregateOne(row) => vec![row],
+                QueryResultValue::AggregateMany(rows) => rows,
+                QueryResultValue::One(_)
+                | QueryResultValue::Maybe(_)
+                | QueryResultValue::Many(_) => return Err(QueryExecutionError::InvalidProgram),
+            };
+            let projected = u64::try_from(agg_rows.len())
+                .ok()
+                .and_then(|groups| groups.checked_mul(selected.len() as u64))
+                .ok_or(QueryExecutionError::BoundExceeded)?;
+            fuel.projected_values(projected)?;
+            driver_agg_entries.push((Arc::<str>::from(aggregate.name()), agg_rows));
+        }
+        per_driver_aggregates.push(driver_agg_entries);
         groups.push(
             page.rows
                 .into_iter()
@@ -4080,12 +4979,20 @@ fn execute_expansion_step<V: QueryReadView>(
         else {
             return Err(QueryExecutionError::InvalidProgram);
         };
-        if result_drivers.len() != groups.len() {
+        if result_drivers.len() != groups.len()
+            || result_drivers.len() != per_driver_aggregates.len()
+        {
             return Err(QueryExecutionError::InvalidProgram);
         }
-        for (driver, targets) in result_drivers.iter_mut().zip(&groups) {
+        for (driver, (targets, agg_entries)) in result_drivers
+            .iter_mut()
+            .zip(groups.iter().zip(&per_driver_aggregates))
+        {
             for nested_name in step.result_names() {
                 driver.attach_nested(Arc::<str>::from(nested_name.as_str()), targets.clone())?;
+            }
+            for (agg_name, agg_rows) in agg_entries {
+                driver.attach_nested_aggregate(Arc::clone(agg_name), agg_rows.clone())?;
             }
         }
     }
@@ -4624,15 +5531,88 @@ fn partition_set_routes<'a>(
     Ok(routes.values())
 }
 
+fn partition_set_step_routes<'a>(
+    program: &'a QueryAccessProgramV1,
+    step: &'a QueryAccessStep,
+    fields: &'a [String],
+    parameters: &'a QueryParameters,
+    predicates: &'a [BoundPredicate],
+) -> Result<(&'a str, Option<&'a str>, &'a [CanonicalValue]), QueryExecutionError> {
+    if program.partition_route().is_finite_set() {
+        let route_field = fields
+            .first()
+            .ok_or(QueryExecutionError::InvalidProgram)?
+            .as_str();
+        let routes = partition_set_routes(program, parameters)?;
+        return Ok((route_field, Some(program.partition_parameter()), routes));
+    }
+    if let Some((route_field, route_param)) =
+        step.predicates()
+            .iter()
+            .find_map(|predicate| match predicate.value() {
+                QueryPredicateValue::Parameter(name)
+                    if predicate.operator() == QueryPredicateOperator::In =>
+                {
+                    Some((predicate.field(), name.as_str()))
+                }
+                _ => None,
+            })
+    {
+        let value =
+            parameters
+                .get(route_param)
+                .ok_or_else(|| QueryExecutionError::MissingParameter {
+                    parameter: route_param.to_owned(),
+                })?;
+        let CanonicalValue::List(routes) = value else {
+            return Err(QueryExecutionError::InvalidParameter {
+                parameter: route_param.to_owned(),
+            });
+        };
+        if routes.values().len() > MAX_QUERY_PARAMETERS
+            || routes.values().iter().any(|value| {
+                matches!(
+                    value,
+                    CanonicalValue::Null
+                        | CanonicalValue::List(_)
+                        | CanonicalValue::Record(_)
+                        | CanonicalValue::Vector(_)
+                )
+            })
+        {
+            return Err(QueryExecutionError::InvalidParameter {
+                parameter: route_param.to_owned(),
+            });
+        }
+        return Ok((route_field, Some(route_param), routes.values()));
+    }
+    let route_field = fields
+        .first()
+        .ok_or(QueryExecutionError::InvalidProgram)?
+        .as_str();
+    let route = predicates
+        .iter()
+        .find(|predicate| {
+            predicate.field() == route_field
+                && predicate.operator() == QueryPredicateOperator::Equal
+        })
+        .map(BoundPredicate::value)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    Ok((route_field, None, std::slice::from_ref(route)))
+}
+
 fn partition_local_predicates(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
-    route_parameter: &str,
+    route_parameter: Option<&str>,
     route: &CanonicalValue,
 ) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
     if step.predicates().len() != predicates.len() {
         return Err(QueryExecutionError::InvalidProgram);
     }
+    let Some(route_parameter) = route_parameter else {
+        return Ok(predicates.to_vec());
+    };
     let mut found = false;
     let local = step
         .predicates()
@@ -4663,14 +5643,14 @@ fn partition_local_predicates(
 
 fn partition_set_marker_values(
     row: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Vec<CanonicalValue>, QueryExecutionError> {
     order
         .iter()
         .map(QueryRootOrderTermV1::field)
-        .chain(fields.first().map(String::as_str))
+        .chain(std::iter::once(route_field))
         .chain(key_fields.iter().map(String::as_str))
         .map(|field| {
             row.field(field)
@@ -4685,11 +5665,11 @@ fn partition_set_marker_values(
 
 fn partition_set_marker(
     row: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Vec<u8>, QueryExecutionError> {
-    let values = partition_set_marker_values(row, fields, order, key_fields)?;
+    let values = partition_set_marker_values(row, route_field, order, key_fields)?;
     let value = CanonicalValue::list(values).map_err(|_| QueryExecutionError::BoundExceeded)?;
     encode_canonical_value(&value).map_err(|_| QueryExecutionError::BoundExceeded)
 }
@@ -4764,7 +5744,7 @@ fn partition_set_value_order(
 fn partition_set_row_order(
     left: &QueryRow,
     right: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Ordering, QueryExecutionError> {
@@ -4803,16 +5783,15 @@ fn partition_set_row_order(
             return Ok(ordering);
         }
     }
-    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
-    let left_partition = left
-        .field(partition_field)
+    let left_route = left
+        .field(route_field)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let right_partition = right
-        .field(partition_field)
+    let right_route = right
+        .field(route_field)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let partition_ordering = aggregate_scalar_order(left_partition, right_partition)?;
-    if partition_ordering != Ordering::Equal {
-        return Ok(partition_ordering);
+    let route_ordering = aggregate_scalar_order(left_route, right_route)?;
+    if route_ordering != Ordering::Equal {
+        return Ok(route_ordering);
     }
     for field in key_fields {
         let left_value = left
@@ -4858,7 +5837,7 @@ fn partition_set_physical_row_order(
 fn merge_partition_runs(
     streams: Vec<Vec<QueryRow>>,
     limit: usize,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
@@ -4880,7 +5859,7 @@ fn merge_partition_runs(
                     scanned_rows: 0,
                     buffered,
                 },
-                fields,
+                route_field,
                 order,
                 key_fields,
             )?;
@@ -4888,7 +5867,8 @@ fn merge_partition_runs(
     }
     let mut result = Vec::with_capacity(limit);
     while result.len() < limit {
-        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+        let Some(mut stream) = partition_heap_pop(&mut heap, route_field, order, key_fields)?
+        else {
             break;
         };
         result.push(
@@ -4899,7 +5879,7 @@ fn merge_partition_runs(
         );
         stream.row = stream.buffered.next();
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
     Ok((result, !heap.is_empty()))
@@ -4907,26 +5887,31 @@ fn merge_partition_runs(
 
 fn sort_partition_rows(
     rows: &mut [QueryRow],
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(), QueryExecutionError> {
     fn sift(
         rows: &mut [QueryRow],
         mut root: usize,
-        fields: &[String],
+        route_field: &str,
         order: &[QueryRootOrderTermV1],
         keys: &[String],
     ) -> Result<(), QueryExecutionError> {
         while root < rows.len() / 2 {
             let mut child = root * 2 + 1;
             if child + 1 < rows.len()
-                && partition_set_row_order(&rows[child], &rows[child + 1], fields, order, keys)?
-                    == Ordering::Less
+                && partition_set_row_order(
+                    &rows[child],
+                    &rows[child + 1],
+                    route_field,
+                    order,
+                    keys,
+                )? == Ordering::Less
             {
                 child += 1;
             }
-            if partition_set_row_order(&rows[root], &rows[child], fields, order, keys)?
+            if partition_set_row_order(&rows[root], &rows[child], route_field, order, keys)?
                 != Ordering::Less
             {
                 break;
@@ -4937,11 +5922,11 @@ fn sort_partition_rows(
         Ok(())
     }
     for root in (0..rows.len() / 2).rev() {
-        sift(rows, root, fields, order, key_fields)?;
+        sift(rows, root, route_field, order, key_fields)?;
     }
     for end in (1..rows.len()).rev() {
         rows.swap(0, end);
-        sift(&mut rows[..end], 0, fields, order, key_fields)?;
+        sift(&mut rows[..end], 0, route_field, order, key_fields)?;
     }
     Ok(())
 }
@@ -4950,7 +5935,7 @@ fn merge_partition_streams(
     left: Vec<QueryRow>,
     right: Vec<QueryRow>,
     limit: usize,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
@@ -4964,7 +5949,7 @@ fn merge_partition_streams(
     while merged.len() < limit {
         let take_left = match (left.peek(), right.peek()) {
             (Some(left), Some(right)) => {
-                partition_set_row_order(left, right, fields, order, key_fields)?
+                partition_set_row_order(left, right, route_field, order, key_fields)?
                     != Ordering::Greater
             }
             (Some(_), None) => true,
@@ -4981,10 +5966,12 @@ fn merge_partition_streams(
     Ok((merged, discarded))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn partition_set_physical_resume(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
     fields: &[String],
+    route_field: &str,
     key_fields: &[String],
     order: &[QueryRootOrderTermV1],
     route: &CanonicalValue,
@@ -4993,12 +5980,18 @@ fn partition_set_physical_resume(
     if marker.len() != order.len() + 1 + key_fields.len() {
         return Err(QueryExecutionError::InvalidContinuation);
     }
-    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let mut physical_index =
-        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let mut physical_index = partition_set_exact_physical_prefix(
+        step,
+        schema,
+        fields,
+        route_field,
+        order,
+        predicates,
+        route,
+    )?;
     let descriptor = step
         .internal_operational_index_descriptor()
         .ok_or(QueryExecutionError::InvalidProgram)?;
@@ -5028,7 +6021,7 @@ fn partition_set_physical_resume(
     let mut synthetic = marker.to_vec();
     synthetic[order.len()] = route.clone();
     for (offset, field) in key_fields.iter().enumerate() {
-        if field == partition_field {
+        if field == route_field {
             entity_values[offset] = route.clone();
             synthetic[key_offset + offset] = route.clone();
         }
@@ -5051,6 +6044,7 @@ fn partition_set_exact_physical_prefix(
     step: &QueryAccessStep,
     schema: &riffdb_contract_ir::KeySchema,
     fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     predicates: &[BoundPredicate],
     route: &CanonicalValue,
@@ -5071,25 +6065,23 @@ fn partition_set_exact_physical_prefix(
     let descriptor = step
         .internal_operational_index_descriptor()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let route_component = descriptor
-        .component(
-            0,
-            fields.first().ok_or(QueryExecutionError::InvalidProgram)?,
-        )
-        .ok_or(QueryExecutionError::InvalidProgram)?;
-    push_exact_index_prefix_value(schema, route_component, &mut physical, route)?;
-    for (field_position, field) in fields.iter().enumerate().take(order_start).skip(1) {
-        let mut matching = predicates.iter().filter(|predicate| {
-            predicate.field() == field && predicate.operator() == QueryPredicateOperator::Equal
-        });
-        let predicate = matching
-            .next()
-            .filter(|_| matching.next().is_none())
-            .ok_or(QueryExecutionError::InvalidProgram)?;
+    for (field_position, field) in fields.iter().enumerate().take(order_start) {
+        let value = if field == route_field {
+            route
+        } else {
+            let mut matching = predicates.iter().filter(|predicate| {
+                predicate.field() == field && predicate.operator() == QueryPredicateOperator::Equal
+            });
+            let predicate = matching
+                .next()
+                .filter(|_| matching.next().is_none())
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            predicate.value()
+        };
         let component = descriptor
             .component(field_position, field)
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        push_exact_index_prefix_value(schema, component, &mut physical, predicate.value())?;
+        push_exact_index_prefix_value(schema, component, &mut physical, value)?;
     }
     Ok(physical)
 }
@@ -5147,7 +6139,8 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
-    route_parameter: &str,
+    route_field: &str,
+    route_parameter: Option<&str>,
     routes: &[CanonicalValue],
     fields: &[String],
     order: &[QueryRootOrderTermV1],
@@ -5169,7 +6162,14 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
         let resume = prior_marker
             .map(|marker| {
                 partition_set_physical_resume(
-                    step, &local, fields, key_fields, order, route, marker,
+                    step,
+                    &local,
+                    fields,
+                    route_field,
+                    key_fields,
+                    order,
+                    route,
+                    marker,
                 )
             })
             .transpose()?;
@@ -5189,7 +6189,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             fuel,
             step,
             &mut stream,
-            fields,
+            route_field,
             order,
             key_fields,
             scan_ceiling,
@@ -5205,13 +6205,14 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             stream.epoch.ok_or(QueryExecutionError::BackendIntegrity)?,
         )?;
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
 
     let mut rows = Vec::with_capacity(output_limit);
     while rows.len() < output_limit {
-        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+        let Some(mut stream) = partition_heap_pop(&mut heap, route_field, order, key_fields)?
+        else {
             break;
         };
         let row = stream
@@ -5219,7 +6220,8 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             .take()
             .ok_or(QueryExecutionError::InvalidProgram)?;
         if let Some(previous) = rows.last()
-            && partition_set_row_order(previous, &row, fields, order, key_fields)? != Ordering::Less
+            && partition_set_row_order(previous, &row, route_field, order, key_fields)?
+                != Ordering::Less
         {
             return Err(QueryExecutionError::BackendIntegrity);
         }
@@ -5229,7 +6231,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             fuel,
             step,
             &mut stream,
-            fields,
+            route_field,
             order,
             key_fields,
             scan_ceiling,
@@ -5244,7 +6246,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             limit.saturating_add(1),
         )?;
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
     Ok((rows, observations, !heap.is_empty()))
@@ -5256,7 +6258,7 @@ fn load_partition_merge_row<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     stream: &mut PartitionMergeStream,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
     scan_ceiling: u32,
@@ -5270,9 +6272,9 @@ fn load_partition_merge_row<V: QueryReadView>(
     loop {
         if let Some(row) = stream.buffered.next() {
             if prior_marker.is_some_and(|marker| {
-                partition_set_marker_values(&row, fields, order, key_fields).and_then(|values| {
-                    partition_set_value_order(&values, marker, order, key_fields)
-                }) != Ok(Ordering::Greater)
+                partition_set_marker_values(&row, route_field, order, key_fields).and_then(
+                    |values| partition_set_value_order(&values, marker, order, key_fields),
+                ) != Ok(Ordering::Greater)
             }) {
                 continue;
             }
@@ -5345,7 +6347,7 @@ fn load_partition_merge_row<V: QueryReadView>(
 fn partition_heap_push(
     heap: &mut Vec<PartitionMergeStream>,
     stream: PartitionMergeStream,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(), QueryExecutionError> {
@@ -5361,7 +6363,7 @@ fn partition_heap_push(
             .row
             .as_ref()
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        if partition_set_row_order(child_row, parent_row, fields, order, key_fields)?
+        if partition_set_row_order(child_row, parent_row, route_field, order, key_fields)?
             != Ordering::Less
         {
             break;
@@ -5374,7 +6376,7 @@ fn partition_heap_push(
 
 fn partition_heap_pop(
     heap: &mut Vec<PartitionMergeStream>,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Option<PartitionMergeStream>, QueryExecutionError> {
@@ -5401,7 +6403,7 @@ fn partition_heap_pop(
                 .row
                 .as_ref()
                 .ok_or(QueryExecutionError::InvalidProgram)?;
-            if partition_set_row_order(right_row, left_row, fields, order, key_fields)?
+            if partition_set_row_order(right_row, left_row, route_field, order, key_fields)?
                 == Ordering::Less
             {
                 right
@@ -5419,7 +6421,7 @@ fn partition_heap_pop(
             .row
             .as_ref()
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        if partition_set_row_order(parent_row, child_row, fields, order, key_fields)?
+        if partition_set_row_order(parent_row, child_row, route_field, order, key_fields)?
             != Ordering::Greater
         {
             break;
@@ -5436,6 +6438,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
+    route_field: &str,
     route: &CanonicalValue,
     fields: &[String],
     order: &[QueryRootOrderTermV1],
@@ -5451,11 +6454,25 @@ fn execute_partition_set_stream<V: QueryReadView>(
         .map(|marker| {
             if mixed {
                 partition_set_group_resume(
-                    step, predicates, fields, order, direction, route, marker,
+                    step,
+                    predicates,
+                    fields,
+                    route_field,
+                    order,
+                    direction,
+                    route,
+                    marker,
                 )
             } else {
                 partition_set_physical_resume(
-                    step, predicates, fields, key_fields, order, route, marker,
+                    step,
+                    predicates,
+                    fields,
+                    route_field,
+                    key_fields,
+                    order,
+                    route,
+                    marker,
                 )
             }
         })
@@ -5513,12 +6530,13 @@ fn execute_partition_set_stream<V: QueryReadView>(
         fuel.intermediates(page.rows.len() as u64)?;
         if mixed {
             let mut incoming = page.rows;
-            sort_partition_rows(&mut incoming, fields, order, key_fields)?;
+            sort_partition_rows(&mut incoming, route_field, order, key_fields)?;
             let total = rows
                 .len()
                 .checked_add(incoming.len())
                 .ok_or(QueryExecutionError::BoundExceeded)?;
-            rows = merge_partition_streams(rows, incoming, total, fields, order, key_fields)?.0;
+            rows =
+                merge_partition_streams(rows, incoming, total, route_field, order, key_fields)?.0;
         } else {
             rows.extend(page.rows);
         }
@@ -5529,7 +6547,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
             break;
         }
         if rows.windows(2).any(|pair| {
-            partition_set_row_order(&pair[0], &pair[1], fields, order, key_fields)
+            partition_set_row_order(&pair[0], &pair[1], route_field, order, key_fields)
                 != Ok(Ordering::Less)
         }) {
             return Err(QueryExecutionError::BackendIntegrity);
@@ -5538,9 +6556,9 @@ fn execute_partition_set_stream<V: QueryReadView>(
             .iter()
             .filter(|row| {
                 prior_marker.is_none_or(|marker| {
-                    partition_set_marker_values(row, fields, order, key_fields).and_then(|values| {
-                        partition_set_value_order(&values, marker, order, key_fields)
-                    }) == Ok(Ordering::Greater)
+                    partition_set_marker_values(row, route_field, order, key_fields).and_then(
+                        |values| partition_set_value_order(&values, marker, order, key_fields),
+                    ) == Ok(Ordering::Greater)
                 })
             })
             .collect::<Vec<_>>();
@@ -5574,7 +6592,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
     }
     if let Some(marker) = prior_marker {
         rows.retain(|row| {
-            partition_set_marker_values(row, fields, order, key_fields)
+            partition_set_marker_values(row, route_field, order, key_fields)
                 .and_then(|values| partition_set_value_order(&values, marker, order, key_fields))
                 == Ok(Ordering::Greater)
         });
@@ -5587,10 +6605,12 @@ fn execute_partition_set_stream<V: QueryReadView>(
     Ok((rows, epoch.unwrap_or(0), stopped_with_more))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn partition_set_group_resume(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
     fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     direction: AccessDirection,
     route: &CanonicalValue,
@@ -5602,8 +6622,15 @@ fn partition_set_group_resume(
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let mut physical =
-        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let mut physical = partition_set_exact_physical_prefix(
+        step,
+        schema,
+        fields,
+        route_field,
+        order,
+        predicates,
+        route,
+    )?;
     let order_start = fields
         .len()
         .checked_sub(order.len())
@@ -5648,43 +6675,75 @@ fn bind_dependent_point_batch(
     let source_rows = bindings
         .get(source_binding)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    if source_rows.len() as u64 > limit || source_rows.len() as u64 > step.maximum_rows() {
-        return Err(QueryExecutionError::BoundExceeded);
-    }
-    let values = source_rows
-        .iter()
-        .map(|row| {
-            row.field(source_field)
-                .cloned()
-                .ok_or_else(|| QueryExecutionError::MissingField {
+    let values = if step.distinct_dependent_keys() {
+        let mut keyed = Vec::with_capacity(source_rows.len());
+        for row in source_rows {
+            let value = row.field(source_field).cloned().ok_or_else(|| {
+                QueryExecutionError::MissingField {
                     entity: row.entity().to_owned(),
                     field: source_field.to_owned(),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if values
-        .iter()
-        .any(|value| matches!(value, CanonicalValue::Null))
-    {
-        return Err(QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        });
-    }
-    let encoded = values
-        .iter()
-        .map(encode_canonical_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        })?;
-    if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(QueryExecutionError::InvalidDependentKey {
-            binding: source_binding.to_owned(),
-            field: source_field.to_owned(),
-        });
-    }
+                }
+            })?;
+            if matches!(value, CanonicalValue::Null) {
+                continue;
+            }
+            let encoded = encode_canonical_value(&value).map_err(|_| {
+                QueryExecutionError::InvalidDependentKey {
+                    binding: source_binding.to_owned(),
+                    field: source_field.to_owned(),
+                }
+            })?;
+            keyed.push((encoded, value));
+        }
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        keyed.dedup_by(|left, right| left.0 == right.0);
+        if keyed.len() as u64 > limit || keyed.len() as u64 > step.maximum_rows() {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        keyed
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+    } else {
+        if source_rows.len() as u64 > limit || source_rows.len() as u64 > step.maximum_rows() {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let values = source_rows
+            .iter()
+            .map(|row| {
+                row.field(source_field)
+                    .cloned()
+                    .ok_or_else(|| QueryExecutionError::MissingField {
+                        entity: row.entity().to_owned(),
+                        field: source_field.to_owned(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values
+            .iter()
+            .any(|value| matches!(value, CanonicalValue::Null))
+        {
+            return Err(QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            });
+        }
+        let encoded = values
+            .iter()
+            .map(encode_canonical_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            })?;
+        if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(QueryExecutionError::InvalidDependentKey {
+                binding: source_binding.to_owned(),
+                field: source_field.to_owned(),
+            });
+        }
+        values
+    };
 
     values
         .into_iter()
@@ -6312,17 +7371,63 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .cloned()
                 .unwrap_or_default();
             rows.retain(|row| predicates_match(row, predicates) == Ok(true));
-            if after.is_some() && !after_inclusive && limit == 1 && !rows.is_empty() {
-                rows.remove(0);
-            }
+            let offset = match after {
+                Some([1, start]) if !after_inclusive => usize::from(*start).min(rows.len()),
+                Some(_) if !after_inclusive && limit == 1 && !rows.is_empty() => 1,
+                _ => 0,
+            };
+            rows.drain(..offset);
             let limit = usize::try_from(limit).expect("test limit");
             if rows.len() > limit {
                 rows.truncate(limit);
-                QueryScanPage::continued(rows, route.unwrap_or(1), limit as u64 + 1, vec![1])
-                    .ok_or(())
+                let next_offset = u8::try_from(offset + limit).expect("test offset");
+                QueryScanPage::continued(
+                    rows,
+                    route.unwrap_or(1),
+                    limit as u64 + 1,
+                    vec![1, next_offset],
+                )
+                .ok_or(())
             } else {
                 Ok(QueryScanPage::exact_end(rows, route.unwrap_or(1)))
             }
+        }
+
+        fn scan_covered(
+            &mut self,
+            step: &QueryAccessStep,
+            predicates: &[BoundPredicate],
+            limit: u64,
+            after: Option<&[u8]>,
+            policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+            let Some(layout) = step.covered_result_layout() else {
+                return Ok(None);
+            };
+            let page = self.scan(step, predicates, limit, after, false, policy)?;
+            let rows = page
+                .rows
+                .into_iter()
+                .map(|row| {
+                    layout
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            row.field(field.name())
+                                .cloned()
+                                .unwrap_or(CanonicalValue::Null)
+                        })
+                        .collect()
+                })
+                .collect();
+            Ok(CoveredResultBatch::checked(
+                layout.clone(),
+                rows,
+                page.epoch,
+                page.scanned_rows,
+                0,
+                page.continuation,
+            ))
         }
 
         fn nearest(
@@ -6482,7 +7587,8 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 &mut fuel,
                 step,
                 &predicates,
-                "experiment_ids",
+                &fields[0],
+                Some("experiment_ids"),
                 &routes,
                 fields,
                 order,
@@ -6554,12 +7660,12 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             )
         });
         for run in &mut runs {
-            sort_partition_rows(run, fields, order, key_fields).unwrap();
+            sort_partition_rows(run, &fields[0], order, key_fields).unwrap();
         }
         runs.push(Vec::new());
         for limit in [0, 1, 3, 64, 131, 132, 133] {
             let (actual, discarded) =
-                merge_partition_runs(runs.clone(), limit, fields, order, key_fields).unwrap();
+                merge_partition_runs(runs.clone(), limit, &fields[0], order, key_fields).unwrap();
             assert_eq!(actual, expected[..limit.min(expected.len())]);
             assert_eq!(discarded, limit < expected.len());
         }
@@ -6574,14 +7680,14 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             merge_partition_runs(
                 vec![vec![make(1, 1)], vec![invalid.clone()]],
                 2,
-                fields,
+                &fields[0],
                 order,
                 key_fields
             )
             .is_err()
         );
         assert!(
-            sort_partition_rows(&mut [make(1, 1), invalid], fields, order, key_fields).is_err()
+            sort_partition_rows(&mut [make(1, 1), invalid], &fields[0], order, key_fields).is_err()
         );
     }
 
@@ -7749,6 +8855,1969 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
 
     #[cfg(not(feature = "test-fixtures"))]
     fn capture_error(_name: &str, _error: &QueryExecutionError) {}
+
+    #[test]
+    fn unique_same_partition_index_satisfies_one_and_maybe_bindings() {
+        let contract = r#"
+contract Directory version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<120>
+    field handle: string<64>
+    unique by_email (organization_id, email)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query LookupByEmail(
+    $organization_id: User.organization_id,
+    $email: User.email,
+    $secondary_email: User.email
+) {
+    one primary_user from User
+        where organization_id == $organization_id && email == $email
+        else UserMissing
+    maybe secondary_user from User
+        where organization_id == $organization_id && email == $secondary_email
+    return Found {
+        primary_user: primary_user { user_id email handle }
+        secondary_user: secondary_user { user_id handle }
+    }
+    outcomes Found | UserMissing
+}
+"#;
+        let program = compile_query(&parse_query(query_source).expect("parse"), &catalog)
+            .expect("unique same-partition index satisfies one and maybe");
+        assert!(matches!(
+            program.steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::Index { index, .. } if index == "by_email"
+        ));
+
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "email".to_owned(),
+                CanonicalValue::string("alice@example.com").expect("email"),
+            ),
+            (
+                "secondary_email".to_owned(),
+                CanonicalValue::string("nobody@example.com").expect("email"),
+            ),
+        ]))
+        .expect("parameters");
+
+        let alice = row(
+            "User",
+            &[
+                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                ("user_id", CanonicalValue::Uuid([9; 16])),
+                (
+                    "email",
+                    CanonicalValue::string("alice@example.com").expect("email"),
+                ),
+                ("handle", CanonicalValue::string("alice").expect("handle")),
+            ],
+        );
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), vec![alice.clone()]),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        let found =
+            execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("found");
+        assert_eq!(found.outcome(), "Found");
+        assert!(matches!(
+            found.fields().get("primary_user"),
+            Some(QueryResultValue::One(row))
+                if row.field("handle") == Some(&CanonicalValue::string("alice").unwrap())
+        ));
+        assert_eq!(
+            found.fields().get("secondary_user"),
+            Some(&QueryResultValue::Maybe(None))
+        );
+
+        let mut missing_view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), Vec::new()),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        let missing = execute_page_in_snapshot(&program, &parameters, None, &mut missing_view)
+            .expect("missing");
+        assert_eq!(missing.outcome(), "UserMissing");
+
+        let mut corrupt_view = FakeView {
+            rows: BTreeMap::from([
+                ("primary_user".to_owned(), vec![alice.clone(), alice]),
+                ("secondary_user".to_owned(), Vec::new()),
+            ]),
+        };
+        assert_eq!(
+            execute_page_in_snapshot(&program, &parameters, None, &mut corrupt_view),
+            Err(QueryExecutionError::UnexpectedCardinality {
+                binding: "primary_user".to_owned(),
+            }),
+            "singular unique-index execution fails closed if storage returns continuation"
+        );
+    }
+
+    #[test]
+    fn distinct_dependent_key_batch_hydrates_foreign_keys_across_unordered_and_nullable_drivers() {
+        let contract = r#"
+contract Helpdesk version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field display_name: string<80>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field updated_at: timestamp
+    field assignee_id: optional<uuid>
+    field title: string<120>
+    index by_updated (organization_id, updated_at, ticket_id)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query RecentTicketsWithAssignees($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by updated_at desc, ticket_id desc
+        take 25
+
+    many assignees from User
+        where organization_id == $organization_id
+          && user_id in distinct(tickets.assignee_id)
+        take 25
+
+    return Found {
+        tickets: tickets { ticket_id assignee_id title }
+        assignees: assignees { user_id display_name }
+    }
+
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(query_source).expect("parse");
+        let formatted = riffdb_riffql_syntax::format_query(&parsed);
+        assert!(
+            formatted.contains("user_id in distinct(tickets.assignee_id)"),
+            "formatter preserves distinct(binding.field): {formatted}"
+        );
+        let reparsed = parse_query(&formatted).expect("reparse formatted query");
+        let program = compile_query(&reparsed, &catalog).expect("compile distinct hydration");
+        assert!(program.steps()[1].distinct_dependent_keys());
+
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+
+        let ticket_rows = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(3000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([5; 16])),
+                    ("title", CanonicalValue::string("First").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([9; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(2000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Null),
+                    ("title", CanonicalValue::string("Unassigned").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([8; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(1000, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([2; 16])),
+                    ("title", CanonicalValue::string("Second").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([7; 16])),
+                    (
+                        "updated_at",
+                        CanonicalValue::Timestamp(riffdb_types::Timestamp::new(500, 0).unwrap()),
+                    ),
+                    ("assignee_id", CanonicalValue::Uuid([5; 16])),
+                    (
+                        "title",
+                        CanonicalValue::string("Duplicate assignee").unwrap(),
+                    ),
+                ],
+            ),
+        ];
+
+        struct RecordingPointBatchView {
+            tickets: Vec<QueryRow>,
+            users: BTreeMap<[u8; 16], QueryRow>,
+            requested_user_ids: Vec<[u8; 16]>,
+        }
+
+        impl QueryReadView for RecordingPointBatchView {
+            type Error = ();
+
+            fn fault(&self, _error: &Self::Error) -> QueryBackendFault {
+                QueryBackendFault::Unavailable
+            }
+
+            fn application_head(&self) -> u64 {
+                1
+            }
+
+            fn point(
+                &mut self,
+                _step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Option<QueryRow>, Self::Error> {
+                Ok(None)
+            }
+
+            fn dependent_point_batch(
+                &mut self,
+                step: &QueryAccessStep,
+                predicates: &[Vec<BoundPredicate>],
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
+                assert_eq!(step.binding(), "assignees");
+                let mut out = Vec::with_capacity(predicates.len());
+                for key in predicates {
+                    let Some(CanonicalValue::Uuid(user_id)) = key
+                        .iter()
+                        .find_map(|pred| (pred.field() == "user_id").then_some(pred.value()))
+                    else {
+                        panic!("missing user_id in key: {key:?}");
+                    };
+                    self.requested_user_ids.push(*user_id);
+                    out.push(self.users.get(user_id).cloned());
+                }
+                Ok(out)
+            }
+
+            fn scan(
+                &mut self,
+                step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _limit: u64,
+                _after: Option<&[u8]>,
+                _after_inclusive: bool,
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<QueryScanPage, Self::Error> {
+                assert_eq!(step.binding(), "tickets");
+                Ok(QueryScanPage::exact_end(self.tickets.clone(), 1))
+            }
+
+            fn nearest(
+                &mut self,
+                _step: &QueryAccessStep,
+                _predicates: &[BoundPredicate],
+                _k: u32,
+                _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+            ) -> Result<QueryNearestPage, Self::Error> {
+                Ok(QueryNearestPage {
+                    rows: Vec::new(),
+                    scanned_rows: 0,
+                })
+            }
+        }
+
+        let mut view = RecordingPointBatchView {
+            tickets: ticket_rows,
+            users: BTreeMap::from([
+                (
+                    [2; 16],
+                    row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([2; 16])),
+                            ("display_name", CanonicalValue::string("Bob").unwrap()),
+                        ],
+                    ),
+                ),
+                (
+                    [5; 16],
+                    row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([5; 16])),
+                            ("display_name", CanonicalValue::string("Eva").unwrap()),
+                        ],
+                    ),
+                ),
+            ]),
+            requested_user_ids: Vec::new(),
+        };
+
+        let result =
+            execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("execute");
+        assert_eq!(
+            view.requested_user_ids,
+            vec![[2; 16], [5; 16]],
+            "nulls are skipped and duplicate foreign keys are sorted and deduplicated"
+        );
+        let Some(QueryResultValue::Many(assignees)) = result.fields().get("assignees") else {
+            panic!("assignees missing")
+        };
+        assert_eq!(assignees.len(), 2);
+    }
+
+    #[test]
+    fn order_family_composes_with_operational_null_and_prefix_predicates() {
+        let contract = r#"
+contract Catalog version 1 {
+  enum ItemOrder { BySlugAsc, BySlugDesc }
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field slug: string<64>
+    field archived_at: optional<timestamp>
+    field updated_at: timestamp
+    index by_slug (organization_id, archived_at, slug, item_id) presence(archived_at) text_key(slug, binary_utf8_v1)
+  }
+  aggregate Items {
+    root Item
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query_source = r#"
+query ActiveItemsByPrefix(
+    $organization_id: Item.organization_id,
+    $slug_prefix: Item.slug,
+    $order: ItemOrder
+) {
+    many items from Item
+        where organization_id == $organization_id
+          && archived_at is null
+          && slug prefix $slug_prefix
+        order by $order {
+            BySlugAsc: slug asc, item_id asc;
+            BySlugDesc: slug desc, item_id desc;
+        }
+        take 25
+
+    return Found {
+        items: items { item_id slug updated_at }
+    }
+    outcomes Found
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(query_source).expect("parse"),
+            &catalog,
+        )
+        .expect("order family composes with operational predicates");
+        assert_eq!(family.members().len(), 2);
+    }
+
+    #[test]
+    fn finite_domain_group_by_and_explicit_group_take_bound_large_aggregate_rollups() {
+        let contract = r#"
+contract Rollup version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field urgent: bool
+    field category: string<64>
+    field story_points: i64
+    index by_org (organization_id, ticket_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+
+        // 1. Finite enum + bool domain (3 * 2 = 6 groups) over 4,000 input rows
+        // caps maximum_groups to 6 rather than 4,000.
+        let finite_domain_query = r#"
+query StatusBreakdown($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 4000
+
+    aggregate by_status from tickets {
+        group by status, urgent
+        count() as ticket_count
+        sum(story_points) as total_points
+    }
+
+    return Found {
+        by_status: by_status {
+            status
+            urgent
+            ticket_count
+            total_points
+        }
+    }
+    outcomes Found
+}
+"#;
+        let finite_family = compile_operational_query_family(
+            &parse_query(finite_domain_query).expect("parse"),
+            &catalog,
+        )
+        .expect("finite enum/bool domain caps maximum_groups to 6");
+        assert_eq!(
+            finite_family.aggregates()[0].maximum_groups(),
+            &PageBound::Literal(6)
+        );
+
+        // 2. Explicit `group by category take 2` bounds a high-cardinality string
+        // grouping over 5,000 input rows and fails closed at runtime if exceeded.
+        let explicit_cap_query = r#"
+query CategoryBreakdown($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take 5000
+
+    aggregate by_category from tickets {
+        group by category take 2
+        count() as ticket_count
+    }
+
+    return Found {
+        by_category: by_category {
+            category
+            ticket_count
+        }
+    }
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(explicit_cap_query).expect("parse");
+        let formatted = riffdb_riffql_syntax::format_query(&parsed);
+        assert!(
+            formatted.contains("group by category take 2"),
+            "formatter preserves group by ... take N: {formatted}"
+        );
+        let explicit_family =
+            compile_operational_query_family(&parse_query(&formatted).expect("reparse"), &catalog)
+                .expect("explicit group take caps maximum_groups");
+        assert_eq!(
+            explicit_family.aggregates()[0].maximum_groups(),
+            &PageBound::Literal(2)
+        );
+
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+        let three_categories = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(idx, category)| {
+                row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([idx as u8 + 1; 16])),
+                        ("status", CanonicalValue::string("Open").unwrap()),
+                        ("urgent", CanonicalValue::Bool(false)),
+                        ("category", CanonicalValue::string(category).unwrap()),
+                        ("story_points", CanonicalValue::I64(1)),
+                    ],
+                )
+            })
+            .collect();
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), three_categories)]),
+        };
+        assert_eq!(
+            execute_operational_page_in_snapshot(
+                explicit_family.select(&[]).expect("sole member").program(),
+                explicit_family.aggregates(),
+                &parameters,
+                None,
+                &mut view,
+            ),
+            Err(QueryExecutionError::BoundExceeded),
+            "exceeding explicit group by take N fails closed rather than truncating"
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, OQ-001, OQ-002, OQ-003
+    #[test]
+    fn order_family_with_presence_and_candidate_operational_predicates_execute() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketOrder { PriorityDesc, PriorityAsc }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: string<32>
+    field priority: i64
+    field title: string<120>
+    index by_org_priority (organization_id, priority, ticket_id)
+    index by_org_status_priority (organization_id, status, priority, ticket_id)
+  }
+  entity TicketSignal {
+    key (organization_id: uuid, signal_id: uuid)
+    field ticket_id: uuid
+    field score: i64
+    field resolved_at: optional<timestamp>
+    index by_score (organization_id, resolved_at, score, ticket_id, signal_id) presence(resolved_at)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate TicketSignals { root TicketSignal partition_by organization_id conflict_key (organization_id, signal_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query SignaledInbox(
+    $organization_id: Ticket.organization_id,
+    $min_score: TicketSignal.score,
+    $status: Ticket.status?,
+    $order: TicketOrder
+) {
+    candidates hot_ids: Ticket.ticket_id
+        from TicketSignal.ticket_id using by_score where organization_id == $organization_id && resolved_at is null && score >= $min_score
+        within 50 else IntegrityFailure
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+          && ticket_id in hot_ids
+        order by $order {
+            PriorityDesc: priority desc, ticket_id desc;
+            PriorityAsc: priority asc, ticket_id asc;
+        }
+        take 20
+
+    return Found {
+        tickets: tickets { ticket_id status priority title }
+    }
+    outcomes Found | IntegrityFailure
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(query).expect("parse"),
+            &catalog,
+        )
+        .expect("compile order family with presence and candidate operational predicates");
+        assert_eq!(family.members().len(), 4);
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                (
+                    "@candidate:hot_ids:0".to_owned(),
+                    vec![
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([91; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("score", CanonicalValue::I64(90)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([92; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("score", CanonicalValue::I64(85)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    "tickets".to_owned(),
+                    vec![
+                        row(
+                            "Ticket",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("status", CanonicalValue::string("Open").unwrap()),
+                                ("priority", CanonicalValue::I64(10)),
+                                ("title", CanonicalValue::string("First").unwrap()),
+                            ],
+                        ),
+                        row(
+                            "Ticket",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("status", CanonicalValue::string("Closed").unwrap()),
+                                ("priority", CanonicalValue::I64(20)),
+                                ("title", CanonicalValue::string("Second").unwrap()),
+                            ],
+                        ),
+                    ],
+                ),
+            ]),
+        };
+
+        let open_params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("min_score".to_owned(), CanonicalValue::I64(80)),
+            ("status".to_owned(), CanonicalValue::string("Open").unwrap()),
+            (
+                "order".to_owned(),
+                CanonicalValue::string("PriorityDesc").unwrap(),
+            ),
+        ]))
+        .expect("params");
+        let open_member = family
+            .select_name_with_presence(&[true], "PriorityDesc")
+            .expect("select open member");
+        let open_result = execute_operational_page_in_snapshot(
+            open_member.program(),
+            family.aggregates(),
+            &open_params,
+            None,
+            &mut view,
+        )
+        .expect("execute open member");
+        let Some(QueryResultValue::Many(open_rows)) = open_result.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(open_rows.len(), 1);
+        assert_eq!(
+            open_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([10; 16]))
+        );
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002
+    #[test]
+    fn non_partition_bounded_set_with_order_executes_k_way_merge() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketStatus { Open, InProgress, Blocked, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field updated_at: i64
+    field title: string<120>
+    index by_org_updated (organization_id, updated_at, ticket_id)
+    index by_org_status_updated (organization_id, status, updated_at, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query FilteredBoard(
+    $organization_id: Ticket.organization_id,
+    $statuses: Set<Ticket.status, 4>?,
+    $after: Cursor?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $statuses { status in $statuses }
+        order by updated_at desc, ticket_id desc
+        take 2 after $after
+
+    return Found {
+        tickets: tickets { ticket_id status updated_at title }
+    }
+    outcomes Found
+}
+"#;
+        let family =
+            compile_operational_query_family(&parse_query(query).expect("parse"), &catalog)
+                .expect("compile non-partition bounded set with order");
+        let present_member = family.select(&[true]).expect("present member");
+        assert!(matches!(
+            present_member.program().steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex { index, .. } if index == "by_org_status_updated"
+        ));
+
+        let status_enum = catalog.enumeration("TicketStatus").expect("TicketStatus");
+        let status_val = |name: &str| CanonicalValue::Enum {
+            type_id: status_enum.internal_id(),
+            variant_id: status_enum.variant(name).expect("variant"),
+        };
+
+        let all_tickets = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([4; 16])),
+                    ("status", status_val("Closed")),
+                    ("updated_at", CanonicalValue::I64(400)),
+                    ("title", CanonicalValue::string("Closed 400").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                    ("status", status_val("Blocked")),
+                    ("updated_at", CanonicalValue::I64(300)),
+                    ("title", CanonicalValue::string("Blocked 300").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([3; 16])),
+                    ("status", status_val("Open")),
+                    ("updated_at", CanonicalValue::I64(200)),
+                    ("title", CanonicalValue::string("Open 200").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                    ("status", status_val("Open")),
+                    ("updated_at", CanonicalValue::I64(100)),
+                    ("title", CanonicalValue::string("Open 100").unwrap()),
+                ],
+            ),
+        ];
+
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "statuses".to_owned(),
+                CanonicalValue::list(vec![status_val("Open"), status_val("Blocked")]).unwrap(),
+            ),
+        ]))
+        .expect("params");
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), all_tickets.clone())]),
+        };
+        let first_page = execute_operational_page_in_snapshot(
+            present_member.program(),
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute first page");
+        let Some(QueryResultValue::Many(first_rows)) = first_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(first_rows.len(), 2);
+        assert_eq!(
+            first_rows[0].field("updated_at"),
+            Some(&CanonicalValue::I64(300))
+        );
+        assert_eq!(
+            first_rows[1].field("updated_at"),
+            Some(&CanonicalValue::I64(200))
+        );
+        let next_cursor = QueryContinuation::checked(
+            first_page
+                .continuation_binding()
+                .expect("binding")
+                .to_owned(),
+            first_page.continuation().expect("next cursor").to_vec(),
+            first_page.index_epochs().clone(),
+        )
+        .expect("checked continuation");
+
+        let mut second_view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), all_tickets)]),
+        };
+        let second_page = execute_operational_page_in_snapshot(
+            present_member.program(),
+            family.aggregates(),
+            &params,
+            Some(&next_cursor),
+            &mut second_view,
+        )
+        .expect("execute second page");
+        let Some(QueryResultValue::Many(second_rows)) = second_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(second_rows.len(), 1);
+        assert_eq!(
+            second_rows[0].field("updated_at"),
+            Some(&CanonicalValue::I64(100))
+        );
+        assert!(second_page.continuation().is_none());
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002
+    #[test]
+    fn single_partition_mixed_direction_order_executes_bounded_merge() {
+        let contract = r#"
+contract Support version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field priority: i64
+    field created_at: i64
+    field title: string<120>
+    index by_priority_created (organization_id, priority, created_at, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query MixedOrderQueue(
+    $organization_id: Ticket.organization_id,
+    $after: Cursor?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by priority desc, created_at asc, ticket_id asc
+        take 2 after $after
+
+    return Found {
+        tickets: tickets { ticket_id priority created_at title }
+    }
+    outcomes Found
+}
+"#;
+        let program = compile_query(&parse_query(query).expect("parse"), &catalog)
+            .expect("compile single-partition mixed direction order");
+        assert!(matches!(
+            program.steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex { index, .. } if index == "by_priority_created"
+        ));
+
+        let rows = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                    ("priority", CanonicalValue::I64(10)),
+                    ("created_at", CanonicalValue::I64(500)),
+                    ("title", CanonicalValue::string("P10 Later").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                    ("priority", CanonicalValue::I64(10)),
+                    ("created_at", CanonicalValue::I64(100)),
+                    ("title", CanonicalValue::string("P10 Earlier").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([3; 16])),
+                    ("priority", CanonicalValue::I64(5)),
+                    ("created_at", CanonicalValue::I64(50)),
+                    ("title", CanonicalValue::string("P5 Earliest").unwrap()),
+                ],
+            ),
+        ];
+
+        let params = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("params");
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), rows.clone())]),
+        };
+        let first_page =
+            execute_page_in_snapshot(&program, &params, None, &mut view).expect("first page");
+        let Some(QueryResultValue::Many(first_rows)) = first_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(first_rows.len(), 2);
+        // Priority 10 comes first (desc), and within priority 10 created_at 100 comes before 500 (asc)
+        assert_eq!(
+            first_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+        assert_eq!(
+            first_rows[1].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        let cursor = QueryContinuation::checked(
+            first_page
+                .continuation_binding()
+                .expect("binding")
+                .to_owned(),
+            first_page.continuation().expect("cursor").to_vec(),
+            first_page.index_epochs().clone(),
+        )
+        .expect("checked continuation");
+
+        let mut second_view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), rows)]),
+        };
+        let second_page =
+            execute_page_in_snapshot(&program, &params, Some(&cursor), &mut second_view)
+                .expect("second page");
+        let Some(QueryResultValue::Many(second_rows)) = second_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(second_rows.len(), 1);
+        assert_eq!(
+            second_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([3; 16]))
+        );
+        assert!(second_page.continuation().is_none());
+    }
+
+    // req: RQL-003, RQL-004, QRY-001, QRY-007
+    #[test]
+    fn covered_index_executes_across_multi_binding_singular_and_aggregate_steps() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketStatus { Open, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field slug: string<64>
+    field status: TicketStatus
+    field priority: i64
+    field title: string<120>
+    index by_org_ticket (organization_id, ticket_id) cover (slug, status, priority, title)
+    index by_org_status_priority (organization_id, status, priority, ticket_id) cover (title)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query CoveredDashboard(
+    $organization_id: Ticket.organization_id,
+    $pinned_id: Ticket.ticket_id,
+    $status: Ticket.status
+) {
+    maybe pinned from Ticket
+        where organization_id == $organization_id
+          && ticket_id == $pinned_id
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && status == $status
+        order by priority desc, ticket_id desc
+        take 10
+
+    aggregate summary from tickets {
+        group by status
+        count() as ticket_count
+        sum(priority) as total_priority
+    }
+
+    return Found {
+        pinned: pinned { ticket_id slug status priority title }
+        tickets: tickets { ticket_id status priority title }
+        summary: summary { status ticket_count total_priority }
+    }
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(query).expect("parse");
+        let family = compile_operational_query_family(&parsed, &catalog)
+            .expect("multi-binding + singular + aggregate covered query compiles");
+        let program = family.select(&[]).expect("sole member").program();
+        assert_eq!(program.steps().len(), 2);
+        assert!(program.steps()[0].covered_result_layout().is_some());
+        assert!(program.steps()[1].covered_result_layout().is_some());
+        assert_eq!(program.cost().point_reads(), 0);
+
+        let open = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(1).expect("variant id"),
+        };
+        let rows = BTreeMap::from([
+            (
+                "pinned".to_owned(),
+                vec![row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([9; 16])),
+                        ("slug", CanonicalValue::string("pinned-1").expect("slug")),
+                        ("status", open.clone()),
+                        ("priority", CanonicalValue::I64(10)),
+                        ("title", CanonicalValue::string("Pinned").expect("title")),
+                    ],
+                )],
+            ),
+            (
+                "tickets".to_owned(),
+                vec![
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(5)),
+                            ("title", CanonicalValue::string("First").expect("title")),
+                        ],
+                    ),
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(3)),
+                            ("title", CanonicalValue::string("Second").expect("title")),
+                        ],
+                    ),
+                ],
+            ),
+        ]);
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("pinned_id".to_owned(), CanonicalValue::Uuid([9; 16])),
+            ("status".to_owned(), open),
+        ]))
+        .expect("params");
+        let mut view = FakeView { rows };
+        let snapshot = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("covered multi-binding + aggregate execution succeeds");
+        let Some(QueryResultValue::Maybe(Some(pinned_row))) = snapshot.fields().get("pinned")
+        else {
+            panic!("pinned missing");
+        };
+        assert_eq!(
+            pinned_row.field("title"),
+            Some(&CanonicalValue::string("Pinned").expect("title"))
+        );
+        let Some(QueryResultValue::Many(ticket_rows)) = snapshot.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(ticket_rows.len(), 2);
+        let Some(QueryResultValue::AggregateMany(summary_rows)) = snapshot.fields().get("summary")
+        else {
+            panic!("summary missing");
+        };
+        assert_eq!(summary_rows.len(), 1);
+        assert_eq!(
+            summary_rows[0].fields().get("ticket_count"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(2)))
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007
+    #[test]
+    fn real_world_complex_queries_compile_and_execute() {
+        let contract = r#"
+contract SupportWorkspace version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+  enum TicketOrder { PriorityDesc, PriorityAsc }
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field display_name: string<80>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field priority: i64
+    field assignee_id: optional<uuid>
+    field title: string<120>
+    index by_org_ticket (organization_id, ticket_id) cover (status, priority, assignee_id, title)
+    index by_org_priority (organization_id, priority, ticket_id) cover (status, assignee_id, title)
+    index by_org_status_priority (organization_id, status, priority, ticket_id) cover (assignee_id, title)
+  }
+  entity TicketSignal {
+    key (organization_id: uuid, signal_id: uuid)
+    field ticket_id: uuid
+    field score: i64
+    field label: string<64>
+    field resolved_at: optional<timestamp>
+    index by_score (organization_id, resolved_at, score, ticket_id, signal_id) presence(resolved_at)
+    index by_label (organization_id, label, ticket_id, signal_id) text_key(label, binary_utf8_v1)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+  aggregate Users { root User partition_by organization_id conflict_key (organization_id, user_id) }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate TicketSignals { root TicketSignal partition_by organization_id conflict_key (organization_id, signal_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+
+        // 1. Combined `when $status` + `order by $order` + operational `candidates` + `in distinct(...)` + `aggregate`
+        let inbox_query = r#"
+query TriageWorkspace(
+    $organization_id: Ticket.organization_id,
+    $min_score: TicketSignal.score,
+    $label_prefix: TicketSignal.label,
+    $status: Ticket.status?,
+    $order: TicketOrder
+) {
+    candidates hot_ids: Ticket.ticket_id
+        from intersect {
+            TicketSignal.ticket_id using by_score where organization_id == $organization_id && resolved_at is null && score >= $min_score,
+            TicketSignal.ticket_id using by_label where organization_id == $organization_id && label prefix $label_prefix,
+        }
+        within 50 else IntegrityFailure
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+          && ticket_id in hot_ids
+        order by $order {
+            PriorityDesc: priority desc, ticket_id desc;
+            PriorityAsc: priority asc, ticket_id asc;
+        }
+        take 25
+
+    many assignees from User
+        where organization_id == $organization_id
+          && user_id in distinct(tickets.assignee_id)
+        take 25
+
+    aggregate status_counts from tickets {
+        group by status
+        count() as ticket_count
+        sum(priority) as total_priority
+    }
+
+    return Found {
+        tickets: tickets { ticket_id status priority assignee_id title }
+        assignees: assignees { user_id display_name }
+        status_counts: status_counts { status ticket_count total_priority }
+    }
+    outcomes Found | IntegrityFailure
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(inbox_query).expect("parse inbox"),
+            &catalog,
+        )
+        .expect("compile triage workspace order family");
+        assert_eq!(family.members().len(), 4);
+
+        let open = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(1).expect("variant id"),
+        };
+        let in_progress = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(2).expect("variant id"),
+        };
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                (
+                    "@candidate:hot_ids:0".to_owned(),
+                    vec![
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([81; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("score", CanonicalValue::I64(95)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([82; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("score", CanonicalValue::I64(85)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    "@candidate:hot_ids:1".to_owned(),
+                    vec![row(
+                        "TicketSignal",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("signal_id", CanonicalValue::Uuid([83; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                            (
+                                "label",
+                                CanonicalValue::string("sev:critical").expect("label"),
+                            ),
+                        ],
+                    )],
+                ),
+                (
+                    "tickets".to_owned(),
+                    vec![row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("assignee_id", CanonicalValue::Uuid([7; 16])),
+                            ("title", CanonicalValue::string("Outage").expect("title")),
+                        ],
+                    )],
+                ),
+                (
+                    "assignees".to_owned(),
+                    vec![row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([7; 16])),
+                            (
+                                "display_name",
+                                CanonicalValue::string("On-Call").expect("name"),
+                            ),
+                        ],
+                    )],
+                ),
+            ]),
+        };
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("min_score".to_owned(), CanonicalValue::I64(80)),
+            (
+                "label_prefix".to_owned(),
+                CanonicalValue::string("sev:").expect("prefix"),
+            ),
+            ("status".to_owned(), open.clone()),
+            (
+                "order".to_owned(),
+                CanonicalValue::string("PriorityDesc").expect("order"),
+            ),
+        ]))
+        .expect("params");
+        let member = family
+            .select_name_with_presence(&[true], "PriorityDesc")
+            .expect("member");
+        let snapshot = execute_operational_page_in_snapshot(
+            member.program(),
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute triage workspace");
+        let Some(QueryResultValue::Many(tickets)) = snapshot.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(tickets.len(), 1);
+        assert_eq!(
+            tickets[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([10; 16]))
+        );
+        let Some(QueryResultValue::Many(assignees)) = snapshot.fields().get("assignees") else {
+            panic!("assignees missing");
+        };
+        assert_eq!(assignees.len(), 1);
+        let Some(QueryResultValue::AggregateMany(counts)) = snapshot.fields().get("status_counts")
+        else {
+            panic!("status_counts missing");
+        };
+        assert_eq!(counts.len(), 1);
+
+        // 2. Non-partition `status in $statuses` + mixed `priority desc, ticket_id asc` k-way merge
+        let multi_status_query = r#"
+query ActiveQueue(
+    $organization_id: Ticket.organization_id,
+    $statuses: Set<Ticket.status, 4>
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && status in $statuses
+        order by priority desc, ticket_id asc
+        take 5
+
+    return Found {
+        tickets: tickets { ticket_id status priority title }
+    }
+    outcomes Found
+}
+"#;
+        let queue_program = compile_query(
+            &parse_query(multi_status_query).expect("parse queue"),
+            &catalog,
+        )
+        .expect("compile multi-status mixed-order queue");
+        let mut queue_view = FakeView {
+            rows: BTreeMap::from([(
+                "tickets".to_owned(),
+                vec![
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("title", CanonicalValue::string("B").expect("title")),
+                        ],
+                    ),
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                            ("status", in_progress.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("title", CanonicalValue::string("A").expect("title")),
+                        ],
+                    ),
+                ],
+            )]),
+        };
+        let queue_params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "statuses".to_owned(),
+                CanonicalValue::list(vec![open, in_progress]).expect("statuses"),
+            ),
+        ]))
+        .expect("queue params");
+        let queue_snapshot =
+            execute_page_in_snapshot(&queue_program, &queue_params, None, &mut queue_view)
+                .expect("execute queue");
+        let Some(QueryResultValue::Many(queue_rows)) = queue_snapshot.fields().get("tickets")
+        else {
+            panic!("tickets missing");
+        };
+        assert_eq!(queue_rows.len(), 2);
+        assert_eq!(
+            queue_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        assert_eq!(
+            queue_rows[1].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002
+    #[test]
+    fn optional_money_and_filtered_aggregate_measures_execute() {
+        let contract = r#"
+contract BillingAggregates version 1 {
+  enum InvoiceStatus { Open, Paid, Void }
+  entity Invoice {
+    key (organization_id: uuid, invoice_id: uuid)
+    field status: InvoiceStatus
+    field amount: money<USD>
+    field discount: optional<money<USD>>
+    field seats: optional<i64>
+    field auto_pay: optional<bool>
+    index by_org_invoice (organization_id, invoice_id)
+  }
+  aggregate Invoices { root Invoice partition_by organization_id conflict_key (organization_id, invoice_id) }
+}
+"#;
+        let query = r#"
+query BillingSummary($organization_id: Invoice.organization_id) {
+    many invoices from Invoice
+        where organization_id == $organization_id
+        order by invoice_id asc
+        take 20
+    aggregate summary from invoices {
+        count() as total_invoices
+        count() where status == InvoiceStatus.Paid as paid_invoices
+        sum(amount) as gross_amount
+        sum(amount) where status == InvoiceStatus.Paid as paid_amount
+        sum(discount) as total_discount
+        mean(seats) as avg_seats
+        any(auto_pay) as any_autopay
+        all(auto_pay) as all_autopay
+    }
+    return Found {
+        summary: summary {
+            total_invoices paid_invoices gross_amount paid_amount
+            total_discount avg_seats any_autopay all_autopay
+        }
+    }
+    outcomes Found
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family =
+            compile_operational_query_family(&parse_query(query).expect("query"), &catalog)
+                .expect("family");
+        let program = family.select(&[]).expect("member").program();
+        let usd = riffdb_types::CurrencyCode::new("USD").expect("usd");
+        let spec = riffdb_types::DecimalSpec::new(38, 2).expect("spec");
+        let money = |cents: i128| {
+            CanonicalValue::Money(riffdb_types::Money::new(
+                usd,
+                riffdb_types::Decimal::new(spec, cents).expect("decimal"),
+            ))
+        };
+        let open = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("type"),
+            variant_id: riffdb_types::EnumVariantId::new(1).expect("variant"),
+        };
+        let paid = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("type"),
+            variant_id: riffdb_types::EnumVariantId::new(2).expect("variant"),
+        };
+        let mut view = FakeView {
+            rows: BTreeMap::from([(
+                "invoices".to_owned(),
+                vec![
+                    row(
+                        "Invoice",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("invoice_id", CanonicalValue::Uuid([1; 16])),
+                            ("status", paid.clone()),
+                            ("amount", money(15_000)),
+                            ("discount", money(1_500)),
+                            ("seats", CanonicalValue::I64(10)),
+                            ("auto_pay", CanonicalValue::Bool(true)),
+                        ],
+                    ),
+                    row(
+                        "Invoice",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("invoice_id", CanonicalValue::Uuid([2; 16])),
+                            ("status", open),
+                            ("amount", money(5_000)),
+                            ("discount", CanonicalValue::Null),
+                            ("seats", CanonicalValue::Null),
+                            ("auto_pay", CanonicalValue::Null),
+                        ],
+                    ),
+                    row(
+                        "Invoice",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("invoice_id", CanonicalValue::Uuid([3; 16])),
+                            ("status", paid),
+                            ("amount", money(25_000)),
+                            ("discount", money(2_500)),
+                            ("seats", CanonicalValue::I64(20)),
+                            ("auto_pay", CanonicalValue::Bool(true)),
+                        ],
+                    ),
+                ],
+            )]),
+        };
+        let params = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("params");
+        let snapshot = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute billing summary");
+        let Some(QueryResultValue::AggregateOne(summary)) = snapshot.fields().get("summary") else {
+            panic!("summary missing");
+        };
+        assert_eq!(
+            summary.fields().get("total_invoices"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(3)))
+        );
+        assert_eq!(
+            summary.fields().get("paid_invoices"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(2)))
+        );
+        assert_eq!(
+            summary.fields().get("gross_amount"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 45_000,
+                scale: 2,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("paid_amount"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 40_000,
+                scale: 2,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("total_discount"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 4_000,
+                scale: 2,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("avg_seats"),
+            Some(&QueryAggregateCell::ExactMean {
+                coefficient: 30,
+                scale: 0,
+                count: 2,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("any_autopay"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(true)))
+        );
+        assert_eq!(
+            summary.fields().get("all_autopay"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(true)))
+        );
+    }
+
+    // req: RQL-004, RQL-008, QRY-001, QRY-007
+    #[test]
+    fn grouped_aggregate_temporal_buckets_having_and_order_by_execute() {
+        let contract = r#"
+contract UsageTimeSeries version 1 {
+  entity UsageEvent {
+    key (organization_id: uuid, event_id: uuid)
+    field occurred_at: timestamp
+    field tokens: i64
+    index by_org_event (organization_id, event_id)
+  }
+  aggregate UsageEvents { root UsageEvent partition_by organization_id conflict_key (organization_id, event_id) }
+}
+"#;
+        let query = r#"
+query DailyUsageLeaderboard($organization_id: UsageEvent.organization_id) {
+    many events from UsageEvent
+        where organization_id == $organization_id
+        order by event_id asc
+        take 25
+    aggregate daily from events {
+        group by day(occurred_at) as day_bucket
+        count() as event_count
+        sum(tokens) as total_tokens
+        having event_count >= 2
+        order by total_tokens desc, day_bucket asc
+        take 2
+    }
+    return Found {
+        daily: daily { day_bucket event_count total_tokens }
+    }
+    outcomes Found
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family =
+            compile_operational_query_family(&parse_query(query).expect("query"), &catalog)
+                .expect("family");
+        let program = family.select(&[]).expect("member").program();
+        let day1 = 1_700_006_400_i64; // exact UTC midnight: 19676 * 86400
+        let day2 = day1 + 86_400;
+        let day3 = day2 + 86_400;
+        let day4 = day3 + 86_400;
+        let ts = |secs: i64| CanonicalValue::Timestamp(Timestamp::new(secs, 500).expect("ts"));
+        let mut view = FakeView {
+            rows: BTreeMap::from([(
+                "events".to_owned(),
+                vec![
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([1; 16])),
+                            ("occurred_at", ts(day1 + 120)),
+                            ("tokens", CanonicalValue::I64(100)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([2; 16])),
+                            ("occurred_at", ts(day1 + 3600)),
+                            ("tokens", CanonicalValue::I64(150)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([3; 16])),
+                            ("occurred_at", ts(day2 + 60)),
+                            ("tokens", CanonicalValue::I64(900)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([4; 16])),
+                            ("occurred_at", ts(day3 + 10)),
+                            ("tokens", CanonicalValue::I64(400)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([5; 16])),
+                            ("occurred_at", ts(day3 + 20)),
+                            ("tokens", CanonicalValue::I64(500)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([6; 16])),
+                            ("occurred_at", ts(day4 + 10)),
+                            ("tokens", CanonicalValue::I64(50)),
+                        ],
+                    ),
+                    row(
+                        "UsageEvent",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("event_id", CanonicalValue::Uuid([7; 16])),
+                            ("occurred_at", ts(day4 + 20)),
+                            ("tokens", CanonicalValue::I64(60)),
+                        ],
+                    ),
+                ],
+            )]),
+        };
+        let params = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("params");
+        let snapshot = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute daily usage leaderboard");
+        let Some(QueryResultValue::AggregateMany(rows)) = snapshot.fields().get("daily") else {
+            panic!("daily missing");
+        };
+        // 4 distinct days existed (> take 2), day2 filtered out by having event_count >= 2,
+        // remaining 3 days (day3=900, day1=250, day4=110) sorted desc by total_tokens and truncated to top 2!
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].fields().get("day_bucket"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Timestamp(
+                Timestamp::new(day3, 0).expect("day3")
+            )))
+        );
+        assert_eq!(
+            rows[0].fields().get("total_tokens"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 900,
+                scale: 0,
+            })
+        );
+        assert_eq!(
+            rows[1].fields().get("day_bucket"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Timestamp(
+                Timestamp::new(day1, 0).expect("day1")
+            )))
+        );
+        assert_eq!(
+            rows[1].fields().get("total_tokens"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 250,
+                scale: 0,
+            })
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-002
+    #[test]
+    fn saas_quantiles_collections_and_per_parent_rollups_execute() {
+        let contract = r#"
+contract ProjectSlaRollups version 1 {
+  enum TaskStatus { Open, Done }
+  entity Project {
+    key (organization_id: uuid, project_id: uuid)
+    field name: string<64>
+    index by_org_project (organization_id, project_id)
+  }
+  entity Task {
+    key (organization_id: uuid, task_id: uuid)
+    field project_id: uuid
+    field status: TaskStatus
+    field duration_ms: i64
+    field tag: string<32>
+    index by_project_task (organization_id, project_id, task_id)
+    reference project (organization_id, project_id) -> Project(organization_id, project_id)
+  }
+  aggregate Projects { root Project partition_by organization_id conflict_key (organization_id, project_id) }
+  aggregate Tasks { root Task partition_by organization_id conflict_key (organization_id, task_id) }
+}
+"#;
+        let query = r#"
+query ProjectRollup($organization_id: Project.organization_id) {
+    many projects from Project
+        where organization_id == $organization_id
+        order by project_id asc
+        take 5
+    many tasks from Task for each project in projects
+        where organization_id == $organization_id
+          && project_id == project.project_id
+        order by task_id asc
+        take 10 per project
+    aggregate task_stats from tasks per projects {
+        count() as total_tasks
+        count() where status == TaskStatus.Done as done_tasks
+        median(duration_ms) as p50_ms
+        p95(duration_ms) as p95_ms
+        first(tag) as first_tag
+        last(tag) as last_tag
+        stddev(duration_ms) as stddev_ms
+        collect_distinct(tag) as distinct_tags
+    }
+    return Found {
+        projects: projects {
+            project_id
+            name
+            task_stats {
+                total_tasks done_tasks p50_ms p95_ms
+                first_tag last_tag stddev_ms distinct_tags
+            }
+        }
+    }
+    outcomes Found
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family =
+            compile_operational_query_family(&parse_query(query).expect("query"), &catalog)
+                .expect("family");
+        let program = family.select(&[]).expect("member").program();
+        let task_status = catalog.enumeration("TaskStatus").expect("enum");
+        let open = CanonicalValue::Enum {
+            type_id: task_status.internal_id(),
+            variant_id: task_status.variant("Open").expect("Open"),
+        };
+        let done = CanonicalValue::Enum {
+            type_id: task_status.internal_id(),
+            variant_id: task_status.variant("Done").expect("Done"),
+        };
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                (
+                    "projects".to_owned(),
+                    vec![
+                        row(
+                            "Project",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("project_id", CanonicalValue::Uuid([10; 16])),
+                                ("name", CanonicalValue::string("Alpha").expect("name")),
+                            ],
+                        ),
+                        row(
+                            "Project",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("project_id", CanonicalValue::Uuid([20; 16])),
+                                ("name", CanonicalValue::string("EmptyBeta").expect("name")),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    "tasks".to_owned(),
+                    vec![
+                        row(
+                            "Task",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("task_id", CanonicalValue::Uuid([1; 16])),
+                                ("project_id", CanonicalValue::Uuid([10; 16])),
+                                ("status", done.clone()),
+                                ("duration_ms", CanonicalValue::I64(10)),
+                                ("tag", CanonicalValue::string("api").expect("tag")),
+                            ],
+                        ),
+                        row(
+                            "Task",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("task_id", CanonicalValue::Uuid([2; 16])),
+                                ("project_id", CanonicalValue::Uuid([10; 16])),
+                                ("status", open),
+                                ("duration_ms", CanonicalValue::I64(20)),
+                                ("tag", CanonicalValue::string("db").expect("tag")),
+                            ],
+                        ),
+                        row(
+                            "Task",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("task_id", CanonicalValue::Uuid([3; 16])),
+                                ("project_id", CanonicalValue::Uuid([10; 16])),
+                                ("status", done),
+                                ("duration_ms", CanonicalValue::I64(30)),
+                                ("tag", CanonicalValue::string("api").expect("tag")),
+                            ],
+                        ),
+                    ],
+                ),
+            ]),
+        };
+        let params = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("params");
+        let snapshot = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute project rollup");
+        let Some(QueryResultValue::Many(projects)) = snapshot.fields().get("projects") else {
+            panic!("projects missing");
+        };
+        assert_eq!(projects.len(), 2);
+        let alpha_stats = projects[0]
+            .nested_aggregate_rows("task_stats")
+            .expect("alpha task_stats");
+        assert_eq!(alpha_stats.len(), 1);
+        assert_eq!(
+            alpha_stats[0].fields().get("total_tasks"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(3)))
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("done_tasks"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(2)))
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("p50_ms"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::I64(20)))
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("p95_ms"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::I64(30)))
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("first_tag"),
+            Some(&QueryAggregateCell::Canonical(
+                CanonicalValue::string("api").expect("api")
+            ))
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("last_tag"),
+            Some(&QueryAggregateCell::Canonical(
+                CanonicalValue::string("api").expect("api")
+            ))
+        );
+        // stddev([10, 20, 30]) = floor(sqrt(200/3)) = 8
+        assert_eq!(
+            alpha_stats[0].fields().get("stddev_ms"),
+            Some(&QueryAggregateCell::ExactDecimal {
+                coefficient: 8,
+                scale: 0,
+            })
+        );
+        assert_eq!(
+            alpha_stats[0].fields().get("distinct_tags"),
+            Some(&QueryAggregateCell::Canonical(
+                CanonicalValue::list(vec![
+                    CanonicalValue::string("api").expect("api"),
+                    CanonicalValue::string("db").expect("db"),
+                ])
+                .expect("list")
+            ))
+        );
+
+        let beta_stats = projects[1]
+            .nested_aggregate_rows("task_stats")
+            .expect("beta task_stats");
+        assert_eq!(beta_stats.len(), 1);
+        assert_eq!(
+            beta_stats[0].fields().get("total_tasks"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(0)))
+        );
+        assert_eq!(
+            beta_stats[0].fields().get("p50_ms"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Null))
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007
+    #[test]
+    fn saas_complete_aggregations_compile_and_execute_end_to_end() {
+        optional_money_and_filtered_aggregate_measures_execute();
+        grouped_aggregate_temporal_buckets_having_and_order_by_execute();
+        saas_quantiles_collections_and_per_parent_rollups_execute();
+    }
 }
 
 #[cfg(test)]

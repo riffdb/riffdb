@@ -340,6 +340,11 @@ record with no front matter.
 | [0303](0303-ergonomic-generated-sdk-connection-outcome-helpers-and-causal-sessions.md) | Ergonomic Generated SDK Connection Outcome Helpers And Causal Sessions | Accepted | surface |
 | [0304](0304-offline-sdk-generation-role-coverage-diagnostics-and-dev-loop-ergonomics.md) | Offline SDK Generation Role Coverage Diagnostics And Dev Loop Ergonomics | Accepted | surface |
 | [0305](0305-zero-ceremony-dev-inspection-manifest-sync-and-tenant-dev-ergonomics.md) | Zero Ceremony Dev Inspection Manifest Sync And Tenant Dev Ergonomics | Accepted | surface |
+| [0306](0306-prometheus-otel-metrics-exposition-and-soak-flight-recorder.md) | Prometheus OTel Metrics Exposition And Soak Flight Recorder | Accepted | surface |
+| [0307](0307-real-world-riffql-planner-composition-k-way-merge-and-covering-generalization.md) | Real-World RiffQL Planner Composition K-Way Merge And Covering Generalization | Accepted | surface |
+| [0308](0308-cli-command-ergonomics-symbolic-entity-get-migrate-up-and-dev-exec.md) | CLI Command Ergonomics Symbolic Entity Get Migrate Up And Dev Exec | Accepted | surface |
+| [0309](0309-saas-complete-riffql-aggregations.md) | SaaS-Complete RiffQL Aggregations Filtered Measures Group Ordering Temporal Buckets Quantiles And Nested Rollups | Accepted | surface |
+| [0310](0310-audited-failover-orchestration-standby-client-routing-and-helm-follower-deployment.md) | Audited failover orchestration, standby client routing, and Helm follower deployment | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

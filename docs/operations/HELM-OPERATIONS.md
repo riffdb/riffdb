@@ -64,6 +64,29 @@ operator must first provision distinct `applicationSecretName` and
 Jobs execute only `server health`, from separate pods, through service DNS.
 They do not install an application or mint authority.
 
+Optional pod-local telemetry (`server.telemetry.metrics.enabled` and
+`server.telemetry.flightRecorder.enabled`) is also disabled by default. When
+enabled, `metrics_listen` binds strictly to `127.0.0.1:<port>` inside the pod
+for pod-local sidecar or `kubectl exec` scraping (never exposed on the cluster
+`Service`), and `telemetry_flight_recorder` writes bounded periodic NDJSON
+snapshots to `/var/lib/riffdb/data/telemetry-flight.ndjson` inside the writable
+data volume so `riffdb telemetry summarize /var/lib/riffdb/data/telemetry-flight.ndjson`
+can inspect latency percentiles and saturation in place.
+
+## Follower deployment
+
+To deploy a follower release that replicates from a primary release, set
+`server.mode: follower` and populate `server.replicationSource` (`endpoint`,
+`serverName`, `tlsTrustRootFile`, `credentialSecretKey`, `database`,
+`databaseId`, `historyIncarnation`, `leadershipEpoch`, and `holdId`). The
+follower's external server Secret must include the replication-stream bearer
+token under `server.replicationSource.credentialSecretKey` (default
+`replication-source.credential`), which the `protect-server-secrets` init
+container copies into `/run/riffdb-protected/` with `0400` permissions. The
+chart refuses follower rendering if any required `replicationSource` identity
+field is omitted. See [Follower administration](FOLLOWER-ADMINISTRATION.md) for
+hold registration, status inspection, and audited failover.
+
 ## Drain
 
 Stop new application, MCP, and administrative submissions at ingress, then

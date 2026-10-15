@@ -46,7 +46,7 @@ until queue.empty?
   key = path.join(" ")
   next if seen[key]
 
-  abort "CLI help tree exceeds 128 commands" if seen.length >= 128
+  abort "CLI help tree exceeds 160 commands" if seen.length >= 160
   abort "CLI help tree exceeds four nested command levels" if path.length > 4
   seen[key] = true
 

@@ -74,14 +74,25 @@ continuation before the predicate and silently omit matches.
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice. The additive
 finite partition-set route is not a join: it replicates one compiler-sealed
-local index plan over caller-submitted bounded routes in one read view. Uniform
-orders use a bounded k-way heap; mixed physical directions use a bounded
-complete-group path. Both produce one globally ordered page and one opaque
-cursor only after whole-set policy and epoch observation succeeds.
-Compiler-proved exact predicates may consume index components between the
-partition route and order suffix. Those values form each local physical prefix
-and are applied before merge, limit, and cursor selection; an absent compatible
-covering index remains a typed `RDB-QP003` refusal rather than a residual filter.
+local index plan over caller-submitted bounded routes in one read view. The same
+bounded multi-stream operator also executes single-partition non-partition
+`field in $set` prefixes followed by trailing `order by` index columns and
+single-partition mixed `asc`/`desc` order suffixes. Uniform orders use a bounded
+k-way heap; mixed physical directions use a bounded complete-group path. Both
+produce one globally ordered page and one opaque cursor only after whole-set
+policy and epoch observation succeeds. Compiler-proved exact predicates may
+consume index components between the partition route and order suffix. Those
+values form each local physical prefix and are applied before merge, limit, and
+cursor selection; an absent compatible covering index remains a typed
+`RDB-QP003` refusal rather than a residual filter.
+
+When a declared index includes `cover (...)` fields and covers every predicate,
+order, dependency, and selected or aggregated field of an ordinary `Index` step
+(across single-step or multi-binding queries, singular `one`/`maybe` lookups, or
+operational `aggregate` source bindings) on an entity without row-read policy,
+the compiler seals a per-step `CoveredResultLayoutV1`. Covered steps reconstruct
+rows directly from index entries (`scan_covered`) without primary-key point
+reads and charge zero point reads in the whole-query cost vector.
 
 One-level expansion repeats a compiler-selected same-partition index access for
 each row of an earlier bounded driver. Planning proves the driver maximum,
@@ -160,6 +171,19 @@ ceilings independently from its source row, group, scan, cell, and output
 bounds. The reference and columnar evaluators consume those resources across
 the whole result, apply row policy before contribution, and withhold every
 aggregate cell if any dimension is exhausted.
+
+When an operational aggregate declares per-measure `where` filters, UTC
+temporal grouping buckets (`hour`, `day`, `week`, `month`, `year`), `having`
+post-aggregation predicates, `order by` sorting with optional top-N `take`,
+exact quantiles (`median`/`p50`, `p90`, `p95`, `p99`), `first`/`last`, fixed-scale
+`stddev` (`variance` alias), bounded `collect`/`collect_distinct` lists, or a
+`per <parent>` nested rollup over a `for each` expanded binding, the compiler
+includes every referenced source, filter, and grouping field in the step's
+selected fields and whole-query authorization union, scales projected cells and
+encoded result bytes by the parent driver maximum for `per <parent>` rollups and
+by the 256-element distinct ceiling for `collect`/`collect_distinct`, and
+encodes all additional clauses as backward-compatible trailing tags so existing
+version-2 and version-8 plan hashes remain unchanged.
 
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded

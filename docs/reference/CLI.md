@@ -14,6 +14,7 @@ Usage: riffdb [OPTIONS] <COMMAND>
 Commands:
   lsp          Starts the bounded compiler-backed Language Server Protocol service on stdio
   outbox       Inspects the stopped server's protected local outbox destination
+  telemetry    Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
@@ -91,6 +92,26 @@ Options:
   -h, --help                               Print help
 ```
 
+### `riffdb telemetry`
+
+```text
+Summarizes bounded flight-recorder telemetry NDJSON logs from soak and endurance runs
+
+Usage: riffdb telemetry [OPTIONS] <COMMAND>
+
+Commands:
+  summarize  Aggregates a bounded flight-recorder NDJSON file into throughput, latency, and byte growth metrics
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 ### `riffdb init`
 
 ```text
@@ -138,6 +159,8 @@ Options:
           Regenerates configured SDK targets in the same invocation
       --database <DATABASE>
 
+      --migrate
+          Runs staged contract migration check and confirmed apply when the successor requires migration
       --output <human|json>
           [possible values: human, json]
       --max-attempts <1..10>
@@ -241,6 +264,7 @@ Commands:
   plan       Prints the exact read-only migration plan for the project lock
   check      Runs one read-only server preflight for the exact project migration
   apply      Applies one exact project migration after hash confirmation
+  up         Runs server preflight check and confirmed apply in one step for the exact project migration
   operation  Observes one caller-stable project migration operation
 
 Options:
@@ -324,6 +348,7 @@ Commands:
   plan       Prints the exact read-only migration plan for a locked application
   check      Runs one read-only server preflight for the exact locked migration
   apply      Applies one exact locked migration after explicit hash confirmation
+  up         Runs server preflight check and confirmed apply in one step for the exact locked migration
   operation  Observes one caller-stable migration operation after the database reopens
 
 Options:
@@ -360,12 +385,14 @@ Options:
           [possible values: human, json]
       --run
           Runs the repository's generated application against the local server
-      --go-runner-package <PATH>
-          Repository-relative Go main-package directory used by `--run`
+      --exec <COMMAND>
+          Runs an arbitrary command against the ephemeral local server and tears down on exit
       --max-attempts <1..10>
 
       --credential-file <PATH>
 
+      --go-runner-package <PATH>
+          Repository-relative Go main-package directory used by `--run`
       --seed
 
       --seed-dir <DIRECTORY>
@@ -608,6 +635,8 @@ Manages audited follower retention policy and permanent primary fencing
 Usage: riffdb follower [OPTIONS] <COMMAND>
 
 Commands:
+  status         Inspects replication role, frontiers, lag sequences, and registered followers
+  failover       Fences the primary and promotes this follower in one audited cutover sequence
   promote        Promotes a follower using the configured source's authenticated fence proof
   fence-primary  Permanently fences this primary; it may remain unavailable if promotion fails
   register       Registers or exactly replays the selected immutable policy
@@ -791,6 +820,26 @@ Options:
   -h, --help                               Print help
 ```
 
+#### `riffdb telemetry summarize`
+
+```text
+Aggregates a bounded flight-recorder NDJSON file into throughput, latency, and byte growth metrics
+
+Usage: riffdb telemetry summarize [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 #### `riffdb agent init`
 
 ```text
@@ -861,6 +910,24 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                                   Print help
+```
+
+#### `riffdb migrate up`
+
+```text
+Runs server preflight check and confirmed apply in one step for the exact project migration
+
+Usage: riffdb migrate up [OPTIONS]
+
+Options:
+      --config <PATH>
+      --operation-id <UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
 ```
 
 #### `riffdb migrate operation`
@@ -1221,6 +1288,26 @@ Options:
   -h, --help                                   Print help
 ```
 
+#### `riffdb migration up`
+
+```text
+Runs server preflight check and confirmed apply in one step for the exact locked migration
+
+Usage: riffdb migration up [OPTIONS]
+
+Options:
+      --application <APPLICATION_SOURCE>   [default: riffdb.application.json]
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --lock <APPLICATION_LOCK>            [default: riffdb.application.lock.json]
+      --database <DATABASE>
+      --operation-id <UUIDV7>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
 #### `riffdb migration operation`
 
 ```text
@@ -1343,7 +1430,7 @@ Options:
 #### `riffdb command run`
 
 ```text
-Usage: riffdb command run [OPTIONS] --input <JSON_INPUT> <COMMAND_NAME>
+Usage: riffdb command run [OPTIONS] <COMMAND_NAME>
 
 Arguments:
   <COMMAND_NAME>
@@ -1353,16 +1440,20 @@ Options:
 
       --input <JSON_INPUT>
 
+      --arg <KEY=VALUE>
+          Inline command input field as KEY=JSON_OR_STRING_VALUE (repeatable)
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
-      --expected-version <VERSION>
-
-      --application <RIFFDB.APPLICATION.JSON>
-          Exact application source used to preflight compiled collection bounds
       --database <DATABASE>
+
+      --input-json <JSON_OBJECT>
+          Inline command input fields as a JSON object string
+      --expected-version <VERSION>
 
       --output <human|json>
           [possible values: human, json]
+      --application <RIFFDB.APPLICATION.JSON>
+          Exact application source used to preflight compiled collection bounds
       --max-attempts <1..10>
 
       --credential-file <PATH>
@@ -1415,23 +1506,40 @@ Options:
 #### `riffdb entity get`
 
 ```text
-Usage: riffdb entity get [OPTIONS] --entity-key <BASE64_ENTITY_KEY> <ENTITY_TYPE_ID>
+Usage: riffdb entity get [OPTIONS] <ENTITY_TYPE_ID_OR_NAME>
 
 Arguments:
-  <ENTITY_TYPE_ID>
+  <ENTITY_TYPE_ID_OR_NAME>
 
 Options:
       --config <PATH>
+
       --entity-key <BASE64_ENTITY_KEY>
-      --contract-lineage <LINEAGE>
+
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
-      --contract-version <VERSION>
+
+      --key <FIELD=VALUE>
+          Symbolic primary-key field as FIELD=JSON_OR_STRING_VALUE (repeatable)
       --database <DATABASE>
-      --field <FIELD_ID>
-      --output <human|json>                [possible values: human, json]
+
+      --key-json <JSON_OBJECT>
+          Symbolic primary-key fields as a JSON object string
+      --contract-source <PATH>
+          Contract or application source used to resolve symbolic entity, key, and field names
+      --output <human|json>
+          [possible values: human, json]
+      --contract-lineage <LINEAGE>
+
       --max-attempts <1..10>
+
+      --contract-version <VERSION>
+
       --credential-file <PATH>
-  -h, --help                               Print help
+
+      --field <FIELD_ID_OR_NAME>
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb commit show`
@@ -1850,16 +1958,17 @@ Options:
 #### `riffdb query check`
 
 ```text
-Usage: riffdb query check [OPTIONS] <RIFFQL_SOURCE>
+Usage: riffdb query check [OPTIONS] [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Arguments:
-  <RIFFQL_SOURCE>
+  [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Options:
       --config <PATH>
+      --inline <RIFFQL>                    Checks an inline read-only RiffQL query string
       --contract-lineage <LINEAGE>
-      --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --contract-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -1870,16 +1979,17 @@ Options:
 #### `riffdb query explain`
 
 ```text
-Usage: riffdb query explain [OPTIONS] <RIFFQL_SOURCE>
+Usage: riffdb query explain [OPTIONS] [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Arguments:
-  <RIFFQL_SOURCE>
+  [RIFFQL_SOURCE_OR_QUERY_NAME]
 
 Options:
       --config <PATH>
+      --inline <RIFFQL>                    Explains an inline read-only RiffQL query string
       --contract-lineage <LINEAGE>
-      --contract-version <VERSION>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --contract-version <VERSION>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
@@ -2324,6 +2434,67 @@ Options:
 
       --credential-file <PATH>
 
+  -h, --help
+          Print help
+```
+
+#### `riffdb follower status`
+
+```text
+Inspects replication role, frontiers, lag sequences, and registered followers
+
+Usage: riffdb follower status [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb follower failover`
+
+```text
+Fences the primary and promotes this follower in one audited cutover sequence
+
+Usage: riffdb follower failover [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --registration-generation <REGISTRATION_GENERATION>
+
+Options:
+      --config <PATH>
+
+      --database-id <SOURCE_DATABASE_UUIDV7>
+
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --history-incarnation <NONZERO_U64>
+
+      --database <DATABASE>
+
+      --leadership-epoch <NONZERO_U64>
+
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+
+      --output <human|json>
+          [possible values: human, json]
+      --max-attempts <1..10>
+
+      --registration-generation <REGISTRATION_GENERATION>
+
+      --credential-file <PATH>
+
+      --primary-endpoint <URI>
+          Primary endpoint URI to fence before promoting this follower
+      --primary-config <PATH>
+          Operator client configuration file targeting the primary to fence
+      --primary-credential-file <PATH>
+          Optional credential file for fencing the primary (defaults to primary config or current credential)
+      --operation-id <PROMOTION_OPERATION_UUIDV7>
+          Promotion operation UUIDv7 (minted automatically when omitted)
+      --fence-operation-id <FENCE_OPERATION_UUIDV7>
+          Primary fence operation UUIDv7 (minted automatically when omitted)
   -h, --help
           Print help
 ```

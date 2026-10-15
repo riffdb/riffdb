@@ -2132,6 +2132,16 @@ impl ServerProcess {
         if query_execute_diagnostics {
             command.env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1");
         }
+        if std::env::var("RIFFDB_APP_BASELINE_FLIGHT_RECORDER").as_deref() == Ok("1")
+            && std::env::var_os("RIFFDB_TELEMETRY_FLIGHT_RECORDER").is_none()
+        {
+            command
+                .arg("--telemetry-flight-recorder")
+                .arg(database_path.with_file_name("telemetry-flight.ndjson"));
+            if std::env::var_os("RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS").is_none() {
+                command.arg("--telemetry-flight-interval-ms").arg("1000");
+            }
+        }
         if let Some(marker) = barrier_marker {
             command.env(EXTERNAL_KILL_BARRIER_ENV, marker);
         }

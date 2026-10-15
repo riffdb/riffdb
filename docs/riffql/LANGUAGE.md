@@ -14,16 +14,17 @@ the compiler must prove a reviewed maximum. `MAX` may be as large as 65,534;
 the compiler still refuses a query whose independently bounded result bytes,
 cost, authority, provider work, or transport envelope cannot support it.
 
-`one` and `maybe` are primary-key point reads: their predicates must constrain
-the target entity's complete primary key. A secondary index does not satisfy a
-singular binding. For a singular lookup by an external identifier such as a
-slug, declare a small route entity keyed by that identifier, point-read the
-route, and then point-read the target entity through its stored key. This
-makes the cardinality proof explicit and prevents data-dependent scans.
+`one` and `maybe` are partition-local point or unique-key reads: their
+predicates must constrain either the target entity's complete primary key or
+every field of a declared same-partition `unique` key index with `==` (and no
+`order by`). When a covering index on those same fields is also declared, the
+compiler prefers it automatically. For a singular lookup across partitions,
+declare a small route entity keyed by that identifier, point-read the route,
+and then point-read the target entity through its stored key.
 
-One deliberately narrow collection dependency is available for operational
-junction reads. An earlier bounded `many` field may be consumed by `in` only to
-supply one component of a later `many` binding's complete primary key:
+Two bounded collection dependencies are available for operational reads. First,
+an earlier bounded `many` field in canonical ascending key order may be consumed
+directly by `in` for junction reads:
 
 ```riffql
 many ticket_labels from TicketLabel
@@ -40,20 +41,32 @@ many labels from Label
     else IntegrityFailure
 ```
 
-The target bound cannot exceed the source bound. Both accesses must remain in
-one partition, source and target keys must be in canonical ascending order, and
-every target must exist. An empty source produces an empty list; a missing
-target selects the declared `else` outcome. Collection-as-scalar use, non-key
-fan-out, nested per-row collections, and Cartesian products are rejected.
+Second, when hydrating parent or foreign-key records from an earlier bounded
+`many` binding whose `order by` is chosen for display (such as `updated_at desc`)
+or whose foreign-key field may contain duplicates or `null` values, wrap the
+source path in `distinct(...)`:
 
-The source collection must be a complete ordered set of target keys: its
-`order by` is exactly the consumed field, ascending. If the source model allows
-the same target key more than once and therefore needs a tie-breaker such as
-`line_id`, it is not a dependent-key set and is rejected with `RDB-QP007`.
-Model one line per product when that is the domain invariant, denormalize the
-small immutable display field onto the line, or use a separately justified
-projection. RiffDB does not silently deduplicate, reorder, or issue per-row
-reads because each would change declared cardinality or hide work.
+```riffql
+many tickets from Ticket
+    where organization_id == $organization_id
+    order by updated_at desc, ticket_id desc
+    take 50
+
+many assignees from User
+    where organization_id == $organization_id
+      && user_id in distinct(tickets.assignee_id)
+    take 50
+```
+
+In both forms, the target bound cannot exceed the source bound and both accesses
+must remain in one partition. Direct `in binding.field` requires the source
+collection to be ordered by the consumed field ascending and requires every
+target to exist (selecting the declared `else` outcome if missing).
+`in distinct(binding.field)` skips `null` values on optional foreign keys,
+sorts and deduplicates present keys in canonical ascending target-key order
+before executing the bounded point batch, and makes `else` and target `order by`
+optional. Collection-as-scalar use, non-key fan-out, nested per-row
+collections, and Cartesian products are rejected.
 
 ```riffql
 query OpenTickets($tenant: TenantId, $limit: Limit<499> = 25) {
@@ -95,8 +108,8 @@ compiler-sealed `matching` shapes and the optional fixed `riff_bm25_v1` order;
 see [Tokenized Text Search](TOKENIZED-TEXT.md). Candidate language V11 adds
 complete-before-order set sources, including declared long-value exact pattern
 providers; see [Long-Value Pattern Search](LONG-PATTERN.md). RiffQL has no
-mutation, SQL escape, function call, recursion,
-loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
+mutation, SQL escape, arbitrary function call, recursion,
+loop, callback, clock, randomness, network, filesystem, unrestricted
 scan, or arbitrary join.
 
 The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
@@ -239,10 +252,15 @@ continue to use one whole-request scan ceiling.
 
 The compiler proves the relationship mapping, common partition parameter,
 declared source index, exact key type, finite source count, and exactly one root
-`in` consumer. Candidate names, sources, operators, indexes, and budgets do not
-appear in SDK or MCP schemas. They are immutable module/plan/role identity,
-not request data. This is bounded same-partition existence filtering, not a
-general join, recursive query, caller-selected plan, or runtime optimizer.
+`in` consumer. Ordinary index-backed candidate sources accept exact equality as
+well as the closed operational predicate set (`!=`, `<`, `<=`, `>`, `>=`,
+bounded `in`, `prefix` over `text_key(...)`, and `is null`, `is not null`, or
+`exists` over `presence(...)`) when the declared source index prefix proves the
+predicate before projecting the root key. Candidate names, sources, operators,
+indexes, and budgets do not appear in SDK or MCP schemas. They are immutable
+module/plan/role identity, not request data. This is bounded same-partition
+existence filtering, not a general join, recursive query, caller-selected plan,
+or runtime optimizer.
 
 ## Bounded one-to-many expansion (language V14)
 
@@ -337,13 +355,16 @@ many experiments from Experiment
 ```
 
 The family must declare every variant of its contract enum exactly once and is
-limited to 32 members. The compiler expands each member before deployment and
-checks its fields, directions, null placement, unique tie-breaker, authority,
-cost, and candidate/root semantics independently. The service resolves the
-enum to a compiled member before storage work. Generated Rust, Go, Python,
-TypeScript, MCP, CLI, gRPC, local, and remote paths carry only that closed enum;
-there is no public field list, expression, index hint, collation, direction, or
-tie-breaker input.
+limited to 32 total compiled members (`2^k * |variants| <= 32`). Order families
+may compose with up to eight `when $param { ... }` optional predicates; the
+compiler expands every `(presence_mask, order_variant)` combination before
+deployment and checks its fields, directions, null placement, unique
+tie-breaker, authority, cost, and candidate/root semantics independently. The
+service resolves the submitted presence bits and enum variant to one compiled
+member before storage work. Generated Rust, Go, Python, TypeScript, MCP, CLI,
+gRPC, local, and remote paths carry only the declared optional parameters and
+closed enum; there is no public field list, expression, index hint, collation,
+direction, or tie-breaker input.
 
 Order families use additive RiffQL V12, query-family IR V15, and module V15.
 A successful result reports the complete finite family's compiler identity,
@@ -590,14 +611,20 @@ on `relation` and `user` proves both `order by relation, user, document_id` and,
 after `relation == $relation`, `order by user, document_id`. Binary equality
 compares exact UTF-8; Unicode-fold equality compares the frozen folded bytes.
 
-Bounded `in` may consume one declared text-key component when that component is
-also the first remaining order term. Each normalized set member becomes one
-exact profile byte prefix; the complete set shares one page limit, scan budget,
-plus-one continuation probe, and opaque cursor. Submitted sets are sorted and
-deduplicated once, and an empty set returns an exact empty page without storage
-work. Multiple `in` dimensions and an `in` predicate followed by another
-filtered index component are rejected rather than forming a Cartesian prefix
-product or a residual filter.
+Bounded `in` may consume one declared index component either when that component
+is the first remaining order term or when it is a non-partition prefix component
+followed by the remaining index `order by` suffix (for example,
+`status in $statuses` followed by `order by updated_at desc, ticket_id desc` on
+`(organization_id, status, updated_at, ticket_id)`). When `in` precedes trailing
+order columns, the executor performs a bounded k-way merge across the distinct
+canonical set values with one shared page limit, scan budget, and opaque cursor.
+Single-partition bindings may also declare mixed `asc`/`desc` directions across
+the ordered index suffix, executing a bounded in-memory group merge within the
+Whole-request scan ceiling. Submitted sets are sorted and deduplicated once, and
+an empty set returns an exact empty page without storage work. Multiple
+non-partition `in` dimensions in one binding and an `in` predicate followed by
+another filtered index component remain rejected rather than forming a Cartesian
+prefix product or a residual filter.
 
 The ordinary executable component matrix is closed: canonical components
 support exact equality, bounded membership at the first remaining order term,
@@ -758,26 +785,55 @@ language version 8 is selected when a query uses any of:
 - `count_distinct(field)`, which includes `NoValue` as one exact typed value;
 - `count_distinct_present(field)`, which excludes `NoValue`;
 - `mean(field)`, which returns `ExactMeanV1 { total, count }` without division,
-  rounding, or floating point; or
-- `any(field)` and `all(field)` over required Boolean fields.
+  rounding, or floating point;
+- `any(field)` and `all(field)` over required or optional Boolean fields (`bool`
+  and `bool?`, skipping `NoValue`);
+- `sum(field)` and `mean(field)` over optional numeric fields (`i64?`, `u64?`,
+  `decimal<P,S>?`) and fixed-currency `money<C>` / `money<C>?` fields (widened
+  to `decimal<39,2>` at fixed scale 2, skipping `NoValue`);
+- conditional per-measure `where <predicate>` filters (`count() where status ==
+  TicketStatus.Open as open_count`, `sum(amount) where ... as ...`);
+- deterministic UTC temporal grouping buckets `hour(ts)`, `day(ts)`, `week(ts)`
+  (ISO Monday 00:00:00 UTC), `month(ts)`, and `year(ts)` in `group by` with
+  optional `as <alias>`, plus `as <alias>` on plain group keys and aggregate
+  `return` field selections;
+- post-aggregation `having <predicate>` filters over group keys and measures,
+  `order by <key_or_measure> asc|desc [nulls first|last]` sorting, and top-N
+  `take <N>` truncation when `order by` is declared;
+- exact nearest-rank order statistics `median(field)` (or `p50(field)`),
+  `p90(field)`, `p95(field)`, and `p99(field)` over non-null ordered scalars;
+- source-order positional selectors `first(field)` and `last(field)` over
+  non-null scalars;
+- exact fixed-scale population standard deviation `stddev(field)` (or parser
+  alias `variance(field)`) over numeric and `money<C>` fields via checked
+  integer square root (`u128::isqrt`) without floating point;
+- bounded scalar collections `collect(field)` and `collect_distinct(field)`
+  returning `List<T>` capped by the 256-element per-measure budget; or
+- per-parent nested rollups `aggregate <name> from <child_binding> per <parent>`
+  folding a `for each <item> in <parent>` expanded binding per parent row and
+  nesting the rollup inside `<parent> { ... }` in `return`.
 
 Function names, input fields, aliases, grouping keys, and the source binding
 are source declarations; callers cannot submit any of them at runtime.
 
-This syntax and its version-3 query-module representation are executable for
-named queries. Finite-family compilation resolves every grouping and
-measure field, derives result types, includes all source fields in the
-authorization union, clamps grouped output to the source row limit, and seals
-the descriptors and cost ceiling into module identity. The ordinary version-1
-compiler still rejects aggregate declarations with `RDB-QP008`.
+This syntax and its version-3/version-11 query-module representations are
+executable for named queries. Finite-family compilation resolves every grouping,
+filter, `having`, `order by`, and measure field, derives result types, includes
+all source fields in the authorization union, clamps grouped output to the
+source row limit, and seals the descriptors and cost ceiling into module
+identity. The ordinary version-1 compiler still rejects aggregate declarations
+with `RDB-QP008`.
 
 The selected source access and every aggregate fold run inside the same
 authoritative read snapshot. `count` and `sum` return zero for an empty whole
-set; `min` and `max` return absence. Integer sums and fixed-decimal sums use a
-checked signed 128-bit accumulator and cross the public boundary as a decimal
-with the source scale and no false precision assertion. Overflow, group-bound
-exhaustion, fuel exhaustion, or a malformed backend row withholds the complete
-query result—there is no partial aggregate response.
+set (or an empty per-parent rollup); `min`, `max`, `median`/`p50`..`p99`,
+`first`, and `last` return absence; `collect` and `collect_distinct` return an
+empty list. Integer, fixed-decimal, and `money<C>` sums and `stddev` use
+checked 128-bit integer arithmetic and cross the public boundary as an exact
+decimal with the source scale (`2` for `money<C>`) and no floating-point
+approximation. Overflow, group-bound exhaustion, fuel exhaustion, or a
+malformed backend row withholds the complete query result—there is no partial
+aggregate response.
 
 The exact aggregate core independently bounds admitted rows, groups, distinct
 values per measure/group, partial-state bytes, checked arithmetic operations,
@@ -785,13 +841,18 @@ scans, result cells, and encoded output. Empty distinct and present counts are
 zero; empty `mean` is `{ total: 0, count: 0 }`; empty `any` is `false`; and
 empty `all` is `true`. A bound or arithmetic failure refuses the whole query.
 
-Grouped rows are ordered by the canonical encoded group key and their count is
-clamped by the source `take` value, including a submitted `Limit`. Version 1
-requires aggregate result names and selected aggregate field names to remain
-the declaration names; renaming either is rejected at compile time rather than
-accepted without a sealed projection mapping. Aggregate live watches remain a
-separate future surface: current reactive compilation accepts only an ordinary
-single access program and cannot substitute one operational-family member.
+Grouped rows are ordered by the declared `order by` clause (with canonical
+group-key tie-breaking) or by the canonical encoded group key when `order by` is
+omitted. Their count is clamped by the source `take` value (including a
+submitted `Limit`), by the product of the grouping keys' finite
+`enum`/`bool`/`optional` domains when the source `take` exceeds 256, or by an
+explicit `group by ... take <N>` cap. When `group by` is paired with `order by`,
+`take <N>` truncates the sorted groups (after `having`) to the top `N`; without
+`order by`, exceeding an explicit `group by ... take <N>` cap at runtime
+withholds the complete aggregate result rather than silently truncating
+unordered groups. Aggregate live watches remain a separate future surface:
+current reactive compilation accepts only an ordinary single access program and
+cannot substitute one operational-family member.
 
 ## Symbolic catalog schema
 

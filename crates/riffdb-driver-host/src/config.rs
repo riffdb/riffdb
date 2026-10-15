@@ -39,28 +39,35 @@ impl DriverRuntime {
             .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let database = DatabaseAlias::new(document.application.database.clone())
             .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-        let endpoint = CanonicalHttpsEndpoint::parse(&document.remote.endpoint)
-            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-        let trust_root = ProtectedFilePath::new(checked_absolute(&document.remote.tls_trust_root)?)
-            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
-        let identity = TlsServerIdentity::parse(&document.remote.tls_server_name)
-            .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
         let pool_connections = NonZeroU32::new(document.remote.pool_connections)
             .filter(|value| value.get() <= 16)
             .ok_or(DriverRuntimeError::InvalidConfiguration)?;
         let streams = NonZeroU32::new(document.remote.streams_per_connection)
             .filter(|value| value.get() <= 256)
             .ok_or(DriverRuntimeError::InvalidConfiguration)?;
-        let tls = TlsClientConfig::new(
-            endpoint,
-            trust_root,
-            identity,
-            Duration::from_secs(5),
-            Duration::from_secs(30),
+        let tls = build_remote_tls(
+            &document.remote.endpoint,
+            &document.remote,
             pool_connections,
             streams,
-        )
-        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+        )?;
+        if document.remote.standby_endpoints.len() > 4
+            || document.remote.read_replica_endpoints.len() > 4
+        {
+            return Err(DriverRuntimeError::InvalidConfiguration);
+        }
+        let standby_tls = document
+            .remote
+            .standby_endpoints
+            .iter()
+            .map(|endpoint| build_remote_tls(endpoint, &document.remote, pool_connections, streams))
+            .collect::<Result<Vec<_>, _>>()?;
+        let read_replica_tls = document
+            .remote
+            .read_replica_endpoints
+            .iter()
+            .map(|endpoint| build_remote_tls(endpoint, &document.remote, pool_connections, streams))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let lock = read_checked(
             &checked_absolute(&document.application.lock_file)?,
@@ -89,9 +96,10 @@ impl DriverRuntime {
         let credential = load_protected_bearer_credential(&credential_path)
             .map_err(|_| DriverRuntimeError::CredentialUnavailable)?;
         let metadata = CallMetadata::authenticated(credential).with_database(database);
-        let pool = DriverPool::connect_verified_tls(&tls)
-            .await
-            .map_err(|_| DriverRuntimeError::RemoteUnavailable)?;
+        let pool =
+            DriverPool::connect_verified_tls_with_topology(&tls, &standby_tls, &read_replica_tls)
+                .await
+                .map_err(|_| DriverRuntimeError::RemoteUnavailable)?;
         pool.verify_remote_identity(&catalog, &metadata)
             .await
             .map_err(|_| DriverRuntimeError::IdentityMismatch)?;
@@ -120,6 +128,30 @@ impl DriverRuntime {
             .await
             .map_err(|_| DriverRuntimeError::SocketUnavailable)
     }
+}
+
+fn build_remote_tls(
+    raw_endpoint: &str,
+    remote: &RemoteSection,
+    pool_connections: NonZeroU32,
+    streams: NonZeroU32,
+) -> Result<TlsClientConfig, DriverRuntimeError> {
+    let endpoint = CanonicalHttpsEndpoint::parse(raw_endpoint)
+        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+    let trust_root = ProtectedFilePath::new(checked_absolute(&remote.tls_trust_root)?)
+        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+    let identity = TlsServerIdentity::parse(&remote.tls_server_name)
+        .map_err(|_| DriverRuntimeError::InvalidConfiguration)?;
+    TlsClientConfig::new(
+        endpoint,
+        trust_root,
+        identity,
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+        pool_connections,
+        streams,
+    )
+    .map_err(|_| DriverRuntimeError::InvalidConfiguration)
 }
 
 fn hex(bytes: &[u8; 32]) -> String {
@@ -157,6 +189,10 @@ struct ApplicationSection {
 #[serde(deny_unknown_fields)]
 struct RemoteSection {
     endpoint: String,
+    #[serde(default)]
+    standby_endpoints: Vec<String>,
+    #[serde(default)]
+    read_replica_endpoints: Vec<String>,
     tls_trust_root: String,
     tls_server_name: String,
     credential_file: String,

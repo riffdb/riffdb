@@ -54,6 +54,11 @@ teardown() {
     done
     stop_pid "$(jq -r '.server_pid // 0' "$state_path")"
     stop_pid "$(jq -r '.stdin_keeper_pid // 0' "$state_path")"
+    if [[ -s "$environment_root/metrics/telemetry-flight.ndjson" && -x "$environment_root/bin/riffdb" ]]; then
+        "$environment_root/bin/riffdb" telemetry summarize \
+            "$environment_root/metrics/telemetry-flight.ndjson" \
+            --output json >"$environment_root/metrics/telemetry-summary.json" 2>/dev/null || true
+    fi
     jq -nS \
         --arg schema riffdb.alpha-endurance-environment-stop/v1 \
         --arg state_sha256 "$(sha256sum "$state_path" | cut -d' ' -f1)" \
@@ -227,6 +232,8 @@ cat >"$environment_root/riffdbd.toml" <<EOF
 audience = "riffdb-alpha-endurance"
 capability_keys = "$environment_root/capability.keys"
 idempotency_keys = "$environment_root/idempotency.keys"
+telemetry_flight_recorder = "$environment_root/metrics/telemetry-flight.ndjson"
+telemetry_flight_interval_ms = 10000
 
 [server.application_listener]
 mode = "direct_tls"

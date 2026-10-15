@@ -44,6 +44,16 @@ helm template riffdb "$chart" \
     --api-versions apps/v1 \
     --api-versions batch/v1 \
     --set-string image.tag="$app_version" >"$scratch/exact-tag.yaml"
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 \
+    --set server.telemetry.metrics.enabled=true \
+    --set server.telemetry.metrics.port=9464 \
+    --set server.telemetry.flightRecorder.enabled=true \
+    --set server.telemetry.flightRecorder.intervalMilliseconds=5000 >"$scratch/telemetry.yaml"
 
 expect_render_refusal() {
     local label="$1"
@@ -133,8 +143,18 @@ expect_render_refusal insufficient-drain-grace \
 expect_render_refusal root-workload \
     "/podSecurityContext/runAsNonRoot" \
     --set podSecurityContext.runAsNonRoot=false
+expect_render_refusal metrics-port-clashes-with-listener \
+    "server.telemetry.metrics.port must not equal server.listener.port" \
+    --set server.telemetry.metrics.enabled=true \
+    --set server.telemetry.metrics.port=7443
+expect_render_refusal subminimum-flight-interval \
+    "/server/telemetry/flightRecorder/intervalMilliseconds" \
+    --set server.telemetry.flightRecorder.intervalMilliseconds=99
+expect_render_refusal excessive-flight-interval \
+    "/server/telemetry/flightRecorder/intervalMilliseconds" \
+    --set server.telemetry.flightRecorder.intervalMilliseconds=3600001
 
-ruby - "$scratch/default.yaml" "$scratch/opt-in.yaml" "$scratch/exact-tag.yaml" "$chart/Chart.yaml" "$scratch" <<'RUBY'
+ruby - "$scratch/default.yaml" "$scratch/opt-in.yaml" "$scratch/exact-tag.yaml" "$chart/Chart.yaml" "$scratch" "$scratch/telemetry.yaml" <<'RUBY'
 require "open3"
 require "yaml"
 
@@ -340,6 +360,15 @@ fail("backup claim lacks the keep policy") unless backup.dig("metadata", "annota
 proxy = objects(opt_in_documents, "Deployment").find { |object| object.dig("metadata", "name") == "riffdb-proxy" }
 fail("proxy Deployment is absent") unless proxy
 fail("proxy receives an ambient service-account token") unless proxy.dig("spec", "template", "spec", "automountServiceAccountToken") == false
+
+telemetry_documents = documents(ARGV.fetch(5))
+telemetry_config = objects(telemetry_documents, "ConfigMap").find { |object| object.dig("metadata", "name") == "riffdb-config" }
+telemetry_toml = telemetry_config&.dig("data", "riffdbd.toml") || ""
+fail("telemetry render omits loopback metrics_listen") unless telemetry_toml.include?('metrics_listen = "127.0.0.1:9464"')
+fail("telemetry render omits persistent flight recorder path") unless telemetry_toml.include?('telemetry_flight_recorder = "/var/lib/riffdb/data/telemetry-flight.ndjson"')
+fail("telemetry render omits flight recorder interval") unless telemetry_toml.include?("telemetry_flight_interval_ms = 5000")
+telemetry_service = objects(telemetry_documents, "Service").find { |object| object.dig("metadata", "name") == "riffdb" }
+fail("telemetry render exposes loopback metrics port on Service") unless (telemetry_service&.dig("spec", "ports") || []).map { |p| p["port"] } == [7443]
 RUBY
 
 [[ -f "$runbook" ]] || fail "operator runbook is missing: $runbook"

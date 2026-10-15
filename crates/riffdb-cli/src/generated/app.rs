@@ -39,7 +39,7 @@ use riffdb_query_module::{
     ApplicationManifest, ApplicationRoleOperationKind, CompiledApplicationRole,
     GeneratedApplicationArtifactKind, ManifestTenantScope, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
-    compile_application_role_v2, compile_reactive_source,
+    compile_application_role_v2, compile_reactive_source, explain_coverage_summary,
 };
 use riffdb_types::{
     ActorId, CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
@@ -73,14 +73,16 @@ use crate::input::{
     InputError, MAX_INPUT_BYTES, read_file, read_path_or_stdin, utf8, validate_path,
 };
 use crate::output::{
-    CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error, local_error,
-    local_error_with, maintenance_uncertain, render_bootstrap, render_commit,
+    CommandIdentity, NormalCreateDisposition, Terminal, authoring_error, client_error,
+    follower_failover_uncertain, local_error, local_error_with, maintenance_uncertain,
+    render_archive_restore_maintenance_start, render_bootstrap, render_commit,
     render_compilation_diagnostics, render_contract_deploy, render_contract_migration_operation,
     render_contract_migration_start, render_contract_validation, render_create_maintenance_start,
-    render_entity, render_execution, render_health, render_installation_observation,
-    render_installation_start, render_maintenance_operation, render_normal_create, render_outcome,
-    render_projection, render_archive_restore_maintenance_start, render_restore_maintenance_start, render_retire_maintenance_start, render_storage_scrub_maintenance_start,
-    render_revoke, success, take_normal_create_disposition, uncertain,
+    render_entity, render_execution, render_follower_status, render_health,
+    render_installation_observation, render_installation_start, render_maintenance_operation,
+    render_normal_create, render_outcome, render_projection, render_restore_maintenance_start,
+    render_retire_maintenance_start, render_revoke, render_storage_scrub_maintenance_start,
+    success, take_normal_create_disposition, uncertain,
 };
 use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
 use crate::runner::{RunnerError, RunnerStream, run_budget};
@@ -366,17 +368,17 @@ use crate::scaffold::{
     PinnedLockRefresh, QueryCostReport, RoleCoverageReport, ScaffoldLanguage,
     application_contract_source, application_contract_version, application_lock_identity,
     check_application, check_application_lock, check_application_sources,
-    check_project_application_lock, create_application, generate_application,
-    generate_project_application_offline, load_locked_application,
+    check_project_application_lock, compile_workspace_contract_bundle, create_application,
+    generate_application, generate_project_application_offline, load_locked_application,
     load_locked_migration_submission, load_locked_project_application,
     load_locked_project_migration_submission, migrate_application_source_v2,
     plan_application_migrations, plan_project_application_migrations, preview_application_lock,
     preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
     preview_genesis_application_lock, read_dev_session_metadata,
     refresh_application_lock_from_pinned_bundle, reset_dev_workspace_state,
-    resolve_workspace_contract_defaults, sync_application_manifest, write_application_lock,
-    write_application_lock_with_bundle, write_project_application_lock_with_bundle,
-    write_runtime_operation_catalog,
+    resolve_workspace_contract_defaults, resolve_workspace_named_query_source,
+    sync_application_manifest, write_application_lock, write_application_lock_with_bundle,
+    write_project_application_lock_with_bundle, write_runtime_operation_catalog,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -470,6 +472,12 @@ pub async fn run() -> ExitCode {
     let mut cli = Cli::parse();
     if let TopLevel::Outbox { command } = &cli.command {
         return crate::local_outbox::inspect(command).emit(
+            cli.output.unwrap_or(OutputMode::Human),
+            &mut io::stdout().lock(), &mut io::stderr().lock(),
+        );
+    }
+    if let TopLevel::Telemetry { command } = &cli.command {
+        return crate::telemetry::summarize(command).emit(
             cli.output.unwrap_or(OutputMode::Human),
             &mut io::stdout().lock(), &mut io::stderr().lock(),
         );
@@ -689,6 +697,11 @@ pub async fn run() -> ExitCode {
                 lock,
                 operation_id,
                 confirm_apply,
+            },
+            ProjectMigrationCommand::Up { operation_id } => MigrationCommand::Up {
+                application,
+                lock,
+                operation_id,
             },
             ProjectMigrationCommand::Operation { operation_id } => {
                 MigrationCommand::Operation { operation_id }
@@ -995,6 +1008,7 @@ pub async fn run() -> ExitCode {
         sync_role,
         watch,
         run,
+        exec,
         go_runner_package,
         seed,
         seed_dir,
@@ -1010,6 +1024,7 @@ pub async fn run() -> ExitCode {
             sync_role: sync_role.as_deref(),
             watch: *watch,
             run: *run,
+            exec: exec.as_deref(),
             go_runner_package: go_runner_package.as_deref(),
             seed: *seed,
             seed_dir: seed_dir.as_deref(),
@@ -1069,9 +1084,15 @@ fn apply_dev_inspection_defaults(
     if !matches!(
         cli.command,
         TopLevel::Query {
-            command: QueryCommand::Run { .. } | QueryCommand::RunNamed { .. }
+            command: QueryCommand::Run { .. }
+                | QueryCommand::RunNamed { .. }
+                | QueryCommand::Check { .. }
+                | QueryCommand::Explain { .. }
+                | QueryCommand::Describe { .. }
         } | TopLevel::Entity {
             command: EntityCommand::Get { .. }
+        } | TopLevel::Command {
+            command: CommandCommand::Run { .. } | CommandCommand::Outcome { .. }
         }
     ) {
         return Ok(());
@@ -1097,24 +1118,56 @@ fn apply_dev_inspection_defaults(
             config.credential_file = Some(PathBuf::from(session.credential_file));
         }
     }
-    let contract = match &mut cli.command {
+    match &mut cli.command {
         TopLevel::Query {
             command:
-                QueryCommand::Run { contract, .. } | QueryCommand::RunNamed { contract, .. },
+                QueryCommand::Run { contract, .. }
+                | QueryCommand::RunNamed { contract, .. }
+                | QueryCommand::Check { contract, .. }
+                | QueryCommand::Explain { contract, .. }
+                | QueryCommand::Describe { contract },
         }
         | TopLevel::Entity {
             command: EntityCommand::Get { contract, .. },
-        } => Some(contract),
-        _ => None,
-    };
-    if let Some(contract) = contract
-        && contract.contract_lineage.is_none()
-        && contract.contract_version.is_none()
-        && let Some((lineage, version)) =
-            resolve_workspace_contract_defaults(workspace_root).map_err(|_| ())?
-    {
-        contract.contract_lineage = Some(lineage);
-        contract.contract_version = Some(version.to_string());
+        } => {
+            if contract.contract_lineage.is_none()
+                && contract.contract_version.is_none()
+                && let Some((lineage, version)) =
+                    resolve_workspace_contract_defaults(workspace_root).map_err(|_| ())?
+            {
+                contract.contract_lineage = Some(lineage);
+                contract.contract_version = Some(version.to_string());
+            }
+        }
+        TopLevel::Command {
+            command: CommandCommand::Run {
+                expected_version, ..
+            },
+        } => {
+            if expected_version.is_none()
+                && let Some((_, version)) =
+                    resolve_workspace_contract_defaults(workspace_root).map_err(|_| ())?
+            {
+                *expected_version = Some(version.to_string());
+            }
+        }
+        TopLevel::Command {
+            command:
+                CommandCommand::Outcome {
+                    lineage,
+                    outcome_uri,
+                    ..
+                },
+        } => {
+            if lineage.is_none()
+                && outcome_uri.is_none()
+                && let Some((resolved_lineage, _)) =
+                    resolve_workspace_contract_defaults(workspace_root).map_err(|_| ())?
+            {
+                *lineage = Some(resolved_lineage);
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1216,6 +1269,7 @@ fn project_push_credential_terminal(error: CredentialError) -> Terminal {
 async fn project_push(
     accepted_lock: Option<&str>,
     generate: bool,
+    migrate: bool,
     config: &EffectiveConfig,
     environment: &dyn Environment,
     stdin: &mut dyn Read,
@@ -1245,6 +1299,7 @@ async fn project_push(
         Err(error) => return project_error(identity, &ProjectError::Scaffold(error)),
     };
 
+    let mut migration_required_from_preview = false;
     if check_project_application_lock(source, &selected).is_err() {
         let (preview, compatibility) =
             match preview_application_lock_from_pinned_bundle(source, None) {
@@ -1305,7 +1360,7 @@ async fn project_push(
             }
             PushCeremony::Publish | PushCeremony::AlreadyExact => {}
         }
-        let migration_required = matches!(
+        migration_required_from_preview = matches!(
             compatibility,
             Some(
                 v1::ContractCompatibilityClass::RequiresMigration
@@ -1321,7 +1376,7 @@ async fn project_push(
         {
             return project_error(identity, &ProjectError::Scaffold(error));
         }
-        if migration_required {
+        if migration_required_from_preview && !migrate {
             return local_error(
                 identity,
                 "project_migration_required",
@@ -1340,6 +1395,21 @@ async fn project_push(
         && let Err(error) = generate_project_application_offline(source, &selected)
     {
         return project_error(identity, &ProjectError::Scaffold(error));
+    }
+    if migrate
+        && (migration_required_from_preview
+            || load_locked_project_migration_submission(source, &selected, None).is_ok())
+    {
+        return migration_command(
+            MigrationCommand::Up {
+                application: source.as_os_str().to_owned(),
+                lock: OsString::from("riffdb.application.lock.json"),
+                operation_id: None,
+            },
+            config,
+            environment,
+        )
+        .await;
     }
 
     application_command(
@@ -1596,6 +1666,7 @@ struct DevInvocation<'a> {
     sync_role: Option<&'a str>,
     watch: bool,
     run: bool,
+    exec: Option<&'a str>,
     go_runner_package: Option<&'a std::ffi::OsStr>,
     seed: bool,
     seed_dir: Option<&'a std::ffi::OsStr>,
@@ -1673,6 +1744,9 @@ fn append_dev_script_arguments(
     if invocation.run {
         command.arg("--run");
     }
+    if let Some(exec) = invocation.exec {
+        command.args(["--exec", exec]);
+    }
     if let Some(go_runner_package) = invocation.go_runner_package {
         command.arg("--go-runner-package").arg(go_runner_package);
     }
@@ -1726,6 +1800,10 @@ async fn dispatch(
             CommandIdentity::LocalArchiveInspect, "local_dispatch_invalid",
             "local archive inspection reached network dispatch",
         ),
+        TopLevel::Telemetry { .. } => local_error(
+            CommandIdentity::TelemetrySummarize, "local_dispatch_invalid",
+            "local telemetry summary reached network dispatch",
+        ),
         TopLevel::Lsp => local_error(
             CommandIdentity::ServerHealth,
             "lsp_dispatch_invalid",
@@ -1734,10 +1812,12 @@ async fn dispatch(
         TopLevel::Push {
             accept_lock,
             generate,
+            migrate,
         } => {
             project_push(
                 accept_lock.as_deref(),
                 generate,
+                migrate,
                 config,
                 environment,
                 stdin,
@@ -1821,7 +1901,9 @@ async fn migration_command(
     let identity = match command {
         MigrationCommand::Plan { .. } => CommandIdentity::MigrationPlan,
         MigrationCommand::Check { .. } => CommandIdentity::MigrationCheck,
-        MigrationCommand::Apply { .. } => CommandIdentity::MigrationApply,
+        MigrationCommand::Apply { .. } | MigrationCommand::Up { .. } => {
+            CommandIdentity::MigrationApply
+        }
         MigrationCommand::Operation { .. } => CommandIdentity::MigrationOperation,
     };
     let project_artifacts = if config.project_mode {
@@ -1981,6 +2063,113 @@ async fn migration_command(
                 ),
                 Err(ClientError::OutcomeUnknown(_)) => {
                     crate::output::migration_uncertain(identity, operation_id)
+                }
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        MigrationCommand::Up {
+            application,
+            lock,
+            operation_id,
+        } => {
+            let apply_operation_id = match operation_id.as_deref() {
+                Some(raw) => match parse_contract_migration_operation_id(raw) {
+                    Ok(value) => value,
+                    Err(()) => return invalid_input(identity),
+                },
+                None => match generate_request_id().map_err(ClientError::IdentifierGeneration) {
+                    Ok(id) => ContractMigrationOperationId::from_bytes(id.into_bytes())
+                        .expect("generated request_id is UUIDv7"),
+                    Err(error) => return client_error(identity, &error),
+                },
+            };
+            let submission_result = match project_artifacts.as_deref() {
+                Some(selected) => {
+                    load_locked_project_migration_submission(Path::new(&application), selected, None)
+                }
+                None => load_locked_migration_submission(
+                    Path::new(&application),
+                    Some(Path::new(&lock)),
+                    None,
+                ),
+            };
+            let submission = match submission_result {
+                Ok(value) => value,
+                Err(error) => {
+                    emit_scaffold_failure(
+                        "riffdb migration up failed",
+                        &error,
+                        Some(config.output),
+                    );
+                    return local_error(
+                        identity,
+                        "migration_application_invalid",
+                        "the locked migration application is invalid",
+                    );
+                }
+            };
+            let (candidate, migration, migration_hash) = submission.into_parts();
+            let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
+            if operation_id.is_none() {
+                let check_operation_id =
+                    match generate_request_id().map_err(ClientError::IdentifierGeneration) {
+                        Ok(id) => ContractMigrationOperationId::from_bytes(id.into_bytes())
+                            .expect("generated request_id is UUIDv7"),
+                        Err(error) => return client_error(identity, &error),
+                    };
+                let check = match CheckContractMigration::new(
+                    check_operation_id,
+                    candidate.clone(),
+                    migration.clone(),
+                ) {
+                    Ok(value) => value,
+                    Err(_) => return invalid_input(identity),
+                };
+                match client
+                    .check_contract_migration_with_retry(&check, attempts, &metadata)
+                    .await
+                {
+                    Ok(response) => {
+                        let succeeded = response.operation.as_ref().is_some_and(|op| {
+                            op.phase == v1::ContractMigrationPhase::Succeeded as i32
+                        });
+                        if !succeeded {
+                            return render_contract_migration_start(
+                                CommandIdentity::MigrationCheck,
+                                response.disposition,
+                                response.operation.as_ref(),
+                            );
+                        }
+                    }
+                    Err(ClientError::OutcomeUnknown(_)) => {
+                        return crate::output::migration_uncertain(
+                            CommandIdentity::MigrationCheck,
+                            check_operation_id,
+                        );
+                    }
+                    Err(error) => return client_error(CommandIdentity::MigrationCheck, &error),
+                }
+            }
+            let apply = match ApplyContractMigration::new(
+                apply_operation_id,
+                candidate,
+                migration,
+                migration_hash,
+            ) {
+                Ok(value) => value,
+                Err(_) => return invalid_input(identity),
+            };
+            match client
+                .apply_contract_migration_with_retry(&apply, attempts, &metadata)
+                .await
+            {
+                Ok(response) => render_contract_migration_start(
+                    identity,
+                    response.disposition,
+                    response.operation.as_ref(),
+                ),
+                Err(ClientError::OutcomeUnknown(_)) => {
+                    crate::output::migration_uncertain(identity, apply_operation_id)
                 }
                 Err(error) => client_error(identity, &error),
             }
@@ -4622,9 +4811,16 @@ async fn query_command(
                 Err(error) => client_error(identity, &error),
             }
         }
-        QueryCommand::Check { source, contract } => {
-            let source = match read_text(&source, stdin) {
-                Ok(source) => source,
+        QueryCommand::Check {
+            source,
+            inline,
+            contract,
+        } => {
+            let source = match resolve_query_source_or_name(source, inline, false, stdin) {
+                Ok(app_v1::explain_query_request::Query::Source(source)) => source,
+                Ok(app_v1::explain_query_request::Query::QueryName(_)) => {
+                    return invalid_input(identity);
+                }
                 Err(error) => return input_terminal(identity, error),
             };
             let contract = match symbolic_contract_selection(contract) {
@@ -4650,9 +4846,13 @@ async fn query_command(
                 Err(error) => client_error(identity, &error),
             }
         }
-        QueryCommand::Explain { source, contract } => {
-            let source = match read_text(&source, stdin) {
-                Ok(source) => source,
+        QueryCommand::Explain {
+            source,
+            inline,
+            contract,
+        } => {
+            let query = match resolve_query_source_or_name(source, inline, true, stdin) {
+                Ok(query) => query,
                 Err(error) => return input_terminal(identity, error),
             };
             let contract = match symbolic_contract_selection(contract) {
@@ -4667,7 +4867,7 @@ async fn query_command(
                 .explain_query(
                     app_v1::ExplainQueryRequest {
                         contract,
-                        query: Some(app_v1::explain_query_request::Query::Source(source)),
+                        query: Some(query),
                         module_hash: None,
                         request_id,
                     },
@@ -5722,6 +5922,53 @@ async fn execute_named_query_cli(
             |result| success(identity, "completed", &result),
         ),
         Err(error) => client_error(identity, &error),
+    }
+}
+
+fn resolve_query_source_or_name(
+    source: Option<OsString>,
+    inline: Option<String>,
+    allow_remote_name: bool,
+    stdin: &mut dyn Read,
+) -> Result<app_v1::explain_query_request::Query, InputError> {
+    match (source, inline) {
+        (None, Some(inline_source)) => {
+            if inline_source.trim().is_empty() {
+                return Err(InputError::Invalid);
+            }
+            if inline_source.len() > MAX_INPUT_BYTES {
+                return Err(InputError::TooLarge);
+            }
+            Ok(app_v1::explain_query_request::Query::Source(inline_source))
+        }
+        (Some(path_or_name), None) => {
+            if path_or_name != "-"
+                && !Path::new(&path_or_name).exists()
+                && let Some(name_str) = path_or_name.to_str()
+                && !name_str.is_empty()
+                && !name_str.starts_with('@')
+                && !name_str.contains('/')
+                && !name_str.contains('\\')
+                && !name_str.contains('.')
+            {
+                if let Ok(root) = std::env::current_dir()
+                    && let Ok(Some(resolved)) = resolve_workspace_named_query_source(&root, name_str)
+                {
+                    return Ok(app_v1::explain_query_request::Query::Source(resolved));
+                }
+                if allow_remote_name
+                    && name_str
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                {
+                    return Ok(app_v1::explain_query_request::Query::QueryName(
+                        name_str.to_owned(),
+                    ));
+                }
+            }
+            read_text(&path_or_name, stdin).map(app_v1::explain_query_request::Query::Source)
+        }
+        _ => Err(InputError::Invalid),
     }
 }
 
@@ -6863,6 +7110,7 @@ async fn contract_command(
 struct ApplicationCommandMetadata {
     collection_constraint: Option<ExactCollectionInputConstraint>,
     idempotency_field: String,
+    contract: riffdb_contract_ir::ContractBundle,
 }
 
 #[derive(Clone, Debug)]
@@ -7128,7 +7376,138 @@ fn application_command_metadata(
     Ok(Some(ApplicationCommandMetadata {
         collection_constraint,
         idempotency_field,
+        contract: locked.contract().clone(),
     }))
+}
+
+fn merge_command_input_map(
+    path: Option<&OsString>,
+    input_json: Option<&str>,
+    arg_pairs: &[String],
+    stdin: &mut dyn Read,
+) -> Result<serde_json::Map<String, serde_json::Value>, InputError> {
+    if path.is_none() && input_json.is_none() && arg_pairs.is_empty() {
+        return Err(InputError::Invalid);
+    }
+    let mut input = match path {
+        Some(path) => read_command_json::<serde_json::Map<String, serde_json::Value>>(path, stdin)?,
+        None => serde_json::Map::new(),
+    };
+    if let Some(raw_json) = input_json {
+        if raw_json.len() > riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2 {
+            return Err(InputError::TooLarge);
+        }
+        let parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(raw_json).map_err(|_| InputError::Invalid)?;
+        for (key, value) in parsed {
+            if key.is_empty() || input.contains_key(&key) {
+                return Err(InputError::Invalid);
+            }
+            input.insert(key, value);
+        }
+    }
+    for pair in arg_pairs {
+        if pair.len() > MAX_INPUT_BYTES {
+            return Err(InputError::TooLarge);
+        }
+        let (key, raw_value) = pair.split_once('=').ok_or(InputError::Invalid)?;
+        if key.is_empty() || input.contains_key(key) {
+            return Err(InputError::Invalid);
+        }
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            return Err(InputError::Invalid);
+        }
+        let value = if trimmed.starts_with('{')
+            || trimmed.starts_with('[')
+            || trimmed.starts_with('"')
+        {
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .map_err(|_| InputError::Invalid)?
+        } else {
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_owned()))
+        };
+        input.insert(key.to_owned(), value);
+    }
+    Ok(input)
+}
+
+fn coerce_json_value_for_value_type(
+    value: &serde_json::Value,
+    value_type: &ValueType,
+) -> serde_json::Value {
+    let target = value_type.optional_inner().unwrap_or(value_type);
+    if let serde_json::Value::String(text) = value {
+        match target.tag() {
+            ValueTypeTag::Uuid if parse_uuid(text).is_some() => {
+                return serde_json::json!({ "$uuid": text });
+            }
+            ValueTypeTag::Enum if !text.is_empty() && text.len() <= 256 => {
+                return serde_json::json!({ "$enum": text });
+            }
+            ValueTypeTag::Decimal if natural_decimal_text(text).is_ok() => {
+                return serde_json::json!({ "$decimal": text });
+            }
+            ValueTypeTag::I64 if text.parse::<i64>().is_ok() => {
+                return serde_json::json!({ "$i64": text });
+            }
+            ValueTypeTag::U64 if text.parse::<u64>().is_ok() => {
+                return serde_json::json!({ "$u64": text });
+            }
+            ValueTypeTag::Bytes if STANDARD.decode(text).is_ok() => {
+                return serde_json::json!({ "$bytes": text });
+            }
+            _ => {}
+        }
+    }
+    value.clone()
+}
+
+fn prepare_ergonomic_command_input(
+    natural_input: &mut serde_json::Map<String, serde_json::Value>,
+    contract: &riffdb_contract_ir::ContractBundle,
+    command_name: &str,
+) -> Result<(), ClientError> {
+    let Some(command) = contract
+        .commands()
+        .iter()
+        .find(|candidate| candidate.name() == command_name)
+    else {
+        return Ok(());
+    };
+    if let Some(field_id) = command.idempotency_input()
+        && let Some(field) = command.input().record().field(field_id)
+        && !natural_input.contains_key(field.name())
+    {
+        let target = field.value_type().optional_inner().unwrap_or(field.value_type());
+        match target.tag() {
+            ValueTypeTag::Uuid => {
+                let generated = generate_request_id().map_err(ClientError::IdentifierGeneration)?;
+                let formatted = format_uuid(&generated.into_bytes()).unwrap_or_default();
+                natural_input.insert(
+                    field.name().to_owned(),
+                    serde_json::json!({ "$uuid": formatted }),
+                );
+            }
+            ValueTypeTag::String if target.byte_bound().is_some_and(|bound| bound >= 36) => {
+                let generated = generate_request_id().map_err(ClientError::IdentifierGeneration)?;
+                let formatted = format_uuid(&generated.into_bytes()).unwrap_or_default();
+                natural_input.insert(
+                    field.name().to_owned(),
+                    serde_json::Value::String(formatted),
+                );
+            }
+            _ => {}
+        }
+    }
+    for field in command.input().record().fields() {
+        if let Some(existing) = natural_input.get(field.name()).cloned() {
+            let coerced = coerce_json_value_for_value_type(&existing, field.value_type());
+            natural_input.insert(field.name().to_owned(), coerced);
+        }
+    }
+    Ok(())
 }
 
 async fn command_command(
@@ -7234,12 +7613,18 @@ async fn command_command(
         CommandCommand::Run {
             command_name,
             input,
+            input_json,
+            arg,
             expected_version,
             application,
         } => {
             let application_command_name = command_name.clone();
-            let natural_input = match read_command_json::<serde_json::Map<String, serde_json::Value>>(
-                &input, stdin,
+            let ergonomic_inline = input_json.is_some() || !arg.is_empty();
+            let mut natural_input = match merge_command_input_map(
+                input.as_ref(),
+                input_json.as_deref(),
+                &arg,
+                stdin,
             ) {
                 Ok(input) => input,
                 Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
@@ -7252,6 +7637,23 @@ async fn command_command(
                 Ok(value) => value,
                 Err(terminal) => return terminal,
             };
+            if ergonomic_inline {
+                let workspace_contract = match application_metadata.as_ref() {
+                    Some(metadata) => Some(metadata.contract.clone()),
+                    None => std::env::current_dir()
+                        .ok()
+                        .and_then(|root| compile_workspace_contract_bundle(&root, None).ok().flatten()),
+                };
+                if let Some(contract) = workspace_contract.as_ref()
+                    && let Err(error) = prepare_ergonomic_command_input(
+                        &mut natural_input,
+                        contract,
+                        &command_name,
+                    )
+                {
+                    return client_error(CommandIdentity::CommandRun, &error);
+                }
+            }
             if application_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.collection_constraint.as_ref())
@@ -7380,6 +7782,145 @@ async fn command_command(
     }
 }
 
+type ResolvedSymbolicEntityGet = (
+    u32,
+    Vec<u8>,
+    Vec<u32>,
+    Option<riffdb_contract_ir::EntitySchema>,
+);
+
+fn resolve_symbolic_entity_get(
+    entity_type_id_or_name: &str,
+    entity_key: Option<&str>,
+    key_pairs: &[String],
+    key_json: Option<&str>,
+    contract_source: Option<&OsStr>,
+    raw_fields: &[String],
+) -> Result<ResolvedSymbolicEntityGet, ()> {
+    let numeric_type_id = parse_nonzero_u32(entity_type_id_or_name);
+    let numeric_fields = increasing_nonzero_u32(raw_fields);
+    let is_symbolic = numeric_type_id.is_err()
+        || !key_pairs.is_empty()
+        || key_json.is_some()
+        || contract_source.is_some()
+        || numeric_fields.is_err();
+    if !is_symbolic {
+        let Some(raw_key) = entity_key else {
+            return Err(());
+        };
+        return Ok((
+            numeric_type_id?,
+            canonical_base64(raw_key)?,
+            numeric_fields?,
+            None,
+        ));
+    }
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let bundle = compile_workspace_contract_bundle(
+        &workspace_root,
+        contract_source.map(Path::new),
+    )
+    .map_err(|_| ())?
+    .ok_or(())?;
+    let entity_schema = match numeric_type_id {
+        Ok(id) => bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.id().get() == id)
+            .cloned()
+            .ok_or(())?,
+        Err(()) => bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == entity_type_id_or_name)
+            .cloned()
+            .ok_or(())?,
+    };
+    let encoded_key = match entity_key {
+        Some(raw_key) if key_pairs.is_empty() && key_json.is_none() => canonical_base64(raw_key)?,
+        None if !key_pairs.is_empty() || key_json.is_some() => {
+            let mut key_map = merge_query_parameter_map(
+                None,
+                key_json,
+                key_pairs,
+                &mut io::empty(),
+            )
+            .map_err(|_| ())?;
+            let mut pk_components = Vec::with_capacity(entity_schema.primary_key_fields().len());
+            for field_id in entity_schema.primary_key_fields() {
+                let field_schema = entity_schema.record().field(*field_id).ok_or(())?;
+                let raw_val = key_map.remove(field_schema.name()).ok_or(())?;
+                let coerced = coerce_json_value_for_value_type(&raw_val, field_schema.value_type());
+                let proto_val = natural_query_value(coerced)?;
+                let canonical = exact_canonical_value(
+                    bundle.schema(),
+                    field_schema.value_type(),
+                    &proto_val,
+                )
+                .ok_or(())?;
+                pk_components.push(canonical);
+            }
+            if !key_map.is_empty() {
+                return Err(());
+            }
+            entity_schema
+                .primary_key()
+                .encode_entity(&pk_components)
+                .map_err(|_| ())?
+                .into_bytes()
+        }
+        _ => return Err(()),
+    };
+    let resolved_fields = if raw_fields.is_empty() {
+        Vec::new()
+    } else if numeric_fields.is_ok()
+        && raw_fields
+            .iter()
+            .all(|item| parse_nonzero_u32(item).is_ok())
+    {
+        numeric_fields?
+    } else {
+        let mut ids = Vec::with_capacity(raw_fields.len());
+        let mut seen = BTreeSet::new();
+        for item in raw_fields {
+            let field_id = match parse_nonzero_u32(item) {
+                Ok(id) => {
+                    if entity_schema
+                        .record()
+                        .fields()
+                        .iter()
+                        .all(|field| field.id().get() != id)
+                    {
+                        return Err(());
+                    }
+                    id
+                }
+                Err(()) => entity_schema
+                    .record()
+                    .fields()
+                    .iter()
+                    .find(|field| field.name() == item)
+                    .map(|field| field.id().get())
+                    .ok_or(())?,
+            };
+            if !seen.insert(field_id) {
+                return Err(());
+            }
+            ids.push(field_id);
+        }
+        ids.sort_unstable();
+        ids
+    };
+    Ok((
+        entity_schema.id().get(),
+        encoded_key,
+        resolved_fields,
+        Some(entity_schema),
+    ))
+}
+
 async fn entity_command(
     command: EntityCommand,
     config: &EffectiveConfig,
@@ -7388,22 +7929,24 @@ async fn entity_command(
     let EntityCommand::Get {
         entity_type_id,
         entity_key,
+        key,
+        key_json,
+        contract_source,
         contract,
         fields,
     } = command;
-    let entity_type_id = match parse_nonzero_u32(&entity_type_id) {
-        Ok(value) => value,
-        Err(()) => return invalid_input(CommandIdentity::EntityGet),
-    };
-    let entity_key = match canonical_base64(&entity_key) {
-        Ok(value) => value,
+    let (entity_type_id, entity_key, fields, symbolic_entity) = match resolve_symbolic_entity_get(
+        &entity_type_id,
+        entity_key.as_deref(),
+        &key,
+        key_json.as_deref(),
+        contract_source.as_deref(),
+        &fields,
+    ) {
+        Ok(resolved) => resolved,
         Err(()) => return invalid_input(CommandIdentity::EntityGet),
     };
     let contract = match contract_selection(contract) {
-        Ok(value) => value,
-        Err(()) => return invalid_input(CommandIdentity::EntityGet),
-    };
-    let fields = match increasing_nonzero_u32(&fields) {
         Ok(value) => value,
         Err(()) => return invalid_input(CommandIdentity::EntityGet),
     };
@@ -7427,9 +7970,62 @@ async fn entity_command(
         fields: Some(v1::FieldSelection { field_ids: fields }),
     };
     match client.get_entity(request, &metadata).await {
-        Ok(response) => render_entity(&response),
+        Ok(response) => match symbolic_entity.as_ref() {
+            Some(entity_schema) => render_symbolic_entity(&response, entity_schema),
+            None => render_entity(&response),
+        },
         Err(error) => client_error(CommandIdentity::EntityGet, &error),
     }
+}
+
+fn render_symbolic_entity(
+    response: &v1::GetEntityResponse,
+    entity_schema: &riffdb_contract_ir::EntitySchema,
+) -> Terminal {
+    use v1::get_entity_response::Result;
+    let Some(Result::Found(entity)) = response.result.as_ref() else {
+        return render_entity(response);
+    };
+    let Some(record) = entity.fields.as_ref() else {
+        return render_entity(response);
+    };
+    let mut fields = Vec::with_capacity(record.fields.len());
+    for field in &record.fields {
+        let Some(raw_id) = field.field_id.filter(|id| *id != 0) else {
+            return render_entity(response);
+        };
+        let Some(value) = field.value.as_ref() else {
+            return render_entity(response);
+        };
+        let Ok(rendered_value) = serde_json::to_value(crate::value::OutputValue(value)) else {
+            return render_entity(response);
+        };
+        let name = riffdb_types::FieldId::new(raw_id)
+            .and_then(|field_id| entity_schema.record().field(field_id))
+            .map(|schema| schema.name().to_owned());
+        fields.push(serde_json::json!({
+            "field_id": raw_id,
+            "name": name,
+            "value": rendered_value,
+        }));
+    }
+    let Ok(entity_key) = serde_json::to_value(crate::value::PaddedBytes(&entity.entity_key)) else {
+        return render_entity(response);
+    };
+    success(
+        CommandIdentity::EntityGet,
+        "found",
+        &serde_json::json!({
+            "status": "found",
+            "entity": entity_schema.name(),
+            "entity_key": entity_key,
+            "entity_version": entity.entity_version.to_string(),
+            "written_by_contract_version": entity.written_by_contract_version.to_string(),
+            "fields": {
+                "fields": fields,
+            },
+        }),
+    )
 }
 
 async fn commit_command(
@@ -11765,6 +12361,17 @@ fn render_query_explain(
             .map(|(query, schema)| {
                 let mut result = checked_query_json(query, schema);
                 if let Some(object) = result.as_object_mut() {
+                    if let Some((covered, point_reads, scanned_index_rows, summary_line)) =
+                        explain_coverage_summary(&response.plan_lines)
+                    {
+                        object.insert("covered".to_owned(), serde_json::json!(covered));
+                        object.insert("point_reads".to_owned(), serde_json::json!(point_reads));
+                        object.insert(
+                            "scanned_index_rows".to_owned(),
+                            serde_json::json!(scanned_index_rows),
+                        );
+                        object.insert("coverage_summary".to_owned(), serde_json::json!(summary_line));
+                    }
                     object.insert("plan".to_owned(), serde_json::json!(response.plan_lines));
                 }
                 result
@@ -11962,6 +12569,7 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
         TopLevel::Outbox { .. } => CommandIdentity::LocalArchiveInspect,
+        TopLevel::Telemetry { .. } => CommandIdentity::TelemetrySummarize,
         TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,
@@ -11976,7 +12584,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: ProjectMigrationCommand::Check { .. },
         } => CommandIdentity::MigrationCheck,
         TopLevel::Migrate {
-            command: ProjectMigrationCommand::Apply { .. },
+            command: ProjectMigrationCommand::Apply { .. } | ProjectMigrationCommand::Up { .. },
         } => CommandIdentity::MigrationApply,
         TopLevel::Migrate {
             command: ProjectMigrationCommand::Operation { .. },
@@ -12004,7 +12612,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
             command: MigrationCommand::Check { .. },
         } => CommandIdentity::MigrationCheck,
         TopLevel::Migration {
-            command: MigrationCommand::Apply { .. },
+            command: MigrationCommand::Apply { .. } | MigrationCommand::Up { .. },
         } => CommandIdentity::MigrationApply,
         TopLevel::Migration {
             command: MigrationCommand::Operation { .. },
@@ -12135,6 +12743,8 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Follower { command: FollowerCommand::Retire { .. } } => CommandIdentity::FollowerRetire,
         TopLevel::Follower { command: FollowerCommand::FencePrimary { .. } } => CommandIdentity::FollowerFencePrimary,
         TopLevel::Follower { command: FollowerCommand::Promote { .. } } => CommandIdentity::FollowerPromote,
+        TopLevel::Follower { command: FollowerCommand::Status } => CommandIdentity::FollowerStatus,
+        TopLevel::Follower { command: FollowerCommand::Failover { .. } } => CommandIdentity::FollowerFailover,
         TopLevel::Server { .. } => CommandIdentity::ServerHealth,
         TopLevel::Backup {
             command: BackupCommand::Create { .. },
@@ -12781,15 +13391,180 @@ fn follower_selection(target: FollowerSelectionArgs) -> Result<v1::ReplicationFo
 }
 
 async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, environment: &dyn Environment) -> Terminal {
-    let identity = match &command { FollowerCommand::Register { .. } => CommandIdentity::FollowerRegister, FollowerCommand::Retire { .. } => CommandIdentity::FollowerRetire, FollowerCommand::FencePrimary { .. } => CommandIdentity::FollowerFencePrimary, FollowerCommand::Promote { .. } => CommandIdentity::FollowerPromote };
+    let identity = match &command {
+        FollowerCommand::Register { .. } => CommandIdentity::FollowerRegister,
+        FollowerCommand::Retire { .. } => CommandIdentity::FollowerRetire,
+        FollowerCommand::FencePrimary { .. } => CommandIdentity::FollowerFencePrimary,
+        FollowerCommand::Promote { .. } => CommandIdentity::FollowerPromote,
+        FollowerCommand::Status => CommandIdentity::FollowerStatus,
+        FollowerCommand::Failover { .. } => CommandIdentity::FollowerFailover,
+    };
     let metadata = match required_metadata(identity, config, environment) { Ok(metadata) => metadata, Err(terminal) => return terminal };
-    let request_id = match request_id() { Ok(id) => id, Err(error) => return client_error(identity, &error) };
+    let first_request_id = match request_id() { Ok(id) => id, Err(error) => return client_error(identity, &error) };
     // Validate the entire selection before opening a transport connection.
     let (register, retire) = match command {
+        FollowerCommand::Status => {
+            let mut client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) => return client_error(identity, &error),
+            };
+            return match client
+                .health(
+                    v1::HealthRequest {
+                        request_id: Some(first_request_id),
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_follower_status(&response),
+                Err(error) => client_error(identity, &error),
+            };
+        }
+        FollowerCommand::Failover {
+            target,
+            registration_generation,
+            primary_endpoint,
+            primary_config,
+            primary_credential_file,
+            operation_id,
+            fence_operation_id,
+        } => {
+            let target = match follower_selection(target) {
+                Ok(target) => target,
+                Err(()) => return invalid_input(identity),
+            };
+            let operation_id = match operation_id {
+                Some(raw) => match parse_uuid_v7(&raw) {
+                    Some(id) => id,
+                    None => return invalid_input(identity),
+                },
+                None => match generate_request_id().map_err(ClientError::IdentifierGeneration) {
+                    Ok(id) => id.into_bytes(),
+                    Err(error) => return client_error(identity, &error),
+                },
+            };
+            let fence_operation_id = match fence_operation_id {
+                Some(raw) => match parse_uuid_v7(&raw) {
+                    Some(id) => id,
+                    None => return invalid_input(identity),
+                },
+                None => match generate_request_id().map_err(ClientError::IdentifierGeneration) {
+                    Ok(id) => id.into_bytes(),
+                    Err(error) => return client_error(identity, &error),
+                },
+            };
+            let primary_effective = match crate::config::resolve_secondary(
+                config,
+                primary_config.as_deref(),
+                primary_endpoint.as_deref(),
+                primary_credential_file.as_deref(),
+            ) {
+                Ok(resolved) => resolved,
+                Err(_) => return invalid_input(identity),
+            };
+            struct EmptyEnv;
+            impl Environment for EmptyEnv {
+                fn value(&self, _name: &str) -> Option<OsString> {
+                    None
+                }
+            }
+            let primary_metadata = if (primary_credential_file.is_some() || primary_config.is_some())
+                && primary_effective.credential_file.is_some()
+            {
+                match required_metadata(identity, &primary_effective, &EmptyEnv) {
+                    Ok(meta) => meta,
+                    Err(terminal) => return terminal,
+                }
+            } else {
+                match required_metadata(identity, &primary_effective, environment) {
+                    Ok(meta) => meta,
+                    Err(terminal) => return terminal,
+                }
+            };
+            let promote_request_id = match request_id() {
+                Ok(id) => id,
+                Err(error) => return client_error(identity, &error),
+            };
+            let mut primary_client = match connect(&primary_effective).await {
+                Ok(client) => client,
+                Err(error) if is_failover_uncertain_error(&error) => {
+                    return follower_failover_uncertain(
+                        "fence_primary",
+                        &fence_operation_id,
+                        &operation_id,
+                    );
+                }
+                Err(error) => return client_error(identity, &error),
+            };
+            let fence_request = v1::FenceReplicationPrimaryRequest {
+                request_id: first_request_id,
+                operation_id: fence_operation_id.to_vec(),
+                target: Some(target.clone()),
+                registration_generation: registration_generation.get(),
+            };
+            let fence_receipt = match primary_client
+                .fence_replication_primary(fence_request, &primary_metadata)
+                .await
+            {
+                Ok(response) => match response.result {
+                    Some(v1::fence_replication_primary_response::Result::Receipt(receipt)) => {
+                        receipt
+                    }
+                    _ => return render_primary_fence(identity, response),
+                },
+                Err(error) if is_failover_uncertain_error(&error) => {
+                    return follower_failover_uncertain(
+                        "fence_primary",
+                        &fence_operation_id,
+                        &operation_id,
+                    );
+                }
+                Err(error) => return client_error(identity, &error),
+            };
+            let mut follower_client = match connect(config).await {
+                Ok(client) => client,
+                Err(error) if is_failover_uncertain_error(&error) => {
+                    return follower_failover_uncertain(
+                        "promote_follower",
+                        &fence_operation_id,
+                        &operation_id,
+                    );
+                }
+                Err(error) => return client_error(identity, &error),
+            };
+            let promote_request = v1::PromoteFollowerRequest {
+                request_id: promote_request_id,
+                operation_id: operation_id.to_vec(),
+                fence_operation_id: fence_operation_id.to_vec(),
+                target: Some(target),
+                registration_generation: registration_generation.get(),
+            };
+            return match follower_client
+                .promote_follower(promote_request, &metadata)
+                .await
+            {
+                Ok(response) => render_follower_failover(
+                    identity,
+                    &fence_operation_id,
+                    &operation_id,
+                    fence_receipt,
+                    response,
+                ),
+                Err(error) if is_failover_uncertain_error(&error) => {
+                    follower_failover_uncertain(
+                        "promote_follower",
+                        &fence_operation_id,
+                        &operation_id,
+                    )
+                }
+                Err(error) => client_error(identity, &error),
+            };
+        }
         FollowerCommand::Promote { target, registration_generation, operation_id, fence_operation_id } => {
             let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
             let (Some(operation_id), Some(fence_operation_id)) = (parse_uuid_v7(&operation_id), parse_uuid_v7(&fence_operation_id)) else { return invalid_input(identity); };
-            let request = v1::PromoteFollowerRequest { request_id, operation_id: operation_id.to_vec(), fence_operation_id: fence_operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
+            let request = v1::PromoteFollowerRequest { request_id: first_request_id, operation_id: operation_id.to_vec(), fence_operation_id: fence_operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
             let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
             return match client.promote_follower(request, &metadata).await {
                 Ok(response) => render_follower_promotion(identity, response),
@@ -12799,7 +13574,7 @@ async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, en
         FollowerCommand::FencePrimary { target, registration_generation, operation_id } => {
             let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
             let Some(operation_id) = parse_uuid_v7(&operation_id) else { return invalid_input(identity); };
-            let request = v1::FenceReplicationPrimaryRequest { request_id, operation_id: operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
+            let request = v1::FenceReplicationPrimaryRequest { request_id: first_request_id, operation_id: operation_id.to_vec(), target: Some(target), registration_generation: registration_generation.get() };
             let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
             return match client.fence_replication_primary(request, &metadata).await {
                 Ok(response) => render_primary_fence(identity, response),
@@ -12808,11 +13583,11 @@ async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, en
         }
         FollowerCommand::Register { target, hold_budget_sequences, expires_at_sequence } => {
             let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
-            (Some(v1::RegisterFollowerRequest { request_id, target: Some(target), hold_budget_sequences: hold_budget_sequences.get(), expires_at_application_sequence: expires_at_sequence.map(std::num::NonZeroU64::get) }), None)
+            (Some(v1::RegisterFollowerRequest { request_id: first_request_id, target: Some(target), hold_budget_sequences: hold_budget_sequences.get(), expires_at_application_sequence: expires_at_sequence.map(std::num::NonZeroU64::get) }), None)
         }
         FollowerCommand::Retire { target, registration_generation } => {
             let target = match follower_selection(target) { Ok(target) => target, Err(()) => return invalid_input(identity) };
-            (None, Some(v1::RetireFollowerRequest { request_id, target: Some(target), registration_generation: registration_generation.get() }))
+            (None, Some(v1::RetireFollowerRequest { request_id: first_request_id, target: Some(target), registration_generation: registration_generation.get() }))
         }
     };
     let mut client = match connect(config).await { Ok(client) => client, Err(error) => return client_error(identity, &error) };
@@ -12835,6 +13610,112 @@ async fn follower_command(command: FollowerCommand, config: &EffectiveConfig, en
         },
         _ => invalid_input(identity),
     }
+}
+
+fn is_failover_uncertain_error(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::OutcomeUnknown(_)
+            | ClientError::ConnectionFailure
+            | ClientError::DetailsFree(
+                riffdb_client_rust::DetailsFreeStatus::TransportUnavailable
+                    | riffdb_client_rust::DetailsFreeStatus::DeadlineExceeded
+                    | riffdb_client_rust::DetailsFreeStatus::Cancelled
+                    | riffdb_client_rust::DetailsFreeStatus::EmergencyInternal
+            )
+    ) || matches!(
+        error,
+        ClientError::Public(public)
+            if public.code() == "outcome_unknown" || public.code() == "service_unavailable"
+    )
+}
+
+fn render_follower_failover(
+    identity: CommandIdentity,
+    fence_operation_id: &[u8; 16],
+    operation_id: &[u8; 16],
+    fence_receipt: v1::PrimaryFenceReceipt,
+    promote_response: v1::PromoteFollowerResponse,
+) -> Terminal {
+    let Some(promote_receipt) = promote_response.receipt else {
+        return local_error(identity, "output_render_failed", "output rendering failed");
+    };
+    let final_application_sequence = match fence_receipt
+        .final_application_frontier
+        .and_then(|f| f.position)
+    {
+        Some(v1::frontier_position::Position::BeforeFirst(_)) => None,
+        Some(v1::frontier_position::Position::AppliedThrough(sequence)) if sequence != 0 => {
+            Some(sequence.to_string())
+        }
+        _ => return local_error(identity, "output_render_failed", "output rendering failed"),
+    };
+    let applied_application_sequence = match promote_receipt
+        .applied_application_frontier
+        .and_then(|f| f.position)
+    {
+        Some(v1::frontier_position::Position::BeforeFirst(_)) => None,
+        Some(v1::frontier_position::Position::AppliedThrough(sequence)) if sequence != 0 => {
+            Some(sequence.to_string())
+        }
+        _ => return local_error(identity, "output_render_failed", "output rendering failed"),
+    };
+    let (Some(fence_operation_id), Some(operation_id)) = (
+        format_uuid(fence_operation_id),
+        format_uuid(operation_id),
+    ) else {
+        return local_error(identity, "output_render_failed", "output rendering failed");
+    };
+    let fence_status = if fence_receipt.replayed {
+        "replayed"
+    } else {
+        "applied"
+    };
+    let promotion_status = if promote_receipt.replayed {
+        "replayed"
+    } else {
+        "applied"
+    };
+    let status = if fence_receipt.replayed && promote_receipt.replayed {
+        "replayed"
+    } else {
+        "applied"
+    };
+    #[derive(Serialize)]
+    struct Summary {
+        status: &'static str,
+        fence_status: &'static str,
+        promotion_status: &'static str,
+        fence_operation_id: String,
+        operation_id: String,
+        primary_administration_sequence: String,
+        administration_sequence: String,
+        registration_generation: String,
+        final_application_sequence: Option<String>,
+        applied_application_sequence: Option<String>,
+        history_incarnation: String,
+        leadership_epoch: String,
+        application_rpo: String,
+    }
+    success(
+        identity,
+        status,
+        &Summary {
+            status,
+            fence_status,
+            promotion_status,
+            fence_operation_id,
+            operation_id,
+            primary_administration_sequence: fence_receipt.administration_sequence.to_string(),
+            administration_sequence: promote_receipt.administration_sequence.to_string(),
+            registration_generation: promote_receipt.registration_generation.to_string(),
+            final_application_sequence,
+            applied_application_sequence,
+            history_incarnation: promote_receipt.history_incarnation.to_string(),
+            leadership_epoch: promote_receipt.leadership_epoch.to_string(),
+            application_rpo: promote_receipt.application_rpo.to_string(),
+        },
+    )
 }
 
 fn render_follower_receipt(command: CommandIdentity, receipt: &v1::FollowerAdministrationReceipt) -> Terminal {
@@ -13922,6 +14803,7 @@ mod tests {
                 sync_role: Some("AcmeRole"),
                 watch: false,
                 run: true,
+                exec: None,
                 go_runner_package,
                 seed: false,
                 seed_dir: None,
@@ -14586,7 +15468,9 @@ mod tests {
             TopLevel::Command {
                 command: CommandCommand::Run {
                     command_name: "WritePolicyMutations".to_owned(),
-                    input: OsString::from("-"),
+                    input: Some(OsString::from("-")),
+                    input_json: None,
+                    arg: Vec::new(),
                     expected_version: Some("1".to_owned()),
                     application: Some(application.into_os_string()),
                 },
@@ -15734,5 +16618,471 @@ query GetDocument(
             .expect("wire request");
             assert_eq!(wire.response_encoding, Some(expected));
         }
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-046
+    #[test]
+    fn command_run_inline_args_and_dev_session_defaults_are_deterministic() {
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-ergonomic-cmd-")
+            .expect("scratch directory");
+        crate::scaffold::create_application(
+            "ergo-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            directory.path(),
+        )
+        .expect("scaffold ergo application");
+        let dev_dir = directory.path().join(".riffdb/dev");
+        fs::create_dir_all(&dev_dir).expect("create dev dir");
+        let cred_path = dev_dir.join("profile.credential");
+        fs::write(&cred_path, "dev-secret-token\n").expect("write dev credential");
+        crate::scaffold::write_dev_session_metadata(
+            directory.path(),
+            &crate::scaffold::DevSessionMetadata {
+                schema: crate::scaffold::DEV_SESSION_SCHEMA_V1.to_owned(),
+                endpoint: "http://127.0.0.1:7449".to_owned(),
+                database: "ergo-db".to_owned(),
+                credential_file: ".riffdb/dev/profile.credential".to_owned(),
+                contract_lineage: "ErgoApp".to_owned(),
+                contract_version: 1,
+                role: "ErgoAppApplication".to_owned(),
+                tenant: None,
+            },
+        )
+        .expect("write dev session metadata");
+
+        let mut cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "command",
+            "run",
+            "CreateItem",
+            "--arg",
+            "item_id=018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10",
+            "--arg",
+            "title=Hello DX",
+        ]);
+        let environment = TestEnvironment::default();
+        let mut config = resolve(&cli, &environment).expect("resolve base config");
+        apply_dev_inspection_defaults(&mut cli, &mut config, &environment, directory.path())
+            .expect("apply dev inspection defaults");
+        assert_eq!(config.endpoint, "http://127.0.0.1:7449");
+        assert_eq!(config.database.as_str(), "ergo-db");
+        let TopLevel::Command {
+            command:
+                CommandCommand::Run {
+                    command_name,
+                    arg,
+                    input_json,
+                    expected_version,
+                    ..
+                },
+        } = &cli.command
+        else {
+            panic!("expected command run");
+        };
+        assert_eq!(command_name, "CreateItem");
+        assert_eq!(expected_version.as_deref(), Some("1"));
+        let mut merged = merge_command_input_map(
+            None,
+            input_json.as_deref(),
+            arg,
+            &mut Cursor::new(Vec::new()),
+        )
+        .expect("merge command args");
+        let bundle = compile_workspace_contract_bundle(directory.path(), None)
+            .expect("compile workspace contract")
+            .expect("contract bundle");
+        prepare_ergonomic_command_input(&mut merged, &bundle, "CreateItem")
+            .expect("prepare ergonomic input");
+        assert_eq!(
+            merged.get("item_id"),
+            Some(&serde_json::json!({"$uuid": "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}))
+        );
+        assert_eq!(merged.get("title"), Some(&serde_json::json!("Hello DX")));
+        let auto_key = merged
+            .get("idempotency_key")
+            .and_then(serde_json::Value::as_str)
+            .expect("auto-minted string UUIDv7 idempotency_key");
+        assert!(parse_uuid_v7(auto_key).is_some());
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-046
+    #[test]
+    fn entity_get_symbolic_key_encoding_and_field_decoding_match_contract() {
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-symbolic-entity-")
+            .expect("scratch directory");
+        crate::scaffold::create_application(
+            "entity-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            directory.path(),
+        )
+        .expect("scaffold entity application");
+        let contract_path = directory.path().join("riffdb/contract.riff");
+        let item_uuid = "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10";
+        let (entity_type_id, encoded_key, fields, symbolic_entity) = resolve_symbolic_entity_get(
+            "Item",
+            None,
+            &[format!("item_id={item_uuid}")],
+            None,
+            Some(contract_path.as_os_str()),
+            &["title".to_owned(), "item_id".to_owned()],
+        )
+        .expect("resolve symbolic entity get");
+        let schema = symbolic_entity.expect("symbolic entity schema");
+        assert_eq!(entity_type_id, schema.id().get());
+        assert_eq!(fields, vec![1, 2]);
+        let decoded = schema
+            .primary_key()
+            .decode_entity(
+                &riffdb_types::EntityKey::from_bytes(encoded_key.clone()).expect("valid entity key"),
+            )
+            .expect("decode primary key");
+        assert_eq!(
+            decoded,
+            vec![CanonicalValue::Uuid(parse_uuid(item_uuid).expect("uuid"))]
+        );
+        let title_id = schema
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "title")
+            .expect("title field")
+            .id()
+            .get();
+        let response = v1::GetEntityResponse {
+            result: Some(v1::get_entity_response::Result::Found(v1::Entity {
+                entity_key: encoded_key,
+                entity_version: 1,
+                written_by_contract_version: 1,
+                fields: Some(v1::ValueRecord {
+                    fields: vec![v1::ValueField {
+                        field_id: Some(title_id),
+                        name: String::new(),
+                        value: Some(v1::Value {
+                            kind: Some(v1::value::Kind::StringValue("Notebook".to_owned())),
+                        }),
+                    }],
+                }),
+            })),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            render_symbolic_entity(&response, &schema).emit(
+                OutputMode::Json,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::SUCCESS
+        );
+        let rendered: serde_json::Value = serde_json::from_slice(&stdout).expect("symbolic entity JSON");
+        assert_eq!(rendered["result"]["entity"], "Item");
+        assert_eq!(rendered["result"]["fields"]["fields"][0]["name"], "title");
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-016, DX-017, DX-046
+    #[test]
+    fn query_explain_and_migrate_up_preserve_exact_hashes_and_coverage() {
+        let response = app_v1::ExplainQueryResponse {
+            identity: Some(app_v1::QueryIdentity {
+                contract_lineage: "SafeApplication".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![0xaa; 32],
+                query_name: Some("ItemPage".to_owned()),
+                plan_hash: vec![0xbb; 32],
+                module_hash: None,
+            }),
+            schema: Some(app_v1::QuerySchema {
+                parameters: Vec::new(),
+                outcomes: vec!["Found".to_owned()],
+                result_fields: Vec::new(),
+            }),
+            plan_lines: vec![
+                "query ItemPage v1".to_owned(),
+                "  many items: entity=1 (Item) scan=index_range (index=1, prefix_equality=1, range_bound=false, descending=false, covered=true, k_way_equality_branches=0) residual_filter=false sort_fields=0 limit=10 cursor=true hydration_fields=0".to_owned(),
+                "  cost scans=10 points=0 filters=0 branches=1".to_owned(),
+            ],
+            diagnostics: Vec::new(),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            render_query_explain(CommandIdentity::QueryExplain, response).emit(
+                OutputMode::Json,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::SUCCESS
+        );
+        let rendered: serde_json::Value = serde_json::from_slice(&stdout).expect("explain JSON");
+        assert_eq!(rendered["result"]["covered"], serde_json::json!(true));
+        assert_eq!(rendered["result"]["point_reads"], serde_json::json!(0));
+        assert_eq!(
+            rendered["result"]["scanned_index_rows"],
+            serde_json::json!(10)
+        );
+        assert_eq!(
+            rendered["result"]["coverage_summary"],
+            serde_json::json!(
+                "  index_coverage: covered=true point_reads=0 scanned_index_rows=10"
+            )
+        );
+
+        let migrate_up = crate::cli::Cli::parse_from([
+            "riffdb",
+            "migrate",
+            "up",
+            "--operation-id",
+            "018f2f85-3c20-7a31-8f11-112233445566",
+        ]);
+        assert_eq!(
+            command_identity(&migrate_up.command),
+            CommandIdentity::MigrationApply
+        );
+        let push_migrate = crate::cli::Cli::parse_from(["riffdb", "push", "--migrate"]);
+        assert!(matches!(
+            push_migrate.command,
+            TopLevel::Push { migrate: true, .. }
+        ));
+    }
+
+    // req: DX-004, DX-005, DX-016, DX-017, DX-046
+    #[test]
+    fn dev_exec_runs_command_against_ephemeral_session_and_propagates_exit_code() {
+        let directory =
+            tempfile::TempDir::with_prefix("riffdb-cli-dev-exec-").expect("scratch directory");
+        fs::write(directory.path().join("riffdb.application.json"), b"{}\n")
+            .expect("application source marker");
+        let invocation = DevInvocation {
+            role: "application",
+            tenant: Some("tenant-acme"),
+            sync_manifest: false,
+            sync_role: None,
+            watch: false,
+            run: false,
+            exec: Some("pytest -q"),
+            go_runner_package: None,
+            seed: true,
+            seed_dir: None,
+            seed_concurrency: "4",
+            reset: true,
+            acceptance: false,
+        };
+        let mut command = ProcessCommand::new("riffdb-dev");
+        append_dev_script_arguments(&mut command, directory.path(), &invocation);
+        let args = command
+            .get_args()
+            .map(std::ffi::OsStr::to_os_string)
+            .collect::<Vec<_>>();
+        let exec_idx = args
+            .iter()
+            .position(|arg| arg == "--exec")
+            .expect("--exec flag forwarded");
+        assert_eq!(args.get(exec_idx + 1), Some(&OsString::from("pytest -q")));
+        assert!(args.iter().any(|arg| arg == "--seed"));
+        assert!(args.iter().any(|arg| arg == "--reset"));
+    }
+
+    // req: REP-002, REP-004, REP-005, REP-006, DX-014
+    #[test]
+    fn follower_status_and_failover_cli_orchestrate_fenced_cutover_and_preserve_uncertainty_ids() {
+        let status_cli = crate::cli::Cli::parse_from(["riffdb", "follower", "status"]);
+        assert_eq!(
+            command_identity(&status_cli.command),
+            CommandIdentity::FollowerStatus
+        );
+
+        let applied = v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::AppliedThrough(42)),
+        };
+        let source = v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::AppliedThrough(45)),
+        };
+        let health_response = v1::HealthResponse {
+            database_alias: "default".to_owned(),
+            authentication_audience: "riffdb.public.v1".to_owned(),
+            result: Some(v1::health_response::Result::Authenticated(
+                v1::AuthenticatedHealth {
+                    status: v1::HealthStatus::Ready as i32,
+                    active_contract_version: Some(1),
+                    last_commit_sequence: Some(42),
+                    history_incarnation: 2,
+                    components: vec![v1::HealthComponent {
+                        component: v1::HealthComponentKind::Replication as i32,
+                        status: v1::HealthComponentStatus::Healthy as i32,
+                        replication: Some(v1::ReplicationStatistics {
+                            role: v1::ReplicationRole::Follower as i32,
+                            source_frontier: Some(v1::ReplicationFrontier {
+                                application: Some(source),
+                                administration: Some(applied),
+                            }),
+                            applied_frontier: Some(v1::ReplicationFrontier {
+                                application: Some(applied),
+                                administration: Some(applied),
+                            }),
+                            acknowledged_frontier: Some(v1::ReplicationFrontier {
+                                application: Some(applied),
+                                administration: Some(applied),
+                            }),
+                            registered_followers: None,
+                            application_lag_sequences: Some(3),
+                            administration_lag_sequences: Some(0),
+                        }),
+                    }],
+                    storage_scrub: None,
+                    started_at: Some(v1::Timestamp {
+                        seconds: 1_700_000_000,
+                        nanos: 0,
+                    }),
+                    build: Some(v1::BuildInfo {
+                        semantic_version: "0.1.0".to_owned(),
+                        git_revision: "deadbeef".to_owned(),
+                        rust_version: "1.90.0".to_owned(),
+                        enabled_features: Vec::new(),
+                        storage_format_version: 1,
+                        contract_ir_version: 1,
+                        mcp_protocol_baseline: "2025-11-25".to_owned(),
+                    }),
+                },
+            )),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            render_follower_status(&health_response).emit(
+                OutputMode::Json,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::SUCCESS
+        );
+        let status_json: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("follower status JSON");
+        assert_eq!(status_json["command"], "follower.status");
+        assert_eq!(status_json["result"]["role"], "follower");
+        assert_eq!(status_json["result"]["history_incarnation"], "2");
+        assert_eq!(status_json["result"]["application_lag_sequences"], "3");
+        assert_eq!(
+            status_json["result"]["applied_frontier"]["application"]["sequence"],
+            "42"
+        );
+
+        let fence_op = parse_uuid_v7("018bcfe5-6800-7101-8101-010101010111").expect("fence op");
+        let promote_op =
+            parse_uuid_v7("018bcfe5-6800-7101-8101-010101010122").expect("promote op");
+        stdout.clear();
+        stderr.clear();
+        assert_eq!(
+            render_follower_failover(
+                CommandIdentity::FollowerFailover,
+                &fence_op,
+                &promote_op,
+                v1::PrimaryFenceReceipt {
+                    operation_id: Vec::new(),
+                    target: None,
+                    administration_sequence: 7,
+                    registration_generation: 3,
+                    final_application_frontier: Some(applied),
+                    replayed: false,
+                },
+                v1::PromoteFollowerResponse {
+                    receipt: Some(v1::FollowerPromotionReceipt {
+                        operation_id: Vec::new(),
+                        target: None,
+                        administration_sequence: 8,
+                        registration_generation: 3,
+                        applied_application_frontier: Some(applied),
+                        history_incarnation: 2,
+                        leadership_epoch: 2,
+                        application_rpo: 0,
+                        replayed: false,
+                    }),
+                },
+            )
+            .emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        let failover_json: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("failover receipt JSON");
+        assert_eq!(failover_json["command"], "follower.failover");
+        assert_eq!(failover_json["result"]["status"], "applied");
+        assert_eq!(failover_json["result"]["fence_status"], "applied");
+        assert_eq!(failover_json["result"]["promotion_status"], "applied");
+        assert_eq!(
+            failover_json["result"]["fence_operation_id"],
+            "018bcfe5-6800-7101-8101-010101010111"
+        );
+        assert_eq!(
+            failover_json["result"]["operation_id"],
+            "018bcfe5-6800-7101-8101-010101010122"
+        );
+        assert_eq!(failover_json["result"]["final_application_sequence"], "42");
+        assert_eq!(
+            failover_json["result"]["applied_application_sequence"],
+            "42"
+        );
+        assert_eq!(failover_json["result"]["history_incarnation"], "2");
+        assert_eq!(failover_json["result"]["leadership_epoch"], "2");
+        assert_eq!(failover_json["result"]["application_rpo"], "0");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let closed_port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        let failover_cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "--endpoint",
+            &format!("http://127.0.0.1:{closed_port}"),
+            "follower",
+            "failover",
+            "--database-id",
+            "018bcfe5-6800-7101-8101-010101010101",
+            "--history-incarnation",
+            "1",
+            "--leadership-epoch",
+            "1",
+            "--hold-id",
+            "71717171717171717171717171717171",
+            "--registration-generation",
+            "3",
+            "--primary-endpoint",
+            &format!("http://127.0.0.1:{closed_port}"),
+        ]);
+        assert_eq!(
+            command_identity(&failover_cli.command),
+            CommandIdentity::FollowerFailover
+        );
+        let mut env = TestEnvironment::default();
+        env.0.insert(
+            "RIFFDB_CAPABILITY_TOKEN".to_owned(),
+            OsString::from("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        );
+        let config = resolve(&failover_cli, &env).expect("resolve failover config");
+        let TopLevel::Follower { command } = failover_cli.command else {
+            panic!("expected follower failover command");
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let terminal = runtime.block_on(follower_command(command, &config, &env));
+        stdout.clear();
+        stderr.clear();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::from(3)
+        );
+        let uncertain_json: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("uncertain failover JSON");
+        assert_eq!(uncertain_json["command"], "follower.failover");
+        assert_eq!(uncertain_json["ok"], false);
+        assert_eq!(uncertain_json["error"]["code"], "outcome_unknown");
+        assert_eq!(uncertain_json["error"]["stage"], "fence_primary");
+        let auto_fence_id = uncertain_json["error"]["fence_operation_id"]
+            .as_str()
+            .expect("auto-minted fence_operation_id");
+        let auto_op_id = uncertain_json["error"]["operation_id"]
+            .as_str()
+            .expect("auto-minted operation_id");
+        assert!(parse_uuid_v7(auto_fence_id).is_some());
+        assert!(parse_uuid_v7(auto_op_id).is_some());
     }
 }

@@ -782,6 +782,127 @@ pub(crate) fn resolve_workspace_contract_defaults(
     )))
 }
 
+pub(crate) fn compile_workspace_contract_bundle(
+    workspace_root: &Path,
+    explicit_source: Option<&Path>,
+) -> Result<Option<ContractBundle>, ScaffoldError> {
+    if let Some(path) = explicit_source {
+        let meta = fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("riff") {
+            let bytes = read_bounded(path, 1_048_576)?;
+            let source = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::CompileContract)?;
+            return compile_contract_source(source)
+                .map(Some)
+                .map_err(|error| contract_diagnostic(&path.to_string_lossy(), &error));
+        }
+        if let Ok(locked) = load_locked_application_unchecked(path, None) {
+            return Ok(Some(locked.contract));
+        }
+        let bytes = read_bounded(path, 1_048_576)?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+        let parsed = ApplicationSourceManifest::parse(text)
+            .map_err(|error| application_source_diagnostic(path, error))?;
+        let root = source_parent(path);
+        let contract_source = read_workspace_text(root, parsed.contract().source(), 1_048_576)?;
+        return compile_contract_source(&contract_source)
+            .map(Some)
+            .map_err(|error| contract_diagnostic(parsed.contract().source(), &error));
+    }
+    let manifest_path = workspace_root.join("riffdb.application.json");
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => return Err(ScaffoldError::UnsafePath),
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    if let Ok(locked) = load_locked_application_unchecked(&manifest_path, None) {
+        return Ok(Some(locked.contract));
+    }
+    let bytes = read_bounded(&manifest_path, 1_048_576)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+    let parsed = ApplicationSourceManifest::parse(text)
+        .map_err(|error| application_source_diagnostic(&manifest_path, error))?;
+    let contract_source =
+        read_workspace_text(workspace_root, parsed.contract().source(), 1_048_576)?;
+    compile_contract_source(&contract_source)
+        .map(Some)
+        .map_err(|error| contract_diagnostic(parsed.contract().source(), &error))
+}
+
+pub(crate) fn resolve_workspace_named_query_source(
+    workspace_root: &Path,
+    query_name: &str,
+) -> Result<Option<String>, ScaffoldError> {
+    let manifest_path = workspace_root.join("riffdb.application.json");
+    match fs::symlink_metadata(&manifest_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => return Err(ScaffoldError::UnsafePath),
+        Ok(metadata) if metadata.is_file() => {
+            let bytes = read_bounded(&manifest_path, 1_048_576)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
+            let parsed = ApplicationSourceManifest::parse(text)
+                .map_err(|error| application_source_diagnostic(&manifest_path, error))?;
+            for module in parsed.query_modules() {
+                for query in module.queries() {
+                    if query.name() == query_name {
+                        let source =
+                            read_workspace_text(workspace_root, query.source(), 1_048_576)?;
+                        return Ok(Some(source));
+                    }
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ScaffoldError::Io(error)),
+    }
+    let riffdb_dir = workspace_root.join("riffdb");
+    if let Ok(meta) = fs::symlink_metadata(&riffdb_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(ScaffoldError::UnsafePath);
+        }
+        let queries_dir = riffdb_dir.join("queries");
+        if let Ok(qmeta) = fs::symlink_metadata(&queries_dir) {
+            if qmeta.file_type().is_symlink() {
+                return Err(ScaffoldError::UnsafePath);
+            }
+            if qmeta.is_dir() {
+                let mut rel_paths = Vec::new();
+                for entry in fs::read_dir(&queries_dir)? {
+                    let entry = entry?;
+                    let emeta = fs::symlink_metadata(entry.path())?;
+                    if emeta.file_type().is_symlink() {
+                        return Err(ScaffoldError::UnsafePath);
+                    }
+                    if !emeta.is_file() {
+                        continue;
+                    }
+                    if let Some(name_str) = entry.file_name().to_str()
+                        && name_str.ends_with(".riffq")
+                    {
+                        rel_paths.push(format!("riffdb/queries/{name_str}"));
+                    }
+                }
+                rel_paths.sort();
+                for rel_path in rel_paths {
+                    let query_text = read_workspace_text(workspace_root, &rel_path, 1_048_576)?;
+                    if riffdb_query_module::extract_declared_query_name(&query_text)
+                        .ok()
+                        .as_deref()
+                        == Some(query_name)
+                    {
+                        return Ok(Some(query_text));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ManifestSyncReport {
     pub(crate) role: String,

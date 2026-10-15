@@ -11,6 +11,7 @@ mod auth;
 mod catalog;
 mod commit;
 mod conflict;
+mod exposition;
 mod health;
 mod mcp;
 mod metrics;

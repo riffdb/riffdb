@@ -102,6 +102,29 @@ impl Daemon {
                     .ok()
                     .map(|value| ("RIFFDB_WRITER_BATCH_DIAGNOSTICS".to_owned(), value)),
             )
+            .envs(
+                (std::env::var("RIFFDB_PERF_SURFACE_FLIGHT_RECORDER").as_deref() == Ok("1")
+                    && std::env::var_os("RIFFDB_TELEMETRY_FLIGHT_RECORDER").is_none())
+                .then(|| {
+                    (
+                        "RIFFDB_TELEMETRY_FLIGHT_RECORDER".to_owned(),
+                        run_dir
+                            .join("telemetry-flight.ndjson")
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                }),
+            )
+            .envs(
+                (std::env::var("RIFFDB_PERF_SURFACE_FLIGHT_RECORDER").as_deref() == Ok("1")
+                    && std::env::var_os("RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS").is_none())
+                .then(|| {
+                    (
+                        "RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS".to_owned(),
+                        "1000".to_owned(),
+                    )
+                }),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

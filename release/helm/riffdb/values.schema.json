@@ -54,21 +54,51 @@
       "additionalProperties": false,
       "required": [
         "replicas",
+        "mode",
         "environment",
         "audience",
         "terminationGracePeriodSeconds",
+        "replicationSource",
         "listener",
         "resources",
         "probes",
         "secretName",
         "tlsTrustRootFile",
-        "persistence"
+        "persistence",
+        "telemetry"
       ],
       "properties": {
         "replicas": { "type": "integer", "const": 1 },
+        "mode": { "type": "string", "enum": ["primary", "follower"] },
         "environment": { "$ref": "#/definitions/nonemptyBoundedString" },
         "audience": { "$ref": "#/definitions/nonemptyBoundedString" },
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 2, "maximum": 600 },
+        "replicationSource": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "endpoint",
+            "serverName",
+            "tlsTrustRootFile",
+            "credentialSecretKey",
+            "database",
+            "databaseId",
+            "historyIncarnation",
+            "leadershipEpoch",
+            "holdId"
+          ],
+          "properties": {
+            "endpoint": { "type": "string", "maxLength": 253 },
+            "serverName": { "type": "string", "maxLength": 253 },
+            "tlsTrustRootFile": { "$ref": "#/definitions/secretKey" },
+            "credentialSecretKey": { "$ref": "#/definitions/secretKey" },
+            "database": { "$ref": "#/definitions/nonemptyBoundedString" },
+            "databaseId": { "type": "string", "pattern": "^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+            "historyIncarnation": { "type": "integer", "minimum": 1 },
+            "leadershipEpoch": { "type": "integer", "minimum": 1 },
+            "holdId": { "type": "string", "pattern": "^$|^[0-9a-f]{32}$" }
+          }
+        },
         "listener": {
           "type": "object",
           "additionalProperties": false,
@@ -116,6 +146,31 @@
           "properties": {
             "data": { "$ref": "#/definitions/dataVolume" },
             "backups": { "$ref": "#/definitions/backupVolume" }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["metrics", "flightRecorder"],
+          "properties": {
+            "metrics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "port"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+              }
+            },
+            "flightRecorder": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled", "intervalMilliseconds"],
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "intervalMilliseconds": { "type": "integer", "minimum": 100, "maximum": 3600000 }
+              }
+            }
           }
         }
       }

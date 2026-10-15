@@ -2944,9 +2944,14 @@ async fn execute_named_query(
     }
     let presence = query
         .operational_family()
-        .map(|family| {
-            family
-                .presence_parameters()
+        .map(riffdb_query_ir::OperationalQueryFamilyV1::presence_parameters)
+        .or_else(|| {
+            query
+                .order_family()
+                .map(riffdb_query_ir::OrderQueryFamilyV1::presence_parameters)
+        })
+        .map(|parameters| {
+            parameters
                 .iter()
                 .map(|name| {
                     request
@@ -2961,12 +2966,16 @@ async fn execute_named_query(
         let submitted = request.parameters.get(family.selector_parameter())?;
         let member = match submitted {
             SubmittedValue::Enum(value) => match (value.type_id(), value.variant_id()) {
-                (Some(type_id), Some(variant_id)) => family.select(type_id, variant_id),
+                (Some(type_id), Some(variant_id)) => {
+                    family.select_with_presence(&presence, type_id, variant_id)
+                }
                 _ => value
                     .name()
-                    .and_then(|name| family.select_name(name.as_str())),
+                    .and_then(|name| family.select_name_with_presence(&presence, name.as_str())),
             },
-            SubmittedValue::String(value) => family.select_name(value.as_str()),
+            SubmittedValue::String(value) => {
+                family.select_name_with_presence(&presence, value.as_str())
+            }
             _ => None,
         }?;
         Some(member.shared_program())
@@ -3011,7 +3020,13 @@ async fn execute_named_query(
     }
     let aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]> = query
         .operational_family()
-        .map_or_else(|| Arc::from([]), |family| Arc::from(family.aggregates()));
+        .map(riffdb_query_ir::OperationalQueryFamilyV1::aggregates)
+        .or_else(|| {
+            query
+                .order_family()
+                .map(riffdb_query_ir::OrderQueryFamilyV1::aggregates)
+        })
+        .map_or_else(|| Arc::from([]), Arc::from);
     execute_compiled_query(
         service,
         context,

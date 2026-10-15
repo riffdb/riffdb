@@ -287,6 +287,10 @@ pub(crate) struct ProductionGraphBuilder {
     backup_root: std::path::PathBuf,
     retention: crate::config::RetentionConfig,
     outbox_destination: Option<crate::config::ConfiguredOutbox>,
+    database_path: std::path::PathBuf,
+    metrics_listen_address: Option<std::net::SocketAddr>,
+    telemetry_flight_recorder_path: Option<std::path::PathBuf>,
+    telemetry_flight_interval: std::time::Duration,
 }
 
 impl ProductionGraphBuilder {
@@ -309,6 +313,11 @@ impl ProductionGraphBuilder {
         let mcp_audience = config.mcp_audience().cloned();
         let mut trusted_audiences = vec![grpc_audience.clone()];
         trusted_audiences.extend(mcp_audience.clone());
+        let is_primary_database = config
+            .databases()
+            .first()
+            .map(crate::config::DatabaseConfig::alias)
+            == Some(database.alias());
         Self {
             startup,
             activator,
@@ -336,6 +345,20 @@ impl ProductionGraphBuilder {
             backup_root: database.backup_root().to_path_buf(),
             retention: database.retention(),
             outbox_destination: database.outbox().cloned(),
+            database_path: database.database_path().to_path_buf(),
+            metrics_listen_address: if is_primary_database {
+                config.metrics_listen_address()
+            } else {
+                None
+            },
+            telemetry_flight_recorder_path: if is_primary_database {
+                config
+                    .telemetry_flight_recorder_path()
+                    .map(std::path::Path::to_path_buf)
+            } else {
+                None
+            },
+            telemetry_flight_interval: config.telemetry_flight_interval(),
         }
     }
 
@@ -372,6 +395,10 @@ impl ProductionGraphBuilder {
             backup_root,
             retention,
             outbox_destination,
+            database_path,
+            metrics_listen_address,
+            telemetry_flight_recorder_path,
+            telemetry_flight_interval,
         } = self;
 
         let server_generation = server_generation
@@ -1051,6 +1078,13 @@ impl ProductionGraphBuilder {
                 outbox_health,
             )
         });
+        let telemetry_exporter = crate::telemetry_exporter::RunningTelemetryExporter::start(
+            Arc::clone(&observability),
+            database_path,
+            metrics_listen_address,
+            telemetry_flight_recorder_path,
+            telemetry_flight_interval,
+        );
         Ok(RunningProductionGraph {
             registration_worker,
             archive_workers,
@@ -1067,6 +1101,7 @@ impl ProductionGraphBuilder {
             scrub_worker,
             retention_lane,
             outbox_worker,
+            telemetry_exporter,
             exact_worker: Some(exact_worker),
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
@@ -1149,6 +1184,7 @@ pub(crate) struct RunningProductionGraph {
     scrub_worker: crate::scrub_worker::RunningScrubWorker,
     retention_lane: crate::retention_worker::RunningRetentionLane,
     outbox_worker: Option<crate::outbox_worker::RunningLocalOutbox>,
+    telemetry_exporter: crate::telemetry_exporter::RunningTelemetryExporter,
     exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
@@ -1353,6 +1389,7 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        self.telemetry_exporter.shutdown();
         elapsed_us[6] = finish_shutdown_stage(6, started);
         let started = begin_shutdown_stage(7);
         let checkpoint_close = if shutdown_prerequisites_succeeded([
@@ -1492,6 +1529,7 @@ impl RunningProductionGraph {
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        self.telemetry_exporter.shutdown();
         elapsed_us[6] = elapsed_microseconds(started);
         let started = Instant::now();
         let checkpoint_close = if shutdown_prerequisites_succeeded([

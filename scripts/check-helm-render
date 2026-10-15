@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# req: REP-002, REP-004, REP-005, DX-014
 set -euo pipefail
 
 # Renders the RiffDB chart against pinned values and compares the result with a
-# committed golden manifest.
+# committed golden manifest, plus verifies follower-mode rendering and
+# fail-closed validation.
 #
 # A chart is a program whose output an operator runs. Reviewing a values or
 # template change by reading the template is reviewing the source of that
@@ -40,10 +42,42 @@ render() {
         --kube-version 1.29.0 \
         --api-versions v1 \
         --api-versions apps/v1 \
-        --api-versions batch/v1
+        --api-versions batch/v1 \
+        "$@"
 }
 
 helm lint "$chart" >/dev/null
+
+follower_manifest="$(
+    render \
+        --set server.mode=follower \
+        --set server.replicationSource.endpoint=https://riffdb-primary.riffdb-alpha.svc:7443 \
+        --set server.replicationSource.serverName=riffdb-primary.riffdb-alpha.svc \
+        --set server.replicationSource.databaseId=018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10 \
+        --set server.replicationSource.historyIncarnation=2 \
+        --set server.replicationSource.leadershipEpoch=3 \
+        --set server.replicationSource.holdId=0102030405060708090a0b0c0d0e0f10
+)"
+grep -Fq 'mode = "follower"' <<<"$follower_manifest" || {
+    echo "follower render omitted mode = \"follower\"" >&2
+    exit 1
+}
+grep -Fq '[server.replication_source]' <<<"$follower_manifest" || {
+    echo "follower render omitted [server.replication_source]" >&2
+    exit 1
+}
+grep -Fq 'credential_file = "/run/riffdb-protected/replication-source.credential"' <<<"$follower_manifest" || {
+    echo "follower render omitted protected replication_source credential_file" >&2
+    exit 1
+}
+grep -Fq 'key: replication-source.credential' <<<"$follower_manifest" || {
+    echo "follower render omitted Secret key mount for replication-source.credential" >&2
+    exit 1
+}
+if render --set server.mode=follower >/dev/null 2>&1; then
+    echo "follower render unexpectedly succeeded without required replicationSource fields" >&2
+    exit 1
+fi
 
 if ((write)); then
     mkdir -p "$(dirname "$golden")"

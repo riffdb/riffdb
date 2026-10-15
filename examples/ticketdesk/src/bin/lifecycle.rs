@@ -77,6 +77,7 @@ async fn main() {
         Some("recovery-smoke") => recovery::smoke().await,
         Some("archive-reconcile") => archive::run(),
         Some("rotation-smoke") => current::rotation_smoke().await,
+        Some("telemetry-config") => telemetry_config(),
         _ => Err("arguments"),
     };
     if let Err(code) = result {
@@ -510,4 +511,91 @@ fn descriptor() -> Result<()> {
             .collect::<String>()
     );
     Ok(())
+}
+
+fn telemetry_flight_recorder_arguments(
+    artifact_directory: &Path,
+    interval_ms: Option<u64>,
+) -> Result<(PathBuf, u64, [String; 4])> {
+    if !artifact_directory.is_absolute()
+        || artifact_directory.is_symlink()
+        || !artifact_directory.is_dir()
+    {
+        return Err("telemetry_directory");
+    }
+    let interval = interval_ms.unwrap_or(10_000);
+    if !(100..=3_600_000).contains(&interval) {
+        return Err("telemetry_interval");
+    }
+    let flight_path = artifact_directory.join("telemetry-flight.ndjson");
+    let path_str = flight_path
+        .to_str()
+        .ok_or("telemetry_directory")?
+        .to_owned();
+    let interval_str = interval.to_string();
+    let args = [
+        "--telemetry-flight-recorder".to_owned(),
+        path_str,
+        "--telemetry-flight-interval-ms".to_owned(),
+        interval_str,
+    ];
+    Ok((flight_path, interval, args))
+}
+
+fn telemetry_config() -> Result<()> {
+    let root = PathBuf::from(
+        env::var_os("RIFFDB_LIFECYCLE_TELEMETRY_ROOT")
+            .or_else(|| env::var_os("RIFFDB_LIFECYCLE_WITNESS_ROOT"))
+            .ok_or("configuration")?,
+    );
+    let interval_ms = match env::var("RIFFDB_LIFECYCLE_TELEMETRY_INTERVAL_MS") {
+        Ok(value) => Some(value.parse::<u64>().map_err(|_| "telemetry_interval")?),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("telemetry_interval"),
+    };
+    let (_, interval, args) = telemetry_flight_recorder_arguments(&root, interval_ms)?;
+    println!(
+        "{{\"schema\":\"riffdb.ticketdesk-lifecycle-telemetry-config/v1\",\"interval_ms\":{},\"server_args\":[\"{}\",\"{}\",\"{}\",\"{}\"]}}",
+        interval, args[0], args[1], args[2], args[3]
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // req: PERF-001, END-007, END-008
+    fn lifecycle_telemetry_flight_recorder_arguments_enforce_directory_and_interval_bounds() {
+        let dir = std::env::temp_dir().join(format!(
+            "riffdb-ticketdesk-telemetry-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+
+        let (flight_path, interval, args) =
+            telemetry_flight_recorder_arguments(&dir, None).expect("default interval");
+        assert_eq!(interval, 10_000);
+        assert_eq!(flight_path, dir.join("telemetry-flight.ndjson"));
+        assert_eq!(args[0], "--telemetry-flight-recorder");
+        assert_eq!(args[2], "--telemetry-flight-interval-ms");
+        assert_eq!(args[3], "10000");
+
+        assert_eq!(
+            telemetry_flight_recorder_arguments(Path::new("relative/dir"), None),
+            Err("telemetry_directory")
+        );
+        assert_eq!(
+            telemetry_flight_recorder_arguments(&dir, Some(50)),
+            Err("telemetry_interval")
+        );
+        assert_eq!(
+            telemetry_flight_recorder_arguments(&dir, Some(3_600_001)),
+            Err("telemetry_interval")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

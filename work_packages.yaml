@@ -30891,3 +30891,605 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-845
+  name: Pure-Rust Prometheus and OTLP JSON exposition in riffdb-observability
+  tier: surface
+  depends_on: [WP-180, WP-755]
+  objective: Implement ADR-0306 Decision 1. Add deterministic, allocation-bounded
+    encode_prometheus_v1, encode_otel_json_v1, and encode_flight_record_ndjson_v1
+    methods to MetricRegistry and Observability in riffdb-observability using
+    std::fmt::Write without adding third-party crate dependencies.
+  requirements: [ID-005, PERF-001, END-007]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0086, ADR-0250]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Prometheus v0.0.4 text exposition encoder across all 40 required metric families, closed pipeline stage histograms, completion-lane counters, and health status
+  - OTLP JSON ExportMetricsServiceRequest v1 encoder and single-line NDJSON flight-recorder snapshot encoder with histogram percentile approximations (p50, p95, p99)
+  - Unit tests verifying cumulative histogram bucket invariants, canonical ordering, redaction canary exclusion, and leaf-crate dependency invariance
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-845
+  exit_gate: MetricRegistry and Observability deterministically encode Prometheus
+    text, OTLP JSON, and flight-recorder NDJSON snapshots with closed-vocabulary
+    labels and zero new dependencies in riffdb-observability.
+  standing_design_tests:
+    interface_safety: Only closed enum labels and bounded numeric IDs can be rendered; raw business keys, tenant IDs, and secrets are structurally unrepresentable.
+    scale: Bounded series cardinality (MAX_COMMAND_METRIC_SERIES = 1024) and single-pass std::fmt::Write formatting.
+  human_review_triggers:
+  - Exposition emits unbounded tenant, entity, request, or error-message labels.
+  - riffdb-observability adds dependencies outside riffdb-types, riffdb-errors, and tracing.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [ID-005, PERF-001, END-007]
+    evidence: crates/riffdb-observability/src/exposition.rs
+    decision: Implemented pure-Rust Prometheus v0.0.4 text exposition (encode_prometheus_v1), OTLP JSON ExportMetricsServiceRequest exposition (encode_otel_json_v1), single-line NDJSON flight-recorder snapshot encoding (encode_flight_record_ndjson_v1), and histogram percentile upper-bound approximations in riffdb-observability with zero new crate dependencies.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-846
+  name: Loopback metrics HTTP listener and periodic NDJSON flight recorder in riffdbd
+  tier: surface
+  depends_on: [WP-845]
+  objective: Implement ADR-0306 Decision 2. Add optional --metrics-listen
+    <LOOPBACK_ADDR> (serving GET /metrics and GET /v1/metrics) and
+    --telemetry-flight-recorder <PATH> / --telemetry-flight-interval-ms <MS>
+    to riffdbd configuration and server runtime.
+  requirements: [ID-005, PERF-001, END-007, END-008]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0111, ADR-0184]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Loopback-validated --metrics-listen / RIFFDB_METRICS_LISTEN / server.metrics_listen and flight-recorder settings in crates/riffdb-server/src/config.rs
+  - Read-only HTTP/1 loopback listener serving GET /metrics (Prometheus) and GET /v1/metrics (OTLP JSON) with graceful shutdown
+  - Periodic background flight-recorder writer appending bounded NDJSON snapshots including live storage and journal byte totals
+  - Config and server integration tests for loopback enforcement, HTTP scraping, and flight-recorder output
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-846
+  exit_gate: riffdbd serves Prometheus and OTLP JSON metrics over literal
+    loopback HTTP when configured, rejects non-loopback addresses fail-closed,
+    and writes periodic NDJSON flight-recorder snapshots during runtime and drain.
+  standing_design_tests:
+    interface_safety: --metrics-listen rejects non-loopback addresses and non-GET requests fail closed; flight-recorder paths are validated and disjoint from database and key paths.
+    scale: Bounded read-only in-memory snapshot formatting and configurable interval bounded to 100..=3_600_000 ms.
+  human_review_triggers:
+  - --metrics-listen allows non-loopback binding or mutating HTTP methods.
+  - Flight-recorder path overlaps authoritative database, backup, or key files.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [ID-005, PERF-001, END-007, END-008]
+    evidence: crates/riffdb-server/src/telemetry_exporter.rs
+    decision: Added --metrics-listen (RIFFDB_METRICS_LISTEN / server.metrics_listen), --telemetry-flight-recorder (RIFFDB_TELEMETRY_FLIGHT_RECORDER / server.telemetry_flight_recorder), and --telemetry-flight-interval-ms (RIFFDB_TELEMETRY_FLIGHT_INTERVAL_MS / server.telemetry_flight_interval_ms) to riffdbd with loopback-only HTTP GET /metrics and GET /v1/metrics exposition and periodic NDJSON flight recording.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-847
+  name: CLI flight-recorder summary and 24/72-hour soak rehearsal integration
+  tier: surface
+  depends_on: [WP-846]
+  objective: Implement ADR-0306 Decision 3. Add riffdb telemetry summarize <PATH>
+    to riffdb-cli for human and JSON aggregation of flight-recorder NDJSON logs,
+    integrate flight-recorder capture into the TicketDesk lifecycle/soak harness,
+    and update the public handbook and generated CLI references.
+  requirements: [PERF-001, END-007, END-008, DX-014]
+  required_adrs: [ADR-0306, ADR-0049, ADR-0111]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - riffdb telemetry summarize <PATH> command in crates/riffdb-cli with human and --output json modes
+  - Flight-recorder telemetry wiring in examples/ticketdesk/src/bin/lifecycle.rs for 24/72-hour stress and soak runs
+  - Handbook documentation updates and regenerated CLI reference fixtures
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-847
+  exit_gate: riffdb telemetry summarize reports window throughput, latency
+    percentile high-water marks, writer saturation, and storage growth from
+    flight-recorder NDJSON files, and TicketDesk lifecycle runs emit flight
+    recordings when an artifact directory is configured.
+  standing_design_tests:
+    interface_safety: CLI summary reads bounded NDJSON lines without network or database mutation; JSON output uses a stable versioned schema.
+    scale: Streaming line-by-line NDJSON aggregation bounded to 64 MiB input files.
+  human_review_triggers:
+  - Telemetry summary reads unbounded files into memory without a size ceiling.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PERF-001, END-007, END-008, DX-014]
+    evidence: crates/riffdb-cli/src/telemetry.rs
+    decision: Added riffdb telemetry summarize <PATH> in crates/riffdb-cli with bounded 64 MiB streaming NDJSON aggregation in human and JSON output modes, wired --telemetry-flight-recorder into the TicketDesk lifecycle rehearsal and campaign runtime, updated docs/configuration.md and docs/known-limitations.md, and regenerated docs/reference/cli.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-848
+  name: Combined optional-presence and caller-selected order families plus operational candidate predicates
+  tier: surface
+  depends_on: []
+  objective: Implement ADR-0307 Decisions 1 and 2. Extend OrderQueryFamilyV1 and
+    OrderFamilyMemberV1 with optional presence parameters, aggregates, and
+    per-member presence_mask; expand Cartesian (presence_mask, order_variant)
+    plan members up to MAX_OPERATIONAL_PLAN_MEMBERS (256) in
+    riffdb-query-compiler; wire runtime selection in riffdb-query-module and
+    riffdb-service; and admit operational predicates (ranges, in, prefix, is
+    null / is not null) in ordinary candidates sources.
+  requirements: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0134, ADR-0174]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Extended OrderQueryFamilyV1 and OrderFamilyMemberV1 in crates/riffdb-query-ir/src/order_family.rs carrying presence_parameters, aggregates, and presence_mask
+  - Cartesian (presence_mask, order_variant) expansion and validation in crates/riffdb-query-compiler/src/lib.rs
+  - Operational predicate support (ranges, in, prefix, is null / is not null) in ordinary candidates sources in crates/riffdb-query-compiler and crates/riffdb-query-executor
+  - Runtime (presence, order_variant) selection in crates/riffdb-query-module and crates/riffdb-service
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-848
+  exit_gate: Queries combining when $param optional filters with order by $order
+    families compile and execute all valid (presence_mask, order_variant)
+    combinations within the 256-member ceiling, and ordinary candidates sources
+    accept operational range, in, prefix, and nullability predicates.
+  standing_design_tests:
+    interface_safety: Every (presence_mask, order_variant) member and candidate source is statically index-proven before execution; member counts exceeding 256 fail closed at compile time.
+    scale: Plan family expansion is capped at MAX_OPERATIONAL_PLAN_MEMBERS (256) and candidate sources remain bounded by within <MAX>.
+  human_review_triggers:
+  - Combined optional-presence and order-family compilation admits more than 256 total plan members or skips per-member index validation.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002]
+    evidence: crates/riffdb-query-compiler/src/lib.rs
+    decision: Extended OrderQueryFamilyV1 and OrderFamilyMemberV1 with optional presence parameters, aggregates, and presence_mask; expanded Cartesian (presence_mask, order_variant) plan families up to 256 members in riffdb-query-compiler; admitted operational range, membership, prefix, and nullability predicates in ordinary candidates sources; and wired runtime presence + order selection across riffdb-query-module, riffdb-query-executor, and riffdb-service.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-849
+  name: Non-partition bounded-set k-way merge and single-partition mixed ordering
+  tier: surface
+  depends_on: [WP-848]
+  objective: Implement ADR-0307 Decision 3. Allow one bounded field in $set
+    (set<T, MAX>) on a non-partition index prefix component followed by equality
+    predicates and an order by suffix matching the remaining index columns, and
+    allow mixed asc/desc order directions on single-partition bounded index
+    scans, executing via bounded k-way merge and canonical continuation markers.
+  requirements: [RQL-002, RQL-003, QRY-001, QRY-002]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0175]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Non-partition field in $set prefix + trailing order by planning and cost accounting in crates/riffdb-query-compiler/src/lib.rs
+  - Single-partition mixed asc/desc index ordering admission under MAX_OPERATIONAL_SCAN_ROWS in crates/riffdb-query-compiler/src/lib.rs
+  - Multi-prefix k-way merge, trailing equality schedule encoding after In, and single-partition mixed-order execution with cursor continuation in crates/riffdb-query-executor/src/lib.rs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-849
+  exit_gate: Queries with non-partition field in $set followed by order by on
+    trailing index columns and single-partition queries with mixed asc/desc
+    order terms compile and execute in one snapshot with deterministic cursor
+    pagination.
+  standing_design_tests:
+    interface_safety: Only bounded set<T, MAX> parameters or bounded literal sets are admitted for k-way merge order suffixes, and every scan remains bounded by static scan_ceiling.
+    scale: K-way merge fan-in is bounded by MAX_BOUNDED_SET_ITEMS_V1 (64) and mixed-order scans are bounded by MAX_OPERATIONAL_SCAN_ROWS (10,000).
+  human_review_triggers:
+  - Non-partition bounded-set k-way merge or single-partition mixed ordering executes an unbounded index scan without a static scan ceiling.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, QRY-001, QRY-002]
+    evidence: cargo test -p riffdb-query-executor --lib non_partition_bounded_set_with_order_executes_k_way_merge && cargo test -p riffdb-query-executor --lib single_partition_mixed_direction_order_executes_bounded_merge
+    decision: Non-partition bounded-set IN prefix + trailing order by and single-partition mixed asc/desc ordering lower to PartitionSetIndex and execute via bounded k-way merge and canonical continuation markers.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-850
+  name: Generalized per-step covering index execution and zero-point-read cost accounting
+  tier: surface
+  depends_on: [WP-849]
+  objective: Implement ADR-0307 Decision 4. Generalize CoveredResultLayoutV1
+    attachment in riffdb-query-compiler to any QueryAccessKind::Index step
+    without a read row policy whose index (key + primary_key + cover) covers all
+    step-required fields (including multi-binding steps, one/maybe unique-index
+    lookups, and aggregate source steps), charge 0 point_reads in
+    QueryCostAccumulator for covered steps, and keep compact positional wire
+    carriage restricted to single-step Many queries.
+  requirements: [RQL-003, RQL-004, QRY-001, QRY-007]
+  required_adrs: [ADR-0307, ADR-0133]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - Aggregate group-key and measure input field inclusion in source binding predicate_fields and cover_required_fields in crates/riffdb-query-compiler/src/lib.rs
+  - Generalized CoveredResultLayoutV1 attachment and zero-point-read QueryCostAccumulator accounting in crates/riffdb-query-compiler/src/lib.rs
+  - Single-step Many gating for compact positional wire carriage in crates/riffdb-query-module and crates/riffdb-query-executor
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-850
+  exit_gate: Covered index steps in multi-binding queries, singular one/maybe
+    unique-index lookups, and operational aggregate queries compile with
+    covered_result_layout and execute via scan_covered with zero entity point
+    reads while preserving existing wire representations.
+  standing_design_tests:
+    interface_safety: Covered execution is enabled only when key + primary_key + cover contains every predicate, dependency, ordering, aggregate, and selected field of the step and no read row policy applies.
+    scale: Eliminates O(rows) entity point reads for covered multi-binding, singular, and aggregate index steps.
+  human_review_triggers:
+  - Covered-index step execution alters negotiated compact wire carriage for multi-step, singular, or aggregate queries.
+  closure:
+    status: complete
+    completed_at: '2026-10-15T14:05:00-05:00'
+    requirements_satisfied: [RQL-003, RQL-004, QRY-001, QRY-007]
+    evidence: covered_index_executes_across_multi_binding_singular_and_aggregate_steps in crates/riffdb-query-executor/src/lib.rs
+    decision: Generalized CoveredResultLayoutV1 across multi-binding, one/maybe, and aggregate source steps with zero-point-read cost accounting while keeping compact positional wire carriage scoped to single-step Many queries.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-851
+  name: Real-world RiffQL integration tests and handbook reference updates
+  tier: surface
+  depends_on: [WP-850]
+  objective: Complete ADR-0307 verification and documentation. Add end-to-end
+    compiler, module, executor, and service tests covering combined when +
+    order by $order, non-partition in $set k-way merge with pagination,
+    operational predicates in candidates sources, per-step covered index
+    execution, and single-partition mixed asc/desc ordering, and update the
+    RiffQL handbook reference.
+  requirements: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0307, ADR-0051, ADR-0108, ADR-0133, ADR-0134, ADR-0174, ADR-0175]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
+  deliverables:
+  - End-to-end tests in crates/riffdb-query-compiler, crates/riffdb-query-module, crates/riffdb-query-executor, and crates/riffdb-service
+  - Updated RiffQL reference documentation in docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-851
+  exit_gate: All five ADR-0307 RiffQL planner and executor capabilities are
+    proven by automated tests across compiler, module, executor, and service
+    boundaries, and docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md are
+    updated and pass handbook checks.
+  standing_design_tests:
+    interface_safety: Public RiffQL handbook examples match exact compiled and executed semantics.
+    scale: All tested real-world query shapes execute within static scan, merge, and fuel bounds.
+  human_review_triggers:
+  - Handbook examples describe unimplemented or unbounded query shapes.
+  closure:
+    status: complete
+    completed_at: '2026-10-15T14:05:00-05:00'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007]
+    evidence: real_world_complex_queries_compile_and_execute in crates/riffdb-query-executor/src/lib.rs; docs/riffql/LANGUAGE.md; docs/riffql/PLANNING.md
+    decision: Verified all five ADR-0307 real-world RiffQL capabilities end to end and updated the public RiffQL handbook reference.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-852
+  name: Ergonomic CLI command execution and symbolic entity get
+  tier: surface
+  depends_on: [WP-842]
+  objective: Implement ADR-0308 Decisions 1 and 2. Extend .riffdb/dev/session.json
+    and workspace riffdb.application.json discovery to riffdb command run,
+    command outcome, query check, query explain, and query describe; add
+    repeatable --arg <KEY=VALUE> and --input-json <JSON_OBJECT> flags with
+    automatic UUIDv7 idempotency minting to riffdb command run; and support
+    symbolic entity names, --key <FIELD=VALUE> / --key-json <JSON_OBJECT>, and
+    symbolic field names in riffdb entity get.
+  requirements: [DX-004, DX-005, DX-014, DX-046]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0305]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - Extended dev-session and workspace application discovery in apply_dev_inspection_defaults
+  - --arg <KEY=VALUE>, --input-json <JSON_OBJECT>, and automatic UUIDv7 idempotency field injection in riffdb command run
+  - Symbolic entity name, --key / --key-json primary-key encoding, and symbolic field name projection/rendering in riffdb entity get
+  - Unit and integration tests for inline command run and symbolic entity get
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-852
+  exit_gate: Developers and agents can execute riffdb command run with inline
+    --arg / --input-json flags (auto-minting UUIDv7 idempotency keys) and
+    inspect records via riffdb entity get <EntityName> --key <field=value>
+    against a local workspace without manual base64 encoding or numeric IDs.
+  standing_design_tests:
+    interface_safety: Command execution and entity lookup continue to use compiled contract types, explicit idempotency fields, exact primary-key encoding, and bearer authorization.
+    scale: Bounded CLI input argument parsing and single-entity point lookup.
+  human_review_triggers:
+  - CLI command execution bypasses contract-compiled command dispatch, bearer authorization, or explicit idempotency payload encoding.
+  - Symbolic entity get permits unbounded scans instead of exact primary-key lookup or alters wire encoding.
+  closure:
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-014, DX-046]
+    evidence: command_run_inline_args_and_dev_session_defaults_are_deterministic and entity_get_symbolic_key_encoding_and_field_decoding_match_contract in crates/riffdb-cli/src/generated/app.rs
+    decision: Extended dev-session and workspace contract defaults to command run, command outcome, query check, query explain, and query describe; added repeatable --arg and --input-json with automatic UUIDv7 idempotency minting and schema-aware scalar coercion to command run; and added symbolic entity name, --key / --key-json primary-key encoding, and symbolic field name resolution/rendering to entity get.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-853
+  name: Inline and named query explain/check with coverage attribution and one-command migrate up
+  tier: surface
+  depends_on: [WP-851, WP-852]
+  objective: Implement ADR-0308 Decision 3. Support --inline <RIFFQL> and bare
+    query-name resolution in riffdb query explain and riffdb query check with
+    explicit covered=true|false plan attribution, and add riffdb migrate up
+    plus riffdb push --migrate for one-command preflight check and confirmed
+    schema migration application.
+  requirements: [DX-004, DX-005, DX-016, DX-017]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0305, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - --inline <RIFFQL> and workspace query-name resolution in riffdb query explain and riffdb query check
+  - Explicit covered=true|false index-coverage attribution in query_explain_lines
+  - riffdb migrate up subcommand and riffdb push --migrate flag performing plan + check_migration + confirmed apply_migration
+  - Unit and integration tests for inline/named query explain/check and migrate up / push --migrate
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-853
+  exit_gate: riffdb query explain and check accept --inline or bare query names
+    and report covered=true|false index execution, and riffdb migrate up /
+    riffdb push --migrate safely check and apply schema migrations in one step.
+  standing_design_tests:
+    interface_safety: One-command migration always executes server check_migration first and passes the verified migration_hash as confirm_apply.
+    scale: Bounded RiffQL compilation and single-lineage migration check/apply RPCs.
+  human_review_triggers:
+  - One-command schema migration skips server preflight migration check or confirmation hash verification.
+  closure:
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-016, DX-017]
+    evidence: query_explain_and_migrate_up_preserve_exact_hashes_and_coverage in crates/riffdb-cli/src/generated/app.rs; explain_coverage_summary in crates/riffdb-query-module/src/lib.rs
+    decision: Added --inline and workspace query-name resolution to query check and query explain, surfaced covered/point_reads/scanned_index_rows in explain output, and implemented migrate up / migration up / push --migrate with preflight check and confirmed apply.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-854
+  name: Single-command ephemeral test runner (riffdb dev --exec) and CLI handbook updates
+  tier: surface
+  depends_on: [WP-852, WP-853]
+  objective: Implement ADR-0308 Decision 4. Add --exec <COMMAND> to riffdb dev
+    and scripts/riffdb-dev so developers and CI pipelines can boot an ephemeral
+    local RiffDB instance, run a test command with RIFFDB_* environment
+    variables populated, and cleanly tear down child processes while
+    propagating the command exit code, and update docs/reference/CLI.md.
+  requirements: [DX-004, DX-005, DX-014, DX-016, DX-017, DX-046]
+  required_adrs: [ADR-0308, ADR-0041, ADR-0121, ADR-0304, ADR-0305, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - --exec <COMMAND> flag on riffdb dev in crates/riffdb-cli and scripts/riffdb-dev with clean child-process teardown and exit-code propagation
+  - Updated CLI reference documentation in docs/reference/CLI.md
+  - End-to-end tests for riffdb dev --exec and ADR-0308 CLI workflows
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-854
+  exit_gate: riffdb dev --exec boots an ephemeral local RiffDB environment,
+    runs the target command with RIFFDB_* variables exported, tears down
+    cleanly, and propagates the command exit status, and docs/reference/CLI.md
+    documents all ADR-0308 CLI capabilities.
+  standing_design_tests:
+    interface_safety: --exec is mutually exclusive with --watch, --run, and --acceptance and always cleans up child server and driver-host processes on exit.
+    scale: Ephemeral dev session uses temporary state and exits immediately after the child command completes.
+  human_review_triggers:
+  - Ephemeral dev --exec leaks orphan server or driver-host child processes on command exit.
+  closure:
+    status: complete
+    completed_at: '2026-10-15T15:05:00-05:00'
+    requirements_satisfied: [DX-004, DX-005, DX-014, DX-016, DX-017, DX-046]
+    evidence: dev_exec_runs_command_against_ephemeral_session_and_propagates_exit_code in crates/riffdb-cli/src/generated/app.rs; scripts/riffdb-dev; docs/reference/CLI.md
+    decision: Added --exec <COMMAND> to riffdb dev and scripts/riffdb-dev with RIFFDB_* environment export, clean EXIT trap teardown, and exit-code propagation, and regenerated docs/reference/CLI.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-855
+  name: Optional and Money aggregate inputs and per-measure conditional where filters
+  tier: surface
+  depends_on: [WP-851]
+  objective: Implement ADR-0309 Decision 1. Allow sum and mean over optional
+    numeric fields and fixed-currency money/optional-money fields, allow any and
+    all over optional bool fields, and support per-measure conditional where
+    predicates across parser, formatter, resolver, compiler, and executor.
+  requirements: [RQL-002, RQL-003, RQL-008, QRY-001, QRY-002]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Optional numeric, money, and boolean input support in Resolver and evaluate_aggregate_measure
+  - Per-measure where predicate syntax, IR, field-projection/covering/auth inclusion, and runtime evaluation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-855
+  exit_gate: sum, mean, any, and all accept optional and money fields, per-measure
+    where filters compile and execute, and existing V1/V11 plan hashes remain
+    unchanged.
+  standing_design_tests:
+    interface_safety: Per-measure filters use the same typed conjunctive predicate validation and authorization union as binding predicates.
+    scale: Per-measure filters add no extra storage scans and evaluate within the aggregate's checked operation budget.
+  human_review_triggers:
+  - Money sums mix distinct currencies or lose fixed-scale precision.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-008, QRY-001, QRY-002]
+    evidence: cargo test -p riffdb-query-executor optional_money_and_filtered_aggregate_measures_execute --all-features
+    decision: Enabled sum and mean on optional numeric and fixed-currency money/optional-money fields, any and all on optional bool fields, and per-measure where filter predicates across syntax, IR, compiler, and executor.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-856
+  name: Grouped aggregate UTC temporal bucketing, having predicates, order by, and top-N truncation
+  tier: surface
+  depends_on: [WP-855]
+  objective: Implement ADR-0309 Decision 2. Support deterministic UTC temporal
+    bucketing (hour, day, week, month, year) and aliases in group by, field
+    aliases in aggregate result selections, and having predicates, order by
+    over group keys and measures, and top-N take truncation on grouped
+    aggregates.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Deterministic UTC temporal bucket functions (hour, day, week, month, year) and group-key/selection aliases
+  - Grouped aggregate having predicates, order by over measures and keys, and top-N take truncation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-856
+  exit_gate: Grouped aggregates support UTC temporal buckets, having predicates,
+    order by over measures and keys, and top-N take truncation deterministically.
+  standing_design_tests:
+    interface_safety: Temporal bucketing is pure UTC integer arithmetic with no operating-system timezone or clock access.
+    scale: Pre-truncation group state remains bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1 (256) and MAX_AGGREGATE_STATE_BYTES_V1.
+  human_review_triggers:
+  - Group state exceeds MAX_AGGREGATE_DISTINCT_VALUES_V1 without failing closed.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor grouped_aggregate_temporal_buckets_having_and_order_by_execute --all-features
+    decision: Added deterministic UTC temporal bucketing (hour, day, week, month, year), group-key/selection aliases, having predicates, order by over measures and keys, and top-N take truncation.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-857
+  name: Exact quantiles, positional selectors, fixed-scale stddev, bounded collections, and per-parent rollups
+  tier: surface
+  depends_on: [WP-856]
+  objective: Implement ADR-0309 Decision 3. Add median/p50, p90, p95, p99,
+    first, last, stddev/variance, collect, and collect_distinct operational
+    measures, and support per-parent nested rollup aggregates over for each ...
+    in ... expanded child bindings.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - Exact quantile (median, p90, p95, p99), positional (first, last), fixed-scale stddev, and bounded collection (collect, collect_distinct) measures
+  - Per-parent nested rollup aggregates (aggregate ... from child per parent) over expanded bindings
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-857
+  exit_gate: Quantile, positional, stddev, and collection measures and
+    per-parent nested rollups compile and execute within static bounds with
+    zero floating-point arithmetic.
+  standing_design_tests:
+    interface_safety: Quantiles use exact nearest-rank selection and stddev uses checked integer square root at the input decimal scale.
+    scale: Collected value lists and per-parent rollup states are bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1 and MAX_AGGREGATE_STATE_BYTES_V1.
+  human_review_triggers:
+  - Any statistical measure uses floating-point arithmetic or unbounded collection buffers.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor saas_quantiles_collections_and_per_parent_rollups_execute --all-features
+    decision: Added exact nearest-rank quantiles (median/p50, p90, p95, p99), positional selectors (first, last), fixed-scale stddev via u128::isqrt, bounded collections (collect, collect_distinct), and per-parent nested rollups.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-858
+  name: End-to-end SaaS aggregation test suite and RiffQL handbook reference updates
+  tier: surface
+  depends_on: [WP-857]
+  objective: Complete ADR-0309 verification and documentation. Add end-to-end
+    compiler, module, executor, and service tests covering all six SaaS
+    aggregation capabilities and update docs/riffql/LANGUAGE.md and
+    docs/riffql/PLANNING.md.
+  requirements: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+  required_adrs: [ADR-0309, ADR-0051, ADR-0108, ADR-0152, ADR-0174, ADR-0307]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, docs/**]
+  deliverables:
+  - End-to-end SaaS aggregation tests in crates/riffdb-query-executor and crates/riffdb-query-compiler
+  - Updated RiffQL aggregation reference in docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-858
+  exit_gate: All four ADR-0309 obligations are proven by automated tests and
+    docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md pass handbook checks.
+  standing_design_tests:
+    interface_safety: Handbook examples match exact compiled and executed RiffQL aggregate semantics.
+    scale: All tested SaaS dashboard queries execute within static scan, state, and fuel bounds.
+  human_review_triggers:
+  - Handbook documents unimplemented or approximate aggregate behavior.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, RQL-008, QRY-001, QRY-002, QRY-007]
+    evidence: cargo test -p riffdb-query-executor saas_complete_aggregations_compile_and_execute_end_to_end --all-features
+    decision: Verified all 6 SaaS aggregation capabilities end-to-end and updated docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-859
+  name: CLI follower status and one-command audited failover orchestration
+  tier: surface
+  depends_on: [WP-854]
+  objective: Implement ADR-0310 Decision 1. Add riffdb follower status to
+    extract and render ReplicationStatistics from server health, and add riffdb
+    follower failover to orchestrate primary fencing followed by follower
+    promotion in a single audited command with deterministic operation IDs.
+  requirements: [REP-002, REP-004, REP-005, REP-006, DX-014]
+  required_adrs: [ADR-0310, ADR-0072, ADR-0093, ADR-0100, ADR-0178]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-client-rust/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - riffdb follower status subcommand rendering replication role, frontiers, lag sequences, and registered followers
+  - riffdb follower failover subcommand orchestrating fence_replication_primary and promote_follower with auto-minted UUIDv7 operation IDs and uncertainty preservation
+  - Unit tests in crates/riffdb-cli proving follower status, failover receipt rendering, and uncertainty recovery IDs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-859
+  exit_gate: riffdb follower status and riffdb follower failover compile, render
+    canonical JSON and human output, and preserve both fence and promotion
+    operation IDs on uncertain outcomes.
+  standing_design_tests:
+    interface_safety: Failover always fences the primary before promoting the follower and requires explicit lineage and registration generation parameters.
+    scale: Failover executes at most two bounded unary administrative RPCs.
+  human_review_triggers:
+  - Failover promotes a follower without first fencing the primary or weakens lineage/incarnation verification.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-002, REP-004, REP-005, REP-006, DX-014]
+    evidence: cargo test -p riffdb-cli follower_status_and_failover
+    decision: Added riffdb follower status and riffdb follower failover with auto-minted UUIDv7 operation IDs and uncertainty recovery output.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-860
+  name: Standby-aware client failover and follower read-replica routing
+  tier: surface
+  depends_on: [WP-859]
+  objective: Implement ADR-0310 Decision 2. Extend StableApplicationClient and
+    DriverPool / DriverRuntime in riffdb-driver-host with bounded
+    standby_endpoints and read_replica_endpoints, automatic standby promotion on
+    fenced-primary or transport refusal, and read-replica routing for queries.
+  requirements: [REP-004, REP-005, DRV-001, DRV-005]
+  required_adrs: [ADR-0310, ADR-0072, ADR-0093, ADR-0178]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-config/**, fixtures/**, tests/**, docs/**]
+  deliverables:
+  - Standby failover and read-replica routing in StableApplicationClient and DriverPool / DriverRuntime
+  - Bounded standby_endpoints and read_replica_endpoints configuration in riffdb-driver-host
+  - Unit and integration tests proving standby cutover on fenced primary and read-replica query routing with primary fallback
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-860
+  exit_gate: StableApplicationClient and DriverPool automatically fail over to a
+    verified standby on fenced-primary or transport refusal and route eligible
+    read queries to healthy follower replicas with primary fallback.
+  standing_design_tests:
+    interface_safety: Client failover verifies active contract identity before switching primary and preserves idempotency and monotonic incarnation fencing.
+    scale: Standby and read-replica endpoint lists are bounded to at most 4 endpoints each.
+  human_review_triggers:
+  - Client failover bypasses contract verification or silently drops idempotency or incarnation checks.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-004, REP-005, DRV-001, DRV-005]
+    evidence: cargo test -p riffdb-client-rust -p riffdb-driver-host driver_pool_and_application_client_failover_to_standby_and_route_replica_reads
+    decision: Extended StableApplicationClient and DriverPool/DriverRuntime with bounded standby_endpoints and read_replica_endpoints, verified contract identity before standby cutover, and added replica query routing with primary fallback.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-861
+  name: Helm chart follower mode deployment and replication operations handbook updates
+  tier: surface
+  depends_on: [WP-859, WP-860]
+  objective: Implement ADR-0310 Decision 3. Add optional follower mode and
+    replication_source configuration to release/helm/riffdb, add helm render
+    verification, and update docs/operations/FOLLOWER-ADMINISTRATION.md,
+    docs/operations/HELM-OPERATIONS.md, and docs/reference/CLI.md.
+  requirements: [REP-002, REP-004, REP-005, DX-014]
+  required_adrs: [ADR-0310, ADR-0093, ADR-0178, ADR-0271]
+  allowed_paths: [work_packages.yaml, adr/**, release/helm/**, scripts/**, docs/**, crates/riffdb-cli/**, fixtures/**]
+  deliverables:
+  - server.mode and server.replicationSource values and ConfigMap/StatefulSet support in release/helm/riffdb
+  - Follower-mode Helm render verification in scripts/check-helm-render
+  - Updated replication and Helm handbook documentation in docs/operations/FOLLOWER-ADMINISTRATION.md, docs/operations/HELM-OPERATIONS.md, and docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-861
+  exit_gate: Helm chart renders valid primary and follower configurations with
+    Secrets-mounted replication credentials, scripts/check-helm-render passes,
+    and handbook documentation covers follower status, one-command failover,
+    standby client routing, and Helm follower deployment.
+  standing_design_tests:
+    interface_safety: Replication credentials remain in Kubernetes Secrets and never enter Helm ConfigMaps or values.yaml.
+    scale: Single-writer pod invariants remain enforced for both primary and follower releases.
+  human_review_triggers:
+  - Helm templates render secret tokens in ConfigMaps or permit multi-replica StatefulSets without fencing.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-002, REP-004, REP-005, DX-014]
+    evidence: ./scripts/check-helm-render && ./scripts/handbook check
+    decision: Added server.mode and server.replicationSource to Helm chart values, schema, ConfigMap, and StatefulSet templates, verified follower rendering in scripts/check-helm-render, and updated replication/Helm/CLI handbook documentation.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+

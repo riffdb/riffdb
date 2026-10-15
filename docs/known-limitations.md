@@ -10,7 +10,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Automated source-install acceptance exercises user scope only, while system-scope installation requires first-install acceptance on a disposable or staging host.
 - Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, while hosted MCP remains loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
 - Browser code must use an application-owned backend and never receive a RiffDB credential.
-- `riffdbd` exposes only the documented POC configuration fields, with no network metrics listener, storage-engine selector, general tuning surface, or secret values in TOML.
+- `riffdbd` exposes only the documented POC configuration fields, with a loopback-only metrics listener and no storage-engine selector, general tuning surface, or secret values in TOML.
 - After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
 - The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
 - Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
@@ -24,7 +24,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and does not perform configuration migration, key rotation, uninstall, or format upgrades.
 - Individual binary replacement is atomic, but replacing all three binaries is not transactional across an interrupted install.
 - Optional Codex MCP registration provides no atomic create-if-absent operation and must not run concurrently with another writer to the same user's Codex MCP configuration.
-- Metrics are in-process only, with no network metrics exporter.
+- Metrics are exposed only over an optional literal-loopback HTTP listener (`GET /metrics` and `GET /v1/metrics`) or periodic local NDJSON flight-recorder files (`riffdb telemetry summarize <PATH>`), with no non-loopback network metrics listener or push exporter.
 - Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
 - Restart after an abrupt stop pays a storage-engine repair proportional to the database file size, and the first write after any restart rebuilds the in-memory command indexes once before admitting writes.
 - Outbox delivery supports only the explicitly configured POC connector behavior.
@@ -46,7 +46,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 
 - Runtime-selectable page sizes use the query-only `Limit<MAX>` refinement up to 65,534 rows and do not refine offsets, byte budgets, contract integers, aggregate work, or projection candidate budgets.
 - A single RiffDB query invocation returns at most its compiled row limit (and never more than 65,534 rows or 4 MiB of encoded results), with no hidden multi-page response or streaming query protocol.
-- Named bounded RiffQL aggregates support exact counts, sum, mean, min, max, and Boolean any/all, while the separate ad-hoc projected CLI supports only `count`, integer-only `sum`, `min`, and `max` with bounded `group_by` in encoded-key byte order.
+- Named bounded RiffQL aggregates support exact counts, sum, mean, min, max, Boolean any/all, and bounded `group by` (automatically bounded on `enum`/`bool` keys or via `group by ... take <N>`), while the separate ad-hoc projected CLI supports only `count`, integer-only `sum`, `min`, and `max` with bounded `group_by` in encoded-key byte order.
 - Candidate algebra supports one compiler-sealed non-output binding across at most eight same-partition declared-index sources, one-level bounded one-to-many expansion, and at most 32 compiler-expanded root orders, without depth-two expansion, cross-partition joins, or caller-supplied sort expressions.
 - `long_pattern_v1` provides exact binary or Unicode-fold equality, literal affix/substring, and LIKE/ILIKE matching for values up to 8,000 bytes as a rebuildable candidate provider, without general regular expressions or direct unanchored negation.
 - Ordinary row-store indexes execute exact equality, one bounded membership or range/prefix branch, and the complete declared order, while canonical string ranges, multiple branching dimensions, residual post-page filters, and runtime join optimization remain compile-time refusals.
