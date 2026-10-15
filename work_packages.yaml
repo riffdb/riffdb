@@ -30407,3 +30407,247 @@ work_packages:
     follow_ups:
     - The commit phase still decodes each segment itself (ADR-0287 Options considered 2).
     - The second SHA-256 over each resolved frame and receipts encoded only to be decoded remain (ADR-0283 Consequences).
+- id: WP-835
+  name: One-line generated SDK connection and embedded lock identity
+  tier: surface
+  depends_on: [WP-703]
+  objective: Implement ADR-0303 Decision 1. Embed compiled role and lock
+    identity constants in generated TypeScript, Python, Rust, and Go role
+    clients and provide a one-line connect factory with default attempt budget
+    and environment variable resolution while keeping existing constructors intact.
+  requirements: [DRV-005, DRV-007, DRV-008, DRV-013]
+  required_adrs: [ADR-0303, ADR-0015, ADR-0106, ADR-0148, ADR-0155]
+  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  deliverables:
+  - Embedded role and lock identity constants in generated TypeScript, Python, Rust, and Go role clients
+  - One-line connect / connect_env factory on generated role clients with default AttemptBudget(3) and RIFFDB_* fallback
+  - Updated application scaffold templates in crates/riffdb-cli/assets/scaffold/application/
+  - Generator unit and fixture tests across all four SDK targets
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-835
+  exit_gate: Generated role clients across TypeScript, Python, Rust, and Go
+    expose embedded lock identity constants and a one-line connect factory without
+    weakening driver handshake verification or removing existing constructors.
+  standing_design_tests:
+    interface_safety: Connection factories delegate to the unchanged Rust-owned driver core and require valid credentials and exact lock identity verification.
+    scale: Embedded constants are static per generated role; no additional runtime state is retained.
+  human_review_triggers:
+  - Generated bindings bypass driver handshake verification or remote identity checks.
+  - Existing explicit client constructors are removed.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-836
+  name: Ergonomic SDK call signatures, typed Rust query enums, and result helpers
+  tier: surface
+  depends_on: [WP-835]
+  objective: Implement ADR-0303 Decision 2. Emit generated Rust enum types in
+    query parameter and row structs, support keyword arguments on generated
+    Python command and query methods, and add ergonomic outcome and result
+    helpers (.outcomeTag, .unwrapFound, .orNull, .items) across TypeScript,
+    Python, Rust, and Go.
+  requirements: [DRV-007, DRV-008, DRV-012, DRV-013]
+  required_adrs: [ADR-0303, ADR-0015, ADR-0148, ADR-0155]
+  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  deliverables:
+  - Typed Rust enum fields in generated query parameter structs and row structs with ApplicationValue::Enum conversion
+  - Keyword-argument invocation support alongside Input/Params dataclasses on generated Python sync and async clients
+  - Direct outcomeTag, unwrapFound/orNull on -> one queries, and items accessor on -> many queries across all four SDKs
+  - Updated scaffold templates and generator tests proving the helpers
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-836
+  exit_gate: Rust query structs use typed enums, Python methods accept keyword
+    arguments, and all four SDKs provide direct outcome and result unwrapping
+    helpers while preserving existing result properties.
+  standing_design_tests:
+    interface_safety: Helpers are pure projections over validated results and inputs; idempotency keys and enum validation remain mandatory.
+    scale: Zero additional network round-trips or retained allocations per operation.
+  human_review_triggers:
+  - Enum validation is weakened or raw unvalidated strings bypass contract enum checks.
+  - Existing result fields (.outcome, .value) are removed incompatibilities.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-837
+  name: Causal read-your-writes session handle and automatic cursor pagination iterators
+  tier: surface
+  depends_on: [WP-836]
+  objective: Implement ADR-0303 Decision 3. Add readAfterOptions on command
+    results, a request-scoped causal() session wrapper on generated role
+    clients, and bounded page/item iterators on cursor-eligible -> many queries
+    across TypeScript, Python, Rust, and Go.
+  requirements: [DRV-001, DRV-007, DRV-008, DRV-016]
+  required_adrs: [ADR-0303, ADR-0148, ADR-0158, ADR-0159]
+  allowed_paths: [crates/riffdb-query-module/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**]
+  deliverables:
+  - readAfterOptions / read_after_options helper on command results across all four SDKs
+  - Request-scoped causal() client handle tracking the highest observed commitSequence per handle
+  - Typed page and item iterator helpers on cursor-eligible -> many queries across TypeScript, Python, Rust, and Go
+  - Conformance and unit tests for causal floor advancement and bounded cursor continuation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-837
+  exit_gate: Command results and causal() handles propagate commitSequence to
+    subsequent queries without global state, and generated pagination iterators
+    advance nextCursor through the bounded continuation path across all four SDKs.
+  standing_design_tests:
+    interface_safety: Causal state is explicitly scoped to the returned causal() handle and never mutates global state or overrides explicit caller floors; page iterators preserve bounded per-page limits.
+    scale: One scalar u64 high-water mark per causal handle and one bounded page in memory per iterator step.
+  human_review_triggers:
+  - Causal session tracking mutates shared global state across unrelated requests.
+  - Pagination iterators buffer unbounded pages in memory or bypass cursor validation.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-838
+  name: Offline riffdb generate lock materialization and single-step riffdb push SDK sync
+  tier: surface
+  depends_on: [WP-835]
+  objective: Implement ADR-0304 Decision 1. Allow riffdb generate to compile
+    and materialize riffdb.application.lock.json offline when missing or stale,
+    and support single-step SDK regeneration during riffdb push.
+  requirements: [DX-014, DX-016, DX-017]
+  required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
+  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-query-module/**]
+  deliverables:
+  - Offline local lock compilation and refresh in riffdb generate when riffdb.application.lock.json is absent or stale
+  - Single-step SDK regeneration support (--generate and configured project generators) on riffdb push
+  - CLI integration tests for offline init + generate and push + generate
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-838
+  exit_gate: riffdb init followed by riffdb generate succeeds offline without a
+    running server, and riffdb push keeps local generated SDK bindings in sync
+    while preserving server-side parent lineage verification.
+  standing_design_tests:
+    interface_safety: Offline lock synthesis never bypasses parent-aware successor checks when deploying to a server.
+    scale: Compilation runs once per CLI invocation within existing source and artifact byte bounds.
+  human_review_triggers:
+  - Server deployment accepts an incompatible successor without parent verification.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-839
+  name: Manifest role coverage diagnostics and unreferenced operation checks
+  tier: surface
+  depends_on: [WP-838]
+  objective: Implement ADR-0304 Decision 2. Emit structured diagnostics with
+    actionable fix hints when a compiled command or query is not granted to any
+    role in riffdb.application.json.
+  requirements: [DX-004, DX-005, DX-016]
+  required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
+  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**]
+  deliverables:
+  - Role coverage check comparing compiled contract commands and RiffQL queries against declared role grants in riffdb.application.json
+  - Structured diagnostic with operation name, manifest path, and fix hint surfaced in check, generate, dev, and lsp
+  - Positive and negative CLI diagnostic tests
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-839
+  exit_gate: Unreferenced commands and queries in non-empty role manifests
+    produce clear, value-free diagnostics naming the missing operation and
+    manifest path.
+  standing_design_tests:
+    interface_safety: Diagnostics inform the author and never auto-grant unrequested role authority.
+    scale: Bounded set-membership pass over compiled operation identifiers.
+  human_review_triggers:
+  - An ungranted operation is silently added to a role without an explicit manifest edit.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-840
+  name: Ephemeral riffdb dev --reset and polyglot repository support
+  tier: surface
+  depends_on: [WP-838]
+  objective: Implement ADR-0304 Decision 3. Add a workspace-confined --reset
+    flag to riffdb dev to wipe local .riffdb/dev state cleanly and allow
+    riffdb dev to materialize multiple declared SDK surfaces in polyglot
+    repositories.
+  requirements: [DX-004, DX-046]
+  required_adrs: [ADR-0304, ADR-0041, ADR-0121, ADR-0155]
+  allowed_paths: [crates/riffdb-cli/**]
+  deliverables:
+  - Workspace-confined --reset flag on riffdb dev with symlink and path-confinement validation
+  - Multi-surface SDK regeneration in riffdb dev bootstrap and watch loops
+  - CLI tests for --reset state wipe, path-confinement refusal, and polyglot surface generation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-840
+  exit_gate: riffdb dev --reset safely resets .riffdb/dev after incompatible
+    prototype edits and refuses unsafe paths, and riffdb dev regenerates all
+    configured surfaces in a polyglot workspace.
+  standing_design_tests:
+    interface_safety: --reset only operates on validated workspace-confined .riffdb/dev directories and cannot affect non-dev databases.
+    scale: Bounded local directory removal and per-declared-surface generation.
+  human_review_triggers:
+  - --reset can delete paths outside <project_root>/.riffdb/dev or follow symlinks.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-841
+  name: Self-contained riffdb agent init skill and actionable compiler fix hints
+  tier: surface
+  depends_on: [WP-837, WP-840]
+  objective: Implement ADR-0304 Decision 4. Expand the embedded agent SKILL.md
+    into a complete .riff, .riffql, manifest, and ergonomic SDK cheat sheet
+    across TypeScript, Python, Rust, and Go, and add actionable compiler fix
+    hints for common agent syntax errors.
+  requirements: [DX-012, DX-021, DX-025]
+  required_adrs: [ADR-0304, ADR-0122, ADR-0303]
+  allowed_paths: [crates/riffdb-cli/**, crates/riffdb-contract-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-compiler/**]
+  deliverables:
+  - Expanded crates/riffdb-cli/assets/agent/SKILL.md covering .riff, .riffql, riffdb.application.json, and ergonomic SDK usage
+  - Actionable compiler fix hints on common .riff and .riffql syntax/lowering diagnostics
+  - Updated agent skill parity and compiler diagnostic snapshot tests
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-841
+  exit_gate: riffdb agent init installs a self-contained syntax and SDK
+    reference passing DX-025 parity checks, and compiler diagnostics provide
+    actionable fix hints.
+  standing_design_tests:
+    interface_safety: Teaching artifacts and diagnostics teach only safe compiled operations and never expose secret values.
+    scale: Static embedded skill text and bounded diagnostic messages.
+  human_review_triggers:
+  - Teaching assets recommend bypassing idempotency, partition scoping, or generated bindings.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+

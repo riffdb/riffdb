@@ -337,6 +337,8 @@ record with no front matter.
 | [0300](0300-bounded-owned-backup-validation-read-intervals.md) | Bounded Owned Backup Validation Read Intervals | Accepted | guarantee |
 | [0301](0301-read-only-source-byte-accounting-independent-of-deletion-proofs.md) | Read Only Source Byte Accounting Independent Of Deletion Proofs | Accepted | guarantee |
 | [0302](0302-retire-stranded-epoch-two-reset-obligations.md) | Retire Stranded Epoch-Two Reset Obligations | Accepted | guarantee |
+| [0303](0303-ergonomic-generated-sdk-connection-outcome-helpers-and-causal-sessions.md) | Ergonomic Generated SDK Connection Outcome Helpers And Causal Sessions | Accepted | surface |
+| [0304](0304-offline-sdk-generation-role-coverage-diagnostics-and-dev-loop-ergonomics.md) | Offline SDK Generation Role Coverage Diagnostics And Dev Loop Ergonomics | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
