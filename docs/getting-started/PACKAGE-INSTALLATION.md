@@ -41,8 +41,8 @@ environment variable because it has no signed installation prefix.
 ## Local development registries
 
 Adapter and application packages can be developed in separate repositories
-before the RiffDB drivers are publicly released. WP-611 derives one immutable
-development publication from the ordinary unsigned WP-601 distribution and
+before the RiffDB drivers are publicly released. The local development registry derives one immutable
+development publication from the ordinary unsigned driver distribution and
 serves it through native loopback registries. This facility contains no
 application-specific integration code: a Better Auth adapter, for example,
 belongs in its own repository and consumes `@riffdb/client` like any other npm

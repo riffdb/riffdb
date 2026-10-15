@@ -85,8 +85,9 @@ history.
 
 ### Projection result-set provider foundation
 
-WP-645 freezes the compiler-owned vocabulary accepted by ADR-0130. It does not
-activate a new public query shape or a composite execution engine.
+The projection result-set foundation freezes a compiler-owned provider
+vocabulary without activating an arbitrary query shape or a caller-controlled
+composite execution engine.
 
 `ProjectionProviderDescriptorV1` is a 112-byte canonical artifact. It pins one
 real provider family, exact or bounded-approximate posture, closed capabilities,
@@ -129,10 +130,11 @@ facets. Existing randomized reference, tenant-statistics isolation, pre-rank
 policy admission, and frontier tests remain the execution evidence behind these
 descriptors.
 
-ADR-0092 lexical search remains a compile-only thought experiment: a future
+General lexical search remains a compile-only design boundary: a future
 descriptor could name lexical candidates, fixed-point ranking, partition-local
-statistics, filters, and whole-set measures. WP-645 contains no lexical runtime,
-durable lexical state, bitmap/ID transfer, or cross-provider bridge.
+statistics, filters, and whole-set measures, whereas the result-set descriptor
+layer contains no general lexical runtime, bitmap/ID transfer, or cross-provider
+bridge.
 
 Opening a result set observes each finite compiled participant once and chooses
 the newest epoch inside their common retained interval. The process-local proof
@@ -149,20 +151,13 @@ call. Authorization and revocation checks remain per request and safe point. A
 deterministic admitted-lag monitor turns sustained bound violations into degraded
 and then unavailable health.
 
-The maintainer explicitly approved this package after WP-641, WP-642, and
-WP-643 closed. The preceding named-read session candidate (WP-650) was rejected
-on both N1 and E2 before production activation. WP-645 therefore remains the
-bounded ADR-0130 descriptor/conformance slice; it does not displace the standing
-c32, unary, or deferred ADR-0127 performance priorities.
-
 ### Exact indexed text result sets
 
-WP-646 introduced the `binary_utf8_v1` exact-text provider described by
-ADR-0131. WP-647 activates it through named RiffQL and the shared service,
-gRPC, CLI, MCP, and generated Rust, Go, TypeScript, and Python surfaces.
-Existing prefix text-key and query-module V1--V4 bytes are unchanged; unfiltered
-exact result modules use additive V5. WP-652 adds compiled exact-query V2,
-provider state V3, query IR V6, and module V6 only when one compiler-bound
+The `binary_utf8_v1` exact-text provider executes through named RiffQL and the
+shared service, gRPC, CLI, MCP, and generated Rust, Go, TypeScript, and Python
+surfaces. Existing prefix text-key and query-module V1--V4 bytes are unchanged;
+unfiltered exact result modules use additive V5. Compiled exact-query V2,
+provider state V3, query IR V6, and module V6 activate only when one compiler-bound
 optional typed equality filter is present; V1--V5 bytes remain exact.
 
 The semantic profile compares canonical UTF-8 bytes with no normalization.
@@ -208,7 +203,7 @@ before values cross the public boundary.
 
 ### Tokenized text provider state
 
-ADR-0173's tokenized provider is separate from exact text. Its V1 segment is a
+The tokenized text provider is separate from exact text. Its V1 segment is a
 partition-scoped, policy-aligned, rebuildable derived generation identified by
 the compiled `text_index`, analyzer, partition, generation, and exact commit
 frontier. The byte-frozen checkpoint carries canonical entity keys and shaped
@@ -244,7 +239,7 @@ provider, scan, or fallback.
 
 ## Reactive application path
 
-The accepted P8 architecture reuses authoritative domain events; it does not
+The reactive architecture reuses authoritative domain events; it does not
 create a second event store. The current compiler-proved event partition and
 derived route-index foundations let the catalog materialize bounded symbolic
 replay from immutable events, commits, writer plans, and provenance. The route
@@ -266,8 +261,8 @@ authorized named-query hydration in one snapshot. Only a later reaction command
 writes authoritative state, with causing-event provenance committed atomically
 through the normal command path.
 
-The current live-query adapter is gRPC over the shared API-neutral service.
-WP-419 adds CLI, generated SDK, MCP, and application-owned browser relay
+The current live-query adapter is gRPC over the shared API-neutral service,
+with CLI, generated SDK, MCP, and application-owned browser relay
 adapters over those same semantics. MCP notifications remain payload-free
 wakeups, and browser clients never receive a RiffDB capability or direct
 database connection.

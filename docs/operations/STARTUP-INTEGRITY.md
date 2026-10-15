@@ -10,7 +10,7 @@ open. Reopening repeats this check, including when a previous attempt left a
 valid file and format marker behind; journal creation is not required to make
 the primary filename durable.
 
-WP-772's in-progress V3 substrate adds an internal first-activation transition.
+The changelog V3 substrate adds an internal first-activation transition.
 An inactive database must complete structural and catalog validation before one
 hardened transaction publishes the V3 registry and all required roots together.
 The exclusive startup lease remains held through that proof join and the DIRTY
@@ -47,7 +47,7 @@ start.
 After an abrupt stop the storage engine also repairs its own allocator state on
 the first open, reading the whole database file. That repair is storage-engine
 recovery, not a RiffDB population walk; startup reports it as an engine repair,
-and its duration grows with file size. On the WP-760 benchmark host a kill
+and its duration grows with file size. On the reference benchmark host a kill
 restart reached readiness in about 0.5 seconds at 65,536 rows and about 53
 seconds at the production benchmark population (about 1.1 million rows), almost
 all of it engine repair; the RiffDB startup stages together took well under a

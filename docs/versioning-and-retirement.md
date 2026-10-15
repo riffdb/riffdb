@@ -66,7 +66,7 @@ policies:
 
 An identity moves forward through `active`, `read_only`,
 `retirement_candidate`, and `retired`. A newer identity does not automatically
-deprecate an older decoder. WP-612 retires no decoder: every existing reader
+deprecate an older decoder. The current baseline retires no decoder: every existing reader
 stays active or read-only.
 
 Before moving an identity to `retirement_candidate` or `retired`, one reviewed

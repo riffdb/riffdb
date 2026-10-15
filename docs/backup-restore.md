@@ -7,8 +7,8 @@ or resolves a server filesystem path.
 
 ## Configuration
 
-WP-772 implementation note: for an already-active changelog V3 database, the
-offline incarnation stamp now validates retained receipts and source fences
+For an already-active changelog V3 database, the
+offline incarnation stamp validates retained receipts and source fences
 before atomically installing a new lineage anchor and clearing replication-local
 progress. A destructive restore cannot continue the old replication tail; a
 receiver needs a new bootstrap. This internal substrate is still under
@@ -37,7 +37,7 @@ itself. The internal coordinator supports audited retirement and configured
 sequence expiry, with durable degradation before expiry release and bounded
 background scheduling. [Follower registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
 are available through the primary operator interfaces. Fencing and promotion
-remain WP-748 work; see the [lifecycle verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md).
+remain POC-scoped; see the [lifecycle verification](architecture/WP-748-LIFECYCLE-VERIFICATION.md).
 
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
@@ -283,7 +283,7 @@ versioned, checksummed, bounded, atomically replaced, and parent-directory
 synchronized. It is durable operational state, not database metadata or
 application history, and it is not included in backup artifacts.
 
-WP-749 implementation status: the external ledger also recognizes archive-only
+The external ledger also recognizes archive-only
 receipt V3. It preserves the verified archive selection across retries, shares
 the existing maintenance ownership and inventory limit, and retains an admitted
 private replay stage for archive recovery. Private replay can stop at the receipt's
@@ -438,15 +438,15 @@ completed twenty valid cells and found measurable archive overhead: write-only
 median throughput fell 8.49% and request P95 rose 4.35%. The later isolated diagnostic
 measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
 journal durability is the named dominant mechanism, present without archive;
-roughly 11.7 ms remained unattributed. **WP-810 is complete**, with a limited
-mitigation and its remaining shared tail accepted. The
-[post-WP-810 direct pair](performance/wp749-archive-post-wp810-2026-09.md)
+roughly 11.7 ms remained unattributed. The checkpoint-coupled journal durability
+mitigation is complete, with its remaining shared tail accepted. The
+[post-mitigation direct pair](performance/wp749-archive-post-wp810-2026-09.md)
 passes host and correctness checks but still finds P95 10.65 to 11.77 ms and
-P99 92.71 to 130.03 ms with archive enabled. **WP-749's latency gate remains
+P99 92.71 to 130.03 ms with archive enabled. **The archive latency gate remains
 unmet.** This archive-presence movement is not attributed by the aggregate
 counters. Further subtraction of historical samples remains closed; no
 completion or latency waiver is claimed.
-WP-750's full replication campaign is also
+The full replication qualification campaign is also
 outstanding, so these paths do not yet constitute a qualified disaster-recovery
 deployment.
 
@@ -479,7 +479,7 @@ bytes is unsupported.
 The POC preserves the `DatabaseId` stored in the backup. Destructive restore
 still rewinds sequence allocators and can reuse destroyed sequence suffixes.
 
-A durable `history_incarnation` fence (ADR-0072) now makes that rewind
+A durable `history_incarnation` fence now makes that rewind
 detectable. The incarnation is a retained-metadata value bootstrapped to 1 and
 bumped only on destructive restore. Backups carry the value when present;
 responses that expose commit-sequence-derived positions include the current

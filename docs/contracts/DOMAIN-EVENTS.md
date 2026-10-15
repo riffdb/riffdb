@@ -103,7 +103,7 @@ delivery, or event-sourced reconstruction.
 
 ## Inspecting events
 
-WP-415 provides an operator-oriented event catalog over the shared application
+RiffDB provides an operator-oriented event catalog over the shared application
 service. `event describe` requires `ReadContract`; `event replay` and `event
 tail` require `ReadCommit`. These permissions are intentionally broader than
 the least-authority named-stream permissions generated for applications in the

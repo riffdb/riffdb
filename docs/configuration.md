@@ -583,7 +583,7 @@ and denied-read telemetry.
 
 The daemon process tests compare every authoritative namespace under the
 app-baseline workload and resume across repeated source and follower crashes.
-WP-746 and [WP-747](architecture/WP-747-VERIFICATION.md) pass their full CI
+The follower replication and [projection freshness verification](architecture/WP-747-VERIFICATION.md) pass their full CI
 gates, including follower freshness, provider equality and sequence-lag reporting.
 
 Follower named queries can use the existing exact-text, exact-predicate,

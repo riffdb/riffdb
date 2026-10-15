@@ -1,7 +1,6 @@
 # Safety by construction
 
-Status: implemented application-surface rule for WP-280 through WP-300 under
-accepted ADR-0055.
+Status: implemented application-surface rule.
 
 RiffDB's application product is not a safer collection of table operations. It
 is a closed set of compiled domain operations whose unsafe alternatives are not
@@ -210,5 +209,5 @@ agent credentials.
 The current lower-level JSON capability documents still encode
 compiler-derived field visibility and command IDs. They are implementation
 fixtures, not the application authoring format. Symbolic role compilation
-replaces those documents in WP-310 without changing the authority separation
+replaces those documents without changing the authority separation
 established here.

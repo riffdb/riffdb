@@ -55,8 +55,8 @@ scope, current capability revision, or whole-query budget is wrong.
 The original independent TicketDesk build rated the storage-shaped application
 path 4/10 and identified numeric IDs, manual masks, N+1 reads, and multi-snapshot
 page composition. Its follow-up build stayed on symbolic commands and named
-RiffQL; the one junction-to-entity collection gap it found was closed by the
-bounded dependent-key batch work in WP-275. The checked TicketDesk application
+RiffQL; the one junction-to-entity collection gap it found was closed by
+bounded dependent-key batch queries. The checked TicketDesk application
 now uses one request per page and an application-only client facade.
 
 This is not a claim that RiffDB infers undeclared business rules or controls

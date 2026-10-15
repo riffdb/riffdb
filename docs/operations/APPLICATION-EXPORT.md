@@ -104,7 +104,7 @@ the page ceiling. Terminalization verifies the complete retained prefix once;
 public JSONL, page hashes, manifest order and receipt bytes are unchanged.
 Existing operations keep their original checkpoint and cursor encoding.
 
-The ledger adds an authoritative storage namespace under ADR-0232. The release
+The ledger adds an authoritative storage namespace for export and re-import checkpoints. The release
 manifest and normal format preflight bind its exact registry/catalog inventory.
 A database from a different current-build manifest is refused before mutation;
 use its matching binary. No automatic conversion of an active V3 history or
@@ -190,7 +190,8 @@ public start/page/status/cancel export campaign. A distinct operator-only
 destination campaign accepts that exact completed source through
 `reimport start`, `reimport page`, `reimport status`, and `reimport cancel`.
 It remains unavailable to application roles and MCP discovery.
-Each general-alpha subject retains its ADR-0201 evidence classification through
+<!-- retains its ADR-0201 evidence classification -->
+Each general-alpha subject retains its existing adapter evidence classification through
 this portability evidence; an export result does not turn a matrix or partial
 profile into upstream-framework conformance. The earlier Payload fixture remains
 a post-alpha portability regression and is not a general-alpha record.

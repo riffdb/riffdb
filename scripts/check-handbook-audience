@@ -60,6 +60,7 @@ def is_excluded(rel_posix: str, patterns: list[str]) -> bool:
 
 
 def strip_code_fences_and_inline(markdown: str) -> str:
+    markdown = re.sub(r"<!--.*?-->", "", markdown, flags=re.DOTALL)
     out_lines: list[str] = []
     in_fence = False
     for line in markdown.splitlines():
@@ -68,7 +69,9 @@ def strip_code_fences_and_inline(markdown: str) -> str:
             in_fence = not in_fence
             continue
         if not in_fence:
-            out_lines.append(INLINE_CODE_RE.sub("CODE", line))
+            cleaned = INLINE_CODE_RE.sub("CODE", line)
+            cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+            out_lines.append(cleaned)
     return "\n".join(out_lines)
 
 

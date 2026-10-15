@@ -53,7 +53,7 @@ The main correction codes are deliberately executable concepts:
   `riffdb application generate --locked`.
 
 `RDB-C017` reports `supply_partition_route` and covers one unsafe shape:
-bindings whose route expressions are not provably identical. Since ADR-0170 a
+bindings whose route expressions are not provably identical. A
 command MAY create and mutate records owned by different aggregates, provided
 every binding derives the same partition route; the command's conflict
 ownership is then the union of the conflict keys those bindings derive, so each

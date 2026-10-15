@@ -1,6 +1,6 @@
 # Composite read views
 
-ADR-0104 defines the standard-profile state published to readers as one frozen
+The standard durability profile publishes state to readers as one frozen
 composite view:
 
 1. one known-durable redb checkpoint; and
@@ -28,7 +28,7 @@ Before an overlay can freeze, RiffDB verifies:
   tombstones; and
 - ordered application of every mutation in each complete frame.
 
-The compiled standard-profile ceilings (ADR-0263 Decision 7) are 65,536
+The compiled standard-profile ceilings are 65,536
 transitions, 256 MiB of cumulative encoded suffix bytes, and 256 MiB of
 conservative overlay-memory charge. Checkpointing starts at the half-full point
 (32,768 transitions or 128 MiB) and earlier if the fixed 320-MiB extent must
@@ -37,7 +37,7 @@ unpublished prefix remain independently capped at 256 transitions and 16 MiB.
 These are fail-closed safety bounds, not tuning settings.
 
 The overlay holds a command segment as its fixed-size history stub, not the
-segment (ADR-0263 Decision 4). The segment stays in the journal frame; a reader
+segment itself. The segment stays in the journal frame; a reader
 resolves the stub from the uncheckpointed frame in memory, or from its extent
 once checkpointed. The overlay's charge therefore scales with current-state
 changes, not with command history.
@@ -77,8 +77,8 @@ state before activating any writer.
 ## Current implementation boundary
 
 The standard profile selects the composite path for command acknowledgement and
-ordinary reads. WP-490 owns the remaining production performance gate and
-operational evidence.
+ordinary reads. Separate benchmark qualification tracks production performance
+and operational evidence.
 
 The hardened profile remains the independent two-phase redb oracle and never
 selects the journal overlay.

@@ -152,7 +152,7 @@ client.
 }
 ```
 
-WP-570 exposes this schema for compiler review and exact-lock generation.
+The manifest schema exposes this structure for compiler review and exact-lock generation.
 Protected queries, commands, projections, live views, event delivery, and
 contextual reactions now use the shared transaction-current evaluator. A
 database-wide reactive wakeup remains unavailable to protected roles because
@@ -243,7 +243,7 @@ query references, and unknown members are rejected. Versions are positive.
 Names and collections are bounded; the source document may not exceed one MiB.
 No hash field is valid in author source.
 
-ADR-0121 also permits the domain-empty bootstrap emitted by `riffdb init`: it
+The manifest format also permits the domain-empty bootstrap emitted by `riffdb init`: it
 contains one named structural query module whose `queries` array is empty and
 an empty `roles` array. The module still receives a canonical identity for
 generation and deployment, but it exposes no query, command, tool, or
@@ -409,9 +409,8 @@ network path.
 
 Lock V4 retains the V3 contract-bundle pin and adds exact direct-parent
 migration artifacts. `riffdb migration plan --application
-riffdb.application.json` validates and prints that local plan. In the current
-WP-406 implementation this command is inspection only; it cannot mutate or
-activate a database.
+riffdb.application.json` validates and prints that local plan. This command is
+inspection only; it cannot mutate or activate a database.
 
 Before deployment, the server compares the lock's expected parent version and
 bundle hash and its candidate bundle hash. A disagreement returns the lock,

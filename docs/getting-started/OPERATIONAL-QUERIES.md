@@ -294,7 +294,7 @@ Framework integrations own their generated profile and route-level acceptance
 in their own repositories. They pin a RiffDB build and prove that their public
 API delegates to generated named methods without client-side filtering,
 sorting, counting, raw query construction, or storage access. An owning
-external adapter may perform ADR-0159's narrow exact-page translation when its
+external adapter may perform narrow exact-page translation when its
 authoritative interface requires more rows than one compiled RiffDB page: it
 requests `min(remaining, MAX)`, follows one unchanged cursor chain, appends
 every row exactly once in order, and returns the final cursor unchanged or none

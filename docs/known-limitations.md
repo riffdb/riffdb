@@ -2,377 +2,70 @@
 
 These limits are part of the POC release posture, not hidden roadmap promises.
 
-- RiffDB is not production ready. Its dual license does not change the POC
-  security, compatibility, or support limits.
-- Linux is the POC deployment gate. Protected credential and key-file loading
-  is unavailable on other platforms.
-- The source convenience installer targets Linux systemd. Every user-scope
-  install requires a valid private `XDG_RUNTIME_DIR` for unit verification.
-  Starting or restarting additionally requires an available per-user manager;
-  `--no-start` avoids that live-manager requirement. The installer does not
-  configure login sessions or lingering.
-- Automated source-install acceptance exercises user scope; separate release
-  checks validate the shared systemd assets. Automation does not execute the
-  source installer's real account, `/etc`, or `/usr/local` flow. System scope
-  requires first-install acceptance on its disposable or staging host.
-- Application gRPC supports literal-loopback cleartext, verified direct TLS,
-  and a protected Unix socket. Hosted MCP remains loopback-only. Direct TLS has
-  static certificate/key paths and intentionally exposes no mTLS, native-root,
-  trust-all, cipher-suite, protocol-version, or provider knobs. OAuth,
-  automatic certificate issuance, and untrusted internet-facing operation are
-  unsupported.
-- The Linux-only `riffdb-driverd` application host and its protected Unix
-  protocol are available. Generated Go and long-lived server-side TypeScript
-  bindings for that protocol are separate alpha work; browser code must still
-  use an application-owned backend and never receive a RiffDB credential.
-- `riffdbd` exposes only the documented POC configuration fields. There is no
-  network metrics listener, storage-engine selector, general tuning surface,
-  or secret value in TOML.
-- systemd `active` means the process started. After generic bootstrap,
-  authenticated Health is intentionally `not_ready` with no active contract;
-  require `ready` or `degraded` only after deploying the first application
-  contract.
-- The production server uses redb only. The isolated Fjall adapter fails the
-  unchanged storage semantic conformance profile, so Fjall performance samples
-  are ineligible and the POC makes no redb-versus-Fjall speed claim.
-- Benchmark reports are revision-specific evidence, not a standing performance
-  promise. Release verification rejects absent, mismatched, or
-  correctness-unqualified redb, budget-comparison, and semantic-workload
-  reports.
-- The sustainable TicketDesk rehearsal remains blocked by native lifecycle
-  behavior. The deterministic receipt-starvation regression now passes with
-  accepted bounded native continuation; required-host continuing-load receipt
-  and physical retirement verification remains outstanding. A real
-  preparation also ended with live-query notification buffer pressure. The
-  native revoked-command error carriage has been repaired and verified through
-  an actual TLS rotation preparation; the complete campaign remains unqualified.
-  A later required-host preparation completed all offered requests and live
-  progress, but its final normal window exceeded the p99 latency gate and again
-  reclaimed no source receipts or extents.
-  Native inspection identified incorrect audit-key classification and rejected
-  command-audit materialization during pruning. Both cases now have native
-  repairs and deterministic coverage. Their required-host preparation removed
-  4,610 source receipts, but reclaimed no physical extents; its final fault-free
-  window failed both p95 and p99 limits. Sustained retirement and latency remain
-  unresolved native blockers.
-  A subsequent native regression found that an outbox write draining a published
-  prune unnecessarily invalidated source validation. The live drain now checks
-  actual preimages before applying canonical command-audit materialization,
-  preserving qualification only for that closed representation change. The
-  regression preserves exact outcomes, provenance and retained-history validity.
-  The next required-host preparation reduced proof invalidations to one and
-  removed 9,730 source receipts, but again retired no physical extents. Work
-  spilled across observation windows, and the final fault-free window reached
-  p95 169 ms with p99 beyond the histogram range. Native admission diagnostics
-  now distinguish the remaining refusal causes; the workload
-  and qualification gates remain unchanged. Its diagnostic preparation completes
-  all offered work but fails final-window latency; it removes 8,962 receipts
-  and recycles one extent. Of 657 admission refusals, 363 encounter pending
-  journal data, 204 a busy writer, 89 the catch-up page bound and one checkpoint
-  publication. These counters do not establish the actual hold ceiling or
-  sustainable eligibility. A further native regression found
-  that a temporary reader or writer barrier could defer an eligible extent
-  across thousands of absent generation names. The reclaimer now retains that
-  candidate for retry while preserving every eligibility check. Its required-host
-  preparation completed all offered work, reclaimed 8,194 receipts and recycled
-  one extent, but failed normal-window latency; this does not establish a
-  retirement improvement. A second native regression found that releasing an
-  actual source reference still deferred retirement across absent generation
-  names. The reclaimer now visits at most 64 actual directory entries per pass,
-  retaining one directory handle rather than a list of the file population.
-  All seven scoped checks and 1,241 native/simulator tests pass, with ten
-  existing skips. Full CI subsequently passes on combined source `819fdfbd`,
-  including the final source-install smoke. Continuing-load qualification of
-  this repair remains pending.
-  Bounded source-floor observations pass 1,806 native/server tests. Their
-  required-host preparation again fails final-window latency. Available plans
-  report no derived or durable source holds; the last pre-deletion plan permits
-  more than 211,000 positions beyond resume, while removal totals only 8,962
-  receipts. Missing and stale samples remain explicit. This is a native source-
-  admission progress limitation. Accepted ADR-0271 amends the nonwaiting drained
-  boundary with one cancellable FIFO source request and a bounded native drain.
-  Its implementation remains under validation. The plan does not prove physical
-  eligibility, and the backlog cannot be classified as protected history.
-  A separate fixed-size graph-owned census now observes the outbox's existing
-  native writer stages, including queue wait and journal materialization.
-  It changes no admission or durability boundary; its scoped validation passes,
-  while its unchanged required-host preparation completes all offered work but
-  fails normal-window latency. Its final plan again records no source holds,
-  with more than 342,000 planning positions beyond resume and only 12,802
-  receipts removed. Whole-run outbox measurements attribute about 374 seconds
-  to commit completion, 98 seconds to overlapping held-begin work and 62 seconds
-  to suffix application; checkpoint waiting totals about 52 milliseconds.
-  These aggregates cannot locate individual latency spikes or prove a safe
-  durability change. The accepted admission repair still needs full checks and
-  unchanged continuing-load verification before qualification.
-  Native reclamation, latency, notification and recovery behavior require
-  further verification; maintenance pauses, automatic
-  watch reconnects or relaxed client validation cannot qualify the rehearsal.
-  See the [repair findings and scope proposal](architecture/WP-825-LIVE-OBSERVATIONS.md).
-- Ordinary redb reads do not verify every engine page checksum; native envelope,
-  CRC, schema and record/key validation remain active. ADR-0269 adds explicit
-  physical verification on a private copy before the complete offline record
-  walk. It requires additional disk space for one primary-sized copy and refuses
-  repair, uncertain custody and a journal suffix needing recovery. The upgraded
-  engine and verifier still require full acceptance, crash evidence and final-host
-  preparation before the sustainable milestone qualifies. See
-  [startup integrity](operations/STARTUP-INTEGRITY.md).
-- The shared recovery inventory contains 41 boundaries. Eighteen belong to the
-  WP-190 process matrix; three replication cases run in the daemon and native
-  applier tests, and the remainder have named owner-package evidence.
-  The synchronized report records no production gap, but this is
-  crash evidence for the POC matrix rather than a general disaster-recovery
-  guarantee.
-- Named bounded RiffQL aggregates support exact row/present/distinct counts,
-  exact sum and mean state, min/max, and Boolean any/all. The separate
-  projected ad-hoc CLI remains deliberately narrow: `count`, `sum`, `min`,
-  and `max` with bounded `group_by` are available; `sum` accepts integer
-  columns only and rejects decimal or money columns with a typed
-  `type_mismatch`. One ungrouped request computes exactly one function — ask
-  for several by grouping. Scan and grouping budgets are server-side with no
-  request vocabulary and no explain surface; a grouped query returns at most
-  the row limit it declared, and an exceeded budget is a typed rejection rather
-  than a partial result. Groups arrive in the server's deterministic
-  encoded-key byte order, which is not collation order; sort client-side for
-  presentation.
-- There is no general SQL surface, arbitrary transaction callback, analytical
-  join engine, distributed transaction, automatic failover, or consensus. WP-746 implements
-  the administrative V3 stream, staged bootstrap, follower daemon and repeated
-  crash proofs, verified through full CI. WP-747 adds verified follower reads,
-  freshness and sequence-lag reporting. WP-748 implements audited operator
-  registration/retirement, health degradation and scheduled configured expiry;
-  [verification and closure](architecture/WP-748-LIFECYCLE-VERIFICATION.md)
-  are recorded separately. [Registration and retirement](operations/FOLLOWER-ADMINISTRATION.md)
-  are available through gRPC, the Rust client and CLI. Fencing and promotion
-  include restricted pre-cutover retry and crash recovery; failure/cancellation,
-  under-load proofs and the complete CI battery pass. The
-  [implementation and fixtures](architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
-  are accepted and WP-748 is complete. These remain POC capabilities pending
-  WP-750's release qualification.
-  WP-749 remains open for qualification.
-  The accepted registration-audit and promotion-fencing amendments are recorded
-  in SPEC §13.5.
-- Compiler-sealed command decisions support bounded branch-local entity field
-  assignments, embeddings, creates, and durable events. Workflow transition
-  and lease instructions retain their existing dedicated command forms and are
-  rejected inside a decision arm; no-effect never runs either form. Decisions
-  are not general branching, per-item partial outcomes, callbacks, or dynamic
-  transaction programs.
-- Runtime-selectable page sizes use the query-only `Limit<MAX>` refinement,
-  where `MAX` is at most 65,534. Bounded limits do not
-  refine offsets, byte budgets, contract integers, full-population aggregate
-  work, or projection candidate work; those retain their separately compiled
-  bounds.
-- One RiffDB invocation still returns at most its compiled maximum and never
-  more than 65,534 rows. The independent 4 MiB encoded-result and transport
-  ceilings often make the practical maximum smaller for wide rows, as can
-  provider, policy, cost, hydration, or role bounds. RiffDB has no hidden
-  multi-page response or streaming query protocol.
-- Candidate algebra supports one compiler-sealed non-output binding, at most
-  eight same-partition declared-index sources, and only single-source
-  deduplication, intersection, union, or authorized root-universe difference.
-  It is complete-before-order and all-or-refusal, but it is not a general join,
-  correlated subquery language, recursive expression, cross-partition plan, or
-  caller-supplied set. Ordinary exact-index and declared `long_pattern_v1`
-  sources are available and may participate in one common fenced result set;
-  this does not make every other provider kind an interchangeable candidate
-  source.
-  One-level bounded one-to-many expansion compiles to additive language, plan,
-  and module identities and executes in memory and redb with complete-before-
-  release, policy-before-observation semantics. Depth-two, cross-partition,
-  independent target pagination, and general joins remain unavailable.
-  A query may expose at most 32 compiler-expanded root orders through one
-  complete contract enum. Callers cannot submit arbitrary sort structure, and
-  changing the enum choice starts a different cursor family.
-- `long_pattern_v1` provides exact binary or Unicode-fold equality, literal
-  prefix/suffix/substring, and LIKE/ILIKE matching for source values through
-  8,000 bytes. It is a compiler-declared, rebuildable candidate provider, not a
-  general regular-expression or ad hoc search endpoint. A direct negated
-  provider source is unavailable: negation must be compiled as candidate
-  difference from an authorized positive root universe. Provider generations
-  are finite, and a continuation whose authoritative snapshot or provider
-  generation is no longer servable fails typed instead of switching epochs.
-- An ordinary command may atomically delete and return the transaction-current preimage of exactly
-  one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
-  `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are
-  unavailable on that unary path; use the separately compiler-bounded collection deletion forms
-  where supported. Delete authority never implies secret-output authority.
-- Ordinary row-store indexes currently execute exact equality, one bounded
-  membership or presence/text-prefix branch, and the complete declared order.
-  `binary_utf8_v1` membership and strict/inclusive interval or two-range `!=`
-  complement are bytewise and cursor-safe when that component supplies the
-  first remaining order term. Order-preserving canonical numeric, time, UUID,
-  and enum components support the same bounded interval shape. Canonical
-  string ranges, multiple branching dimensions, overlapping unions,
-  residual post-page filters, index intersections, caller-selected plans, and
-  general joins are unavailable. Remaining relationship refusals are dependent
-  or correlated existence, depth-two expansion, independent target paging,
-  cross-partition joins, Cartesian products, recursion, and runtime join
-  optimization.
-  Recompile and redeploy a refused named query rather than emulating it in
-  application code.
-- The WP-690 external receipt is intentionally a narrow source-compilation
-  acceptance for shared bytewise equality, membership, and order. It is not a
-  full external application or framework-conformance result. Canonical-string
-  range sources remain correctly refused because length-prefixed canonical
-  order cannot prove lexical range semantics; recompile against an explicitly
-  declared `binary_utf8_v1` component rather than applying client filtering or
-  comparator substitution.
-- Vector search's exact and declared approximate tiers are application-reachable
-  through the same named RiffQL operation. The server chooses exact search at
-  or below the contract's per-organization `ann_threshold` and first-party HNSW
-  only above it when an exactly matched admitted-population graph is available.
-  Cold or unavailable graphs fall back to exact execution; callers cannot choose
-  a tier or weaken the declared recall target. Primary providers use bounded
-  background builds and memory-only reuse; followers currently stay exact.
-  This POC does not claim persistent-graph latency for large partitions. A
-  field that declares an approximate tier is served up to 65,536 rows per
-  organization, the unit its own `ann_threshold` is expressed in (ADR-0255); a
-  field that declares none keeps the server's smaller 500-row ceiling. Above
-  the applicable ceiling an organization receives a typed `ScanBudgetExceeded`
-  refusal rather than an exact answer: the ceiling bounds what is answerable
-  and is not a fallback to exact search.
-  The native and typed Protobuf value branches, gRPC and
-  hosted MCP conversions, and CLI numeric component arrays now preserve finite
-  binary32 vectors without bytes punning. Contract IR V15 now seals one exact
-  model identity/current version and bounded replay ceilings per production
-  vector field. A compiler-sealed `embed` command now atomically persists the
-  entity vector and authoritative model/version/write-sequence evidence;
-  generic `set` cannot bypass that evidence. Generated Rust, Go, TypeScript,
-  and Python models expose exact-dimension vector values and contract-sealed
-  model constructors. Generated clients also expose the bounded symbolic
-  staleness/model inspection operation.
-- Vector staleness now has v1 count semantics: a declared positive stale-entity
-  threshold breaches only when `stale_count > threshold`; duration-based
-  semantics are future work. Authoritative embedding and source-field write
-  evidence now persists atomically, and paginated staleness/model-version DTOs
-  exist and the public symbolic operation enumerates them under an exact role
-  grant, bounded page, current policy, and snapshot-bound cursor. The dedicated
-  `vector_staleness` health component is maintained from authoritative
-  observations rather than being overloaded onto `projection`; missing or
-  invalid observer state remains unavailable.
-- Production `nearest()` requires one explicit compiler-owned projected source
-  and `available`, causal, or duration-bounded freshness. The exact adapter
-  admits current-policy rows before ranking and enforces the shared 500-row
-  ceiling. Scalar and vector columnar generations share one schema-bound
-  durable control. Fresh V1 state rebuilds from a stable authoritative snapshot
-  plus retained tail and publishes only after an immutable manifest is reopened
-  and selected by exact checksum. The symbolic projection name remains public
-  but never supplies a durable identity or path. Building or an unservable
-  rebuild is a typed refusal, and restart never overclaims the persisted
-  frontier. Multi-source vector
-  queries, vector joins/aggregates, and
-  production ANN routing remain deferred and never fall back to row-store
-  scans or mixed snapshots.
-- Columnar artifacts are demand activated. A configured scalar or vector source
-  does not open, decode, populate, publish, or checkpoint before its first
-  semantic query. That first query, and concurrent queries while activation is
-  running, receive the existing typed `Building` result with no rows. This POC
-  has no public prewarm or eager-mode control. An activation failure is rowless
-  and unavailable for the rest of that process generation; repair the selected
-  artifact or durable vector selection and restart instead of expecting a
-  request-owned retry or authoritative fallback.
-- Reactive applications are partition-local and bounded. P8 does not provide
-  raw CDC, global or cross-partition order, physical time-based event
-  retention, exactly-once external effects, event-sourced reconstruction,
-  persisted hydration, direct browser credentials, webhooks, connectors,
-  arbitrary callbacks, or in-process agent inference.
-- Protected event replay and reaction validation currently enter the redb
-  mutation fence to obtain one transaction-current capability/row/relationship
-  view, even though replay aborts without mutation. This is a correctness-first
-  alpha path and can contend with the writer under heavy protected replay. The
-  singleton global reactive wakeup is unavailable to protected roles because
-  it cannot suppress hidden-commit timing without a subscription identity;
-  protected workers use bounded consumer long-poll instead.
-- Contract migration source, canonical artifacts, Application Source V3, Lock
-  V4, read-only planning, dedicated authorization, public check/apply/status,
-  Gate-A through Gate-C memory semantics, redb staged execution, crash recovery,
-  automatic rollback, populated public workflow, direct-parent compatibility
-  matrix, and bounded migration baseline are implemented. Gate C deliberately
-  rejects key swaps and predecessor-occupied rekey chains.
-  Migration administration is intentionally absent from MCP,
-  TypeScript, Python, and generated application clients.
-- The POC authorization model uses opaque local capability tokens, not a
-  production identity provider or OAuth authorization server.
-- Capability administration has create and revoke operations but no
-  operator-facing inventory command. Retain each issued capability ID in a
-  private operational inventory; deleting a bearer file is not revocation.
-- Generic bootstrap deploys no application. Its MCP developer can validate and
-  deploy contracts but has no wildcard application-data authority. After
-  deployment, an administrator must bind a compiled application role or issue
-  an exact lineage-scoped capability before application commands or data are
-  available through that identity.
-- Convenience bootstrap capabilities expire after at most 30 days. There is
-  no automatic renewal; a replacement must be created through the public
-  service while an administrative capability remains valid.
-- Re-running the source installer updates the three binaries but deliberately
-  preserves existing keys, server configuration, unit files, and system
-  sysusers/tmpfiles definitions. It is not a general configuration migration,
-  key-rotation, uninstall, or compatibility-aware upgrade mechanism.
-- Individual binary replacement is atomic, but replacement of all three
-  binaries is not transactional. Rerun an interrupted install before starting
-  or restarting the service.
-- Optional Codex MCP registration checks for an existing `riffdb` entry before
-  calling the replacement-capable Codex command, but Codex provides no atomic
-  create-if-absent operation. Do not run it concurrently with another writer
-  to the same user's Codex MCP configuration.
-- Metrics are in-process; there is no network metrics exporter.
-- Neither a clean nor a bounded dirty restart is a full population scrub.
-  Latent corruption outside the bound roots fails closed when an affected row
-  is first accessed, and is otherwise found by the background scrub after
-  readiness or by `riffdb storage scrub`. The offline scrub takes the database
-  offline for the whole pass, has no target, scope, resume, or repair option,
-  and serializes with every other maintenance operation. There is no MCP scrub
-  tool. The earlier logical-only pass took about four minutes at the production
-  benchmark population on the WP-760 host; that observation does not measure
-  the added private-copy and physical-verification work.
-- Restart after an abrupt stop pays a storage-engine repair proportional to
-  the database file size (about 53 seconds at the production benchmark
-  population on the WP-760 host), and the first write after any restart
-  rebuilds the in-memory command indexes once, holding writes for tens of
-  seconds at that scale.
-- Outbox delivery has only the explicitly configured POC connector behavior.
-- Projection state is rebuildable and can be degraded while authoritative
-  commits remain available.
-- Tokenized-text declarations, durable provider-state V1, named boolean search,
-  and fixed `riff_bm25_v1` ranking are implemented. The closed boolean shapes
-  are conjunction, capped disjunction, phrase, and bounded ordered proximity.
-  There is no wildcard, regular expression, fuzzy match, stemming, highlighting,
-  snippet, caller boost, score output, hybrid vector/text query, or scan fallback.
-  The production provider retains eight epochs per registered query shape, so a
-  ranked cursor may return the typed snapshot-retired outcome after sustained
-  writes even if the cursor token itself has not expired.
-- Restore publication assumes the database directory is private to the sole
-  configured service identity: the current operator for user scope or `riffdb`
-  for system scope. An uncooperative process with equal write authority can
-  invalidate filesystem assumptions, so shared write access and concurrent
-  servers are unsupported.
-- Backup and restore are offline. There is no online, incremental, encrypted,
-  remote-object, or point-in-time backup.
-- Restore preserves `DatabaseId` while rewinding history. Destroyed application
-  and administration sequence suffixes can still be reused. ADR-0072 adds a
-  durable `history_incarnation` fence so participating clients can detect the
-  rewind via optional `observed_history_incarnation` validation
-  (`RDB-HISTORY-0101`). Non-participating clients remain unvalidated.
-- Locators, cursors, sessions, read-after-sequence expectations, authorization
-  observations, and idempotency assumptions from a destroyed suffix are
-  invalid after restore.
-- The optional systemd MCP socket shares one capability among members of its
-  Unix socket group. Spawn one bridge per client when identities must differ.
-- Release verification checks unit syntax and hardening directives, runs
-  `riffdbd` with closed stdin through SIGTERM drain, and drives authenticated
-  newline-delimited MCP over the bridge's socket-style stdin/stdout. It does
-  not start the units inside the host systemd manager, so deployment must still
-  verify that the target manager applies the declared sandbox and socket
-  ownership.
-- The PostgreSQL counterexamples prove only that unsafe patterns remain
-  expressible in a general SQL/host-code surface and are absent from RiffDB's
-  supported application mutation surface. They are not performance cases.
-- POC performance has no absolute TPS gate. No benchmark claim is valid until
-  the exact hardware, filesystem, durability mode, workload, revision, and raw
-  output are published.
-- A POC-exit decision still requires all POC-001 through POC-010 evidence plus
-  a human architecture review: proceed to alpha, revise and repeat, or stop.
+## Deployment and Operations
+
+- RiffDB is a pre-release proof of concept, and its dual license does not change its security, compatibility, or support limits.
+- Linux is the supported deployment platform; protected credential and key-file loading is unavailable on other operating systems.
+- The source convenience installer targets Linux systemd, requires a valid private `XDG_RUNTIME_DIR` for user-scope unit verification, and does not configure login sessions or lingering.
+- Automated source-install acceptance exercises user scope only, while system-scope installation requires first-install acceptance on a disposable or staging host.
+- Application gRPC supports literal-loopback cleartext, verified direct TLS with static certificate and key paths, and a protected Unix socket, while hosted MCP remains loopback-only and OAuth, mTLS, automatic certificate issuance, and untrusted internet-facing operation are unsupported.
+- Browser code must use an application-owned backend and never receive a RiffDB credential.
+- `riffdbd` exposes only the documented POC configuration fields, with no network metrics listener, storage-engine selector, general tuning surface, or secret values in TOML.
+- After generic bootstrap, systemd `active` means the process started while authenticated Health remains `not_ready` until the first application contract is deployed.
+- The production server uses redb only, and the isolated Fjall comparison workspace is never linked into or shipped as a server binary.
+- Benchmark reports are revision-specific evidence rather than a standing performance promise, with no absolute TPS gate and no valid claim without published hardware, filesystem, durability mode, workload, revision, and raw output.
+- The sustainable TicketDesk rehearsal remains blocked by continuing-load source-receipt reclamation and final-window tail latency; see the [live observations](architecture/WP-825-LIVE-OBSERVATIONS.md).
+- Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
+- The shared crash-recovery matrix covers the enumerated POC recovery boundaries rather than providing a general disaster-recovery guarantee.
+- The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.
+- Capability administration provides create and revoke operations without an operator-facing inventory command, so operators must retain issued capability IDs in a private inventory and never treat file deletion as revocation.
+- Generic bootstrap deploys no application and grants its MCP developer no wildcard application-data authority until an administrator binds a compiled role or lineage-scoped capability.
+- Convenience bootstrap capabilities expire after at most 30 days with no automatic renewal.
+- Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and does not perform configuration migration, key rotation, uninstall, or format upgrades.
+- Individual binary replacement is atomic, but replacing all three binaries is not transactional across an interrupted install.
+- Optional Codex MCP registration provides no atomic create-if-absent operation and must not run concurrently with another writer to the same user's Codex MCP configuration.
+- Metrics are in-process only, with no network metrics exporter.
+- Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
+- Restart after an abrupt stop pays a storage-engine repair proportional to the database file size, and the first write after any restart rebuilds the in-memory command indexes once before admitting writes.
+- Outbox delivery supports only the explicitly configured POC connector behavior.
+- The optional systemd MCP socket shares one capability among members of its Unix socket group, so operators must spawn one bridge per client when principal identities must differ.
+- Release verification validates systemd unit syntax and hardening directives without starting the units inside the host systemd manager.
+- A POC-exit decision requires all POC-001 through POC-010 evidence together with a human architecture review.
+
+## Contracts and Writes
+
+- There is no general SQL surface, arbitrary transaction callback, analytical join engine, distributed transaction, automatic failover, or consensus protocol.
+- Compiler-sealed command decisions support bounded branch-local entity field assignments, embeddings, creates, and durable events, while workflow transition and lease instructions remain dedicated command forms outside decision arms.
+- An ordinary command may atomically delete and return the transaction-current preimage of at most one complete-key, partition-local `no_inbound` entity, whereas multi-row deletes must use the separately compiler-bounded collection deletion forms.
+- Reactive applications are partition-local and bounded, with no raw CDC, cross-partition ordering, wall-clock event retention, exactly-once external effects, event-sourced reconstruction, webhooks, or in-process agent inference.
+- Protected event replay and reaction validation acquire the storage mutation fence to obtain a transaction-current capability, row, and relationship view, and protected workers use bounded consumer long-poll rather than the global reactive wakeup.
+- Contract migration administration is available through the operator service, Rust client, and CLI, and is intentionally absent from MCP, TypeScript, Python, and generated application clients; Gate C rejects key swaps and predecessor-occupied rekey chains.
+- The PostgreSQL counterexamples in the repository demonstrate only that unsafe write patterns remain expressible in a general SQL surface and are excluded from RiffDB's compiled command surface.
+
+## Queries and Projections
+
+- Runtime-selectable page sizes use the query-only `Limit<MAX>` refinement up to 65,534 rows and do not refine offsets, byte budgets, contract integers, aggregate work, or projection candidate budgets.
+- A single RiffDB query invocation returns at most its compiled row limit (and never more than 65,534 rows or 4 MiB of encoded results), with no hidden multi-page response or streaming query protocol.
+- Named bounded RiffQL aggregates support exact counts, sum, mean, min, max, and Boolean any/all, while the separate ad-hoc projected CLI supports only `count`, integer-only `sum`, `min`, and `max` with bounded `group_by` in encoded-key byte order.
+- Candidate algebra supports one compiler-sealed non-output binding across at most eight same-partition declared-index sources, one-level bounded one-to-many expansion, and at most 32 compiler-expanded root orders, without depth-two expansion, cross-partition joins, or caller-supplied sort expressions.
+- `long_pattern_v1` provides exact binary or Unicode-fold equality, literal affix/substring, and LIKE/ILIKE matching for values up to 8,000 bytes as a rebuildable candidate provider, without general regular expressions or direct unanchored negation.
+- Ordinary row-store indexes execute exact equality, one bounded membership or range/prefix branch, and the complete declared order, while canonical string ranges, multiple branching dimensions, residual post-page filters, and runtime join optimization remain compile-time refusals.
+- The external tuple-capability fixture is a narrow source-compilation receipt for bytewise equality, membership, and order rather than a full external framework-conformance claim.
+- Named vector search selects exact scan at or below the declared per-organization `ann_threshold` (up to 500 rows when undeclared or 65,536 rows when declared) and first-party in-memory HNSW on the primary above that threshold when a warm graph is available, refusing larger organizations with `ScanBudgetExceeded`.
+- Vector staleness uses v1 count semantics (`stale_count > threshold`) rather than duration-based thresholds.
+- Production `nearest()` requires one explicit compiler-owned projected source with `available`, causal, or duration-bounded freshness and refuses multi-source vector queries, vector joins, or row-store fallbacks.
+- Columnar artifacts are demand-activated on their first semantic query, returning `Building` while activation is running and remaining unavailable for the process generation if activation fails.
+- Projection state is derived and rebuildable, so projections may report degraded or building status while authoritative commits remain available.
+- Tokenized-text search supports conjunction, capped disjunction, phrase, and bounded ordered proximity with fixed `riff_bm25_v1` ranking across eight retained provider epochs, without wildcards, regular expressions, fuzzy matching, stemming, snippets, caller boosts, or hybrid vector/text queries.
+
+## Replication, Backup, and Restore
+
+- Follower replication, follower reads, operator registration/retirement, and experimental primary fencing/promotion are POC-scoped capabilities pending full multi-consumer release qualification; see [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
+- Archive collection and point-in-time archive restore remain open for write-path latency qualification; see [backup and restore](backup-restore.md#archive-restore-integration-status).
+- Restore publication requires the database directory to be private to the sole configured service identity, and shared write access or concurrent server processes are unsupported.
+- Backup and restore are offline maintenance operations, with no online, incremental, encrypted, or remote-object backup.
+- Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`), leaving clients that omit `observed_history_incarnation` unvalidated.
+- Locators, cursors, sessions, read-after-sequence expectations, authorization observations, and idempotency assumptions from a destroyed history suffix are invalid after a restore.
 
 ## Retention
 
@@ -380,133 +73,25 @@ Online retention (see [Configuration](configuration.md#online-retention)) never
 passes a fence, and in this POC three fences bind more than an operator may
 expect:
 
-- This POC composes no outbox delivery destination, so an emitted event is
-  never marked delivered. History from the first undelivered event onward is
-  retained, online and offline. A contract that emits events compacts only the
-  history before its first event.
-- A declared columnar projection that has not been populated in the current
-  process holds retention at its last populated frontier, or at the beginning
-  of history if it was never populated, until something queries it.
-- The first online retention step deletes the validated-prefix checkpoint.
-  The next restart after the lane advances therefore takes complete startup
-  validation, which is proportional to the live population, and earns a fresh
-  checkpoint. A database whose lane keeps advancing takes that path on most
-  restarts. See [Startup integrity](operations/STARTUP-INTEGRITY.md).
-
-The lane is paced to about five percent of the writer's time. Pruning a command
-relocates its retained outcome, provenance, and audit out of its commit segment.
-In WP-811's direct-prune baseline on the ADR-0239 benchmark host, with 32
-interactive clients, the lane kept p95
-within 3 percent and throughput at 0.97 of the held run while pruning about 1.3
-percent as many sequences as the load committed (WP-811). Most of each step's
-writer time in that baseline was spent materializing journaled history and
-committing the step itself. ADR-0263 Amendment 5 returns Standard-profile logical
-pruning to journaled V4 transitions, with private preparation outside the writer
-gate and fresh precondition checks inside it (WP-815). Its correction separates
-logical pruning (steps of at most 256 sequences) from physical file reclamation:
-a sealed file remains allocated while any command, V3 receipt, older snapshot,
-or background scrub needs it. Receipt release uses the existing source-history
-protocol and is independent of the application watermark. The lane does not
-invent acknowledgements or source checkpoints to make files eligible. The
-1.3-percent result is the WP-811 baseline. WP-815's fresh six-cell, 32-client
-qualification pruned 12.60 percent as many sequences as the workload committed;
-median p95 rose 3.57 percent and throughput fell 6.21 percent against the held lane.
-The unchanged p95 and keep-up gates pass. No extents were deleted or recycled:
-source receipts still held them, and no production source-reclamation scheduler
-is composed. A 12.60-percent keep-up rate is below the workload's commit rate,
-so logical history backlog can still grow under saturation. The intermediate
-direct-prune implementation failed its keep-up
-gate; both results are recorded in the
-[design review](architecture/WP-815-DESIGN-REVIEW.md). Where writes leave the
-writer idle capacity, it compacts to its target. This evidence covers one workload
-on one host, is not a general latency guarantee, and marked seeded events
-delivered on the stopped database first with the board projection undeclared.
-It does not establish steady state with outbox, projections, followers, and
-archive/export consumers composed.
+- Because this POC composes no production outbox delivery destination, an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward.
+- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (or at the beginning of history if never populated) until a query activates it.
+- The first online retention step invalidates the validated-prefix startup checkpoint so the next restart performs complete startup validation proportional to the live population; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
+- Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation; see the [retention design review](architecture/WP-815-DESIGN-REVIEW.md).
 
 ## Storage reclamation
 
-Retention pruning deletes rows; it does not shrink the database file. redb 4.3
-exposes `Database::compact`, and nothing in RiffDB calls it, so freed pages are
-reused inside the file and the file's high-water mark is permanent for the life
-of the database. Capacity planning must size for the historical peak, not for
-the retained working set, and an operator who prunes aggressively to recover
-disk will not recover any.
-
-Journal extents are now retained after their checkpoint rather than recycled
-(ADR-0263, WP-814). Each installed checkpoint leaves one
-sealed extent beside the database, named `<database>.riffjournal.sealed.<generation>`
-and trimmed to its frames and footer. For journaled history, whether a
-checkpoint, crash recovery, or a synchronous drain materializes it, the database
-file keeps only a small locator ("history stub") per command segment and
-receipt, and the bytes stay in the journal extent. Direct writes and
-administration ceremonies still store their history in the database file. Backups
-copy the journal and every sealed extent, and a restored copy resolves its history from them;
-deleting a sealed extent by hand makes that history unreadable. Within one
-process, a read may resolve a history stub from any open copy of the same
-database whose retained frame has the same hash; the bytes are exact, but a
-missing extent is then reported only once no such copy is open. WP-815 retires a
-sealed extent only after logical pruning and legitimate source-history
-reclamation release every command and receipt reference, with no captured reader
-or scrub holding it. Source receipts still prevented physical reclamation in its
-qualification, so sealed files can continue accumulating. A backup reads its
-history from its own journal and sealed
-extent artifacts. A staged maintenance restore (promotion rewind or archive
-replay) and a contract migration stage rewrite the stubs as full rows while
-staging, so the database they publish keeps its earlier history in the database
-file. The replaced database's journal extents stay beside it, unreferenced,
-until WP-815 retention reclaims them.
-
+- Retention pruning frees pages for internal reuse inside the redb file without calling compaction or lowering the file's high-water mark, so capacity planning must size for the historical peak rather than the retained working set.
+- Sealed journal extents (`<database>.riffjournal.sealed.<generation>`) retain command and receipt history referenced by compact stubs in the database file and must never be deleted by hand.
+- A sealed journal extent is retired only after logical pruning and source-history reclamation release every command and receipt reference with no active reader or scrub holding it.
 
 ## What a command cannot express
 
-The compiler proves bounded structural properties of application writes. It
-cannot infer the relevance of an arbitrary business predicate or the freshness
-of an input delta. `checked_by` makes business associations explicit;
-caller-version fences additionally depend on a consistently advanced revision
-protocol. See the [write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
+The compiler proves bounded structural properties of application writes; see the
+[write cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md#declare-the-evidence-for-each-write).
+The command language has the following structural limits:
 
-The command language also has three structural limits:
-
-- Commands normally read by complete key. [Atomic indexed selection](contracts/ATOMIC-INDEXED-SELECTION.md)
-  admits one first-row selection when an equality prefix proves the partition
-  and every conflict key before the read. Other write-influencing range reads
-  remain rejected.
-- An invariant may span entities inside one aggregate, never across aggregates.
-  A command may *write* two aggregates that share a partition route, and since
-  ADR-0252 it carries each one's own invariants, but no invariant relates them.
-- A command cannot read a projection. Projections are derived state, and
-  admitting them into a write decision would make a write depend on a
-  watermark.
-
-Less follows from this than it appears, and the part that does follow is worth
-stating exactly.
-
-A limit over rows a command does not name *is* expressible: maintain the total
-on the aggregate root in the same command and put the invariant on the root.
-The conflict key covers the root, so concurrent writers serialize and the
-invariant is checked at commit against the value the command wrote. A rollup
-maintained this way is a first-class pattern, not a workaround.
-
-Choosing the first free slot within a statically owned indexed pool can happen
-inside one command with `mutate first`. More general selection still happens in
-the application: read a bounded page, choose, then invoke a command naming that
-target by complete key. That pattern is safe *when the command re-checks the
-condition the choice depended on*, because a losing choice becomes a declared
-outcome rather than a lost update. Application-side selection, retry scheduling,
-and multi-command recovery remain application responsibilities for those shapes. The compiler requires
-`set` for narrow same-field arithmetic, a named business association, or a
-proven same-root revision fence, and explicit `overwrite` for replacement
-without those proofs. Only the fence checks a supplied caller revision; a
-business association does not prove the predicate is relevant to caller intent.
-The root fence must unconditionally compare an integer revision to an input
-and increment it by one; arbitrary equivalent predicates and conditional
-fences are not inferred. Invariants alone do not establish this protection.
-
-What remains genuinely unavailable is allocating an unspecified free row in one
-round trip. That is a contention and round-trip cost, not a safety gap.
-
-The specification's risk register names durable workflows outside commands as
-the answer for logic a command cannot hold (`R-01`). No such facility exists in
-this POC: no requirement, record, or work package defines one, and sagas are
-listed as deferred. Treat the sentence as a direction, not an available feature.
+- Commands read entities by complete key or through one [atomic indexed first-row selection](contracts/ATOMIC-INDEXED-SELECTION.md) whose equality prefix proves the partition and every conflict key before the read.
+- An invariant may span entities inside one aggregate, and a command may mutate multiple aggregates that share a partition route, but no invariant may relate two distinct aggregates.
+- A command cannot read a derived projection because write decisions must never depend on an asynchronous projection watermark.
+- Allocating an unspecified free row from an unowned pool in a single round trip without root contention is not expressible inside one command.
+- General multi-step durable workflows and sagas outside a single compiled command are not implemented in this POC.

@@ -233,7 +233,7 @@ bulk command WritePolicyMutations {
 ```
 
 The number is compiler-owned, positive, and applies only to the single list expanded by the bulk
-command. It is the sum of the complete ADR-0011 canonical documents for the submitted elements;
+command. It is the sum of the complete canonical binary documents for the submitted elements;
 it is not JSON, Protobuf, compressed, or in-memory size. Every element still obeys its individual
 type and byte bounds, and the list still obeys its count bound.
 

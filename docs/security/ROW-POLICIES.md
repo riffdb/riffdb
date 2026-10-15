@@ -5,8 +5,8 @@ application roles. They are intended to make a forgotten application-side row
 check impossible: a request carries ordinary operation values only, while the
 compiler and authorization path own the exact policy proof.
 
-WP-570 freezes authoring, IR, identities, and capability-fact delegation.
-WP-572 applies the shared pure evaluator across authoritative, projected,
+The row-policy compiler and runtime freeze authoring, IR, identities, and capability-fact delegation, and
+apply the shared pure evaluator across authoritative, projected,
 search, live, event, contextual, workflow, scheduler, and bulk safe points. It
 denies missing rules, facts, rows, and exact relationship evidence; evaluates read/create/delete
 against the required row; evaluates update against both transaction-current and
@@ -15,8 +15,8 @@ revision and row hashes. The same evaluator filters rows before limits and
 aggregates, and its final-safe-point recheck rejects capability or row drift.
 
 Boolean constants, fields and declared principal facts can be used directly as
-predicates or under logical operators. ADR-0233 fixes the evaluator's former
-incorrect denial of these compiled policies; after upgrade, `allow create when
+predicates or under logical operators. The evaluator's former
+incorrect denial of these compiled policies is fixed; after upgrade, `allow create when
 true` can allow creation subject to every existing authority check. Missing or
 mistyped values are still denied, and required relationship evidence is checked
 even when another Boolean branch is true. See [contract authoring](../contracts/AUTHORING.md#boolean-row-policies).

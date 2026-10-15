@@ -107,4 +107,4 @@ The predecessor vector-control record (durable tag 65) remains readable only
 for bounded structural validation through the epoch-1 compatibility window.
 It is not writable and contributes no selection, retention, health, recovery,
 metrics, or migration input. Its values and old directories are never copied or
-translated into common control; WP-757 removes that predecessor family.
+translated into common control; the epoch-2 format reset removes that predecessor family.

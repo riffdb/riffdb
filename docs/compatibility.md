@@ -9,13 +9,11 @@ boundaries; it is not a blanket promise that arbitrary commits can be mixed.
 across clones. `value()` still returns `&CanonicalRecord`, but it is no longer
 a `const fn`. Storage adapters calling it inside a const function must make
 that caller an ordinary function. Generated application interfaces and stored
-outcome bytes retain their existing contracts. See
-ADR-0274, Shared Immutable Declared Outcome Values, in the repository's
-decision records.
+outcome bytes retain their existing contracts.
 
 ## Per-write evidence in V25
 
-ADR-0262 introduces grammar, executable IR, and bundle V25 for newly compiled
+Grammar, executable IR, and bundle V25 apply to newly compiled
 commands with field assignments. Every assignment carries validated evidence
 in its plan hash. Recompilation rejects replacement `set` writes justified only
 by unrelated reads or revision increments; migrate to an explicit `checked_by`
@@ -54,7 +52,7 @@ readers. A bounded maximum is immutable operation identity: changing it
 requires module/application rotation and invalidates predecessor cursors, but
 does not migrate entity data or change storage or public Protobuf formats.
 
-ADR-0159 adds a process-local named-query cursor hash domain that excludes only
+The process-local named-query cursor hash domain excludes only
 compiler-proved ordinary page-cardinality values. Shared parameter hashes,
 query/IR/module/plan/lock identities, public opaque token bytes, protocols,
 storage, and durable formats are unchanged. Cursor registries already do not
@@ -89,7 +87,7 @@ The current pre-alpha identity is alpha epoch `1`, writer `4`. Downgrade is
 unsupported. A format marker from another epoch or writer is not evidence that
 its bytes are readable merely because a decoder accepts some records.
 
-ADR-0278 retains explicit backup-bound offline upgrades from writers 0, 1,
+RiffDB retains explicit backup-bound offline upgrades from writers 0, 1,
 2 and 3. Writers 2 and 3 are accepted only with their exact frozen registry and
 compatibility inventory; an epoch or writer number alone grants no transition. Use the
 existing `riffdb storage upgrade` operation with a verified matching backup,
@@ -121,8 +119,8 @@ database, history incarnation and current registry, atomically with its
 validated-prefix completion receipt. Legacy V2 registry bytes remain readable
 and contain no independent completion witness.
 
-Writer 4 adds logical journal frame V5 and its closed SourceReclamation kind
-under ADR-0278. V2, V3 and V4 remain readable with their frozen semantics;
+Writer 4 adds logical journal frame V5 and its closed SourceReclamation kind.
+V2, V3 and V4 remain readable with their frozen semantics;
 only V5 may encode the new kind. The physical extent format, canonical V3
 receipts and application interfaces are unchanged. Online Standard-profile
 source reclamation publishes a bounded source-prefix cut without first draining
@@ -159,7 +157,7 @@ The V4 extension binds one exact application-role hash, canonical principal
 facts, and canonical protected entity/operation selections; omitting the
 extension under the V4 identity is corruption. V1 through V4 source,
 descriptor, hash, and wire fixtures remain frozen. V2's source and schema hash
-are frozen to ADR-0089's original bytes. A short-lived pre-alpha build
+are frozen to the original capability-V2 bytes. A short-lived pre-alpha build
 accidentally emitted the additive V3 installation payload under V2's compact
 identity; current readers recover that exact payload without dropping
 authority, while every new installation grant is written as V3. No general
@@ -230,7 +228,7 @@ corrupt selected material fails closed without V1 fallback. Downgrade remains
 unsupported; a future removal of V1 identities still requires its separately
 governed retirement package.
 
-WP-748 adds a V2 follower-registration policy codec in the existing source-hold
+The current registry adds a V2 follower-registration policy codec in the existing source-hold
 record domain (tag 73, revision 2). Frozen V1 follower, archive and bootstrap
 holds retain their exact bytes. V2 carries an explicit sequence budget,
 registration predecessor, phase, optional sequence expiry and checked degradation
@@ -241,7 +239,7 @@ coordinator path described below. Archive and bootstrap jobs retain V1.
 Automatic registry migration remains unavailable. Operator registration and
 retirement use the shared service, gRPC, Rust client and CLI.
 
-The accepted WP-748 audit successor adds `ServiceAuditRecordV3` (tag 22,
+The audit successor adds `ServiceAuditRecordV3` (tag 22,
 revision 3) in a separate schema. It preserves existing target fields and adds
 one source-lineage-scoped follower target. V1/V2 bytes and readers remain
 unchanged; existing audits still write V2. The bounded V3 codec and mixed audit
@@ -250,7 +248,7 @@ Promotion remains unavailable. The exact registry digest changes; earlier
 markers still require their matching binary until an explicit migration is
 implemented and proven. An older binary refuses the V3 identity.
 
-WP-748 also registers `StoredReplicationAdministrationV1` at tag 75, revision 1,
+The registry also registers `StoredReplicationAdministrationV1` at tag 75, revision 1,
 with a 2 KiB payload bound. Tag 74, revision 1 remains the existing export-page
 record. Checked administration values bind the exact target, generation, source
 predecessor, policy images and explicit principal/request/approval or original
@@ -356,7 +354,7 @@ admit degraded primary health with live registrations and zero sequence lag.
 Older clients that require Healthy whenever those counters are zero refuse this
 newly admitted Health shape; use matching updated validators. Follower health and the zero-registration primary case retain their prior rules.
 
-WP-749 registers successor command capsule V7 (tag 54, revision 6) and segment
+The current registry registers successor command capsule V7 (tag 54, revision 6) and segment
 V6 (tag 55, revision 6) for exact command-prefix evidence. Earlier record bytes
 remain readable by their own codecs and do not acquire intermediate values.
 The registry digest changes: a database or backup carrying the previous exact
@@ -433,7 +431,7 @@ while last-archived includes the selected terminal frontier. The maintenance
 driver exposes these paths through `RestoreArchivedBackup`, the Rust operator
 client and `riffdb storage restore --archive`; see [archive restore](backup-restore.md#archive-restore-integration-status)
 for selection, retry and staged-authorization rules. Full CI and write-path
-performance qualification remain required before WP-749 closes.
+performance qualification remain required before archive restore qualification closes.
 
 Inspect the format while the server is stopped:
 
@@ -490,11 +488,11 @@ in an isolated nested workspace and cannot be substituted into the server.
 
 Restore preserves the backed-up `DatabaseId` but does not preserve observations
 from the destroyed suffix. It is therefore not a mechanism for maintaining
-globally stable post-backup locators. ADR-0072's durable `history_incarnation`
-makes restore rewinds detectable for clients that send optional
+globally stable post-backup locators. The durable `history_incarnation`
+fence makes restore rewinds detectable for clients that send optional
 `observed_history_incarnation`; non-participating clients remain unvalidated.
 
-### Primary fencing and promotion (WP-748)
+### Primary fencing and promotion
 
 Fresh sources use `AuthoritativeStateCatalogV2` (catalog tag 69/revision 2)
 with explicit Active primary admission. V1 catalog bytes retain their meaning;
@@ -518,7 +516,7 @@ fencing or promotion tool is exposed. The primary-fenced error is
 variants. See [follower administration](operations/FOLLOWER-ADMINISTRATION.md)
 for the experimental path and remaining recovery limits.
 
-WP-815's journal writer uses logical frame version 4 for bounded retention
+The journal writer uses logical frame version 4 for bounded retention
 pruning. Frozen version 2 and 3 frames remain readable; the physical extent
 format and existing record encodings are unchanged. The durable-format writer
 identity advances to 2 before any version 4 frame can be written. A binary for
@@ -529,6 +527,6 @@ with an exact immutable backup created by its matching binary before upgrading.
 The upgrade validates the predecessor's registry and frozen compatibility corpus,
 binds its durable receipt to that backup, and replaces the marker atomically.
 It preserves application and administration frontiers. It has no online or
-backup-free upgrade mode. WP-815's journaled pruning path, crash recovery, and
+backup-free upgrade mode. The journaled pruning path, crash recovery, and
 interference qualification pass; physical and all-consumer steady-state limits
 are recorded in [Known limitations](known-limitations.md#retention).

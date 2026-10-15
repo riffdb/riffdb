@@ -79,9 +79,9 @@ entity key resolve the tie. Direction changes only value-versus-value order:
 does not inherit SQL, storage-engine, locale, or host-language null defaults and
 does not substitute a sentinel scalar.
 
-WP-675 makes the V7 source and its provider-independent V10 semantic/module
-artifacts compilable. WP-676 activates rebuildable provider-state V5 and its
-internal exact-count/direct-ordinal execution lane. WP-677 connects that lane
+The compiler makes the V7 source and its provider-independent V10 semantic/module
+artifacts compilable. Rebuildable provider-state V5 activates its
+internal exact-count/direct-ordinal execution lane and connects that lane
 through the shared service, gRPC, CLI, MCP, and generated Rust, Go, TypeScript,
 and Python methods. There is no scan, request-time sort, page walk, or older-
 provider fallback.
@@ -101,9 +101,9 @@ source-spanned diagnostic. There is no partial family and no runtime scan.
 
 ## Current activation status
 
-WP-656 makes V6 source, semantic IR V9, and query-module V9 compilable and
-reproducible. WP-657 adds rebuildable provider-state format V4, and WP-658
-activates that provider through the shared application service, gRPC, CLI,
+RiffQL V6 source, semantic IR V9, and query-module V9 are compilable and
+reproducible. Rebuildable provider-state format V4 is active
+through the shared application service, gRPC, CLI,
 MCP, and generated Rust, Go, TypeScript, and Python methods. The compiler
 seals optional-family members, comparison profiles, policy mode, exact-count
 and ordinal requirements, independent order layouts, and static work/state

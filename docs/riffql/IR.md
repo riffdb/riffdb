@@ -1,6 +1,6 @@
 # Symbolic catalog and query surface IR
 
-WP-220 resolves RiffQL against one exact validated contract bundle. The
+The RiffQL compiler resolves RiffQL against one exact validated contract bundle. The
 symbolic catalog indexes entities, fields, enums, variants, and indexes by
 their exact source names. Internal stable IDs remain compiler data and never
 appear in parameter schemas, result schemas, source maps, or diagnostics.
@@ -48,7 +48,7 @@ limit, and uses the same maximum for result-list bounds and whole-plan cost.
 Existing V1 through V11 bytes remain unchanged. Changing only `MAX` changes
 the surface, plan, module, role, lock, generated schema, and operation hashes.
 
-ADR-0159 adds no IR field or version. Cursor-page-cardinality eligibility is
+Cursor-page-cardinality eligibility adds no IR field or version. It is
 derived from the existing V12 row-limit, cursor, cardinality, and physical
 access structure: a parameter qualifies only when every use is an ordinary
 ordered cursor-page limit. The declared `MAX` remains identity-bearing in the

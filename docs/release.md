@@ -1,6 +1,6 @@
 # Release Verification
 
-WP-200 assembles evidence; it does not turn a skipped test or missing dependency
+The release verifier assembles evidence; it does not turn a skipped test or missing dependency
 into a pass.
 
 Run from a clean checkout:
@@ -18,17 +18,17 @@ Retirement](versioning-and-retirement.md). Release review runs
 reader/writer or lifecycle metadata, and disagreement with the durable-format
 manifest. A retirement also requires the prior-notice, frozen-fixture,
 typed-refusal, operator-action, and permanent-reservation evidence in that
-policy. The current WP-612 baseline retires no decoder.
+policy. The current baseline retires no decoder.
 
 `scripts/demo --assert` verifies the candidate requirement map and writes a
 revision-specific `demo_verified` report to `target/wp200/demo-report.json`
 only after its live and process-level suites pass. POC-010 remains
 `requires_release_verification` in that intermediate report. The demo consumes
-the WP-139 report with the exact
+the performance comparison report with the exact
 `supported_application_mutation_surface` qualifier and rejects any attempt to
 mark the unsafe variants benchmark eligible.
 
-The same evidence check pins WP-190's checked report hash, command list, case
+The same evidence check pins the checked crash-recovery report hash, command list, case
 order, coverage counts, and production-gap inventory. Any unresolved
 `production-gap` row rejects POC-009; a partial executed-case report is never
 treated as complete crash coverage.
@@ -104,7 +104,7 @@ implementation:
 The passing receipt at
 `release/evidence/deployable-application-alpha-v1.json` binds the exact Git
 revision and command inventory plus SHA-256 references to the durable-format,
-WP-552 performance, bound 72-hour endurance, six-run agent campaign, and every
+comparator performance, bound 72-hour endurance, six-run agent campaign, and every
 adapter conformance/export/disaster-recovery artifact used by the run. A
 generated artifact that is absent, empty, oversized, or a symlink prevents the
 receipt from being published even when every phase exited successfully.
@@ -125,7 +125,7 @@ stores the exact evidence references described above. A failed run remains under
 waive a phase, shorten endurance, substitute a diagnostic benchmark, or print
 command arguments into the receipt.
 
-The retained WP-552 comparator corpus is verified separately with:
+The retained comparator corpus is verified separately with:
 
 ```bash
 ./scripts/check-alpha-performance-evidence --verify

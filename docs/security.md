@@ -33,8 +33,7 @@ with no TLS provider or feature-set change. See the
   no arbitrary-channel or cleartext constructor. Receiver connections verify
   the configured source lineage and complete durable transfer before allowing
   offline materialization; receiving bytes alone never grants readiness.
-  The [source stream and follower lifecycle](architecture/CHANGELOG-V3.md)
-  are tracked in WP-746.
+  See the [source stream and follower lifecycle](architecture/CHANGELOG-V3.md).
 - Projection and outbox workers consume committed authoritative state. Their
   failure may degrade service but cannot roll back a commit.
 - The deterministic runtime receives checked inputs and reserved logical time;
@@ -68,7 +67,7 @@ with no TLS provider or feature-set change. See the
 | Logging leakage | Closed telemetry vocabularies before subscriber layers | Operator-added subscribers require review |
 | Corrupt storage | Complete startup structural/catalog validation, fail closed | No privileged repair tool |
 | Backup path traversal | Checked name joined only beneath server-owned root | Backups are not encrypted |
-| Destructive restore abuse | Exact confirmation plus current and staged authorization | History-incarnation fence (ADR-0072); residual risk is non-participating clients |
+| Destructive restore abuse | Exact confirmation plus current and staged authorization | History-incarnation fence; residual risk is non-participating clients |
 
 ## Deployment Rules
 
@@ -153,6 +152,6 @@ with that obligation return the typed follower-mode refusal before releasing dat
 Applications requiring durable audit of reads or denials must use the primary.
 Primary audit behavior and replicated audit records are unchanged.
 
-The daemon and process crash tests exercise this boundary under WP-746. See the
+The daemon and process crash tests exercise this boundary across restarts. See the
 [follower implementation and remaining gates](architecture/CHANGELOG-V3.md)
 before planning deployment.

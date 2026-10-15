@@ -15,7 +15,7 @@ entity Session {
 The classification marks values whose accidental display would be a security
 incident — session tokens, verification tokens, credential hashes, provider
 refresh secrets. It is declared once, in the contract, and every present and
-future display surface inherits it (ADR-0118).
+future display surface inherits it.
 
 `secret` is a contextual modifier: it is an ordinary identifier everywhere
 else, so a field *named* `secret` stays valid, and adopting the keyword is a

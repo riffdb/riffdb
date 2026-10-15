@@ -34,7 +34,7 @@ canonical row hash. Required projection generations are tied to the frozen
 application frontier before final cutover.
 
 Final validation still scans every row and validates the private stage and its
-immutable history. Under ADR-0228, redb checks newly added unique constraints
+immutable history. The redb migration validator checks newly added unique constraints
 with at most two entries per complete canonical unique prefix. Every row must
 have exactly its independently derived owner, schema, partition and covered
 values in the rebuilt index. Missing entries cannot hide duplicates. The

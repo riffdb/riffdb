@@ -427,8 +427,7 @@ See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
 
 ## Accepted application-profile target
 
-The following boundary is accepted by ADR-0055 and assigned to WP-280 through
-WP-300; it is not a claim about the pre-WP-300 surface.
+The following boundary defines the safe application query profile:
 
 - Stable applications execute exact named deployed queries with typed
   parameters. They do not submit source text.
@@ -473,8 +472,8 @@ string-built predicate, or optimizer-dependent plan. This is the key
 difference from treating RiffQL as a smaller SQL dialect: the rejected forms
 are product safety properties, not optimizer preferences.
 
-WP-335 exercised this rule against independent Blog/CMS and Orders/Inventory
-corpora. Both completed without a new grammar, IR node, hash input, access
+Independent Blog/CMS and Orders/Inventory corpora exercise this rule.
+Both completed without a new grammar, IR node, hash input, access
 operator, cursor, or result semantic. The positive corpus proves:
 
 - primary-key page and slug-route reads;

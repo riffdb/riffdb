@@ -18,7 +18,7 @@ identity-mismatched arm before releasing a partial result.
 Current generated clients advertise through `COMPACT_V1` for eligible
 compiler-covered queries. `PACKED_V1` exists in the additive protocol and
 strict driver compatibility codec, but generated clients neither select it nor
-carry dormant direct decoders because its WP-659 candidate missed both the
+carry dormant direct decoders because its candidate implementation missed both the
 performance and generated-size gates. There is no application configuration
 switch for it. Queries without a complete safe cover continue to use legacy
 records.

@@ -72,7 +72,7 @@ post-scan filtering: doing so could apply `take`, an ordinal offset, or a
 continuation before the predicate and silently omit matches.
 
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
-cross-partition join, or optimizer-dependent plan choice. ADR-0175's additive
+cross-partition join, or optimizer-dependent plan choice. The additive
 finite partition-set route is not a join: it replicates one compiler-sealed
 local index plan over caller-submitted bounded routes in one read view. Uniform
 orders use a bounded k-way heap; mixed physical directions use a bounded
@@ -174,20 +174,20 @@ before a partial result can be released.
 `explain` remains value-free and names a dependent collection as `dependent
 primary-key batch from source.binding_field`. The complete target/source
 mapping, dependencies, and absence outcome are already sealed in canonical
-plan bytes; changing any of them changes plan identity. WP-689 deliberately
+plan bytes; changing any of them changes plan identity. The compiler deliberately
 keeps existing explain bytes stable because application manifests include that
 representation.
 
 The current repository-wide relationship inventory is deliberately closed to
 three shapes: an exact complete-key point, a singular-key-driven separately
-bounded index access, and ADR-0054's dependent complete-key point batch. A new
+bounded index access, and the dependent complete-key point batch. A new
 semijoin, correlated existence test, bounded one-to-many expansion, or other
 composition requires a real-consumer amendment with independent fan-out,
 intermediate, probe, byte, output, policy, snapshot, and identity evidence.
 Arbitrary or caller-supplied joins, cross-partition work, Cartesian products,
 recursion, and runtime join optimization remain unavailable.
 
-WP-689 validates that inventory against three independent applications:
+The relationship inventory is validated against three independent applications:
 TicketDesk, agent-blog, and agent-orders. Its checked fixture records every
 current source/target mapping together with the access shape, driver and target
 row maxima, shared partition proof, continuation-probe and complete access-key
@@ -219,7 +219,7 @@ routes, adapters, and generated profiles remain in their owning repository.
 
 ## Whole-query authorization and execution fuel
 
-ADR-0055, WP-280, and WP-285 establish the exact application-query
+The compiled query runtime enforces the exact application-query
 authorization and work boundary below.
 
 The service resolves the entire query before data access and presents policy

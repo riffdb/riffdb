@@ -149,5 +149,5 @@ The POC expects a running RiffDB service and an already provisioned ordinary
 capability credential for authenticated project operations. Run
 `riffdb agent init` to install the generated repository skill, managed AGENTS
 section, and project MCP entry; the command deliberately does not provision or
-embed that credential. Public ecosystem package placement remains owned by
-WP-601.
+embed that credential. Public ecosystem package placement is documented in
+[Package Installation](PACKAGE-INSTALLATION.md).

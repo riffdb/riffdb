@@ -173,7 +173,7 @@ current and proposed row. Missing fields, mistyped facts, and missing required
 relationship evidence still deny the operation; values are never coerced to
 Booleans.
 
-Upgrade note: ADR-0233 corrects an evaluator defect that denied direct Boolean
+Upgrade note: the row-policy evaluator corrects an earlier defect that denied direct Boolean
 predicates even though they compiled. Such policies now apply their declared
 true/false result and may admit rows that the defective evaluator denied.
 
@@ -289,7 +289,7 @@ The v1 analyzer set is closed:
 - `keyword_v1` emits the complete source value as exactly one term, including
   one empty term for an empty value. It performs no normalization.
 - `standard_v1` first applies Unicode 17.0.0 UAX 29 word segmentation, assigns
-  monotonically increasing positions, and then applies ADR-0172's
+  monotonically increasing positions, and then applies the deterministic
   `unicode_fold_v1` compatibility fold to each term. Analyzer behavior is
   pinned by checked-in conformance tests rather than changing with the host.
 
@@ -386,7 +386,7 @@ bundle, where it is part of the contract's durable identity:
   `recall_target_bps` must appear together in that order. The threshold is
   1 to 65,536 rows per organization. Search remains exact at or below the
   threshold. Above it, a matching warm graph may engage; a cold or unavailable
-  graph uses the exact path under ADR-0229.
+  graph uses the exact path.
 - `recall_target_bps` is 1 to 10,000 basis points. For example, `9500`
   declares recall@K of at least 0.95 against exact scan at the same projection
   frontier. Application query inputs cannot lower or omit this projection-owned
@@ -626,9 +626,8 @@ reusing stable IDs or editing the active database file.
 A valid successor that needs existing state to be checked or transformed
 returns `migration_required`. Use Application Source V3, a parent-specific
 `.riffm` proof, Application Lock V4, and the read-only plan described in
-[Contract Migrations](MIGRATIONS.md). Internal redb execution and crash recovery
-are implemented, but no supported public check/apply/status interface can
-activate that successor until WP-409.
+[Contract Migrations](MIGRATIONS.md). Offline check, apply, and status operations
+activate that successor through the migration CLI and operator service.
 
 `contract deploy` is a mutating operator command, not a compatibility probe.
 There is no contract rollback RPC. Use `contract validate` for source-only
