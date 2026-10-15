@@ -1,0 +1,11 @@
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":0,"kind":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11602,"kind":"tool","operation":"riffdb.new"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":79800,"kind":"package_install","operation":"npm.install"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":199570,"kind":"compiler_failure","code":"RDB-S004","operation":"BlogCms"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":210373,"kind":"tool","operation":"riffdb.application.check"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":219433,"kind":"identity_change_ceremony","operation":"riffdb.application.lock"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":219564,"kind":"tool","operation":"riffdb.application.generate"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":336185,"kind":"first_write","operation":"SubmitComment"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":336202,"kind":"first_page_read","operation":"PostDetailPage"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":998900,"kind":"rating","code":"9.5"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":998976,"kind":"complete"}

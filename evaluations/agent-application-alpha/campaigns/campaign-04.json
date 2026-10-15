@@ -1,0 +1,145 @@
+{
+  "schema": "riffdb-agent-application-alpha-campaign/v2",
+  "campaign_id": "campaign-04",
+  "bundle_hash": "495c8b41d6a2182b749ab29c3ae555d5f5c2b6654ce54afc0dac1fed0e7d3988",
+  "package_distribution": {
+    "checksums_sha256": "df0b698fd95f6c95609ceb22eb4f96ca46478847f926ed0df02aa7bede0ccd39",
+    "signing_identity": "wp601-test"
+  },
+  "status": "passed",
+  "immutable": true,
+  "runs": [
+    {
+      "run_id": "campaign04-blog-go-c442a2ac",
+      "domain": "blog",
+      "language": "go",
+      "agent_identity": "campaign04-agent-blog-go-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-go-c442a2ac/report.json",
+        "sha256": "28f3e960e740098960c3300447344300b4992fbb29fe9b75a552b39c7a77846f"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-go-c442a2ac/events.jsonl",
+        "sha256": "2bfa4bfff3ffc215a50b1a9c11dfc88af003288a6e664d23710709086d1fd81c"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-go-c442a2ac/qualified-events.jsonl",
+        "sha256": "8818ddb5f3613c5073c2cfcef755102e741a36b44887f9ff7000a04eb3450fef"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-go-c442a2ac/riffdb.application.lock.json",
+        "sha256": "dc688f7f5543651d9b9817b752c4d3e73c02d7ed67c6bebb7ec946c349ebe7ef"
+      }
+    },
+    {
+      "run_id": "campaign04-blog-rust-c442a2ac",
+      "domain": "blog",
+      "language": "rust",
+      "agent_identity": "campaign04-agent-blog-rust-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-rust-c442a2ac/report.json",
+        "sha256": "6090cb887855e17c1cca7f30eb25f6290c07be73cc87867bd59fa1f6063ab561"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-rust-c442a2ac/events.jsonl",
+        "sha256": "3bfab81a8cc769fa3c8149cec49bfe63bc44aea1372a3fc429998f8c07cd48b5"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-rust-c442a2ac/qualified-events.jsonl",
+        "sha256": "9d3d8c41e5492a2ebd78379780a4cb8eb1c46ffde7a178b25753769ade51fd31"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-rust-c442a2ac/riffdb.application.lock.json",
+        "sha256": "e156a870e63cfbd7b68b508596022e3823a8cb4c41629662a32317341b190eb2"
+      }
+    },
+    {
+      "run_id": "campaign04-blog-typescript-c442a2ac",
+      "domain": "blog",
+      "language": "typescript",
+      "agent_identity": "campaign04-agent-blog-typescript-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-typescript-c442a2ac/report.json",
+        "sha256": "c8876d0cbe024cea13860ddb57b53c8a5b36cf6935eddd66ab296340e51c1233"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-typescript-c442a2ac/events.jsonl",
+        "sha256": "7cf35e0c97b36e4d4d725a8333e598d730c49d45c5df077c3c994782eb79e384"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-typescript-c442a2ac/qualified-events.jsonl",
+        "sha256": "4877a6cbcce215163a7f625a5bbc9f975dd1c79246446cdf6eabcbdb8d0ecd77"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-blog-typescript-c442a2ac/riffdb.application.lock.json",
+        "sha256": "72a86cb635c25cd3b3c612c10fa75b851028015f763504988216139d43fc5339"
+      }
+    },
+    {
+      "run_id": "campaign04-orders-python-c442a2ac",
+      "domain": "orders",
+      "language": "python",
+      "agent_identity": "campaign04-agent-orders-python-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-python-c442a2ac/report.json",
+        "sha256": "6190b454fd1e0174d78107c7651247d828a024edf936e0c7eec5366224716f4f"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-python-c442a2ac/events.jsonl",
+        "sha256": "543f4d3daed2f70b753b0e1c7d4295b7c4ac7c921e66c8645a33145804ad0fab"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-python-c442a2ac/qualified-events.jsonl",
+        "sha256": "43369ac2c42402ea4735feda2a956683e47358b5f82bdf85c232bf07c7fc6103"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-python-c442a2ac/riffdb.application.lock.json",
+        "sha256": "49f2f270446fad7a545df5215deeb210969321c0f3620b697c8b16390bbe0621"
+      }
+    },
+    {
+      "run_id": "campaign04-orders-rust-c442a2ac",
+      "domain": "orders",
+      "language": "rust",
+      "agent_identity": "campaign04-agent-orders-rust-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-rust-c442a2ac/report.json",
+        "sha256": "fe25fe9cff7f81ab5d795dbfdfb42febcab5cf4a83392c968f2daff5a9a2ce35"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-rust-c442a2ac/events.jsonl",
+        "sha256": "c8f5ad43b53d318de808e37ee1887f909e89358c5c99fb326d1d660ac9673c09"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-rust-c442a2ac/qualified-events.jsonl",
+        "sha256": "2b57acc6e8bd976bcf72950e470d2651a978ca4505db721911840b8bb45cdd56"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-rust-c442a2ac/riffdb.application.lock.json",
+        "sha256": "64c7499c6f1ff56bf4b5296e144dbc01b1109e06f074535571c823bf4bdb5f24"
+      }
+    },
+    {
+      "run_id": "campaign04-orders-typescript-c442a2ac",
+      "domain": "orders",
+      "language": "typescript",
+      "agent_identity": "campaign04-agent-orders-typescript-c442a2ac",
+      "report": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-typescript-c442a2ac/report.json",
+        "sha256": "cf213b979cda72e9702950f6fe829ce97eae04882a43aed556c9c643dcd69eb1"
+      },
+      "events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-typescript-c442a2ac/events.jsonl",
+        "sha256": "4481f5f0feee4dd2e3ad9fc5434ca8b59f7cbb5f54f2735aa9052fcffbec3811"
+      },
+      "qualified_events": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-typescript-c442a2ac/qualified-events.jsonl",
+        "sha256": "b5c2bf56ff28f421ff871b94def53264a43cb3a3832817777b8452450ce0337d"
+      },
+      "application_lock": {
+        "path": "evaluations/agent-application-alpha/runs/campaign04-orders-typescript-c442a2ac/riffdb.application.lock.json",
+        "sha256": "12fde13a37d8664b600b1854b27429d9cc75610d998dd5e124b11f752dc57fb6"
+      }
+    }
+  ]
+}

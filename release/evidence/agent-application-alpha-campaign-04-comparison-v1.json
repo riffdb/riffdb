@@ -1,0 +1,99 @@
+{
+  "schema": "riffdb.agent-application-campaign-comparison/v1",
+  "work_package": "WP-759",
+  "requirements": [
+    "GOV-006",
+    "HBK-002",
+    "HBK-005",
+    "HBK-011"
+  ],
+  "baseline_campaign": "campaign-03",
+  "evaluated_campaign": "campaign-04",
+  "baseline_receipt": {
+    "path": "release/evidence/agent-application-alpha-package-campaign-v1.json",
+    "sha256": "3743de378055441aace96cf8eb1f9a5d1fc0774b61c45885acc62a9885c6234c"
+  },
+  "evaluated_receipt": {
+    "path": "release/evidence/agent-application-alpha-package-campaign-04-v1.json",
+    "sha256": "81c526826b7baad364015e63a0b9eaf00da63d588aa4c961eed033ca8777edad"
+  },
+  "baseline_median_time_to_first_committed_row_s": 570.0,
+  "evaluated_median_time_to_first_committed_row_s": 546.5,
+  "baseline_total_rescue_count": 0,
+  "evaluated_total_rescue_count": 0,
+  "slowest_cell_target_reduction_ratio": 0.25,
+  "target_is_release_gate": false,
+  "slowest_retained_cell": {
+    "language": "typescript",
+    "brief": "blog",
+    "baseline_time_to_first_committed_row_s": 1680.0,
+    "evaluated_time_to_first_committed_row_s": 336.0,
+    "reduction_ratio": 0.8,
+    "evaluated_campaign_max_time_to_first_committed_row_s": 734.0,
+    "max_cell_reduction_ratio": 0.5631,
+    "target_met": true
+  },
+  "cells": [
+    {
+      "language": "go",
+      "brief": "blog",
+      "baseline_run_id": "campaign03u-blog-go-1aa9b6d8",
+      "evaluated_run_id": "campaign04-blog-go-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 600.0,
+      "evaluated_time_to_first_committed_row_s": 516.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    },
+    {
+      "language": "python",
+      "brief": "orders",
+      "baseline_run_id": "orders-python-1aa9b6d8",
+      "evaluated_run_id": "campaign04-orders-python-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 1040.0,
+      "evaluated_time_to_first_committed_row_s": 577.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    },
+    {
+      "language": "rust",
+      "brief": "blog",
+      "baseline_run_id": "campaign03u-blog-rust-1aa9b6d8",
+      "evaluated_run_id": "campaign04-blog-rust-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 316.0,
+      "evaluated_time_to_first_committed_row_s": 432.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    },
+    {
+      "language": "rust",
+      "brief": "orders",
+      "baseline_run_id": "campaign-03-orders-rust-1aa9b6d8",
+      "evaluated_run_id": "campaign04-orders-rust-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 11.0,
+      "evaluated_time_to_first_committed_row_s": 734.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    },
+    {
+      "language": "typescript",
+      "brief": "blog",
+      "baseline_run_id": "campaign-03-blog-typescript-1aa9b6d8",
+      "evaluated_run_id": "campaign04-blog-typescript-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 1680.0,
+      "evaluated_time_to_first_committed_row_s": 336.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    },
+    {
+      "language": "typescript",
+      "brief": "orders",
+      "baseline_run_id": "wp604-orders-typescript-1aa9b6d8",
+      "evaluated_run_id": "campaign04-orders-typescript-c442a2ac",
+      "baseline_time_to_first_committed_row_s": 540.0,
+      "evaluated_time_to_first_committed_row_s": 684.0,
+      "baseline_rescue_count": 0,
+      "evaluated_rescue_count": 0
+    }
+  ],
+  "status": "passed"
+}

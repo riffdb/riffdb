@@ -24539,6 +24539,31 @@ work_packages:
       describe proposed or deferred behavior as available and cannot expose values or credentials.
     scale: Not applicable; the package changes documentation and evaluation receipts only.
   human_review_triggers: *id0181
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [GOV-006, HBK-002, HBK-005, HBK-011]
+    evidence: release/evidence/agent-application-alpha-campaign-04-comparison-v1.json
+    decision: Rewrote docs/known-limitations.md as one sentence per limitation item in public
+      vocabulary, removed work-package and ADR identifiers from every non-excluded public handbook
+      page, updated quickstarts and agent guidance with check --write, dev --reset, and zero-ceremony
+      SDK facades, wired scripts/check-handbook-audience into scripts/handbook check, and completed
+      the six-cell package-first sealed Campaign 04 evaluation (evaluations/agent-application-alpha/campaigns/campaign-04.json).
+      Campaign 04 passed scripts/agent-application-alpha-canary-acceptance --campaign campaign-04
+      --runs 6 --sealed --assert-gate with median time to first committed row 546.5s vs 570.0s in
+      Campaign 03, total rescue count 0 vs 0, and slowest retained cell (blog-typescript) reduced
+      by 80.0% from 1680s to 336s (campaign max cell reduced by 56.3% from 1680s to 734s), exceeding
+      the 25% target.
+    decisions_taken:
+    - Evaluated Campaign 04 median time to first committed row (546.5s vs 570.0s) and total rescue
+      count (0 vs 0) across the six retained (language, brief) cells in scripts/check-handbook-audience,
+      binding SHA-256 digests of the Campaign 03 and Campaign 04 package campaign receipts in
+      release/evidence/agent-application-alpha-campaign-04-comparison-v1.json.
+    known_limitations: null
+    follow_ups:
+    - Three Orders evaluation cells noted that money<CUR> in contract command inputs fails MCP
+      application surface validation with a generic message instead of a source-spanned diagnostic
+      naming the unsupported MCP input type.
 
 - id: WP-760
   name: Bounded dirty recovery, first-access row validation, background scrub, and public scrub
