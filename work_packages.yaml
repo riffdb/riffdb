@@ -31385,11 +31385,11 @@ work_packages:
   human_review_triggers:
   - Client failover bypasses contract verification or silently drops idempotency or incarnation checks.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-004, REP-005, DRV-001, DRV-005]
+    evidence: cargo test -p riffdb-client-rust -p riffdb-driver-host driver_pool_and_application_client_failover_to_standby_and_route_replica_reads
+    decision: Extended StableApplicationClient and DriverPool/DriverRuntime with bounded standby_endpoints and read_replica_endpoints, verified contract identity before standby cutover, and added replica query routing with primary fallback.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

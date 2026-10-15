@@ -2,19 +2,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
 use riffdb_errors::{
-    ApplicationError, ApplicationErrorContext, ApplicationOperation, ApplicationRecoveryAction,
+    ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+    ApplicationRecoveryAction, PublicErrorKind,
 };
 use riffdb_proto::{app::v1 as app_v1, application_error_from_proto, v1};
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
-    AttemptBudget, CallMetadata, ClientError, GeneratedExecutionError, IdempotentCommand,
-    RiffDbClient, generate_request_id,
+    AttemptBudget, CallMetadata, ClientError, DetailsFreeStatus, GeneratedExecutionError,
+    IdempotentCommand, RiffDbClient, generate_request_id,
     generated::{GeneratedCommand, GeneratedQuery},
 };
 use riffdb_config::TlsClientConfig;
@@ -22,6 +24,8 @@ use riffdb_config::TlsClientConfig;
 const MAX_GENERATED_TRANSPORT_BATCH_ITEMS: usize = 16;
 /// Maximum independently in-flight items in one generated command batch.
 pub const MAX_GENERATED_BATCH_CONCURRENCY: usize = 384;
+const MAX_STANDBY_CLIENTS: usize = 4;
+const MAX_READ_REPLICA_CLIENTS: usize = 4;
 
 const APPLICATION_CATALOG_SCHEMA_V1: &str = "riffdb.application-catalog/v1";
 
@@ -105,6 +109,151 @@ impl fmt::Display for IdempotentTransportBatchError {
 
 impl std::error::Error for IdempotentTransportBatchError {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PinnedContractIdentity {
+    database: String,
+    lineage: String,
+    version: u64,
+    bundle_hash: [u8; 32],
+}
+
+#[derive(Default)]
+struct ScriptedPeer {
+    active_contract: Mutex<Option<v1::GetActiveContractResponse>>,
+    commands: Mutex<std::collections::VecDeque<Result<v1::ExecuteCommandResponse, ClientError>>>,
+    queries: Mutex<std::collections::VecDeque<Result<app_v1::ExecuteQueryResponse, ClientError>>>,
+    recorded_command_inputs: Mutex<Vec<Option<v1::Value>>>,
+    recorded_queries: Mutex<Vec<(String, Option<u64>, bool)>>,
+}
+
+#[derive(Clone)]
+struct PeerClient {
+    inner: RiffDbClient,
+    scripted: Option<Arc<ScriptedPeer>>,
+}
+
+impl PeerClient {
+    async fn verify_active_contract(
+        &mut self,
+        expected: &PinnedContractIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        if expected.database.is_empty() || expected.lineage.is_empty() || expected.version == 0 {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let request_id = Vec::from(
+            generate_request_id()
+                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
+                .into_bytes(),
+        );
+        let response = if let Some(scripted) = &self.scripted {
+            scripted
+                .active_contract
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .ok_or(ClientError::ConnectionFailure)?
+        } else {
+            self.inner
+                .get_active_contract(v1::GetActiveContractRequest { request_id }, metadata)
+                .await?
+        };
+        let Some(v1::get_active_contract_response::Result::Present(contract)) = response.result
+        else {
+            return Err(ApplicationClientError::InvalidResponse);
+        };
+        if response.database_alias != expected.database
+            || contract.contract_lineage != expected.lineage
+            || contract.contract_version != expected.version
+            || contract.bundle_hash.as_slice() != expected.bundle_hash
+        {
+            return Err(ApplicationClientError::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    async fn execute_with_retry(
+        &mut self,
+        command: &IdempotentCommand,
+        attempts: AttemptBudget,
+        metadata: &CallMetadata,
+    ) -> Result<v1::ExecuteCommandResponse, ClientError> {
+        if let Some(scripted) = &self.scripted {
+            let request_id = generate_request_id().map_err(ClientError::IdentifierGeneration)?;
+            let request = command.request(request_id);
+            scripted
+                .recorded_command_inputs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.input);
+            return scripted
+                .commands
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .unwrap_or(Err(ClientError::ConnectionFailure));
+        }
+        self.inner
+            .execute_with_retry(command, attempts, metadata)
+            .await
+    }
+
+    async fn execute_named_application_query_wire(
+        &mut self,
+        query: NamedQuery,
+        metadata: &CallMetadata,
+    ) -> Result<app_v1::ExecuteQueryResponse, ApplicationClientError> {
+        if let Some(scripted) = &self.scripted {
+            scripted
+                .recorded_queries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    query.name.clone(),
+                    query.minimum_application_head,
+                    query.admission_head_consistency,
+                ));
+            let response = scripted
+                .queries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .unwrap_or(Err(ClientError::ConnectionFailure))?;
+            validate_query_response_identity(
+                &response,
+                &query.contract,
+                &query.name,
+                query.module_hash,
+                query.expected_plan_hash,
+            )?;
+            return Ok(response);
+        }
+        self.inner
+            .execute_named_application_query_wire(query, metadata)
+            .await
+    }
+}
+
+struct TopologyState {
+    promoted_active: Option<PeerClient>,
+    standby: Vec<PeerClient>,
+    pinned_contract: Option<PinnedContractIdentity>,
+}
+
+struct ClientTopology {
+    state: Mutex<TopologyState>,
+    read_replicas: Vec<PeerClient>,
+    next_replica: AtomicUsize,
+}
+
+impl ClientTopology {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, TopologyState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Application-only client facade.
 ///
 /// This type deliberately has no accessor for its kernel client. Stable
@@ -114,6 +263,9 @@ impl std::error::Error for IdempotentTransportBatchError {}
 #[derive(Clone)]
 pub struct StableApplicationClient {
     pub(crate) inner: RiffDbClient,
+    scripted: Option<Arc<ScriptedPeer>>,
+    pinned_contract: Option<PinnedContractIdentity>,
+    topology: Option<Arc<ClientTopology>>,
 }
 
 impl StableApplicationClient {
@@ -122,6 +274,9 @@ impl StableApplicationClient {
     pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, ClientError> {
         Ok(Self {
             inner: RiffDbClient::connect_verified_tls(config).await?,
+            scripted: None,
+            pinned_contract: None,
+            topology: None,
         })
     }
 
@@ -142,6 +297,9 @@ impl StableApplicationClient {
     pub async fn connect(endpoint: Endpoint) -> Result<Self, ClientError> {
         Ok(Self {
             inner: RiffDbClient::connect(endpoint).await?,
+            scripted: None,
+            pinned_contract: None,
+            topology: None,
         })
     }
 
@@ -150,6 +308,236 @@ impl StableApplicationClient {
     pub fn from_channel(channel: Channel) -> Self {
         Self {
             inner: RiffDbClient::from_channel(channel),
+            scripted: None,
+            pinned_contract: None,
+            topology: None,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted_for_test(active_contract: v1::GetActiveContractResponse) -> Self {
+        let scripted = Arc::new(ScriptedPeer {
+            active_contract: Mutex::new(Some(active_contract)),
+            ..ScriptedPeer::default()
+        });
+        Self {
+            inner: RiffDbClient::from_channel(
+                Endpoint::from_static("http://127.0.0.1:9").connect_lazy(),
+            ),
+            scripted: Some(scripted),
+            pinned_contract: None,
+            topology: None,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn push_scripted_command(
+        self,
+        result: Result<v1::ExecuteCommandResponse, ClientError>,
+    ) -> Self {
+        if let Some(scripted) = &self.scripted {
+            scripted
+                .commands
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_back(result);
+        }
+        self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn push_scripted_query(
+        self,
+        result: Result<app_v1::ExecuteQueryResponse, ClientError>,
+    ) -> Self {
+        if let Some(scripted) = &self.scripted {
+            scripted
+                .queries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_back(result);
+        }
+        self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted_command_inputs(&self) -> Vec<Option<v1::Value>> {
+        self.scripted
+            .as_ref()
+            .map(|scripted| {
+                scripted
+                    .recorded_command_inputs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted_queries(&self) -> Vec<(String, Option<u64>, bool)> {
+        self.scripted
+            .as_ref()
+            .map(|scripted| {
+                scripted
+                    .recorded_queries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    fn peer_client(&self) -> PeerClient {
+        PeerClient {
+            inner: self.inner.clone(),
+            scripted: self.scripted.clone(),
+        }
+    }
+
+    /// Attaches up to 4 standby channels for automatic
+    /// contract-verified failover when the primary is fenced or unreachable.
+    pub fn with_standby_clients(
+        mut self,
+        standby: Vec<Self>,
+    ) -> Result<Self, ApplicationClientError> {
+        if standby.len() > MAX_STANDBY_CLIENTS {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let standby_peers: Vec<PeerClient> = standby
+            .into_iter()
+            .map(|client| client.peer_client())
+            .collect();
+        let (promoted_active, read_replicas, pinned_contract) = match self.topology.take() {
+            Some(existing) => {
+                let state = existing.lock_state();
+                (
+                    state.promoted_active.clone(),
+                    existing.read_replicas.clone(),
+                    state
+                        .pinned_contract
+                        .clone()
+                        .or_else(|| self.pinned_contract.clone()),
+                )
+            }
+            None => (None, Vec::new(), self.pinned_contract.clone()),
+        };
+        if standby_peers.is_empty() && read_replicas.is_empty() && promoted_active.is_none() {
+            self.topology = None;
+        } else {
+            self.topology = Some(Arc::new(ClientTopology {
+                state: Mutex::new(TopologyState {
+                    promoted_active,
+                    standby: standby_peers,
+                    pinned_contract,
+                }),
+                read_replicas,
+                next_replica: AtomicUsize::new(0),
+            }));
+        }
+        Ok(self)
+    }
+
+    /// Attaches up to 4 follower read-replica channels
+    /// for eligible read queries with automatic primary fallback.
+    pub fn with_read_replica_clients(
+        mut self,
+        replicas: Vec<Self>,
+    ) -> Result<Self, ApplicationClientError> {
+        if replicas.len() > MAX_READ_REPLICA_CLIENTS {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        let read_replicas: Vec<PeerClient> = replicas
+            .into_iter()
+            .map(|client| client.peer_client())
+            .collect();
+        let (promoted_active, standby, pinned_contract) = match self.topology.take() {
+            Some(existing) => {
+                let state = existing.lock_state();
+                (
+                    state.promoted_active.clone(),
+                    state.standby.clone(),
+                    state
+                        .pinned_contract
+                        .clone()
+                        .or_else(|| self.pinned_contract.clone()),
+                )
+            }
+            None => (None, Vec::new(), self.pinned_contract.clone()),
+        };
+        if standby.is_empty() && read_replicas.is_empty() && promoted_active.is_none() {
+            self.topology = None;
+        } else {
+            self.topology = Some(Arc::new(ClientTopology {
+                state: Mutex::new(TopologyState {
+                    promoted_active,
+                    standby,
+                    pinned_contract,
+                }),
+                read_replicas,
+                next_replica: AtomicUsize::new(0),
+            }));
+        }
+        Ok(self)
+    }
+
+    /// Returns the number of remaining standby channels configured on this facade.
+    #[must_use]
+    pub fn standby_client_count(&self) -> usize {
+        self.topology
+            .as_ref()
+            .map_or(0, |topology| topology.lock_state().standby.len())
+    }
+
+    /// Returns the number of read-replica channels configured on this facade.
+    #[must_use]
+    pub fn read_replica_client_count(&self) -> usize {
+        self.topology
+            .as_ref()
+            .map_or(0, |topology| topology.read_replicas.len())
+    }
+
+    fn sync_active_from_topology(&mut self) {
+        if let Some(topology) = &self.topology {
+            let state = topology.lock_state();
+            if let Some(promoted) = &state.promoted_active {
+                self.inner = promoted.inner.clone();
+                self.scripted = promoted.scripted.clone();
+            }
+            if self.pinned_contract.is_none() {
+                self.pinned_contract = state.pinned_contract.clone();
+            }
+        }
+    }
+
+    fn standby_candidates(&self) -> (Vec<PeerClient>, Option<PinnedContractIdentity>) {
+        let Some(topology) = &self.topology else {
+            return (Vec::new(), self.pinned_contract.clone());
+        };
+        let state = topology.lock_state();
+        (
+            state.standby.clone(),
+            state
+                .pinned_contract
+                .clone()
+                .or_else(|| self.pinned_contract.clone()),
+        )
+    }
+
+    fn promote_standby_candidate(&mut self, index: usize, promoted: PeerClient) {
+        self.inner = promoted.inner.clone();
+        self.scripted = promoted.scripted.clone();
+        if let Some(topology) = &self.topology {
+            let mut state = topology.lock_state();
+            if index < state.standby.len() {
+                state.standby.remove(index);
+            }
+            state.promoted_active = Some(promoted);
         }
     }
 
@@ -161,6 +549,7 @@ impl StableApplicationClient {
         identity: crate::ApplicationSessionIdentity,
         metadata: &CallMetadata,
     ) -> Result<(), ApplicationClientError> {
+        self.sync_active_from_topology();
         self.inner
             .enable_bounded_application_session(identity, metadata.clone())
             .await?;
@@ -190,28 +579,19 @@ impl StableApplicationClient {
         bundle_hash: [u8; 32],
         metadata: &CallMetadata,
     ) -> Result<(), ApplicationClientError> {
-        if database.is_empty() || lineage.is_empty() || version == 0 {
-            return Err(ApplicationClientError::InvalidInput);
-        }
-        let request_id = Vec::from(
-            generate_request_id()
-                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
-                .into_bytes(),
-        );
-        let response = self
-            .inner
-            .get_active_contract(v1::GetActiveContractRequest { request_id }, metadata)
-            .await?;
-        let Some(v1::get_active_contract_response::Result::Present(contract)) = response.result
-        else {
-            return Err(ApplicationClientError::InvalidResponse);
+        self.sync_active_from_topology();
+        let expected = PinnedContractIdentity {
+            database: database.to_owned(),
+            lineage: lineage.to_owned(),
+            version,
+            bundle_hash,
         };
-        if response.database_alias != database
-            || contract.contract_lineage != lineage
-            || contract.contract_version != version
-            || contract.bundle_hash.as_slice() != bundle_hash
-        {
-            return Err(ApplicationClientError::InvalidResponse);
+        self.peer_client()
+            .verify_active_contract(&expected, metadata)
+            .await?;
+        self.pinned_contract = Some(expected.clone());
+        if let Some(topology) = &self.topology {
+            topology.lock_state().pinned_contract = Some(expected);
         }
         Ok(())
     }
@@ -226,6 +606,7 @@ impl StableApplicationClient {
         contract: ApplicationContract,
         metadata: &CallMetadata,
     ) -> Result<ApplicationCatalogPreflight, ApplicationClientError> {
+        self.sync_active_from_topology();
         let expected = contract.clone();
         let request_id = Vec::from(
             generate_request_id()
@@ -254,6 +635,7 @@ impl StableApplicationClient {
         request: VectorStateInspection,
         metadata: &CallMetadata,
     ) -> Result<VectorStateInspectionResult, ApplicationClientError> {
+        self.sync_active_from_topology();
         request.validate()?;
         let request_id = Vec::from(
             generate_request_id()
@@ -306,9 +688,79 @@ impl StableApplicationClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<app_v1::ExecuteQueryResponse, ApplicationClientError> {
-        self.inner
-            .execute_named_application_query_wire(query, metadata)
+        self.sync_active_from_topology();
+        if !query.admission_head_consistency
+            && let Some(topology) = &self.topology
+            && !topology.read_replicas.is_empty()
+        {
+            let replicas = &topology.read_replicas;
+            let start = topology.next_replica.fetch_add(1, Ordering::Relaxed);
+            let pinned = topology
+                .lock_state()
+                .pinned_contract
+                .clone()
+                .or_else(|| self.pinned_contract.clone());
+            for offset in 0..replicas.len() {
+                let mut replica = replicas[(start + offset) % replicas.len()].clone();
+                match replica
+                    .execute_named_application_query_wire(query.clone(), metadata)
+                    .await
+                {
+                    Ok(response) => {
+                        if let Some(pinned) = &pinned {
+                            validate_pinned_query_response(&response, pinned)?;
+                        }
+                        return Ok(response);
+                    }
+                    Err(error) if application_query_error_allows_replica_fallback(&error) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        let mut active = self.peer_client();
+        match active
+            .execute_named_application_query_wire(query.clone(), metadata)
             .await
+        {
+            Ok(response) => Ok(response),
+            Err(primary_error) => {
+                let (standby, pinned) = self.standby_candidates();
+                if !standby.is_empty()
+                    && matches!(
+                        &primary_error,
+                        ApplicationClientError::Client(error)
+                            if client_error_triggers_standby_failover(error)
+                    )
+                {
+                    for (index, mut candidate) in standby.into_iter().enumerate() {
+                        if let Some(pinned) = &pinned
+                            && candidate
+                                .verify_active_contract(pinned, metadata)
+                                .await
+                                .is_err()
+                        {
+                            continue;
+                        }
+                        match candidate
+                            .execute_named_application_query_wire(query.clone(), metadata)
+                            .await
+                        {
+                            Ok(response) => {
+                                self.promote_standby_candidate(index, candidate);
+                                return Ok(response);
+                            }
+                            Err(ApplicationClientError::Client(ref error))
+                                if client_error_triggers_standby_failover(error) => {}
+                            Err(error) => {
+                                self.promote_standby_candidate(index, candidate);
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+                Err(primary_error)
+            }
+        }
     }
 
     /// Executes and decodes one generated exact named-query shape.
@@ -367,9 +819,50 @@ impl StableApplicationClient {
         attempts: AttemptBudget,
         metadata: &CallMetadata,
     ) -> Result<ApplicationCommandResult, ApplicationClientError> {
-        self.inner
-            .execute_application_command(command, attempts, metadata)
+        self.sync_active_from_topology();
+        let command_name = command.name.clone();
+        let idempotent = command.into_idempotent_command()?;
+        let mut active = self.peer_client();
+        match active
+            .execute_with_retry(&idempotent, attempts, metadata)
             .await
+        {
+            Ok(response) => raise_application_command_result(response),
+            Err(primary_error) => {
+                let (standby, pinned) = self.standby_candidates();
+                if !standby.is_empty() && client_error_triggers_standby_failover(&primary_error) {
+                    for (index, mut candidate) in standby.into_iter().enumerate() {
+                        if let Some(pinned) = &pinned
+                            && candidate
+                                .verify_active_contract(pinned, metadata)
+                                .await
+                                .is_err()
+                        {
+                            continue;
+                        }
+                        match candidate
+                            .execute_with_retry(&idempotent, attempts, metadata)
+                            .await
+                        {
+                            Ok(response) => {
+                                self.promote_standby_candidate(index, candidate);
+                                return raise_application_command_result(response);
+                            }
+                            Err(error) if client_error_triggers_standby_failover(&error) => {}
+                            Err(error) => {
+                                self.promote_standby_candidate(index, candidate);
+                                return Err(ApplicationClientError::Client(
+                                    contextualize_command_client_error(error, &command_name),
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(ApplicationClientError::Client(
+                    contextualize_command_client_error(primary_error, &command_name),
+                ))
+            }
+        }
     }
 
     /// Executes and decodes one generated command, then performs one exact
@@ -380,10 +873,58 @@ impl StableApplicationClient {
         attempts: AttemptBudget,
         metadata: &CallMetadata,
     ) -> Result<TypedCommandResult<C::Outcome>, GeneratedExecutionError> {
-        let execution = self
+        self.sync_active_from_topology();
+        let execution = match self
             .inner
             .execute_generated_with_recovery(command, attempts, metadata)
-            .await?;
+            .await
+        {
+            Ok(execution) => execution,
+            Err(primary_error) => {
+                let (standby, pinned) = self.standby_candidates();
+                let mut promoted_execution = None;
+                if !standby.is_empty()
+                    && matches!(
+                        &primary_error,
+                        GeneratedExecutionError::Client(error)
+                            if client_error_triggers_standby_failover(error)
+                    )
+                {
+                    for (index, mut candidate) in standby.into_iter().enumerate() {
+                        if let Some(pinned) = &pinned
+                            && candidate
+                                .verify_active_contract(pinned, metadata)
+                                .await
+                                .is_err()
+                        {
+                            continue;
+                        }
+                        match candidate
+                            .inner
+                            .execute_generated_with_recovery(command, attempts, metadata)
+                            .await
+                        {
+                            Ok(execution) => {
+                                self.promote_standby_candidate(index, candidate);
+                                promoted_execution = Some(Ok(execution));
+                                break;
+                            }
+                            Err(GeneratedExecutionError::Client(ref error))
+                                if client_error_triggers_standby_failover(error) => {}
+                            Err(error) => {
+                                self.promote_standby_candidate(index, candidate);
+                                promoted_execution = Some(Err(error));
+                                break;
+                            }
+                        }
+                    }
+                }
+                match promoted_execution {
+                    Some(result) => result?,
+                    None => return Err(primary_error),
+                }
+            }
+        };
         let (outcome, response) = execution.into_parts();
         let workflow_revisions = command
             .workflow_successor_revisions(&response)
@@ -1885,6 +2426,82 @@ pub(crate) fn contextualize_command_client_error(
         ApplicationOperation::ExecuteCommand,
         context,
     )))
+}
+
+fn validate_pinned_query_response(
+    response: &app_v1::ExecuteQueryResponse,
+    pinned: &PinnedContractIdentity,
+) -> Result<(), ApplicationClientError> {
+    let identity = response
+        .identity
+        .as_ref()
+        .ok_or(ApplicationClientError::InvalidResponse)?;
+    if identity.contract_lineage != pinned.lineage
+        || identity.contract_version != pinned.version
+        || identity.contract_bundle_hash.as_slice() != pinned.bundle_hash
+    {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    Ok(())
+}
+
+const fn client_error_triggers_standby_failover(error: &ClientError) -> bool {
+    match error {
+        ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
+        | ClientError::ConnectionFailure
+        | ClientError::OutcomeUnknown(_) => true,
+        ClientError::Public(public) => matches!(
+            public.kind(),
+            PublicErrorKind::PrimaryFenced
+                | PublicErrorKind::FollowerMode
+                | PublicErrorKind::StorageUnavailable
+        ),
+        ClientError::Application(application) => matches!(
+            application.code(),
+            ApplicationErrorCode::PrimaryFenced
+                | ApplicationErrorCode::FollowerMode
+                | ApplicationErrorCode::StorageUnavailable
+                | ApplicationErrorCode::OutcomeUnknown
+        ),
+        ClientError::Protocol(_)
+        | ClientError::IdentifierGeneration(_)
+        | ClientError::Tls(_)
+        | ClientError::DetailsFree(_) => false,
+    }
+}
+
+const fn application_query_error_allows_replica_fallback(error: &ApplicationClientError) -> bool {
+    match error {
+        ApplicationClientError::Client(client) => match client {
+            ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
+            | ClientError::ConnectionFailure
+            | ClientError::OutcomeUnknown(_) => true,
+            ClientError::Public(public) => matches!(
+                public.kind(),
+                PublicErrorKind::FollowerMode
+                    | PublicErrorKind::PrimaryFenced
+                    | PublicErrorKind::StorageUnavailable
+                    | PublicErrorKind::Overloaded
+            ),
+            ClientError::Application(application) => matches!(
+                application.code(),
+                ApplicationErrorCode::FreshnessUnsatisfied
+                    | ApplicationErrorCode::SnapshotRetired
+                    | ApplicationErrorCode::ProjectionDiverged
+                    | ApplicationErrorCode::FollowerMode
+                    | ApplicationErrorCode::PrimaryFenced
+                    | ApplicationErrorCode::StorageUnavailable
+                    | ApplicationErrorCode::Overloaded
+            ),
+            ClientError::Protocol(_)
+            | ClientError::IdentifierGeneration(_)
+            | ClientError::Tls(_)
+            | ClientError::DetailsFree(_) => false,
+        },
+        ApplicationClientError::InvalidInput
+        | ApplicationClientError::InvalidResponse
+        | ApplicationClientError::IdentifierUnavailable => false,
+    }
 }
 
 fn validate_query_response_identity(
@@ -3482,5 +4099,177 @@ mod tests {
             result,
             Err(ApplicationClientError::InvalidResponse)
         ));
+    }
+
+    // req: REP-004, REP-005, DRV-001, DRV-005
+    #[test]
+    fn driver_pool_and_application_client_failover_to_standby_and_route_replica_reads() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        runtime.block_on(async {
+            let active_contract = |bundle_hash: [u8; 32]| v1::GetActiveContractResponse {
+                result: Some(v1::get_active_contract_response::Result::Present(
+                    v1::ContractDescriptor {
+                        contract_lineage: "TicketDesk".to_owned(),
+                        contract_version: 1,
+                        bundle_hash: bundle_hash.to_vec(),
+                        ..v1::ContractDescriptor::default()
+                    },
+                )),
+                database_alias: "default".to_owned(),
+            };
+
+            let primary = StableApplicationClient::scripted_for_test(active_contract([7; 32]))
+                .push_scripted_command(Err(ClientError::Public(
+                    riffdb_errors::PublicError::primary_fenced(),
+                )));
+            let standby_mismatched =
+                StableApplicationClient::scripted_for_test(active_contract([9; 32]))
+                    .push_scripted_command(Ok(stub_response("WrongStandby")));
+            let query_response = |head: u64, outcome: &str| app_v1::ExecuteQueryResponse {
+                identity: Some(app_v1::QueryIdentity {
+                    contract_lineage: "TicketDesk".to_owned(),
+                    contract_version: 1,
+                    contract_bundle_hash: vec![7; 32],
+                    query_name: Some("TicketPage".to_owned()),
+                    plan_hash: vec![2; 32],
+                    module_hash: Some(vec![3; 32]),
+                }),
+                outcome: outcome.to_owned(),
+                application_head: head,
+                fields: Vec::new(),
+                next_cursor: None,
+                selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
+                compact_result: None,
+                packed_result: None,
+            };
+            let standby_promoted =
+                StableApplicationClient::scripted_for_test(active_contract([7; 32]))
+                    .push_scripted_command(Ok(v1::ExecuteCommandResponse {
+                        status: v1::execute_command_response::CompletionStatus::Committed as i32,
+                        commit_sequence: 19,
+                        contract_version: 1,
+                        plan_hash: vec![0x44; 32],
+                        outcome_type: "Created".to_owned(),
+                        outcome: Some(v1::Value {
+                            kind: Some(v1::value::Kind::NullValue(
+                                v1::NullValue::NullValue as i32,
+                            )),
+                        }),
+                        provenance_uri: String::new(),
+                        durability_mode: String::new(),
+                        outcome_uri: Some("riffdb://outcomes/19".to_owned()),
+                        history_incarnation: 2,
+                    }))
+                    .push_scripted_query(Ok(query_response(50, "PrimaryCaughtUp")));
+            let replica = StableApplicationClient::scripted_for_test(active_contract([7; 32]))
+                .push_scripted_query(Ok(query_response(18, "ReplicaAvailable")))
+                .push_scripted_query(Err(ClientError::Application(Box::new(
+                    ApplicationError::new(
+                        ApplicationErrorCode::FreshnessUnsatisfied,
+                        ApplicationOperation::ExecuteQuery,
+                        ApplicationErrorContext::empty(),
+                        None,
+                    ),
+                ))));
+
+            assert!(matches!(
+                primary.clone().with_standby_clients(vec![
+                    standby_promoted.clone(),
+                    standby_promoted.clone(),
+                    standby_promoted.clone(),
+                    standby_promoted.clone(),
+                    standby_promoted.clone(),
+                ]),
+                Err(ApplicationClientError::InvalidInput)
+            ));
+            assert!(matches!(
+                primary.clone().with_read_replica_clients(vec![
+                    replica.clone(),
+                    replica.clone(),
+                    replica.clone(),
+                    replica.clone(),
+                    replica.clone(),
+                ]),
+                Err(ApplicationClientError::InvalidInput)
+            ));
+
+            let mut client = primary
+                .clone()
+                .with_standby_clients(vec![standby_mismatched.clone(), standby_promoted.clone()])
+                .expect("bounded standbys")
+                .with_read_replica_clients(vec![replica.clone()])
+                .expect("bounded replicas");
+            assert_eq!(client.standby_client_count(), 2);
+            assert_eq!(client.read_replica_client_count(), 1);
+
+            let metadata = CallMetadata::default();
+            client
+                .verify_active_contract("default", "TicketDesk", 1, [7; 32], &metadata)
+                .await
+                .expect("verify primary active contract");
+
+            let command = ApplicationCommand::new(
+                "CreateTicket",
+                Some(1),
+                BTreeMap::from([(
+                    "title".to_owned(),
+                    ApplicationValue::String("Failover ticket".to_owned()),
+                )]),
+            )
+            .expect("command");
+            let result = client
+                .execute_command(
+                    command,
+                    AttemptBudget::new(2).expect("attempt budget"),
+                    &metadata,
+                )
+                .await
+                .expect("failover command execution");
+            assert_eq!(result.outcome.as_deref(), Some("Created"));
+            assert_eq!(result.commit_sequence, Some(19));
+            assert_eq!(standby_mismatched.scripted_command_inputs().len(), 0);
+            assert_eq!(primary.scripted_command_inputs().len(), 1);
+            assert_eq!(
+                primary.scripted_command_inputs(),
+                standby_promoted.scripted_command_inputs(),
+                "standby retry must preserve the exact command input and idempotency key from the fenced primary attempt"
+            );
+
+            let base_query = NamedQuery::new(
+                ApplicationContract::Exact {
+                    lineage: "TicketDesk".to_owned(),
+                    version: 1,
+                    bundle_hash: Some([7; 32]),
+                },
+                "TicketPage",
+                Some([3; 32]),
+                BTreeMap::new(),
+                None,
+            )
+            .expect("query")
+            .expect_plan_hash([2; 32]);
+
+            let replica_result = client
+                .execute_named_query(base_query.clone(), &metadata)
+                .await
+                .expect("replica query");
+            assert_eq!(replica_result.outcome, "ReplicaAvailable");
+            assert_eq!(replica.scripted_queries().len(), 1);
+            assert_eq!(standby_promoted.scripted_queries().len(), 0);
+
+            let causal_query = base_query
+                .with_options(QueryOptions::new().read_after_commit(50))
+                .expect("causal query");
+            let fallback_result = client
+                .execute_named_query(causal_query, &metadata)
+                .await
+                .expect("fallback to promoted primary on replica lag");
+            assert_eq!(fallback_result.outcome, "PrimaryCaughtUp");
+            assert_eq!(replica.scripted_queries().len(), 2);
+            assert_eq!(standby_promoted.scripted_queries().len(), 1);
+        });
     }
 }

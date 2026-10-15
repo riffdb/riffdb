@@ -85,6 +85,79 @@ impl DriverPool {
         })
     }
 
+    /// Connects the configured number of independent verified TLS channels along
+    /// with optional bounded standby and read-replica channels.
+    pub async fn connect_verified_tls_with_topology(
+        config: &TlsClientConfig,
+        standby_configs: &[TlsClientConfig],
+        read_replica_configs: &[TlsClientConfig],
+    ) -> Result<Self, DriverHostError> {
+        if standby_configs.len() > 4 || read_replica_configs.len() > 4 {
+            return Err(DriverHostError::InvalidConfiguration);
+        }
+        let pool = Self::connect_verified_tls(config).await?;
+        let mut standbys = Vec::with_capacity(standby_configs.len());
+        for standby_config in standby_configs {
+            standbys.push(
+                StableApplicationClient::connect_verified_tls(standby_config)
+                    .await
+                    .map_err(|_| DriverHostError::RemoteUnavailable)?,
+            );
+        }
+        let mut replicas = Vec::with_capacity(read_replica_configs.len());
+        for replica_config in read_replica_configs {
+            replicas.push(
+                StableApplicationClient::connect_verified_tls(replica_config)
+                    .await
+                    .map_err(|_| DriverHostError::RemoteUnavailable)?,
+            );
+        }
+        pool.with_standby_clients(standbys)?
+            .with_read_replica_clients(replicas)
+    }
+
+    /// Attaches up to 4 standby application clients to every pooled client for
+    /// verified primary failover.
+    pub fn with_standby_clients(
+        mut self,
+        standby_clients: Vec<StableApplicationClient>,
+    ) -> Result<Self, DriverHostError> {
+        if standby_clients.is_empty() {
+            return Ok(self);
+        }
+        let mut updated = Vec::with_capacity(self.clients.len());
+        for client in self.clients {
+            updated.push(
+                client
+                    .with_standby_clients(standby_clients.clone())
+                    .map_err(|_| DriverHostError::InvalidConfiguration)?,
+            );
+        }
+        self.clients = updated;
+        Ok(self)
+    }
+
+    /// Attaches up to 4 read-replica application clients to every pooled client
+    /// for eligible read query routing.
+    pub fn with_read_replica_clients(
+        mut self,
+        read_replica_clients: Vec<StableApplicationClient>,
+    ) -> Result<Self, DriverHostError> {
+        if read_replica_clients.is_empty() {
+            return Ok(self);
+        }
+        let mut updated = Vec::with_capacity(self.clients.len());
+        for client in self.clients {
+            updated.push(
+                client
+                    .with_read_replica_clients(read_replica_clients.clone())
+                    .map_err(|_| DriverHostError::InvalidConfiguration)?,
+            );
+        }
+        self.clients = updated;
+        Ok(self)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_clients(
         clients: Vec<StableApplicationClient>,
@@ -2619,5 +2692,143 @@ mod tests {
                 outcome_uncertain: false,
             }
         );
+    }
+
+    // req: REP-004, REP-005, DRV-001, DRV-005
+    #[tokio::test]
+    async fn driver_pool_and_application_client_failover_to_standby_and_route_replica_reads() {
+        use riffdb_client_rust::v1;
+
+        let catalog = ApplicationCatalog::from_exact_artifacts(
+            include_bytes!("../../../examples/agent-alpha/riffdb.application.lock.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/riffdb.application.exact.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/mcp/tools.json"),
+            "default",
+            "AgentAlphaApplication",
+        )
+        .expect("catalog");
+        let active_contract = || v1::GetActiveContractResponse {
+            result: Some(v1::get_active_contract_response::Result::Present(
+                v1::ContractDescriptor {
+                    contract_lineage: catalog.contract_lineage().to_owned(),
+                    contract_version: catalog.contract_version(),
+                    bundle_hash: catalog.contract_bundle_hash().to_vec(),
+                    ..v1::ContractDescriptor::default()
+                },
+            )),
+            database_alias: catalog.database().to_owned(),
+        };
+        let command_spec = catalog
+            .operation("agent_alpha_create_item")
+            .cloned()
+            .expect("command spec");
+        let query_spec = catalog
+            .operation("agent_alpha_item_page")
+            .cloned()
+            .expect("query spec");
+
+        let primary = StableApplicationClient::scripted_for_test(active_contract())
+            .push_scripted_command(Err(riffdb_client_rust::ClientError::Public(
+                riffdb_client_rust::PublicError::primary_fenced(),
+            )));
+        let standby = StableApplicationClient::scripted_for_test(active_contract())
+            .push_scripted_command(Ok(v1::ExecuteCommandResponse {
+                status: v1::execute_command_response::CompletionStatus::Committed as i32,
+                commit_sequence: 12,
+                contract_version: catalog.contract_version(),
+                plan_hash: command_spec.plan_hash().unwrap_or([0x22; 32]).to_vec(),
+                outcome_type: "Created".to_owned(),
+                outcome: Some(v1::Value {
+                    kind: Some(v1::value::Kind::NullValue(v1::NullValue::NullValue as i32)),
+                }),
+                provenance_uri: "riffdb://provenance/12".to_owned(),
+                durability_mode: "group_commit_synced".to_owned(),
+                outcome_uri: Some("riffdb://outcomes/12".to_owned()),
+                history_incarnation: 2,
+            }));
+        let replica = StableApplicationClient::scripted_for_test(active_contract())
+            .push_scripted_query(Ok(app_v1::ExecuteQueryResponse {
+                identity: Some(app_v1::QueryIdentity {
+                    contract_lineage: catalog.contract_lineage().to_owned(),
+                    contract_version: catalog.contract_version(),
+                    contract_bundle_hash: catalog.contract_bundle_hash().to_vec(),
+                    query_name: Some(query_spec.symbol().to_owned()),
+                    plan_hash: query_spec.plan_hash().unwrap_or([0x11; 32]).to_vec(),
+                    module_hash: query_spec.module_hash().map(|hash| hash.to_vec()),
+                }),
+                outcome: "NotFound".to_owned(),
+                application_head: 12,
+                fields: Vec::new(),
+                next_cursor: None,
+                selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
+                compact_result: None,
+                packed_result: None,
+            }));
+
+        let pool = DriverPool::from_clients(vec![primary.clone()], 4)
+            .expect("pool")
+            .with_standby_clients(vec![standby.clone()])
+            .expect("standby attached")
+            .with_read_replica_clients(vec![replica.clone()])
+            .expect("replica attached");
+        pool.verify_remote_identity(&catalog, &CallMetadata::default())
+            .await
+            .expect("verify remote identity");
+        let host =
+            DriverHost::new(catalog, pool, CallMetadata::default(), "00".repeat(32)).expect("host");
+
+        let mut command_req = command_request(&host, "failover-command-1");
+        if let DriverRequest::Invoke { options, .. } = &mut command_req {
+            options.maximum_attempts = 2;
+        }
+        let command_resp = host.invoke(command_req).await;
+        assert!(
+            matches!(
+                command_resp,
+                DriverResponse::Result {
+                    application_head: Some(12),
+                    ..
+                }
+            ),
+            "expected command failover result, got {command_resp:?}"
+        );
+        let primary_cmds = primary.scripted_command_inputs();
+        let standby_cmds = standby.scripted_command_inputs();
+        assert_eq!(primary_cmds.len(), 1);
+        assert_eq!(standby_cmds.len(), 1);
+        assert_eq!(primary_cmds, standby_cmds);
+
+        let query_resp = host
+            .invoke(DriverRequest::Invoke {
+                request_id: "replica-query-1".to_owned(),
+                operation: query_spec.public_name().to_owned(),
+                input_schema_hash: query_spec.input_schema_hash(),
+                input: BTreeMap::from([(
+                    "item_id".to_owned(),
+                    DriverValue::Uuid("018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10".to_owned()),
+                )]),
+                options: InvokeOptions {
+                    deadline_millis: 30_000,
+                    maximum_attempts: 1,
+                    read_after_commit: None,
+                    cursor: None,
+                    query_consistency: None,
+                    accept_compact_result: false,
+                    accept_packed_result: false,
+                },
+            })
+            .await;
+        assert!(
+            matches!(
+                query_resp,
+                DriverResponse::Result {
+                    application_head: Some(12),
+                    ..
+                }
+            ),
+            "expected replica query result, got {query_resp:?}"
+        );
+        assert_eq!(replica.scripted_queries().len(), 1);
+        assert!(standby.scripted_queries().is_empty());
     }
 }
