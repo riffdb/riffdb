@@ -7,8 +7,14 @@ metadata:
     {{- include "riffdb.labels" . | nindent 4 }}
 data:
   riffdbd.toml: |
+    {{- if not (or (eq .Values.server.mode "primary") (eq .Values.server.mode "follower")) }}
+    {{- fail "server.mode must be primary or follower" }}
+    {{- end }}
     [server]
     database = "/var/lib/riffdb/data/riffdb.redb"
+    {{- if eq .Values.server.mode "follower" }}
+    mode = "follower"
+    {{- end }}
     environment = {{ .Values.server.environment | quote }}
     audience = {{ .Values.server.audience | quote }}
     capability_keys = "/run/riffdb-protected/capability.keys"
@@ -19,6 +25,19 @@ data:
     {{- if .Values.server.telemetry.flightRecorder.enabled }}
     telemetry_flight_recorder = "/var/lib/riffdb/data/telemetry-flight.ndjson"
     telemetry_flight_interval_ms = {{ .Values.server.telemetry.flightRecorder.intervalMilliseconds }}
+    {{- end }}
+    {{- if eq .Values.server.mode "follower" }}
+
+    [server.replication_source]
+    endpoint = {{ required "server.replicationSource.endpoint is required when server.mode is follower" .Values.server.replicationSource.endpoint | quote }}
+    trust_root = "/run/riffdb-protected/{{ .Values.server.replicationSource.tlsTrustRootFile }}"
+    server_name = {{ required "server.replicationSource.serverName is required when server.mode is follower" .Values.server.replicationSource.serverName | quote }}
+    credential_file = "/run/riffdb-protected/{{ .Values.server.replicationSource.credentialSecretKey }}"
+    database = {{ .Values.server.replicationSource.database | quote }}
+    database_id = {{ required "server.replicationSource.databaseId is required when server.mode is follower" .Values.server.replicationSource.databaseId | quote }}
+    history_incarnation = {{ .Values.server.replicationSource.historyIncarnation }}
+    leadership_epoch = {{ .Values.server.replicationSource.leadershipEpoch }}
+    hold_id = {{ required "server.replicationSource.holdId is required when server.mode is follower" .Values.server.replicationSource.holdId | quote }}
     {{- end }}
 
     [server.application_listener]

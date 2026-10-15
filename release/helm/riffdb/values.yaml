@@ -26,9 +26,23 @@ server:
   replicas: 1
   # riffdbd is a single-writer engine. More than one replica does not shard or
   # replicate; it starts a second server against a second volume.
+  # Set mode to "follower" and populate replicationSource to deploy a follower
+  # release that replicates from a primary release.
+  mode: primary
   environment: kubernetes-alpha
   audience: riffdb-container-application
   terminationGracePeriodSeconds: 25
+
+  replicationSource:
+    endpoint: ""
+    serverName: ""
+    tlsTrustRootFile: riffdb-ca.pem
+    credentialSecretKey: replication-source.credential
+    database: default
+    databaseId: ""
+    historyIncarnation: 1
+    leadershipEpoch: 1
+    holdId: ""
 
   listener:
     port: 7443

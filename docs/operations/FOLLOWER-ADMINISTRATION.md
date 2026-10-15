@@ -93,11 +93,27 @@ proofs, a completed CI battery, and receipted replication acceptance evidence.
 Its [implementation and fixture review](../architecture/WP-748-PROMOTION-IMPLEMENTATION-REVIEW.md)
 was accepted on 2026-09-21.
 
-## Primary fencing and promotion
+## Inspecting replication status
 
-RiffDB exposes `riffdb follower fence-primary` and `riffdb follower promote`
-through the same checked Rust client, gRPC service and policy owner. Automatic
-election, quorum durability, and cascading followers remain outside the POC scope.
+Operators can inspect the replication role, frontiers, lag sequences, and
+registered follower count directly with `riffdb follower status`:
+
+```bash
+riffdb --config ./operator.toml --output json follower status
+```
+
+`riffdb follower status` queries the authenticated `Health` RPC and extracts the
+`replication` component and `ReplicationStatistics` (`role`,
+`history_incarnation`, `source_frontier`, `applied_frontier`,
+`acknowledged_frontier`, `registered_followers`, `application_lag_sequences`,
+and `administration_lag_sequences`).
+
+## Primary fencing, promotion, and one-command failover
+
+RiffDB exposes `riffdb follower fence-primary`, `riffdb follower promote`, and
+`riffdb follower failover` through the same checked Rust client, gRPC service
+and policy owner. Automatic election, quorum durability, and cascading followers
+remain outside the POC scope.
 
 Fencing requires the distinct global, all-partition
 `fence_replication_primary` permission and a currently attached registration.
@@ -111,6 +127,25 @@ operator configuration at the follower; retain the source fence operation and
 registration selection. The daemon obtains proof through its configured
 CA/name-verified TLS source connection. The caller cannot supply a new
 incarnation, epoch, RPO or unauthenticated proof.
+
+Operators can run the two steps individually or orchestrate both steps in a
+single audited command with `riffdb follower failover`:
+
+```bash
+riffdb --config ./follower-operator.toml --output json follower failover \
+  --primary-config ./source-operator.toml \
+  --database-id 018f22a1-7b3c-7def-8123-456789abcdef \
+  --history-incarnation 1 --leadership-epoch 1 \
+  --hold-id 71717171717171717171717171717171 \
+  --registration-generation 10
+```
+
+When `--fence-operation-id` or `--operation-id` are omitted, `riffdb follower
+failover` mints fresh UUIDv7 operation IDs before contacting either node, fences
+the primary first, verifies the `applied` or `replayed` fence receipt, and then
+promotes the follower. If either step returns an uncertain outcome, the CLI
+error output preserves both `fence_operation_id` and `operation_id` so the
+operator can retry the exact same operation IDs idempotently:
 
 ```text
 riffdb --config ./source-operator.toml follower fence-primary \
@@ -137,6 +172,24 @@ JSON integers are decimal strings; BeforeFirst is `null`. Keep both operation
 IDs and the complete selection unchanged after an uncertain response. An exact
 retry on a successfully promoted source checks fresh authority, returns the
 original result and audits the invocation without contacting the former source.
+
+## Standby client failover and read-replica routing
+
+Applications using `StableApplicationClient` or `riffdb-driverd` can configure
+up to 4 `standby_endpoints` and up to 4 `read_replica_endpoints` in the driver
+host `[remote]` section (or via `with_standby_clients` and
+`with_read_replica_clients` in Rust):
+
+- When the active primary returns `RDB-REP-0102` (`PrimaryFenced` /
+  `FollowerMode`) or transport unavailability during an idempotent command or
+  query, the client probes configured standby endpoints in order, verifies the
+  active contract identity (`GetActiveContract`), promotes the verified standby
+  channel to active primary, and retries the operation with the original
+  idempotency key.
+- When `read_replica_endpoints` are configured, read queries that do not require
+  `AdmissionHead` consistency route to healthy follower replicas first and fall
+  back to the active primary if a replica is unavailable or lags behind a causal
+  `read_after_commit` frontier.
 
 Keep `<backup-root>/.maintenance/replication_promotion` with the database and
 maintenance receipts. Missing or contradictory evidence fences readiness.

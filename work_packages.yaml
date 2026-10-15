@@ -31420,11 +31420,11 @@ work_packages:
   human_review_triggers:
   - Helm templates render secret tokens in ConfigMaps or permit multi-replica StatefulSets without fencing.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-002, REP-004, REP-005, DX-014]
+    evidence: ./scripts/check-helm-render && ./scripts/handbook check
+    decision: Added server.mode and server.replicationSource to Helm chart values, schema, ConfigMap, and StatefulSet templates, verified follower rendering in scripts/check-helm-render, and updated replication/Helm/CLI handbook documentation.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

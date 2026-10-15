@@ -140,6 +140,14 @@ spec:
                 path: {{ .Values.server.tlsTrustRootFile }}
               - key: readiness.credential
                 path: readiness.credential
+              {{- if eq .Values.server.mode "follower" }}
+              - key: {{ .Values.server.replicationSource.credentialSecretKey }}
+                path: {{ .Values.server.replicationSource.credentialSecretKey }}
+              {{- if ne .Values.server.replicationSource.tlsTrustRootFile .Values.server.tlsTrustRootFile }}
+              - key: {{ .Values.server.replicationSource.tlsTrustRootFile }}
+                path: {{ .Values.server.replicationSource.tlsTrustRootFile }}
+              {{- end }}
+              {{- end }}
         - name: protected
           emptyDir:
             medium: Memory
