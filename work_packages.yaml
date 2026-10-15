@@ -30714,4 +30714,116 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
-
+- id: WP-842
+  name: Zero-ceremony ad-hoc dev query and entity inspection
+  tier: surface
+  depends_on: [WP-840]
+  objective: Implement ADR-0305 Decision 1. Write a workspace-confined
+    .riffdb/dev/session.json during riffdb dev, auto-discover dev endpoint,
+    credential, and contract lineage/version in riffdb query run, query
+    run-named, and entity get, and add --inline <RIFFQL> plus --param /
+    --params-json flags for one-liner read-only inspection without mutating
+    riffdb.application.lock.json.
+  requirements: [DX-004, DX-005, DX-014, DX-046]
+  required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0304]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  deliverables:
+  - Workspace-confined .riffdb/dev/session.json lifecycle in riffdb dev and scripts/riffdb-dev
+  - Automatic dev-session and project-manifest fallback for endpoint, credential, and contract lineage/version in riffdb query run, query run-named, and entity get
+  - --inline <RIFFQL>, repeatable --param <KEY=VALUE>, and --params-json <JSON_OBJECT> flags on riffdb query run with optional --parameters file
+  - CLI unit and integration tests for zero-ceremony entity get and inline query run
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-842
+  exit_gate: Developers and coding agents can run riffdb entity get and riffdb
+    query run --inline against a local dev session without manual endpoint,
+    credential, or lineage flags and without mutating riffdb.application.lock.json.
+  standing_design_tests:
+    interface_safety: Inline queries execute strictly through the bounded read-only RiffQL compiler and bearer-authenticated query path and never mutate lock artifacts.
+    scale: Bounded session metadata file (<= 4 KiB) and existing RiffQL source/parameter byte bounds.
+  human_review_triggers:
+  - Inline CLI query execution permits mutations, unbounded scans, or bypasses bearer authorization.
+  - Dev session metadata writes outside <project_root>/.riffdb/dev or exposes raw credential secrets in session.json.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-843
+  name: Single-command manifest query discovery and single-role operation sync
+  tier: surface
+  depends_on: [WP-839, WP-840]
+  objective: Implement ADR-0305 Decision 2. Add --sync-manifest and --sync-role
+    <ROLE> to riffdb application check, riffdb application lock, riffdb
+    generate, and riffdb dev so single-role manifests (or an explicitly named
+    role) automatically register riffdb/queries/*.riffq files and grant newly
+    authored commands and queries in canonical order before locking and
+    regenerating SDKs.
+  requirements: [DX-004, DX-005, DX-016, DX-017]
+  required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0155, ADR-0304]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  deliverables:
+  - Deterministic riffdb/queries/*.riffq discovery and canonical manifest query registration under --sync-manifest
+  - Single-role automatic operation grant synchronization and explicit --sync-role <ROLE> support
+  - Fail-closed diagnostic when --sync-manifest is used on a multi-role manifest without --sync-role
+  - CLI tests proving one-step schema/query authoring + manifest sync + SDK generation and multi-role refusal
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-843
+  exit_gate: Adding a command to .riff or a query file under riffdb/queries/ and
+    running riffdb generate --sync-manifest (or riffdb dev --sync-manifest)
+    updates riffdb.application.json, locks, and regenerates SDK bindings in one
+    step while failing closed on ambiguous multi-role manifests.
+  standing_design_tests:
+    interface_safety: Manifest synchronization is opt-in via --sync-manifest / --sync-role and refuses ambiguous multi-role manifests without an explicit target role.
+    scale: Bounded lexical scan of <project_root>/riffdb/queries/*.riffq and canonical sorted set merge.
+  human_review_triggers:
+  - --sync-manifest silently grants operations across multiple roles without an explicit --sync-role target.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-844
+  name: First-class tenant-scoped roles in riffdb dev and generated SDKs
+  tier: surface
+  depends_on: [WP-835, WP-840]
+  objective: Implement ADR-0305 Decision 3. Support tenant-scoped roles
+    (tenant_scope=tenant) in riffdb dev and scripts/riffdb-dev via
+    --tenant <TENANT_ID> (defaulting to dev-tenant in local dev), export
+    RIFFDB_TENANT to child runners and .riffdb/dev/session.json, and expose the
+    bound tenant identifier on generated SDK clients across Rust, TypeScript,
+    Python, and Go.
+  requirements: [DX-004, DX-046, DRV-005, DRV-007, DRV-008]
+  required_adrs: [ADR-0305, ADR-0015, ADR-0041, ADR-0121, ADR-0155, ADR-0303, ADR-0304]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - --tenant <TENANT_ID> flag and dev-tenant local fallback for tenant-scoped roles in riffdb dev and scripts/riffdb-dev
+  - RIFFDB_TENANT environment variable propagation and generated SDK connection option / client property exposure across Rust, TypeScript, Python, and Go
+  - Unit and integration tests for tenant-scoped riffdb dev role binding and generated SDK tenant metadata
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-844
+  exit_gate: riffdb dev binds and runs roles with tenant_scope=tenant using
+    --tenant <TENANT_ID> (or default dev-tenant), exports RIFFDB_TENANT, and
+    generated SDK clients across all four languages surface the configured tenant
+    identifier.
+  standing_design_tests:
+    interface_safety: Tenant authority remains cryptographically enforced by the server-bound role bearer credential; client tenant metadata never overrides bearer scope.
+    scale: Zero additional network round-trips; one optional bounded tenant identifier string on client configuration.
+  human_review_triggers:
+  - A tenant-scoped role is permitted to bind without a tenant identifier or override its server-bound bearer tenant scope from client options.
+  closure:
+    status: open
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
