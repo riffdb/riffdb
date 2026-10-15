@@ -11,32 +11,36 @@ The evidence checker is preparatory acceptance code.
 ## Current status (2026-10-15 UTC)
 
 WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
-has started. Main is integrated through `c148a8bf`, including WP-757 and WP-749;
-the native recovery correction below still requires integrated-source acceptance.
+has started. Native recovery and the scaffold test correction are committed as
+`4ae2070f`. Merge `f176342b` adds seven main commits through `13342b206`, including
+money/decimal, authoring, scaffold and MCP fixes. New shipping binaries and
+complete CI for that combined source remain pending.
 
-A discovery sweep on the required host continues through independent failures.
-It runs 7,131 workspace tests: 7,129 pass, two fail, and 25 remain skipped under
-the existing CI configuration. The 396 lifecycle controller/evidence tests,
+A discovery sweep on the earlier `c148a8bf` base ran all independent checks.
+Of 7,131 workspace tests, 7,129 pass and two fail; 25 remain skipped under the
+existing CI configuration. The 396 lifecycle controller/evidence tests,
 version topology, durable-format and epoch-two inventories, both qualification
 validator self-tests, fresh daemon builds and workspace Clippy pass. This sweep
 does not replace complete `scripts/ci-all` or language/package conformance.
 
-The two failures have separate causes. The native 100-row correlated command
-is rejected by recovery memory admission and returns `OutcomeUnknown`. The CLI
-scaffold test expects the previous SDK package checksum after main updated both
-lock templates. Their closest retests now pass: 95 native receipt/recovery tests,
+The two failures had separate causes. Recovery memory admission rejected the
+native 100-row correlated command with `OutcomeUnknown`; the CLI scaffold test
+expected the previous SDK checksum after main updated both lock templates.
+Their closest retests pass: 95 native receipt/recovery tests,
 six correlated/replication tests including an acknowledged 100-row process
-kill and reopen, and the single corrected scaffold test. Scoped Clippy passes.
-These are tested implementation changes, not final-source CI qualification.
+kill and reopen, and the single corrected scaffold test. Scoped Clippy and
+14 scoped native acceptance checks pass. These checks precede the latest main
+merge and do not qualify the new combined source.
 
-The current native-fix proposal, built with the ordinary shipping release
-profile, passes the saved primary-loss component. Original acknowledgement
-replay and reconciliation of all 65,536 tickets finish at **42.227416 seconds**,
+The pre-merge native-fix binaries, built with the ordinary shipping release
+profile from `c148a8bf` plus the correction, pass the saved primary-loss component.
+Original acknowledgement replay and reconciliation of all 65,536 tickets finish
+at **42.227416 seconds**,
 before the unchanged fixed release at **45.000069 seconds**. The first new
 acknowledged write finishes at **45.115351 seconds**; its exact replay and
 complete reconciliation finish at **47.757662 seconds**, within the unchanged
-60-second deadline. This tests the proposed binaries before their integration
-commit; final-source CI and the real scheduled restore remain unproved.
+60-second deadline. These measured binaries predate the seven newly merged main
+commits; final-source CI and the real scheduled restore remain unproved.
 
 The initial resumed restore attempt refuses before backup creation because
 the saved application's generated SDK hashes predate main's generator changes.
@@ -51,7 +55,22 @@ and immutable population remain preserved; CLI lock validation is unchanged.
 Earlier ordinary shipping revision `12e0dcae` completed the same component in
 47.805942 seconds, with pre-release reconciliation at 41.737534 seconds and
 15.818895 seconds of backup creation before loss. These historical observations
-remain separate from the current proposal's result.
+remain separate from the native-fix component result.
+
+The same pre-merge ordinary release binaries pass a fresh, fault-free 300-second
+normal preparation window: 30,000 commands and 120,000 reads, zero retries or
+late operations, p95 **2.526 ms**, p99 **5.256 ms**, and no histogram overflow.
+Independent reconciliation checks all 65,536 tickets and 95,536 archive records;
+native accounting and resource checks pass. This is a short baseline, not a
+long-history, new-main or scheduled-fault qualification.
+
+The final raw qualification assembler and its prerequisite, component and
+operator joins are implemented. Five focused synthetic integration tests run
+the actual producers through independent raw joins and the accepted result
+checker; all 415 lifecycle tests pass. A new preflight rejects protocol JSON
+that parses identically but differs from the existing producer's exact frozen
+bytes, before offered work starts. This closes an integration gap without
+changing the evidence formats or clocks; actual campaign evidence remains open.
 
 Independent investigations and code changes proceed in parallel; heavy checks
 and timing measurements share the required host sequentially. Each correction
@@ -60,11 +79,11 @@ the independent fixes, before either measured campaign starts.
 
 | Work item | Owner | Dependency and next check |
 | --- | --- | --- |
-| Native recovery admission | Storage implementation | `native_recovery_admits_a_hundred_row_correlated_command_layout` and remote correlated loopback/crash tests pass; integrate the correction and include it in final CI. |
-| Scaffold checksum expectation | CLI implementation | `scaffold::tests::scaffold_is_deterministic_and_compiled` passes; include the test-only correction in final CI. |
-| Integrated acceptance and CI | Integration | Integrate both fixes; run scoped acceptance and complete `scripts/ci-all`, including generated surfaces and language/package checks. |
-| Current shipping restore and accounting | Runtime qualification | Saved-population restore passes on the proposed ordinary release binaries; retest loaded native-worker accounting and bind qualification to the integrated source. |
-| Final raw qualification join | Controller/evidence | `scripts/check-ticketdesk-lifecycle --self-test` passes; check original worker witnesses, all seven faults, all 19 predicates and twelve frozen prerequisite artifacts against actual raw inputs. |
+| Native recovery admission | Storage implementation | Committed; closest memory and remote correlated loopback/crash tests pass. Include the correction in new combined-source CI. |
+| Scaffold checksum expectation | CLI implementation | Committed; `scaffold::tests::scaffold_is_deterministic_and_compiled` passes. Include it in new combined-source CI. |
+| Integrated acceptance and CI | Integration | Validate the B4 evidence integration and latest main merge; run complete `scripts/ci-all`, including generated surfaces and language/package checks. |
+| Current shipping restore and accounting | Runtime qualification | Saved restore and a 300-second normal window pass on pre-merge binaries. Freeze new shipping binaries, then recheck restore and loaded native accounting/latency. |
+| Final raw qualification join | Controller/evidence | Assembler implemented; five producer-to-checker synthetic tests and all 415 lifecycle tests pass. Join actual seven-fault evidence, 19 predicates and twelve frozen prerequisites after the real controller exits. |
 | Starting free space | Host operations | Reclaimed 29.059 GiB of idle temporary output; prove the unchanged 134-GiB starting gate after final artifact freezing and cache cleanup. |
 | Eight-hour then 24-hour qualification | Campaign owner | All preceding gates pass; execute the actual schedule, close and merge WP-825, then run WP-826 against its merged dependency. |
 
@@ -84,8 +103,10 @@ instrumentation supplies no qualifying timing evidence. These observations show
 accounting progress without qualifying current shipping code or the campaign.
 The [native accounting review](WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md) and
 [later live observations](WP-825-LIVE-OBSERVATIONS.md) retain the comparisons.
-Current loaded retests must establish capture freshness, latency and the
-unchanged deletion-authority checks together.
+The new 300-second pre-merge baseline establishes those checks only for its
+short normal window. Longer-history and latest-source loaded retests must still
+establish capture freshness, latency and unchanged deletion-authority checks
+together.
 
 Host cleanup recovers 29.059 GiB while preserving original failure images,
 archive witnesses and frozen executables. Free space is 137.988 GiB before the
@@ -154,7 +175,8 @@ refuse before native publication or recovery mutation.
 Required-host checks pass 95 selected native receipt/recovery tests and six
 correlated/replication tests, including the original 1/9/19/100-row loopback and
 an abrupt kill after the 100-row acknowledgement followed by native reopen and
-independent state reconciliation. Scoped Clippy and the allowed-path check pass.
+independent state reconciliation. Scoped Clippy, the allowed-path check and
+14 scoped native acceptance checks pass.
 The separate deterministic scaffold regression passes after updating only its
 stale expected checksum; canonical template and fixture bytes are unchanged.
 
@@ -164,12 +186,44 @@ validation, preserving the 64-MiB ceiling and byte-exact comparisons; Checks:
 the required-host targeted tests, scoped Clippy and allowed-path check above;
 Compatibility: public interfaces, durable identities, formats, fixtures and
 dependencies unchanged; Updated handbook: this page; Hazards and follow-ups:
-the proposed ordinary shipping binaries pass the saved-population restore
-component, while new receipt payload copying still needs loaded accounting
-and latency measurements. Integrated acceptance, full CI, the final raw
-evidence join, final free-space admission, the actual scheduled restore and both
-complete campaigns remain required. No fault clock, workload, retry policy,
-predicate or qualification threshold changes.
+the pre-merge ordinary shipping binaries pass saved-population restore and a
+300-second normal accounting/latency baseline. Longer-history and latest-main
+measurements, integrated acceptance, full CI, the actual raw evidence join,
+final free-space admission, the scheduled restore and both complete campaigns
+remain required. No fault clock, workload, retry policy, predicate or
+qualification threshold changes.
+
+### Final raw qualification integration
+
+The offline assembler independently joins the frozen prerequisite artifacts,
+component results, original operator/worker witnesses and closed campaign raw
+evidence before invoking the accepted result checker. The original controller
+must have exited first. The verifier runs within its own frozen 8-GiB limit
+and writes proof outputs outside the closed campaign root, preserving the
+original evidence. A successful controller exit alone supplies no predicate.
+
+Preflight compares the exact protocol serialization used by the existing
+controller producer. Compact JSON and the controller's spaced JSON can decode
+to the same value while hashing differently; that mismatch now refuses before
+the offered clock. The frozen protocol must match the existing producer bytes.
+No schema, public interface, ABI, workload, fault order or clock changes.
+
+Five focused synthetic tests exercise actual producer output, independent raw
+joins and the accepted checker, including hostile prerequisite and operator
+evidence. All 415 lifecycle tests pass on the required host. These tests prove
+the integration against synthetic inputs; they do not prove a scheduled fault,
+native timing, resource retirement or either campaign's duration.
+
+PR note: Package WP-825 (open); Tier guarantee for the cumulative package;
+Behavior: implement the internal final raw qualification assembler and reject
+frozen protocol byte mismatches before offered work; Checks: five focused
+producer-to-checker tests and all 415 lifecycle tests on the required host;
+Compatibility: accepted evidence formats, checker, bounds, clocks and public
+interfaces unchanged; Updated handbook: this page; Hazards and follow-ups:
+latest-main shipping binaries, complete CI, longer-history accounting/latency,
+final disk admission and actual scheduled faults with the final raw evidence
+join remain required. The 300-second pre-merge baseline and saved restore pass
+qualify only their components. Neither eight-hour nor 24-hour run has started.
 
 ## Earlier qualified preparation (2026-10-11 UTC)
 

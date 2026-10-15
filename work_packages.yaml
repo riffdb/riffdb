@@ -29169,6 +29169,32 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 final raw qualification integration within the accepted evidence
+      contract: implement the offline assembler and independent prerequisite,
+      component and operator joins, preserving all 19 predicates and twelve
+      frozen prerequisites. Run only after the original controller exits, under
+      the verifier's own frozen 8-GiB limit, with proof outputs outside the
+      closed campaign root. Reject a compact-versus-spaced protocol JSON hash
+      mismatch before offered work; require the existing controller producer's
+      exact frozen bytes without changing schema, ABI, workload or clocks.
+      Five actual-producer-to-independent-joins-to-accepted-checker synthetic
+      tests and all 415 lifecycle tests pass. Receipt
+      a5494267fdabf103d93ce5cc451085cd01099cdbe149ed8a01e37f247347f80e.
+      Fourteen scoped native acceptance checks also pass. The native/scaffold
+      correction is committed as 4ae2070f; merge f176342b integrates seven main
+      commits through 13342b206. Earlier ordinary release binaries, based on
+      c148a8bf plus the native correction, pass a fresh fault-free 300-second
+      normal preparation: 30,000 commands, 120,000 reads, zero retries or late
+      operations, p95 2.526 ms, p99 5.256 ms, no histogram overflow, all 65,536
+      tickets and 95,536 archive records reconciled, and native accounting and
+      resource checks passing. Receipt
+      53681f4cc5cbfb3320163af5acac928fb37670abf537b973297cadefbb81392e.
+      This is a short baseline, not long-history, latest-main or scheduled-fault
+      qualification. New shipping binaries, integrated acceptance/full CI,
+      longer-history accounting/latency, final starting space and actual fault
+      evidence with the final raw join remain required. WP-825 stays open;
+      neither the eight-hour rehearsal nor the 24-hour campaign has started.
+    - >-
       D-003 native recovery admission correction under accepted bounds: charge
       the actual borrowed namespace/key/index sorting layout, with checked u32
       indices and the existing capped net output vector. Bound nested source
@@ -29202,8 +29228,9 @@ work_packages:
       prove final starting space after restore copies. Current loaded accounting
       and latency, integrated acceptance/full CI, raw qualification join, final
       free-space admission, actual scheduled restore and both complete campaigns
-      remain required. The tested proposal is not yet committed or final-source
-      CI qualified. WP-825 stays open; neither eight-hour rehearsal nor 24-hour
+      remain required. These component measurements precede commit 4ae2070f
+      and do not qualify the latest combined source. WP-825 stays open;
+      neither eight-hour rehearsal nor 24-hour
       campaign has started. No threshold or retry changes.
     - >-
       D-005: advance only the admitted rustls patch 0.23.45 to 0.23.46 for
