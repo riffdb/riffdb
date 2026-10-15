@@ -24512,7 +24512,7 @@ work_packages:
     scripts/prepare-rust-package-mirror, scripts/agent-package-campaign-receipt,
     evaluations/agent-application-alpha/**, release/evidence/**, release/agent-application-alpha/**,
     fixtures/agent-guidance/**, crates/riffdb-cli/src/scaffold.rs,
-    crates/riffdb-cli/assets/scaffold/application/Cargo.lock, templates/application/Cargo.lock]
+    crates/riffdb-cli/assets/scaffold/application/**, templates/application/**]
   deliverables:
   - docs/known-limitations.md rewritten as one sentence per limit grouped by task, using only
     vocabulary defined in the handbook concept pages, with internal provenance moved to source
