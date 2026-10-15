@@ -11,12 +11,6 @@ supersedes: []
 requirements: [GOV-001, GOV-002, GOV-003, REP-003, VER-005]
 packages: [WP-757, WP-772]
 obligations:
-  - id: OBL-0207-1
-    package: WP-757
-    proof: topology_allows_only_exact_changelog_compatibility_exception
-    says: While the pre-external window is open, the topology accepts exactly the frozen
-      authoritative-changelog V1/V2/V3 reader set with V3 as its sole writer and current identity,
-      and continues to reject every other multiple-identity domain or variation of that set.
   - id: OBL-0207-2
     package: WP-772
     proof: changelog_v3_is_only_production_replication_identity
@@ -37,7 +31,7 @@ review_triggers:
   - This proposal would change runtime code, durable bytes, fixtures, topology data, package text,
     or the external-database registry before exact acceptance and separate reviewed changes.
 obligation_sources:
-  824f3e5fdbec23729c20df98d5a6fd6ab87909ed29b6ddcf9ffc16b8b976f4e9: ["OBL-0207-1", "OBL-0207-2"]
+  824f3e5fdbec23729c20df98d5a6fd6ab87909ed29b6ddcf9ffc16b8b976f4e9: ["OBL-0207-2"]
 ---
 # ADR-0207: Frozen Changelog Compatibility Exception During the Pre-External Window
 

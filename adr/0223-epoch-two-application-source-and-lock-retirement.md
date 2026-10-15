@@ -22,9 +22,9 @@ review_triggers:
   - A predecessor source or lock would reach semantic lowering, canonicalization, generation, locking, filesystem effects, deployment, authority binding, or network access before refusal.
   - Historical byte/hash evidence would preserve a live fixture, compatibility artifact, topology identity, or decoder contrary to WP-757.
   - Current source/lock semantics, application authority, generated behavior, storage, protocol, or transaction ordering would change.
-obligation_sources:
-  fb3c3548e7ff3e143e3caa9294d9a9777e1bd27b8d7919eba32f6a3394a4e12d: ["OBL-0181-3"]
-  3f2fb7e0afe9f9fd75e07ff81dadc5179ceb0842c83c111ae282a1ef6f0d70a0: ["OBL-0181-1", "OBL-0181-2", "OBL-0181-3", "OBL-0216-1", "OBL-0216-2"]
+struck_obligations:
+  fb3c3548e7ff3e143e3caa9294d9a9777e1bd27b8d7919eba32f6a3394a4e12d: "Retired whole by ADR-0302; exact OBL-0181-3 tuple remains preserved in ADR-0302."
+  3f2fb7e0afe9f9fd75e07ff81dadc5179ceb0842c83c111ae282a1ef6f0d70a0: "Retired whole by ADR-0302; exact OBL-0181-1 through OBL-0181-3 and OBL-0216-1 through OBL-0216-2 tuples remain preserved in ADR-0302."
 ---
 # ADR-0223: Epoch-Two Application Source and Lock Retirement
 

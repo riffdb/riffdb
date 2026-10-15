@@ -13,11 +13,7 @@ requirements: [GOV-001, GOV-002, GOV-003, OQ-005, OQ-006, OQ-015, OQ-017,
   OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-025, OQ-026, OQ-027,
   OQ-028, OQ-029, OQ-030, VER-001, VER-002, VER-003, VER-004, VER-008]
 packages: [WP-757]
-obligations:
-  - id: OBL-0219-1
-    package: WP-757
-    proof: epoch_two_exact_provider_state_is_sole_v5_and_plan_rotations_are_exact
-    says: Epoch two admits only exact-provider state V5, removes and refuses every V1 through V4 source and artifact, and reviews the exact resulting plan, module, fixture, and hash rotations without changing exact-provider semantics or V5 bytes.
+obligations: []
 review_triggers:
   - A V1 through V4 exact-provider state constant, reader, writer, fixture, alias, descriptor, source locator, or dispatch would remain or be reinterpreted.
   - V5 checkpoint bytes, comparison, null placement, count, ordinal, policy, epoch, readiness, retention, or refusal semantics would change.
@@ -25,8 +21,8 @@ review_triggers:
   - ADR-0216 or OBL-0185-1 retirement would not precede the query identity and fixture rotation required here.
   - An application, agent, transport, storage, migration, cursor, provider-selection, or compatibility surface would change.
   - WP-757 would edit the amended ADRs before a separate path-authority commit or combine path authority with reconciliation or implementation.
-obligation_sources:
-  f318f7d591ffa0c180787c9f5f82e86563461fe137d7ad847e261e5ed2dd8888: ["OBL-0219-1"]
+struck_obligations:
+  f318f7d591ffa0c180787c9f5f82e86563461fe137d7ad847e261e5ed2dd8888: "Retired whole by ADR-0302; exact OBL-0219-1 tuple remains preserved in ADR-0302."
 ---
 # ADR-0219: Epoch-Two Sole-Current Exact-Provider State
 

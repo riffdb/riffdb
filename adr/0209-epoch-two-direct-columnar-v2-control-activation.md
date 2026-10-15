@@ -10,27 +10,7 @@ amends: [ADR-0190, ADR-0192, ADR-0200, ADR-0204]
 supersedes: []
 requirements: [GOV-001, GOV-002, GOV-003, REC-001, PRJ-004, PRJ-006, PRJ-007, PRJ-008, PRJ-009, PRJ-010, PERF-019]
 packages: [WP-757]
-obligations:
-  - id: OBL-0209-1
-    package: WP-757
-    proof: epoch_two_columnar_control_lifecycle_is_v2_only
-    says: Epoch 2 accepts exactly the closed V2 control shapes and refuses every V1, CatchingUp, missing-fingerprint, mixed-layout, malformed, or unenumerated semantic shape.
-  - id: OBL-0209-2
-    package: WP-757
-    proof: epoch_two_columnar_reset_allocates_transaction_current_v2_candidate
-    says: Fresh insertion, stale-incarnation reset, initial retarget, and failed-initial replacement allocate only the exact checked V2 candidate with deterministic physical fingerprint and reread-only uncertainty resolution.
-  - id: OBL-0209-3
-    package: WP-757
-    proof: epoch_two_first_demand_publishes_v2_without_v1_artifact_or_dispatch
-    says: Cold startup opens no artifact and first semantic demand builds, validates, publishes, and installs only V2 without any V1 codec, artifact, prepared witness, transition, or fallback.
-  - id: OBL-0209-4
-    package: WP-757
-    proof: epoch_two_unprepared_v2_retires_exact_candidate_paths
-    says: Every unprepared V2 candidate construction or restart repeats the exact aggregate-bounded final, temporary, quarantine, rename, sync, reference, and crash protocol before construction.
-  - id: OBL-0209-5
-    package: WP-757
-    proof: epoch_two_prepared_initial_v2_head_advance_allocates_checked_replacement
-    says: A prepared initial V2 candidate behind transaction-current head is retired only through the exact checked-next unprepared initial V2 replacement CAS and every refusal or uncertain result resolves by durable reread.
+obligations: []
 review_triggers:
   - Tag 67, revision 1, its Protobuf declaration, descriptor, schema hash, field or enum number, payload byte, key, table, or bound would change.
   - Epoch 2 would semantically accept V1, CatchingUp, a missing or caller-selected physical fingerprint, mixed layout, or a state outside the closed table.
@@ -43,8 +23,8 @@ acceptance: >-
   Original exact text accepted by the maintainer on the accepted date above;
   canonical-vector amendment accepted by the maintainer in session 2026-09-15,
   "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
-obligation_sources:
-  5a129bc5f2d42f35b45454c82b5b850889fa723e656ac1a5ed5ad639b14b9600: ["OBL-0209-1", "OBL-0209-2", "OBL-0209-3", "OBL-0209-4", "OBL-0209-5"]
+struck_obligations:
+  5a129bc5f2d42f35b45454c82b5b850889fa723e656ac1a5ed5ad639b14b9600: "Retired whole by ADR-0302; exact OBL-0209-1 through OBL-0209-5 tuples remain preserved in ADR-0302."
 ---
 # ADR-0209: Epoch-Two Direct Columnar V2 Control Activation
 

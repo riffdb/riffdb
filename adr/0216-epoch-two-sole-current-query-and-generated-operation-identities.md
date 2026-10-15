@@ -11,28 +11,15 @@ supersedes: []
 requirements: [GOV-001, GOV-002, GOV-003, OQ-116, DX-044, DX-047, DX-049,
   VER-001, VER-002, VER-003, VER-004, VER-008]
 packages: [WP-757, WP-779]
-obligations:
-  - id: OBL-0216-1
-    package: WP-757
-    proof: epoch_two_query_identity_topology_is_sole_current
-    says: Epoch two admits only RiffQL V14, query IR V18, and query module V18, refuses every retired reader and artifact, and preserves operator semantics without a version fallback.
-  - id: OBL-0216-2
-    package: WP-757
-    proof: epoch_two_generated_application_operations_v5_is_sole_current
-    says: Epoch two admits only generated application operations V5, deletes V2 through V4 readers, writers, and artifacts, and preserves pagination, SDK-only, and vector semantics within V5.
-  - id: OBL-0216-3
-    package: WP-779
-    proof: generated_application_operations_v6_is_sole_current_for_all_registries
-    says: While the external-database registry is empty, V6 succeeds sole-current V5 for empty and nonempty command registries and refuses every retired artifact without changing descriptor semantics.
+obligations: []
 review_triggers:
   - A RiffQL, query IR, query-module, generated-operation, application-lock, reader, writer, source locator, fixture, or topology identity would differ from the exact sole-current epoch-two sets.
   - An old artifact would be read, written, migrated, reinterpreted, aliased, negotiated, or retained as a compatibility fallback after its owning transition.
   - The external-database registry would become nonempty before the reviewed V6 activation, V5 retirement, and WP-779 closure all complete; V6 would be selected conditionally on command-registry population; or an MCP descriptor, schema, visibility, authorization, pagination, cursor, SDK-only, or vector semantic would change.
   - Operator admission, plan semantics, public query behavior, protocol, durable data, runtime authority, or any compatibility boundary other than the named artifact identities would change.
-obligation_sources:
-  e7f0f2c93ca1b802096ef3086cb37918a959a1aec36a44ac38811689a4d2057e: ["OBL-0216-3"]
 struck_obligations:
   48b8e1b22aab8296295175a4c2da645bfcb91266398adb2ec657f1686fb822e6: "Rejected-option rationale explaining why V6 follows V5, not a deferred implementation obligation."
+  e7f0f2c93ca1b802096ef3086cb37918a959a1aec36a44ac38811689a4d2057e: "Retired whole by ADR-0302; exact OBL-0216-3 tuple remains preserved in ADR-0302."
 ---
 # ADR-0216: Epoch-Two Sole-Current Query and Generated-Operation Identities
 

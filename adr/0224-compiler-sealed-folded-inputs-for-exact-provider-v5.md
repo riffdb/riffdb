@@ -10,11 +10,7 @@ amends: [ADR-0172, ADR-0219, ADR-0222]
 supersedes: []
 requirements: [GOV-001, GOV-002, OQ-005, OQ-006, OQ-007, OQ-008, OQ-015, OQ-017, OQ-024, OQ-025, OQ-026, OQ-027, OQ-028, OQ-029]
 packages: [WP-757]
-obligations:
-  - id: OBL-0224-1
-    package: WP-757
-    proof: epoch_two_folded_exact_inputs_are_sealed_and_v5_bytes_remain_exact
-    says: Compiler-sealed matched-form bindings preserve folded and binary truth, original output, policy and epoch isolation, and exact V5 encoding without predecessor providers or unbound normalization.
+obligations: []
 review_triggers:
   - V5 framing, schema hash, scalar tags, comparison profiles, index algorithms, or codec bytes would change.
   - A transform would be inferred at runtime, omitted from full plan identity, caller-selected, or applied to authoritative state, policy evaluation, routing, or canonical keys.

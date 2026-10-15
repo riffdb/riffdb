@@ -44,10 +44,6 @@ obligations:
     package: WP-711
     proof: columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback
     says: Every build, sync, CAS, view-install, compaction, and reclamation crash reopens the one durable selection or stays closed degraded, with no selected-V2 fallback.
-  - id: OBL-0192-10
-    package: WP-757
-    proof: epoch_two_removes_legacy_vector_control_bridge
-    says: Epoch 2 removes tag-65 source, decoder, table, fixture, manifest entry, and topology exception while permanently reserving every retired numeric identity.
 review_triggers:
   - Another durable tag, Protobuf field/enum number, source/key encoding, table, hash-domain label, hash purpose tag, preimage, or bound would replace or collide with an identity frozen here.
   - Contract grammar, Bundle, Executable IR, Lineage Ledger, provider descriptor, query module, cursor, public protocol, or generic projection-control bytes would change.

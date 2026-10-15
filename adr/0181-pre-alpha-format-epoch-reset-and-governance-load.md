@@ -14,24 +14,6 @@ amends:
 requirements: [GOV-001, GOV-002, GOV-003, GOV-004, GOV-005, GOV-006]
 packages: [WP-757, WP-758, WP-759]
 obligations:
-  - id: OBL-0181-1
-    package: WP-757
-    proof: topology_refuses_second_readable_identity_before_external_database
-    says: Every topology domain carries exactly one readable and one writable
-      identity, and the topology check refuses a second readable identity while no
-      external database is registered.
-  - id: OBL-0181-2
-    package: WP-757
-    proof: epoch_two_ceremony_refuses_in_place_open_and_reconciles_reimport
-    says: An epoch-1 database is refused in place by an epoch-2 binary and crosses
-      only through the complete ADR-0112 ceremony with reconciled export/reimport
-      counts and hashes.
-  - id: OBL-0181-3
-    package: WP-757
-    proof: epoch_two_fixture_inventory_contains_no_epoch_one_identity
-    says: The durable-fixture inventory and release manifest name no epoch-1
-      identity after the reset, and every deleted Protobuf field number and enum
-      value remains reserved.
   - id: OBL-0181-4
     package: WP-758
     proof: check-adr-obligations --self-test

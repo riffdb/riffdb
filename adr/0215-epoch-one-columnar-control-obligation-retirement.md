@@ -20,8 +20,8 @@ review_triggers:
   - An OBL-0192-3 or OBL-0192-4 clause would be mapped beyond the exact says text of OBL-0209-1 through OBL-0209-5.
   - OBL-0192-10, its exact says text, package, or proof would change.
   - This proposal would edit an accepted ADR, work package, governance rule, requirement, proof tag, or implementation before exact acceptance.
-obligation_sources:
-  3e337503b9682c65e0f5b25e4f59dc72db32c93c018b95fab55ece39b1530d13: ["OBL-0209-1", "OBL-0209-2", "OBL-0209-3", "OBL-0209-4", "OBL-0209-5", "OBL-0192-10"]
+struck_obligations:
+  3e337503b9682c65e0f5b25e4f59dc72db32c93c018b95fab55ece39b1530d13: "Retired whole by ADR-0302; exact OBL-0209-1 through OBL-0209-5 and OBL-0192-10 tuples remain preserved in ADR-0302."
 ---
 # ADR-0215: Epoch-One Columnar Control Obligation Retirement
 

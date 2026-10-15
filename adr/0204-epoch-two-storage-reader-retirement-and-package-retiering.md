@@ -10,19 +10,7 @@ amends: [ADR-0181, ADR-0197]
 supersedes: []
 requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, VER-005]
 packages: [WP-757]
-obligations:
-  - id: OBL-0204-1
-    package: WP-757
-    proof: epoch_two_format_gate_precedes_retired_reader_dispatch
-    says: The immutable epoch comparison refuses every epoch-1 database before any retired storage reader, table open, journal replay, repair, allocator action, or mutation can run, while missing, malformed, unknown, and future identities remain fail-closed.
-  - id: OBL-0204-2
-    package: WP-757
-    proof: epoch_two_removes_legacy_vector_control_bridge
-    says: Epoch 2 removes tag-65 vector control without translating its bytes, preserves exact tag-67 control and V2 semantics, and retains cold registration and automatic first-demand activation.
-  - id: OBL-0204-3
-    package: WP-757
-    proof: epoch_two_descriptor_closure_rotations_are_exact
-    says: The exact declaration and identity retirements produce only the 27 enumerated retained-record descriptor-closure hash rotations; retained payload bytes, fields, tags, revisions, and semantics stay exact, and predecessor hashes remain reserved and refused.
+obligations: []
 review_triggers:
   - Epoch-1 bytes could reach a retired decoder, table, migration, journal, repair, or mutation path before the typed epoch refusal.
   - The 32-identity retirement set, 26-declaration deletion set, five historical-row removal set, or 27 retained hash pairs would differ from decision 5.
