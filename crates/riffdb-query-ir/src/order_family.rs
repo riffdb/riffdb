@@ -13,9 +13,10 @@ const MAGIC: &[u8] = b"RIFFDB-ORDER-QUERY-FAMILY\0";
 /// Maximum immutable order variants in one generated operation.
 pub const MAX_ORDER_FAMILY_MEMBERS_V1: usize = 32;
 
-/// One exact enum choice and its complete immutable access program.
+/// One exact enum choice (and optional-presence mask) with its complete immutable access program.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderFamilyMemberV1 {
+    presence_mask: u16,
     variant_name: String,
     variant_id: EnumVariantId,
     program: Arc<QueryAccessProgramV1>,
@@ -29,11 +30,27 @@ impl OrderFamilyMemberV1 {
         variant_id: EnumVariantId,
         program: QueryAccessProgramV1,
     ) -> Self {
+        Self::checked_with_presence(0, variant_name, variant_id, program)
+    }
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked_with_presence(
+        presence_mask: u16,
+        variant_name: String,
+        variant_id: EnumVariantId,
+        program: QueryAccessProgramV1,
+    ) -> Self {
         Self {
+            presence_mask,
             variant_name,
             variant_id,
             program: Arc::new(program),
         }
+    }
+    /// Bitmask over the enclosing family's `presence_parameters`.
+    #[must_use]
+    pub const fn presence_mask(&self) -> u16 {
+        self.presence_mask
     }
     /// Exact public contract variant name.
     #[must_use]
@@ -63,6 +80,7 @@ pub struct OrderQueryFamilyV1 {
     surface: ResolvedQueryV1,
     selector_parameter: String,
     selector_type: EnumTypeId,
+    presence_parameters: Vec<String>,
     members: Vec<OrderFamilyMemberV1>,
     authorization_union: Vec<AuthorizationEntityAccess>,
     maximum_cost: QueryCostVectorV1,
@@ -76,17 +94,50 @@ impl OrderQueryFamilyV1 {
         surface: ResolvedQueryV1,
         selector_parameter: String,
         selector_type: EnumTypeId,
+        members: Vec<OrderFamilyMemberV1>,
+    ) -> Option<Self> {
+        Self::checked_with_presence(
+            surface,
+            selector_parameter,
+            selector_type,
+            Vec::new(),
+            members,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn checked_with_presence(
+        surface: ResolvedQueryV1,
+        selector_parameter: String,
+        selector_type: EnumTypeId,
+        presence_parameters: Vec<String>,
         mut members: Vec<OrderFamilyMemberV1>,
     ) -> Option<Self> {
-        members.sort_by_key(OrderFamilyMemberV1::variant_id);
+        members.sort_by_key(|member| (member.presence_mask, member.variant_id));
         let first = members.first()?;
+        let presence_combinations =
+            1usize.checked_shl(u32::try_from(presence_parameters.len()).ok()?)?;
+        let max_members = if presence_parameters.is_empty() {
+            MAX_ORDER_FAMILY_MEMBERS_V1
+        } else {
+            crate::MAX_OPERATIONAL_PLAN_MEMBERS
+        };
         if selector_parameter.is_empty()
-            || members.len() > MAX_ORDER_FAMILY_MEMBERS_V1
-            || members
+            || presence_parameters.len() > crate::MAX_OPERATIONAL_PRESENCE_PARAMETERS
+            || presence_parameters.iter().any(String::is_empty)
+            || presence_parameters
                 .windows(2)
-                .any(|pair| pair[0].variant_id >= pair[1].variant_id)
+                .any(|pair| pair[0] >= pair[1])
+            || members.len() > max_members
+            || !members.len().is_multiple_of(presence_combinations)
+            || (members.len() / presence_combinations) > MAX_ORDER_FAMILY_MEMBERS_V1
+            || members.windows(2).any(|pair| {
+                (pair[0].presence_mask, pair[0].variant_id)
+                    >= (pair[1].presence_mask, pair[1].variant_id)
+            })
             || members.iter().any(|member| {
-                member.variant_name.is_empty()
+                usize::from(member.presence_mask) >= presence_combinations
+                    || member.variant_name.is_empty()
                     || member.program.contract() != surface.contract()
                     || member.program.name() != first.program.name()
                     || member.program.partition_route() != first.program.partition_route()
@@ -103,8 +154,18 @@ impl OrderQueryFamilyV1 {
         put(&mut canonical_bytes, surface.canonical_bytes())?;
         put(&mut canonical_bytes, selector_parameter.as_bytes())?;
         canonical_bytes.extend_from_slice(&selector_type.get().to_be_bytes());
+        if !presence_parameters.is_empty() {
+            canonical_bytes
+                .extend_from_slice(&u32::try_from(presence_parameters.len()).ok()?.to_be_bytes());
+            for parameter in &presence_parameters {
+                put(&mut canonical_bytes, parameter.as_bytes())?;
+            }
+        }
         canonical_bytes.extend_from_slice(&u32::try_from(members.len()).ok()?.to_be_bytes());
         for member in &members {
+            if !presence_parameters.is_empty() {
+                canonical_bytes.extend_from_slice(&member.presence_mask.to_be_bytes());
+            }
             put(&mut canonical_bytes, member.variant_name.as_bytes())?;
             canonical_bytes.extend_from_slice(&member.variant_id.get().to_be_bytes());
             put(&mut canonical_bytes, member.program.canonical_bytes())?;
@@ -129,6 +190,7 @@ impl OrderQueryFamilyV1 {
             surface,
             selector_parameter,
             selector_type,
+            presence_parameters,
             members,
             authorization_union,
             maximum_cost,
@@ -156,12 +218,22 @@ impl OrderQueryFamilyV1 {
     pub const fn selector_type(&self) -> EnumTypeId {
         self.selector_type
     }
-    /// Every member in stable enum-variant order.
+    /// Optional-presence parameters in canonical order.
+    #[must_use]
+    pub fn presence_parameters(&self) -> &[String] {
+        &self.presence_parameters
+    }
+    /// Declared bounded aggregates evaluated over member rows.
+    #[must_use]
+    pub fn aggregates(&self) -> &[crate::OperationalAggregateV1] {
+        self.surface.aggregates()
+    }
+    /// Every member in stable `(presence_mask, variant_id)` order.
     #[must_use]
     pub fn members(&self) -> &[OrderFamilyMemberV1] {
         &self.members
     }
-    /// Selects by fully materialized stable enum identity.
+    /// Selects by fully materialized stable enum identity (assuming all optional parameters absent).
     #[must_use]
     pub fn select(
         &self,
@@ -172,16 +244,57 @@ impl OrderQueryFamilyV1 {
             .then(|| {
                 self.members
                     .iter()
-                    .find(|member| member.variant_id == variant_id)
+                    .find(|member| member.presence_mask == 0 && member.variant_id == variant_id)
             })
             .flatten()
     }
-    /// Selects by exact public enum variant name before materialization.
+    /// Selects by exact public enum variant name (assuming all optional parameters absent).
     #[must_use]
     pub fn select_name(&self, name: &str) -> Option<&OrderFamilyMemberV1> {
         self.members
             .iter()
-            .find(|member| member.variant_name == name)
+            .find(|member| member.presence_mask == 0 && member.variant_name == name)
+    }
+    /// Selects by presence vector and fully materialized stable enum identity.
+    #[must_use]
+    pub fn select_with_presence(
+        &self,
+        presence: &[bool],
+        type_id: EnumTypeId,
+        variant_id: EnumVariantId,
+    ) -> Option<&OrderFamilyMemberV1> {
+        let mask = self.presence_mask(presence)?;
+        (type_id == self.selector_type)
+            .then(|| {
+                self.members
+                    .iter()
+                    .find(|member| member.presence_mask == mask && member.variant_id == variant_id)
+            })
+            .flatten()
+    }
+    /// Selects by presence vector and exact public enum variant name.
+    #[must_use]
+    pub fn select_name_with_presence(
+        &self,
+        presence: &[bool],
+        name: &str,
+    ) -> Option<&OrderFamilyMemberV1> {
+        let mask = self.presence_mask(presence)?;
+        self.members
+            .iter()
+            .find(|member| member.presence_mask == mask && member.variant_name == name)
+    }
+    fn presence_mask(&self, presence: &[bool]) -> Option<u16> {
+        if presence.len() != self.presence_parameters.len() {
+            return None;
+        }
+        let mut mask = 0u16;
+        for (bit, present) in presence.iter().copied().enumerate() {
+            if present {
+                mask |= 1u16.checked_shl(u32::try_from(bit).ok()?)?;
+            }
+        }
+        Some(mask)
     }
     /// Complete authority union checked before member selection.
     #[must_use]

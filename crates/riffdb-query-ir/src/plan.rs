@@ -1018,30 +1018,37 @@ impl QueryAccessStep {
                 scan_ceiling,
                 ..
             } => {
+                let in_predicates = predicates
+                    .iter()
+                    .filter(|predicate| {
+                        predicate.operator == QueryPredicateOperator::In
+                            && matches!(predicate.value, QueryPredicateValue::Parameter(_))
+                    })
+                    .collect::<Vec<_>>();
                 !index.is_empty()
                     && !fields.is_empty()
                     && !key_fields.is_empty()
                     && !order.is_empty()
+                    && in_predicates.len() <= 1
                     && partition_set_order_start(fields, order).is_some_and(|order_start| {
-                        fields[1..order_start].iter().all(|field| {
+                        fields[..order_start].iter().all(|field| {
                             predicates.iter().any(|predicate| {
                                 predicate.field == *field
-                                    && predicate.operator == QueryPredicateOperator::Equal
+                                    && matches!(
+                                        predicate.operator,
+                                        QueryPredicateOperator::Equal | QueryPredicateOperator::In
+                                    )
                             })
+                        }) && in_predicates.iter().all(|predicate| {
+                            fields[..order_start]
+                                .iter()
+                                .any(|field| field == &predicate.field)
                         })
                     })
                     && u64::from(*scan_ceiling) > maximum_rows
                     && u64::from(*scan_ceiling) <= MAX_QUERY_SCANNED_ROWS
                     && cardinality == Cardinality::Many
                     && covered_result_layout.is_none()
-                    && fields[0]
-                        == predicates
-                            .iter()
-                            .find(|predicate| {
-                                predicate.operator == QueryPredicateOperator::In
-                                    && matches!(predicate.value, QueryPredicateValue::Parameter(_))
-                            })
-                            .map_or("", |predicate| predicate.field.as_str())
             }
         };
         let covered_layout_is_valid = covered_result_layout.as_ref().is_none_or(|layout| {
@@ -1466,7 +1473,7 @@ impl QueryAccessProgramV1 {
     ) -> Option<Self> {
         if surface.contract() != &contract
             || partition_route.parameter().is_empty()
-            || partition_route.is_finite_set() != surface.has_bounded_set()
+            || (partition_route.is_finite_set() && !surface.has_bounded_set())
             || steps.is_empty()
             || authorization.is_empty()
             || authorization
@@ -1487,7 +1494,11 @@ impl QueryAccessProgramV1 {
         let ir_version = if surface.ir_version() == crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
         {
             crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
-        } else if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+        } else if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1
+            || steps
+                .iter()
+                .any(|step| matches!(step.access(), QueryAccessKind::PartitionSetIndex { .. }))
+        {
             partition_set_ir_version(&steps)
         } else if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -1615,7 +1626,12 @@ impl QueryAccessProgramV1 {
     pub fn ir_version(&self) -> u32 {
         if self.surface.ir_version() == crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1 {
             crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
-        } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+        } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1
+            || self
+                .steps
+                .iter()
+                .any(|step| matches!(step.access(), QueryAccessKind::PartitionSetIndex { .. }))
+        {
             partition_set_ir_version(&self.steps)
         } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -2109,7 +2125,8 @@ fn encode_program(
             crate::QUERY_IR_VERSION_COVERED_RESULT_V1
                 | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
                 | crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
-        ) {
+        ) || steps.iter().any(|s| s.covered_result_layout.is_some())
+        {
             match &step.covered_result_layout {
                 None => out.push(0),
                 Some(layout) => {

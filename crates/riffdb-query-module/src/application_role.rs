@@ -586,13 +586,8 @@ fn compile_application_role_inner(
         candidate_authority |= query_has_candidates;
         let mut requires_row_policy = false;
         maximum_rows = maximum_rows.max(
-            if query
-                .plan()
-                .representative_program()
-                .partition_route()
-                .is_finite_set()
-            {
-                minimum_scan_budget_for_partition_set_program(query.plan().representative_program())
+            if let Some(budget) = minimum_scan_budget_for_partition_set_plan(query.plan()) {
+                budget
             } else if query_has_candidates {
                 minimum_scan_budget_for_candidate_program(query.plan().representative_program())
             } else {
@@ -1062,6 +1057,47 @@ fn minimum_scan_budget_for_candidate_program(
         .max()
         .unwrap_or(1)
         .max(1)
+}
+
+fn minimum_scan_budget_for_partition_set_plan(plan: &crate::CompiledNamedQueryPlan) -> Option<u64> {
+    let program_has_partition_set_step = |program: &riffdb_query_ir::QueryAccessProgramV1| {
+        program.partition_route().is_finite_set()
+            || program.steps().iter().any(|step| {
+                matches!(
+                    step.access(),
+                    riffdb_query_ir::QueryAccessKind::PartitionSetIndex { .. }
+                )
+            })
+    };
+    match plan {
+        crate::CompiledNamedQueryPlan::V1(program) => program_has_partition_set_step(program)
+            .then(|| minimum_scan_budget_for_partition_set_program(program)),
+        crate::CompiledNamedQueryPlan::OperationalV1(family) => family
+            .members()
+            .iter()
+            .any(|member| program_has_partition_set_step(member.program()))
+            .then(|| {
+                family
+                    .members()
+                    .iter()
+                    .map(|member| minimum_scan_budget_for_partition_set_program(member.program()))
+                    .max()
+                    .unwrap_or(1)
+            }),
+        crate::CompiledNamedQueryPlan::OrderFamilyV1(family) => family
+            .members()
+            .iter()
+            .any(|member| program_has_partition_set_step(member.program()))
+            .then(|| {
+                family
+                    .members()
+                    .iter()
+                    .map(|member| minimum_scan_budget_for_partition_set_program(member.program()))
+                    .max()
+                    .unwrap_or(1)
+            }),
+        _ => None,
+    }
 }
 
 fn minimum_scan_budget_for_partition_set_program(

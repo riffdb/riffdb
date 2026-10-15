@@ -1476,7 +1476,7 @@ fn lower_existence_predicates(
             ));
         }
         let junction_comparisons = comparisons(&existence.predicate.value);
-        if !candidate_index_is_complete_prefix(junction_index, &junction_comparisons) {
+        if !candidate_index_is_complete_prefix(junction, junction_index, &junction_comparisons) {
             return Err(one(
                 PlannerDiagnosticCode::CandidateInvalid,
                 existence.predicate.span,
@@ -1826,17 +1826,44 @@ fn compile_order_query_family_inner(
             None,
         ));
     };
-    if document
-        .body
-        .bindings
+    let declared_optional = document
+        .parameters
         .iter()
-        .any(|binding| first_presence_guard_span(&binding.predicate.value).is_some())
-    {
+        .filter(|parameter| matches!(parameter.ty.value, TypeReference::Optional(_)))
+        .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
+        .collect::<BTreeMap<_, _>>();
+    let mut guards = BTreeMap::<String, Span>::new();
+    for candidate in &document.body.candidates {
+        for source in candidate_ast_sources(&candidate.expression) {
+            validate_operational_expression(
+                &source.predicate,
+                true,
+                None,
+                &declared_optional,
+                &mut guards,
+            )?;
+        }
+    }
+    for binding in &document.body.bindings {
+        validate_operational_expression(
+            &binding.predicate,
+            true,
+            None,
+            &declared_optional,
+            &mut guards,
+        )?;
+    }
+    if guards.len() > MAX_OPERATIONAL_PRESENCE_PARAMETERS {
+        let span = guards
+            .values()
+            .nth(MAX_OPERATIONAL_PRESENCE_PARAMETERS)
+            .copied()
+            .unwrap_or(family.span);
         return Err(one(
-            PlannerDiagnosticCode::OperationalFamilyRequired,
-            family.span,
+            PlannerDiagnosticCode::Unbounded,
+            span,
             Vec::new(),
-            "order and optional-presence families cannot be combined in V1",
+            "optional predicate combinations exceed the finite family bound",
             None,
         ));
     }
@@ -1906,25 +1933,52 @@ fn compile_order_query_family_inner(
             None,
         ));
     }
-    let mut members = Vec::with_capacity(family.variants.len());
-    for variant in &family.variants {
-        let mut expanded = document.clone();
-        let binding = &mut expanded.body.bindings[*binding_index];
-        binding.order.clone_from(&variant.order);
-        binding.order_family = None;
-        let program = compile_query_member(&expanded, catalog, BTreeSet::new())?;
-        members.push(OrderFamilyMemberV1::checked(
-            variant.variant.value.as_str().to_owned(),
-            enumeration
-                .variant(variant.variant.value.as_str())
-                .ok_or_else(internal)?,
-            program,
+    let presence_parameters = guards.keys().cloned().collect::<Vec<_>>();
+    let unwrapped_parameters = presence_parameters.iter().cloned().collect::<BTreeSet<_>>();
+    let presence_count = 1_usize
+        .checked_shl(u32::try_from(presence_parameters.len()).map_err(|_| internal())?)
+        .ok_or_else(internal)?;
+    let total_members = presence_count
+        .checked_mul(family.variants.len())
+        .ok_or_else(internal)?;
+    if total_members > riffdb_query_ir::MAX_OPERATIONAL_PLAN_MEMBERS {
+        return Err(one(
+            PlannerDiagnosticCode::Unbounded,
+            family.span,
+            Vec::new(),
+            "combined optional-presence and order-family members exceed the finite family bound",
+            None,
         ));
     }
-    OrderQueryFamilyV1::checked(
+    let mut members = Vec::with_capacity(total_members);
+    for mask in 0..presence_count {
+        let enabled = presence_parameters
+            .iter()
+            .enumerate()
+            .map(|(bit, name)| (name.as_str(), mask & (1_usize << bit) != 0))
+            .collect::<BTreeMap<_, _>>();
+        let presence_expanded = expand_operational_document(document, &enabled)?;
+        for variant in &family.variants {
+            let mut expanded = presence_expanded.clone();
+            let binding = &mut expanded.body.bindings[*binding_index];
+            binding.order.clone_from(&variant.order);
+            binding.order_family = None;
+            let program = compile_query_member(&expanded, catalog, unwrapped_parameters.clone())?;
+            members.push(OrderFamilyMemberV1::checked_with_presence(
+                u16::try_from(mask).map_err(|_| internal())?,
+                variant.variant.value.as_str().to_owned(),
+                enumeration
+                    .variant(variant.variant.value.as_str())
+                    .ok_or_else(internal)?,
+                program,
+            ));
+        }
+    }
+    OrderQueryFamilyV1::checked_with_presence(
         surface,
         family.parameter.value.as_str().to_owned(),
         enumeration.internal_id(),
+        presence_parameters,
         members,
     )
     .ok_or_else(internal)
@@ -1954,6 +2008,17 @@ fn compile_operational_query_family_inner(
         .map(|parameter| (parameter.name.value.as_str(), parameter.name.span))
         .collect::<BTreeMap<_, _>>();
     let mut guards = BTreeMap::<String, Span>::new();
+    for candidate in &document.body.candidates {
+        for source in candidate_ast_sources(&candidate.expression) {
+            validate_operational_expression(
+                &source.predicate,
+                true,
+                None,
+                &declared_optional,
+                &mut guards,
+            )?;
+        }
+    }
     for binding in &document.body.bindings {
         validate_operational_expression(
             &binding.predicate,
@@ -2129,6 +2194,21 @@ fn expand_operational_document(
     enabled: &BTreeMap<&str, bool>,
 ) -> Result<Document, PlannerDiagnostics> {
     let mut expanded = document.clone();
+    for candidate in &mut expanded.body.candidates {
+        let name = candidate.name.value.as_str().to_owned();
+        for source in candidate_ast_sources_mut(&mut candidate.expression) {
+            source.predicate = expand_operational_expression(&source.predicate, enabled)?
+                .ok_or_else(|| {
+                    one(
+                        PlannerDiagnosticCode::NonLocal,
+                        source.predicate.span,
+                        vec![name.clone()],
+                        "optional predicates cannot remove the complete partition route",
+                        None,
+                    )
+                })?;
+        }
+    }
     for binding in &mut expanded.body.bindings {
         binding.predicate = expand_operational_expression(&binding.predicate, enabled)?
             .ok_or_else(|| {
@@ -2306,6 +2386,7 @@ impl<'a> Planner<'a> {
                     entity,
                     source_ast.predicate.span,
                     &ordinary_comparisons,
+                    source.long_pattern().is_none(),
                 )?;
                 let partition_field = entity.partition_field();
                 let route = self.partition_route(&comparisons, partition_field);
@@ -2374,7 +2455,7 @@ impl<'a> Planner<'a> {
                     )
                 } else {
                     let index = entity.index(source.access()).ok_or_else(internal)?;
-                    if !candidate_index_is_complete_prefix(index, &comparisons) {
+                    if !candidate_index_is_complete_prefix(entity, index, &comparisons) {
                         return Err(one(
                             PlannerDiagnosticCode::CandidateInvalid,
                             source_ast.span,
@@ -2758,7 +2839,44 @@ impl<'a> Planner<'a> {
                     }
                 };
             }
-            if finite_partition_route {
+            let non_partition_in_parameter = (!finite_partition_route)
+                .then(|| {
+                    let first_order_field = binding
+                        .order
+                        .first()
+                        .and_then(|term| path_field(&term.path.value));
+                    comparisons.iter().find_map(|comparison| {
+                        if !comparison.operator.is_binary(BinaryOperator::In)
+                            || comparison.field == entity.partition_field()
+                            || first_order_field == Some(comparison.field)
+                            || binding.order.is_empty()
+                        {
+                            return None;
+                        }
+                        let Some(Expression::Parameter(parameter)) = comparison.value else {
+                            return None;
+                        };
+                        Some(parameter.value.as_str())
+                    })
+                })
+                .flatten();
+            let has_mixed_binding_order = binding.order.first().is_some_and(|first| {
+                binding
+                    .order
+                    .iter()
+                    .any(|term| term.direction.value != first.direction.value)
+            });
+            if finite_partition_route
+                || non_partition_in_parameter.is_some()
+                || (binding.cardinality.value == Cardinality::Many && has_mixed_binding_order)
+            {
+                let route_maximum = if finite_partition_route {
+                    partition_route_maximum
+                } else if let Some(param_name) = non_partition_in_parameter {
+                    document_set_maximum(self.document, param_name).ok_or_else(internal)?
+                } else {
+                    1
+                };
                 access = match access {
                     QueryAccessKind::Index {
                         index,
@@ -2790,31 +2908,31 @@ impl<'a> Planner<'a> {
                         let mixed_order = order.iter().any(|term| term.direction() != direction);
                         let scan_ceiling = if mixed_order {
                             riffdb_query_ir::MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1
-                                .checked_div(partition_route_maximum)
+                                .checked_div(route_maximum)
                                 .unwrap_or(0)
                                 .min(riffdb_query_ir::MAX_QUERY_SCANNED_ROWS)
                         } else {
                             riffdb_query_ir::MAX_QUERY_SCANNED_ROWS
                         };
                         QueryAccessKind::PartitionSetIndex {
-                        index,
-                        fields,
-                        direction,
-                        order,
-                        scan_ceiling: u32::try_from(scan_ceiling)
-                        .ok()
-                        .filter(|ceiling| u64::from(*ceiling) > maximum_rows)
-                        .ok_or_else(|| {
-                            one(
-                                PlannerDiagnosticCode::Unbounded,
-                                binding.predicate.span,
-                                vec![binding.name.value.as_str().to_owned()],
-                                "partition-set route and page maxima exceed the whole-request scan ceiling",
-                                None,
-                            )
-                        })?,
-                        key_fields: entity.primary_key().to_vec(),
-                    }
+                            index,
+                            fields,
+                            direction,
+                            order,
+                            scan_ceiling: u32::try_from(scan_ceiling)
+                                .ok()
+                                .filter(|ceiling| u64::from(*ceiling) > maximum_rows)
+                                .ok_or_else(|| {
+                                    one(
+                                        PlannerDiagnosticCode::Unbounded,
+                                        binding.predicate.span,
+                                        vec![binding.name.value.as_str().to_owned()],
+                                        "partition-set route and page maxima exceed the whole-request scan ceiling",
+                                        None,
+                                    )
+                                })?,
+                            key_fields: entity.primary_key().to_vec(),
+                        }
                     }
                     other => other,
                 };
@@ -2891,35 +3009,54 @@ impl<'a> Planner<'a> {
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
+            let is_compact_covered_many = surface.aggregates().is_empty()
+                && self.document.body.bindings.len() == 1
+                && binding.cardinality.value == Cardinality::Many
+                && binding_results.len() == 1
+                && dependency_fields
+                    .get(binding.name.value.as_str())
+                    .is_none_or(BTreeSet::is_empty);
+            let layout_fields = predicate_fields
+                .iter()
+                .chain(selected_fields.iter())
+                .cloned()
+                .collect::<BTreeSet<_>>();
             let covered_result_layout = match &access {
                 QueryAccessKind::Index { index, .. }
-                    if surface.aggregates().is_empty()
-                        && self.document.body.bindings.len() == 1
-                        && binding.cardinality.value == Cardinality::Many
-                        && binding_results.len() == 1
-                        && selected_fields.iter().all(|name| {
+                    if !matches!(row_limit, QueryRowLimit::CandidateComplete { .. })
+                        && layout_fields.iter().all(|name| {
                             entity.field(name).is_some_and(|field| {
                                 compact_result_type_supported(field.value_type())
                             })
                         })
-                        && dependency_fields
-                            .get(binding.name.value.as_str())
-                            .is_none_or(BTreeSet::is_empty)
                         && !self.catalog.internal_has_read_policy(entity.name()) =>
                 {
                     entity.index(index).and_then(|index_symbol| {
                         (!index_symbol.cover_fields().is_empty()
-                            && index_covers_fields(entity, index_symbol, &cover_required_fields))
+                            && (is_compact_covered_many
+                                || layout_fields
+                                    .iter()
+                                    .any(|name| index_symbol.cover_fields().contains(name)))
+                            && index_covers_fields(entity, index_symbol, &layout_fields))
                         .then(|| {
-                            cover_required_fields
+                            layout_fields
                                 .iter()
                                 .map(|name| {
                                     let field = entity.field(name)?;
                                     let source = if let Some(position) = index_symbol
                                         .fields()
                                         .iter()
-                                        .position(|candidate| candidate == name)
-                                    {
+                                        .zip(index_symbol.internal_encodings())
+                                        .position(|(candidate, encoding)| {
+                                            candidate == name
+                                                && matches!(
+                                                    encoding,
+                                                    IndexFieldEncodingV1::Canonical
+                                                        | IndexFieldEncodingV1::TextKey(
+                                                            TextKeyProfileV1::BinaryUtf8
+                                                        )
+                                                )
+                                        }) {
                                         CoveredResultSourceV1::IndexKey(
                                             u16::try_from(position).ok()?,
                                         )
@@ -3017,7 +3154,7 @@ impl<'a> Planner<'a> {
                 has_distinct_collection_dependency,
             )
             .ok_or_else(internal)?;
-            cost.add_step(entity, &step)?;
+            cost.add_step(entity, &step, is_compact_covered_many)?;
 
             let accumulator = auth
                 .entry(entity.name().to_owned())
@@ -3308,37 +3445,95 @@ impl<'a> Planner<'a> {
         entity: &EntitySymbol,
         span: Span,
         comparisons: &[Comparison<'_>],
+        allow_operational: bool,
     ) -> Result<(), PlannerDiagnostics> {
         for comparison in comparisons {
             let field = entity.field(comparison.field).ok_or_else(internal)?;
             let finite_partition_route = comparison.field == entity.partition_field()
                 && comparison.operator.is_binary(BinaryOperator::In);
-            if !comparison.operator.is_binary(BinaryOperator::Equal) && !finite_partition_route {
-                return Err(one(
-                    PlannerDiagnosticCode::TypeMismatch,
-                    span,
-                    vec![entity.name().to_owned(), comparison.field.to_owned()],
-                    "ordinary candidate V1 sources require exact equality predicates",
-                    None,
-                ));
+            if !allow_operational {
+                if !comparison.operator.is_binary(BinaryOperator::Equal) && !finite_partition_route
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::TypeMismatch,
+                        span,
+                        vec![entity.name().to_owned(), comparison.field.to_owned()],
+                        "ordinary candidate V1 sources require exact equality predicates",
+                        None,
+                    ));
+                }
+            } else {
+                match comparison.operator {
+                    SourcePredicateOperator::Unary(
+                        UnaryOperator::IsNull | UnaryOperator::IsNotNull | UnaryOperator::Exists,
+                    ) => {
+                        if !field.value_type().is_optional() {
+                            return Err(one(
+                                PlannerDiagnosticCode::TypeMismatch,
+                                span,
+                                vec![entity.name().to_owned(), comparison.field.to_owned()],
+                                "null/existence predicate requires an optional contract field",
+                                None,
+                            ));
+                        }
+                        continue;
+                    }
+                    SourcePredicateOperator::Binary(
+                        BinaryOperator::Equal
+                        | BinaryOperator::NotEqual
+                        | BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                        | BinaryOperator::In
+                        | BinaryOperator::Prefix,
+                    ) => {}
+                    _ => {
+                        return Err(one(
+                            PlannerDiagnosticCode::TypeMismatch,
+                            span,
+                            vec![entity.name().to_owned(), comparison.field.to_owned()],
+                            "candidate predicate operator is not supported on an ordinary index source",
+                            None,
+                        ));
+                    }
+                }
             }
             match comparison.value {
                 Some(Expression::Parameter(parameter)) => {
-                    let actual = self
+                    let parameter_type = self
                         .parameters
                         .get(parameter.value.as_str())
-                        .and_then(|value| {
-                            if finite_partition_route {
-                                match value {
-                                    TypeReference::BoundedSet { element, .. } => {
-                                        self.resolve_parameter_type(&element.value)
-                                    }
-                                    _ => None,
-                                }
-                            } else {
-                                self.resolve_parameter_type(value)
+                        .ok_or_else(internal)?;
+                    let effective_parameter_type = if self
+                        .unwrapped_optional_parameters
+                        .contains(parameter.value.as_str())
+                    {
+                        match parameter_type {
+                            TypeReference::Optional(inner) => &inner.value,
+                            _ => parameter_type,
+                        }
+                    } else {
+                        parameter_type
+                    };
+                    let actual = if finite_partition_route {
+                        match effective_parameter_type {
+                            TypeReference::BoundedSet { element, .. } => {
+                                self.resolve_parameter_type(&element.value)
                             }
-                        });
+                            _ => None,
+                        }
+                    } else if comparison.operator.is_binary(BinaryOperator::In) {
+                        match effective_parameter_type {
+                            TypeReference::Set(inner) => self.resolve_parameter_type(&inner.value),
+                            TypeReference::BoundedSet { element, .. } => {
+                                self.resolve_parameter_type(&element.value)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        self.resolve_parameter_type(effective_parameter_type)
+                    };
                     if actual.as_ref() != Some(field.value_type()) {
                         return Err(one(
                             PlannerDiagnosticCode::TypeMismatch,
@@ -3687,11 +3882,20 @@ impl QueryCostAccumulator {
             partition_maximums: document
                 .parameters
                 .iter()
-                .filter_map(|parameter| match &parameter.ty.value {
-                    TypeReference::BoundedSet { maximum, .. } => {
-                        Some((parameter.name.value.as_str().to_owned(), *maximum))
+                .filter_map(|parameter| {
+                    let ty = match &parameter.ty.value {
+                        TypeReference::Optional(inner) => &inner.value,
+                        other => other,
+                    };
+                    match ty {
+                        TypeReference::BoundedSet { maximum, .. } => {
+                            Some((parameter.name.value.as_str().to_owned(), *maximum))
+                        }
+                        TypeReference::Set(_) => {
+                            Some((parameter.name.value.as_str().to_owned(), 64))
+                        }
+                        _ => None,
                     }
-                    _ => None,
                 })
                 .collect(),
             scanned_index_rows: 0,
@@ -3707,8 +3911,9 @@ impl QueryCostAccumulator {
         &mut self,
         entity: &EntitySymbol,
         step: &QueryAccessStep,
+        legacy_compact_covered: bool,
     ) -> Result<(), PlannerDiagnostics> {
-        self.add_step_repeated(entity, step, 1)
+        self.add_step_repeated_inner(entity, step, 1, legacy_compact_covered)
     }
 
     fn add_step_repeated(
@@ -3716,6 +3921,16 @@ impl QueryCostAccumulator {
         entity: &EntitySymbol,
         step: &QueryAccessStep,
         repetitions: u64,
+    ) -> Result<(), PlannerDiagnostics> {
+        self.add_step_repeated_inner(entity, step, repetitions, false)
+    }
+
+    fn add_step_repeated_inner(
+        &mut self,
+        entity: &EntitySymbol,
+        step: &QueryAccessStep,
+        repetitions: u64,
+        legacy_compact_covered: bool,
     ) -> Result<(), PlannerDiagnostics> {
         if repetitions == 0 {
             return Err(internal());
@@ -3733,7 +3948,9 @@ impl QueryCostAccumulator {
             QueryAccessKind::Index { .. } => {
                 self.scanned_index_rows =
                     checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
-                self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+                if step.covered_result_layout().is_none() || legacy_compact_covered {
+                    self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+                }
             }
             QueryAccessKind::ExpansionIndex { .. } => {
                 self.scanned_index_rows =
@@ -3755,7 +3972,7 @@ impl QueryCostAccumulator {
                 // declared route plus one refill per emitted row. Mixed physical
                 // direction must complete bounded order groups and retains the
                 // conservative per-partition scan ceiling.
-                let partitions = u64::from(
+                let in_parameter =
                     step.predicates()
                         .iter()
                         .find_map(|predicate| match predicate.value() {
@@ -3765,10 +3982,16 @@ impl QueryCostAccumulator {
                                 Some(name)
                             }
                             _ => None,
-                        })
-                        .and_then(|name| self.partition_maximums.get(name.as_str()).copied())
-                        .ok_or_else(internal)?,
-                );
+                        });
+                let partitions = match in_parameter {
+                    Some(name) => u64::from(
+                        self.partition_maximums
+                            .get(name.as_str())
+                            .copied()
+                            .ok_or_else(internal)?,
+                    ),
+                    None => 1,
+                };
                 let mixed_order = order.iter().any(|term| term.direction() != *direction);
                 let (scanned, hydrated) = if mixed_order {
                     let work = checked_cost_product(
@@ -4282,6 +4505,8 @@ fn operational_component_capabilities(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OperationalAccessShape {
     order_start: usize,
+    has_terminal: bool,
+    has_non_partition_in_prefix: bool,
 }
 
 fn comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
@@ -4306,27 +4531,38 @@ fn candidate_ast_sources(
     }
 }
 
+fn candidate_ast_sources_mut(
+    expression: &mut riffdb_riffql_syntax::CandidateSetExpression,
+) -> Vec<&mut riffdb_riffql_syntax::CandidateSource> {
+    match expression {
+        riffdb_riffql_syntax::CandidateSetExpression::Single(source) => vec![source],
+        riffdb_riffql_syntax::CandidateSetExpression::Intersection(sources)
+        | riffdb_riffql_syntax::CandidateSetExpression::Union(sources) => {
+            sources.iter_mut().collect()
+        }
+        riffdb_riffql_syntax::CandidateSetExpression::Difference { positive, negative } => {
+            let mut sources = Vec::with_capacity(negative.len() + 1);
+            sources.push(positive);
+            sources.extend(negative);
+            sources
+        }
+    }
+}
+
 fn candidate_index_is_complete_prefix(
+    entity: &EntitySymbol,
     index: &riffdb_query_ir::IndexSymbol,
     comparisons: &[Comparison<'_>],
 ) -> bool {
-    if comparisons.is_empty() || comparisons.len() >= index.fields().len() {
+    if comparisons.is_empty() {
         return false;
     }
-    index.fields().iter().take(comparisons.len()).all(|field| {
-        comparisons.iter().any(|comparison| {
-            comparison.field == field
-                && (comparison.operator.is_binary(BinaryOperator::Equal)
-                    || (index.fields().first().is_some_and(|first| first == field)
-                        && comparison.operator.is_binary(BinaryOperator::In)))
-        })
-    }) && comparisons.iter().all(|comparison| {
-        index
-            .fields()
-            .iter()
-            .take(comparisons.len())
-            .any(|field| field == comparison.field)
-    })
+    let Some((order_start, has_terminal, _)) =
+        consume_operational_index_prefix(entity, index, comparisons, &[])
+    else {
+        return false;
+    };
+    has_terminal || order_start < index.fields().len()
 }
 
 fn collect_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparison<'a>>) {
@@ -4535,6 +4771,49 @@ fn choose_access(
         ));
     }
 
+    if binding.cardinality.value != Cardinality::Many
+        && !context.finite_partition_route
+        && binding.order.is_empty()
+    {
+        for index in entity.indexes().filter(|index| {
+            !index.cover_fields().is_empty()
+                && (index.is_unique()
+                    || entity
+                        .primary_key()
+                        .iter()
+                        .all(|pk| index.fields().contains(pk)))
+        }) {
+            let Some(shape) = operational_access_shape(entity, index, comparisons, binding) else {
+                continue;
+            };
+            if shape.order_start != index.fields().len() || shape.has_non_partition_in_prefix {
+                continue;
+            }
+            if !index
+                .fields()
+                .iter()
+                .any(|field| field == entity.partition_field())
+            {
+                continue;
+            }
+            if context
+                .cover_required_fields
+                .iter()
+                .any(|field| index.cover_fields().contains(field))
+                && index_covers_fields(entity, index, context.cover_required_fields)
+            {
+                return Ok((
+                    QueryAccessKind::Index {
+                        index: index.name().to_owned(),
+                        fields: index.fields().to_vec(),
+                        direction: AccessDirection::Forward,
+                    },
+                    Some(index.internal_id()),
+                ));
+            }
+        }
+    }
+
     if entity.primary_key().iter().all(|field| {
         comparisons.iter().any(|comparison| {
             comparison.field == field && comparison.operator.is_binary(BinaryOperator::Equal)
@@ -4556,7 +4835,7 @@ fn choose_access(
                 else {
                     continue;
                 };
-                if shape.order_start != index.fields().len() {
+                if shape.order_start != index.fields().len() || shape.has_non_partition_in_prefix {
                     continue;
                 }
                 if !index
@@ -4610,34 +4889,29 @@ fn choose_access(
         .filter_map(|term| path_field(&term.path.value))
         .collect::<Vec<_>>();
     let first_direction = binding.order[0].direction.value;
-    if !context.finite_partition_route
-        && binding
-            .order
-            .iter()
-            .any(|term| term.direction.value != first_direction)
-    {
-        return Err(one(
-            PlannerDiagnosticCode::Unordered,
-            binding.order[0].direction.span,
-            vec![binding.name.value.as_str().to_owned()],
-            "index ordering must be wholly forward or wholly reverse",
-            suggested_index(entity, comparisons, binding),
-        ));
-    }
+    let mixed_order = binding
+        .order
+        .iter()
+        .any(|term| term.direction.value != first_direction);
 
     let mut first_compatible = None;
     for index in entity.indexes() {
         let Some(shape) = operational_access_shape(entity, index, comparisons, binding) else {
             continue;
         };
-        if context.finite_partition_route
-            && shape.order_start > 1
-            && index.fields()[1..shape.order_start].iter().any(|field| {
-                !comparisons.iter().any(|comparison| {
-                    comparison.field == field
-                        && comparison.operator.is_binary(BinaryOperator::Equal)
-                })
-            })
+        if context.finite_partition_route && shape.has_non_partition_in_prefix {
+            continue;
+        }
+        if (context.finite_partition_route || mixed_order || shape.has_non_partition_in_prefix)
+            && (binding.expansion.is_some()
+                || shape.has_terminal
+                || index.fields()[..shape.order_start].iter().any(|field| {
+                    !comparisons.iter().any(|comparison| {
+                        comparison.field == field
+                            && (comparison.operator.is_binary(BinaryOperator::Equal)
+                                || comparison.operator.is_binary(BinaryOperator::In))
+                    })
+                }))
         {
             continue;
         }
@@ -4681,6 +4955,16 @@ fn choose_access(
         return Ok(candidate);
     }
 
+    if !context.finite_partition_route && mixed_order {
+        return Err(one(
+            PlannerDiagnosticCode::Unordered,
+            binding.order[0].direction.span,
+            vec![binding.name.value.as_str().to_owned()],
+            "index ordering must be wholly forward or wholly reverse",
+            suggested_index(entity, comparisons, binding),
+        ));
+    }
+
     Err(one(
         PlannerDiagnosticCode::Unindexed,
         binding.predicate.span,
@@ -4697,7 +4981,18 @@ fn index_covers_fields(
 ) -> bool {
     required.iter().all(|field| {
         entity.primary_key().contains(field)
-            || index.fields().contains(field)
+            || index
+                .fields()
+                .iter()
+                .zip(index.internal_encodings())
+                .any(|(candidate, encoding)| {
+                    candidate == field
+                        && matches!(
+                            encoding,
+                            IndexFieldEncodingV1::Canonical
+                                | IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)
+                        )
+                })
             || index.cover_fields().contains(field)
     })
 }
@@ -4761,14 +5056,15 @@ fn suggested_index(
     })
 }
 
-fn operational_access_shape(
+fn consume_operational_index_prefix(
     entity: &EntitySymbol,
     index: &riffdb_query_ir::IndexSymbol,
     comparisons: &[Comparison<'_>],
-    binding: &riffdb_riffql_syntax::Binding,
-) -> Option<OperationalAccessShape> {
+    order_fields: &[&str],
+) -> Option<(usize, bool, bool)> {
     let mut consumed = vec![false; comparisons.len()];
     let mut order_start = 0;
+    let mut has_non_partition_in_prefix = false;
 
     while order_start < index.fields().len() {
         let field = index.fields()[order_start].as_str();
@@ -4794,6 +5090,9 @@ fn operational_access_shape(
                 )
             )
         }) {
+            if has_non_partition_in_prefix {
+                return None;
+            }
             let has_complement = matching
                 .iter()
                 .any(|(_, comparison)| comparison.operator.is_binary(BinaryOperator::NotEqual));
@@ -4853,7 +5152,10 @@ fn operational_access_shape(
             for (comparison_index, _) in matching {
                 consumed[comparison_index] = true;
             }
-            break;
+            if consumed.iter().any(|consumed| !consumed) {
+                return None;
+            }
+            return Some((order_start, true, false));
         }
         let [(comparison_index, comparison)] = matching.as_slice() else {
             return None;
@@ -4876,18 +5178,52 @@ fn operational_access_shape(
                 order_start += 1;
             }
             SourcePredicateOperator::Binary(BinaryOperator::In) if capabilities.membership => {
+                let is_terminal = order_fields.first() == Some(&field)
+                    || (order_fields.is_empty()
+                        && consumed
+                            .iter()
+                            .enumerate()
+                            .all(|(idx, c)| *c || idx == *comparison_index));
+                if is_terminal {
+                    if has_non_partition_in_prefix {
+                        return None;
+                    }
+                    consumed[*comparison_index] = true;
+                    if consumed.iter().any(|consumed| !consumed) {
+                        return None;
+                    }
+                    return Some((order_start, true, false));
+                }
+                if has_non_partition_in_prefix
+                    || !matches!(comparison.value, Some(Expression::Parameter(_)))
+                {
+                    return None;
+                }
+                has_non_partition_in_prefix = true;
                 consumed[*comparison_index] = true;
-                break;
+                order_start += 1;
             }
             SourcePredicateOperator::Binary(BinaryOperator::Prefix) if capabilities.prefix => {
+                if has_non_partition_in_prefix {
+                    return None;
+                }
                 consumed[*comparison_index] = true;
-                break;
+                if consumed.iter().any(|consumed| !consumed) {
+                    return None;
+                }
+                return Some((order_start, true, false));
             }
             SourcePredicateOperator::Unary(UnaryOperator::IsNotNull | UnaryOperator::Exists)
                 if capabilities.presence_state =>
             {
+                if has_non_partition_in_prefix {
+                    return None;
+                }
                 consumed[*comparison_index] = true;
-                break;
+                if consumed.iter().any(|consumed| !consumed) {
+                    return None;
+                }
+                return Some((order_start, true, false));
             }
             _ => return None,
         }
@@ -4896,12 +5232,22 @@ fn operational_access_shape(
     if consumed.iter().any(|consumed| !consumed) {
         return None;
     }
+    Some((order_start, false, has_non_partition_in_prefix))
+}
 
+fn operational_access_shape(
+    entity: &EntitySymbol,
+    index: &riffdb_query_ir::IndexSymbol,
+    comparisons: &[Comparison<'_>],
+    binding: &riffdb_riffql_syntax::Binding,
+) -> Option<OperationalAccessShape> {
     let order_fields = binding
         .order
         .iter()
         .filter_map(|term| path_field(&term.path.value))
         .collect::<Vec<_>>();
+    let (order_start, has_terminal, has_non_partition_in_prefix) =
+        consume_operational_index_prefix(entity, index, comparisons, &order_fields)?;
     let remaining_fields = &index.fields()[order_start..];
     if remaining_fields.len() != order_fields.len()
         || !remaining_fields
@@ -4927,7 +5273,11 @@ fn operational_access_shape(
         }
     }
 
-    Some(OperationalAccessShape { order_start })
+    Some(OperationalAccessShape {
+        order_start,
+        has_terminal,
+        has_non_partition_in_prefix,
+    })
 }
 
 fn maximum_rows(
@@ -5038,6 +5388,24 @@ fn document_limit_maximum(document: &Document, parameter: &str) -> Option<u64> {
             TypeReference::Limit => Some(riffdb_query_ir::max_query_page_take()),
             TypeReference::BoundedLimit(maximum) => Some(maximum),
             _ => None,
+        })
+}
+
+fn document_set_maximum(document: &Document, parameter: &str) -> Option<u64> {
+    document
+        .parameters
+        .iter()
+        .find(|candidate| candidate.name.value.as_str() == parameter)
+        .and_then(|candidate| {
+            let ty = match &candidate.ty.value {
+                TypeReference::Optional(inner) => &inner.value,
+                other => other,
+            };
+            match ty {
+                TypeReference::BoundedSet { maximum, .. } => Some(u64::from(*maximum)),
+                TypeReference::Set(_) => Some(64),
+                _ => None,
+            }
         })
 }
 
@@ -5251,16 +5619,6 @@ fn binding_field_path(
     }
 }
 
-fn first_presence_guard_span(expression: &Expression) -> Option<Span> {
-    match expression {
-        Expression::PresenceGuard { parameter, .. } => Some(parameter.span),
-        Expression::Unary { operand, .. } => first_presence_guard_span(&operand.value),
-        Expression::Binary { left, right, .. } => first_presence_guard_span(&left.value)
-            .or_else(|| first_presence_guard_span(&right.value)),
-        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => None,
-    }
-}
-
 fn first_operational_expression_span(expression: &Expression) -> Option<Span> {
     match expression {
         Expression::PresenceGuard { parameter, .. } => Some(parameter.span),
@@ -5395,5 +5753,141 @@ mod operational_component_registry_tests {
                 order: true,
             }
         );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, OQ-001, OQ-002
+    #[test]
+    fn order_family_expands_presence_and_order_variants() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketStatus { Open, Closed }
+  enum TicketOrder { Recent, Oldest }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field assignee_id: uuid
+    field updated_at: timestamp
+    index by_org_updated (organization_id, updated_at, ticket_id)
+    index by_org_status_updated (organization_id, status, updated_at, ticket_id)
+    index by_org_assignee_updated (organization_id, assignee_id, updated_at, ticket_id)
+    index by_org_status_assignee_updated (organization_id, status, assignee_id, updated_at, ticket_id)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = riffdb_contract_compiler::compile_contract_source(contract).expect("contract");
+        let catalog = super::SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query InboxTickets(
+    $organization_id: Ticket.organization_id,
+    $status: Ticket.status?,
+    $assignee_id: Ticket.assignee_id?,
+    $order: TicketOrder
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+          && when $assignee_id { assignee_id == $assignee_id }
+        order by $order {
+            Recent: updated_at desc, ticket_id desc;
+            Oldest: updated_at asc, ticket_id asc;
+        }
+        take 25
+
+    return Found {
+        tickets: tickets { ticket_id status updated_at }
+    }
+    outcomes Found
+}
+"#;
+        let parsed = riffdb_riffql_syntax::parse_query(query).expect("parse");
+        let family = super::compile_order_query_family(&parsed, &catalog)
+            .expect("order family with when $param filters compiles");
+        assert_eq!(
+            family.presence_parameters(),
+            &["assignee_id".to_owned(), "status".to_owned()]
+        );
+        // 2^2 presence masks * 2 order variants = 8 compiled members.
+        assert_eq!(family.members().len(), 8);
+        assert!(
+            family
+                .select_name_with_presence(&[false, false], "Recent")
+                .is_some()
+        );
+        assert!(
+            family
+                .select_name_with_presence(&[true, false], "Recent")
+                .is_some()
+        );
+        assert!(
+            family
+                .select_name_with_presence(&[true, true], "Oldest")
+                .is_some()
+        );
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002, OQ-003
+    #[test]
+    fn candidate_source_operational_predicates_compile_and_execute() {
+        let contract = r#"
+contract Support version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field title: string<120>
+    field priority: i64
+    field updated_at: timestamp
+    index by_org_updated (organization_id, updated_at, ticket_id)
+  }
+  entity TicketSignal {
+    key (organization_id: uuid, signal_id: uuid)
+    field ticket_id: uuid
+    field score: i64
+    field label: string<64>
+    field resolved_at: optional<timestamp>
+    index by_score (organization_id, resolved_at, score, ticket_id, signal_id) presence(resolved_at)
+    index by_label (organization_id, label, ticket_id, signal_id) text_key(label, binary_utf8_v1)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate TicketSignals { root TicketSignal partition_by organization_id conflict_key (organization_id, signal_id) }
+}
+"#;
+        let bundle = riffdb_contract_compiler::compile_contract_source(contract).expect("contract");
+        let catalog = super::SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query SignaledTickets(
+    $organization_id: Ticket.organization_id,
+    $min_score: TicketSignal.score,
+    $label_prefix: TicketSignal.label
+) {
+    candidates signaled_ids: Ticket.ticket_id
+        from intersect {
+            TicketSignal.ticket_id using by_score where organization_id == $organization_id && resolved_at is null && score >= $min_score,
+            TicketSignal.ticket_id using by_label where organization_id == $organization_id && label prefix $label_prefix,
+        }
+        within 100 else IntegrityFailure
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && ticket_id in signaled_ids
+        order by updated_at desc, ticket_id desc
+        take 20
+
+    return Found {
+        tickets: tickets { ticket_id title priority }
+    }
+    outcomes Found | IntegrityFailure
+}
+"#;
+        let parsed = riffdb_riffql_syntax::parse_query(query).expect("parse");
+        let family = super::compile_operational_query_family(&parsed, &catalog)
+            .expect("candidate operational predicates compile");
+        assert_eq!(family.members().len(), 1);
+        let program = family.members()[0].program();
+        assert_eq!(program.steps().len(), 3);
     }
 }

@@ -31000,11 +31000,11 @@ work_packages:
   human_review_triggers:
   - Non-partition bounded-set k-way merge or single-partition mixed ordering executes an unbounded index scan without a static scan ceiling.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [RQL-002, RQL-003, QRY-001, QRY-002]
+    evidence: cargo test -p riffdb-query-executor --lib non_partition_bounded_set_with_order_executes_k_way_merge && cargo test -p riffdb-query-executor --lib single_partition_mixed_direction_order_executes_bounded_merge
+    decision: Non-partition bounded-set IN prefix + trailing order by and single-partition mixed asc/desc ordering lower to PartitionSetIndex and execute via bounded k-way merge and canonical continuation markers.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31038,11 +31038,11 @@ work_packages:
   human_review_triggers:
   - Covered-index step execution alters negotiated compact wire carriage for multi-step, singular, or aggregate queries.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15T14:05:00-05:00'
+    requirements_satisfied: [RQL-003, RQL-004, QRY-001, QRY-007]
+    evidence: covered_index_executes_across_multi_binding_singular_and_aggregate_steps in crates/riffdb-query-executor/src/lib.rs
+    decision: Generalized CoveredResultLayoutV1 across multi-binding, one/maybe, and aggregate source steps with zero-point-read cost accounting while keeping compact positional wire carriage scoped to single-step Many queries.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -31061,25 +31061,24 @@ work_packages:
   allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, examples/**, docs/**, fixtures/**, scripts/**]
   deliverables:
   - End-to-end tests in crates/riffdb-query-compiler, crates/riffdb-query-module, crates/riffdb-query-executor, and crates/riffdb-service
-  - Updated RiffQL reference documentation in docs/reference/riffql.md
+  - Updated RiffQL reference documentation in docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md
   acceptance_commands:
   - ./scripts/acceptance --wp WP-851
   exit_gate: All five ADR-0307 RiffQL planner and executor capabilities are
     proven by automated tests across compiler, module, executor, and service
-    boundaries, and docs/reference/riffql.md is updated and passes handbook
-    checks.
+    boundaries, and docs/riffql/LANGUAGE.md and docs/riffql/PLANNING.md are
+    updated and pass handbook checks.
   standing_design_tests:
     interface_safety: Public RiffQL handbook examples match exact compiled and executed semantics.
     scale: All tested real-world query shapes execute within static scan, merge, and fuel bounds.
   human_review_triggers:
   - Handbook examples describe unimplemented or unbounded query shapes.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15T14:05:00-05:00'
+    requirements_satisfied: [RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007]
+    evidence: real_world_complex_queries_compile_and_execute in crates/riffdb-query-executor/src/lib.rs; docs/riffql/LANGUAGE.md; docs/riffql/PLANNING.md
+    decision: Verified all five ADR-0307 real-world RiffQL capabilities end to end and updated the public RiffQL handbook reference.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
-

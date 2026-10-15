@@ -74,14 +74,25 @@ continuation before the predicate and silently omit matches.
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice. The additive
 finite partition-set route is not a join: it replicates one compiler-sealed
-local index plan over caller-submitted bounded routes in one read view. Uniform
-orders use a bounded k-way heap; mixed physical directions use a bounded
-complete-group path. Both produce one globally ordered page and one opaque
-cursor only after whole-set policy and epoch observation succeeds.
-Compiler-proved exact predicates may consume index components between the
-partition route and order suffix. Those values form each local physical prefix
-and are applied before merge, limit, and cursor selection; an absent compatible
-covering index remains a typed `RDB-QP003` refusal rather than a residual filter.
+local index plan over caller-submitted bounded routes in one read view. The same
+bounded multi-stream operator also executes single-partition non-partition
+`field in $set` prefixes followed by trailing `order by` index columns and
+single-partition mixed `asc`/`desc` order suffixes. Uniform orders use a bounded
+k-way heap; mixed physical directions use a bounded complete-group path. Both
+produce one globally ordered page and one opaque cursor only after whole-set
+policy and epoch observation succeeds. Compiler-proved exact predicates may
+consume index components between the partition route and order suffix. Those
+values form each local physical prefix and are applied before merge, limit, and
+cursor selection; an absent compatible covering index remains a typed
+`RDB-QP003` refusal rather than a residual filter.
+
+When a declared index includes `cover (...)` fields and covers every predicate,
+order, dependency, and selected or aggregated field of an ordinary `Index` step
+(across single-step or multi-binding queries, singular `one`/`maybe` lookups, or
+operational `aggregate` source bindings) on an entity without row-read policy,
+the compiler seals a per-step `CoveredResultLayoutV1`. Covered steps reconstruct
+rows directly from index entries (`scan_covered`) without primary-key point
+reads and charge zero point reads in the whole-query cost vector.
 
 One-level expansion repeats a compiler-selected same-partition index access for
 each row of an earlier bounded driver. Planning proves the driver maximum,

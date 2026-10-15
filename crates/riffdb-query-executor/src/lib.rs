@@ -895,10 +895,7 @@ pub fn bound_index_range_schedule_v1(
                         leading.push(expanded);
                     }
                 }
-                if consumed + 1 != predicates.len() {
-                    return Err(QueryExecutionError::InvalidProgram);
-                }
-                return encode_prefix_schedule(schema, leading, *direction);
+                consumed += 1;
             }
             QueryPredicateOperator::IsNull => {
                 for values in &mut leading {
@@ -2401,7 +2398,13 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     if aggregates != program.surface().aggregates() {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    if program.steps().len() == 1 && program.steps()[0].covered_result_layout().is_some() {
+    if program.steps().len() == 1
+        && aggregates.is_empty()
+        && program.steps()[0].covered_result_layout().is_some()
+        && program.steps()[0].cardinality() == Cardinality::Many
+        && program.steps()[0].result_names().len() == 1
+        && program.steps()[0].dependencies().is_empty()
+    {
         return execute_covered_page_in_snapshot(program, parameters, prior, view, policy);
     }
     let mut fuel = QueryExecutionFuel::from_cost(program.cost());
@@ -2544,7 +2547,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let local = partition_local_predicates(
                         step,
                         &predicates,
-                        program.partition_parameter(),
+                        Some(program.partition_parameter()),
                         route,
                     )?;
                     let page = view
@@ -2693,7 +2696,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
-                let routes = partition_set_routes(program, parameters)?;
+                let (route_field, route_parameter, routes) =
+                    partition_set_step_routes(program, step, fields, parameters, &predicates)?;
                 let prior_marker = after
                     .map(|lower| {
                         decode_partition_set_marker(lower, order.len() + 1 + key_fields.len())
@@ -2708,7 +2712,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         &mut fuel,
                         step,
                         &predicates,
-                        program.partition_parameter(),
+                        route_field,
+                        route_parameter,
                         routes,
                         fields,
                         order,
@@ -2723,17 +2728,14 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let mut has_more = false;
                     let mut observations = Vec::new();
                     for route in routes {
-                        let local_predicates = partition_local_predicates(
-                            step,
-                            &predicates,
-                            program.partition_parameter(),
-                            route,
-                        )?;
+                        let local_predicates =
+                            partition_local_predicates(step, &predicates, route_parameter, route)?;
                         let (stream, epoch, stream_has_more) = execute_partition_set_stream(
                             view,
                             &mut fuel,
                             step,
                             &local_predicates,
+                            route_field,
                             route,
                             fields,
                             order,
@@ -2749,7 +2751,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         streams.push(stream);
                     }
                     let (merged, discarded) =
-                        merge_partition_runs(streams, merge_limit, fields, order, key_fields)?;
+                        merge_partition_runs(streams, merge_limit, route_field, order, key_fields)?;
                     has_more |= discarded;
                     (merged, observations, has_more)
                 };
@@ -2763,7 +2765,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let lower = merged
                         .last()
                         .ok_or(QueryExecutionError::InvalidProgram)
-                        .and_then(|row| partition_set_marker(row, fields, order, key_fields))?;
+                        .and_then(|row| {
+                            partition_set_marker(row, route_field, order, key_fields)
+                        })?;
                     if lower.len() > MAX_QUERY_CONTINUATION_BYTES || continuation.is_some() {
                         return Err(QueryExecutionError::BoundExceeded);
                     }
@@ -2917,17 +2921,29 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     u64::try_from(observations.len())
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
                 )?;
-                let mut hydrated = observations
+                let mut hydrated = Vec::with_capacity(observations.len());
+                for (row, predicates) in observations
                     .into_iter()
                     .zip(&predicates)
                     .filter_map(|(row, predicates)| row.map(|row| (row, predicates)))
-                    .map(|(row, predicates)| {
-                        if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
-                            return Err(QueryExecutionError::InvalidProgram);
-                        }
-                        Ok(row)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                {
+                    let key_predicates_match = predicates
+                        .iter()
+                        .filter(|predicate| key_fields.iter().any(|key| key == predicate.field()))
+                        .all(|predicate| {
+                            predicate_values_match(
+                                step.entity(),
+                                std::slice::from_ref(predicate),
+                                |field| row.field(field),
+                            ) == Ok(true)
+                        });
+                    if row.entity() != step.entity() || !key_predicates_match {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
+                    if predicates_match(&row, predicates)? {
+                        hydrated.push(row);
+                    }
+                }
                 fuel.intermediates(
                     u64::try_from(hydrated.len())
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
@@ -4631,15 +4647,88 @@ fn partition_set_routes<'a>(
     Ok(routes.values())
 }
 
+fn partition_set_step_routes<'a>(
+    program: &'a QueryAccessProgramV1,
+    step: &'a QueryAccessStep,
+    fields: &'a [String],
+    parameters: &'a QueryParameters,
+    predicates: &'a [BoundPredicate],
+) -> Result<(&'a str, Option<&'a str>, &'a [CanonicalValue]), QueryExecutionError> {
+    if program.partition_route().is_finite_set() {
+        let route_field = fields
+            .first()
+            .ok_or(QueryExecutionError::InvalidProgram)?
+            .as_str();
+        let routes = partition_set_routes(program, parameters)?;
+        return Ok((route_field, Some(program.partition_parameter()), routes));
+    }
+    if let Some((route_field, route_param)) =
+        step.predicates()
+            .iter()
+            .find_map(|predicate| match predicate.value() {
+                QueryPredicateValue::Parameter(name)
+                    if predicate.operator() == QueryPredicateOperator::In =>
+                {
+                    Some((predicate.field(), name.as_str()))
+                }
+                _ => None,
+            })
+    {
+        let value =
+            parameters
+                .get(route_param)
+                .ok_or_else(|| QueryExecutionError::MissingParameter {
+                    parameter: route_param.to_owned(),
+                })?;
+        let CanonicalValue::List(routes) = value else {
+            return Err(QueryExecutionError::InvalidParameter {
+                parameter: route_param.to_owned(),
+            });
+        };
+        if routes.values().len() > MAX_QUERY_PARAMETERS
+            || routes.values().iter().any(|value| {
+                matches!(
+                    value,
+                    CanonicalValue::Null
+                        | CanonicalValue::List(_)
+                        | CanonicalValue::Record(_)
+                        | CanonicalValue::Vector(_)
+                )
+            })
+        {
+            return Err(QueryExecutionError::InvalidParameter {
+                parameter: route_param.to_owned(),
+            });
+        }
+        return Ok((route_field, Some(route_param), routes.values()));
+    }
+    let route_field = fields
+        .first()
+        .ok_or(QueryExecutionError::InvalidProgram)?
+        .as_str();
+    let route = predicates
+        .iter()
+        .find(|predicate| {
+            predicate.field() == route_field
+                && predicate.operator() == QueryPredicateOperator::Equal
+        })
+        .map(BoundPredicate::value)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    Ok((route_field, None, std::slice::from_ref(route)))
+}
+
 fn partition_local_predicates(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
-    route_parameter: &str,
+    route_parameter: Option<&str>,
     route: &CanonicalValue,
 ) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
     if step.predicates().len() != predicates.len() {
         return Err(QueryExecutionError::InvalidProgram);
     }
+    let Some(route_parameter) = route_parameter else {
+        return Ok(predicates.to_vec());
+    };
     let mut found = false;
     let local = step
         .predicates()
@@ -4670,14 +4759,14 @@ fn partition_local_predicates(
 
 fn partition_set_marker_values(
     row: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Vec<CanonicalValue>, QueryExecutionError> {
     order
         .iter()
         .map(QueryRootOrderTermV1::field)
-        .chain(fields.first().map(String::as_str))
+        .chain(std::iter::once(route_field))
         .chain(key_fields.iter().map(String::as_str))
         .map(|field| {
             row.field(field)
@@ -4692,11 +4781,11 @@ fn partition_set_marker_values(
 
 fn partition_set_marker(
     row: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Vec<u8>, QueryExecutionError> {
-    let values = partition_set_marker_values(row, fields, order, key_fields)?;
+    let values = partition_set_marker_values(row, route_field, order, key_fields)?;
     let value = CanonicalValue::list(values).map_err(|_| QueryExecutionError::BoundExceeded)?;
     encode_canonical_value(&value).map_err(|_| QueryExecutionError::BoundExceeded)
 }
@@ -4771,7 +4860,7 @@ fn partition_set_value_order(
 fn partition_set_row_order(
     left: &QueryRow,
     right: &QueryRow,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Ordering, QueryExecutionError> {
@@ -4810,16 +4899,15 @@ fn partition_set_row_order(
             return Ok(ordering);
         }
     }
-    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
-    let left_partition = left
-        .field(partition_field)
+    let left_route = left
+        .field(route_field)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let right_partition = right
-        .field(partition_field)
+    let right_route = right
+        .field(route_field)
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let partition_ordering = aggregate_scalar_order(left_partition, right_partition)?;
-    if partition_ordering != Ordering::Equal {
-        return Ok(partition_ordering);
+    let route_ordering = aggregate_scalar_order(left_route, right_route)?;
+    if route_ordering != Ordering::Equal {
+        return Ok(route_ordering);
     }
     for field in key_fields {
         let left_value = left
@@ -4865,7 +4953,7 @@ fn partition_set_physical_row_order(
 fn merge_partition_runs(
     streams: Vec<Vec<QueryRow>>,
     limit: usize,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
@@ -4887,7 +4975,7 @@ fn merge_partition_runs(
                     scanned_rows: 0,
                     buffered,
                 },
-                fields,
+                route_field,
                 order,
                 key_fields,
             )?;
@@ -4895,7 +4983,8 @@ fn merge_partition_runs(
     }
     let mut result = Vec::with_capacity(limit);
     while result.len() < limit {
-        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+        let Some(mut stream) = partition_heap_pop(&mut heap, route_field, order, key_fields)?
+        else {
             break;
         };
         result.push(
@@ -4906,7 +4995,7 @@ fn merge_partition_runs(
         );
         stream.row = stream.buffered.next();
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
     Ok((result, !heap.is_empty()))
@@ -4914,26 +5003,31 @@ fn merge_partition_runs(
 
 fn sort_partition_rows(
     rows: &mut [QueryRow],
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(), QueryExecutionError> {
     fn sift(
         rows: &mut [QueryRow],
         mut root: usize,
-        fields: &[String],
+        route_field: &str,
         order: &[QueryRootOrderTermV1],
         keys: &[String],
     ) -> Result<(), QueryExecutionError> {
         while root < rows.len() / 2 {
             let mut child = root * 2 + 1;
             if child + 1 < rows.len()
-                && partition_set_row_order(&rows[child], &rows[child + 1], fields, order, keys)?
-                    == Ordering::Less
+                && partition_set_row_order(
+                    &rows[child],
+                    &rows[child + 1],
+                    route_field,
+                    order,
+                    keys,
+                )? == Ordering::Less
             {
                 child += 1;
             }
-            if partition_set_row_order(&rows[root], &rows[child], fields, order, keys)?
+            if partition_set_row_order(&rows[root], &rows[child], route_field, order, keys)?
                 != Ordering::Less
             {
                 break;
@@ -4944,11 +5038,11 @@ fn sort_partition_rows(
         Ok(())
     }
     for root in (0..rows.len() / 2).rev() {
-        sift(rows, root, fields, order, key_fields)?;
+        sift(rows, root, route_field, order, key_fields)?;
     }
     for end in (1..rows.len()).rev() {
         rows.swap(0, end);
-        sift(&mut rows[..end], 0, fields, order, key_fields)?;
+        sift(&mut rows[..end], 0, route_field, order, key_fields)?;
     }
     Ok(())
 }
@@ -4957,7 +5051,7 @@ fn merge_partition_streams(
     left: Vec<QueryRow>,
     right: Vec<QueryRow>,
     limit: usize,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
@@ -4971,7 +5065,7 @@ fn merge_partition_streams(
     while merged.len() < limit {
         let take_left = match (left.peek(), right.peek()) {
             (Some(left), Some(right)) => {
-                partition_set_row_order(left, right, fields, order, key_fields)?
+                partition_set_row_order(left, right, route_field, order, key_fields)?
                     != Ordering::Greater
             }
             (Some(_), None) => true,
@@ -4988,10 +5082,12 @@ fn merge_partition_streams(
     Ok((merged, discarded))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn partition_set_physical_resume(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
     fields: &[String],
+    route_field: &str,
     key_fields: &[String],
     order: &[QueryRootOrderTermV1],
     route: &CanonicalValue,
@@ -5000,12 +5096,18 @@ fn partition_set_physical_resume(
     if marker.len() != order.len() + 1 + key_fields.len() {
         return Err(QueryExecutionError::InvalidContinuation);
     }
-    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let mut physical_index =
-        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let mut physical_index = partition_set_exact_physical_prefix(
+        step,
+        schema,
+        fields,
+        route_field,
+        order,
+        predicates,
+        route,
+    )?;
     let descriptor = step
         .internal_operational_index_descriptor()
         .ok_or(QueryExecutionError::InvalidProgram)?;
@@ -5035,7 +5137,7 @@ fn partition_set_physical_resume(
     let mut synthetic = marker.to_vec();
     synthetic[order.len()] = route.clone();
     for (offset, field) in key_fields.iter().enumerate() {
-        if field == partition_field {
+        if field == route_field {
             entity_values[offset] = route.clone();
             synthetic[key_offset + offset] = route.clone();
         }
@@ -5058,6 +5160,7 @@ fn partition_set_exact_physical_prefix(
     step: &QueryAccessStep,
     schema: &riffdb_contract_ir::KeySchema,
     fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     predicates: &[BoundPredicate],
     route: &CanonicalValue,
@@ -5078,25 +5181,23 @@ fn partition_set_exact_physical_prefix(
     let descriptor = step
         .internal_operational_index_descriptor()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let route_component = descriptor
-        .component(
-            0,
-            fields.first().ok_or(QueryExecutionError::InvalidProgram)?,
-        )
-        .ok_or(QueryExecutionError::InvalidProgram)?;
-    push_exact_index_prefix_value(schema, route_component, &mut physical, route)?;
-    for (field_position, field) in fields.iter().enumerate().take(order_start).skip(1) {
-        let mut matching = predicates.iter().filter(|predicate| {
-            predicate.field() == field && predicate.operator() == QueryPredicateOperator::Equal
-        });
-        let predicate = matching
-            .next()
-            .filter(|_| matching.next().is_none())
-            .ok_or(QueryExecutionError::InvalidProgram)?;
+    for (field_position, field) in fields.iter().enumerate().take(order_start) {
+        let value = if field == route_field {
+            route
+        } else {
+            let mut matching = predicates.iter().filter(|predicate| {
+                predicate.field() == field && predicate.operator() == QueryPredicateOperator::Equal
+            });
+            let predicate = matching
+                .next()
+                .filter(|_| matching.next().is_none())
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            predicate.value()
+        };
         let component = descriptor
             .component(field_position, field)
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        push_exact_index_prefix_value(schema, component, &mut physical, predicate.value())?;
+        push_exact_index_prefix_value(schema, component, &mut physical, value)?;
     }
     Ok(physical)
 }
@@ -5154,7 +5255,8 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
-    route_parameter: &str,
+    route_field: &str,
+    route_parameter: Option<&str>,
     routes: &[CanonicalValue],
     fields: &[String],
     order: &[QueryRootOrderTermV1],
@@ -5176,7 +5278,14 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
         let resume = prior_marker
             .map(|marker| {
                 partition_set_physical_resume(
-                    step, &local, fields, key_fields, order, route, marker,
+                    step,
+                    &local,
+                    fields,
+                    route_field,
+                    key_fields,
+                    order,
+                    route,
+                    marker,
                 )
             })
             .transpose()?;
@@ -5196,7 +5305,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             fuel,
             step,
             &mut stream,
-            fields,
+            route_field,
             order,
             key_fields,
             scan_ceiling,
@@ -5212,13 +5321,14 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             stream.epoch.ok_or(QueryExecutionError::BackendIntegrity)?,
         )?;
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
 
     let mut rows = Vec::with_capacity(output_limit);
     while rows.len() < output_limit {
-        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+        let Some(mut stream) = partition_heap_pop(&mut heap, route_field, order, key_fields)?
+        else {
             break;
         };
         let row = stream
@@ -5226,7 +5336,8 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             .take()
             .ok_or(QueryExecutionError::InvalidProgram)?;
         if let Some(previous) = rows.last()
-            && partition_set_row_order(previous, &row, fields, order, key_fields)? != Ordering::Less
+            && partition_set_row_order(previous, &row, route_field, order, key_fields)?
+                != Ordering::Less
         {
             return Err(QueryExecutionError::BackendIntegrity);
         }
@@ -5236,7 +5347,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             fuel,
             step,
             &mut stream,
-            fields,
+            route_field,
             order,
             key_fields,
             scan_ceiling,
@@ -5251,7 +5362,7 @@ fn execute_partition_set_uniform_merge<V: QueryReadView>(
             limit.saturating_add(1),
         )?;
         if stream.row.is_some() {
-            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+            partition_heap_push(&mut heap, stream, route_field, order, key_fields)?;
         }
     }
     Ok((rows, observations, !heap.is_empty()))
@@ -5263,7 +5374,7 @@ fn load_partition_merge_row<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     stream: &mut PartitionMergeStream,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
     scan_ceiling: u32,
@@ -5277,9 +5388,9 @@ fn load_partition_merge_row<V: QueryReadView>(
     loop {
         if let Some(row) = stream.buffered.next() {
             if prior_marker.is_some_and(|marker| {
-                partition_set_marker_values(&row, fields, order, key_fields).and_then(|values| {
-                    partition_set_value_order(&values, marker, order, key_fields)
-                }) != Ok(Ordering::Greater)
+                partition_set_marker_values(&row, route_field, order, key_fields).and_then(
+                    |values| partition_set_value_order(&values, marker, order, key_fields),
+                ) != Ok(Ordering::Greater)
             }) {
                 continue;
             }
@@ -5352,7 +5463,7 @@ fn load_partition_merge_row<V: QueryReadView>(
 fn partition_heap_push(
     heap: &mut Vec<PartitionMergeStream>,
     stream: PartitionMergeStream,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<(), QueryExecutionError> {
@@ -5368,7 +5479,7 @@ fn partition_heap_push(
             .row
             .as_ref()
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        if partition_set_row_order(child_row, parent_row, fields, order, key_fields)?
+        if partition_set_row_order(child_row, parent_row, route_field, order, key_fields)?
             != Ordering::Less
         {
             break;
@@ -5381,7 +5492,7 @@ fn partition_heap_push(
 
 fn partition_heap_pop(
     heap: &mut Vec<PartitionMergeStream>,
-    fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     key_fields: &[String],
 ) -> Result<Option<PartitionMergeStream>, QueryExecutionError> {
@@ -5408,7 +5519,7 @@ fn partition_heap_pop(
                 .row
                 .as_ref()
                 .ok_or(QueryExecutionError::InvalidProgram)?;
-            if partition_set_row_order(right_row, left_row, fields, order, key_fields)?
+            if partition_set_row_order(right_row, left_row, route_field, order, key_fields)?
                 == Ordering::Less
             {
                 right
@@ -5426,7 +5537,7 @@ fn partition_heap_pop(
             .row
             .as_ref()
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        if partition_set_row_order(parent_row, child_row, fields, order, key_fields)?
+        if partition_set_row_order(parent_row, child_row, route_field, order, key_fields)?
             != Ordering::Greater
         {
             break;
@@ -5443,6 +5554,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
     fuel: &mut QueryExecutionFuel,
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
+    route_field: &str,
     route: &CanonicalValue,
     fields: &[String],
     order: &[QueryRootOrderTermV1],
@@ -5458,11 +5570,25 @@ fn execute_partition_set_stream<V: QueryReadView>(
         .map(|marker| {
             if mixed {
                 partition_set_group_resume(
-                    step, predicates, fields, order, direction, route, marker,
+                    step,
+                    predicates,
+                    fields,
+                    route_field,
+                    order,
+                    direction,
+                    route,
+                    marker,
                 )
             } else {
                 partition_set_physical_resume(
-                    step, predicates, fields, key_fields, order, route, marker,
+                    step,
+                    predicates,
+                    fields,
+                    route_field,
+                    key_fields,
+                    order,
+                    route,
+                    marker,
                 )
             }
         })
@@ -5520,12 +5646,13 @@ fn execute_partition_set_stream<V: QueryReadView>(
         fuel.intermediates(page.rows.len() as u64)?;
         if mixed {
             let mut incoming = page.rows;
-            sort_partition_rows(&mut incoming, fields, order, key_fields)?;
+            sort_partition_rows(&mut incoming, route_field, order, key_fields)?;
             let total = rows
                 .len()
                 .checked_add(incoming.len())
                 .ok_or(QueryExecutionError::BoundExceeded)?;
-            rows = merge_partition_streams(rows, incoming, total, fields, order, key_fields)?.0;
+            rows =
+                merge_partition_streams(rows, incoming, total, route_field, order, key_fields)?.0;
         } else {
             rows.extend(page.rows);
         }
@@ -5536,7 +5663,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
             break;
         }
         if rows.windows(2).any(|pair| {
-            partition_set_row_order(&pair[0], &pair[1], fields, order, key_fields)
+            partition_set_row_order(&pair[0], &pair[1], route_field, order, key_fields)
                 != Ok(Ordering::Less)
         }) {
             return Err(QueryExecutionError::BackendIntegrity);
@@ -5545,9 +5672,9 @@ fn execute_partition_set_stream<V: QueryReadView>(
             .iter()
             .filter(|row| {
                 prior_marker.is_none_or(|marker| {
-                    partition_set_marker_values(row, fields, order, key_fields).and_then(|values| {
-                        partition_set_value_order(&values, marker, order, key_fields)
-                    }) == Ok(Ordering::Greater)
+                    partition_set_marker_values(row, route_field, order, key_fields).and_then(
+                        |values| partition_set_value_order(&values, marker, order, key_fields),
+                    ) == Ok(Ordering::Greater)
                 })
             })
             .collect::<Vec<_>>();
@@ -5581,7 +5708,7 @@ fn execute_partition_set_stream<V: QueryReadView>(
     }
     if let Some(marker) = prior_marker {
         rows.retain(|row| {
-            partition_set_marker_values(row, fields, order, key_fields)
+            partition_set_marker_values(row, route_field, order, key_fields)
                 .and_then(|values| partition_set_value_order(&values, marker, order, key_fields))
                 == Ok(Ordering::Greater)
         });
@@ -5594,10 +5721,12 @@ fn execute_partition_set_stream<V: QueryReadView>(
     Ok((rows, epoch.unwrap_or(0), stopped_with_more))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn partition_set_group_resume(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
     fields: &[String],
+    route_field: &str,
     order: &[QueryRootOrderTermV1],
     direction: AccessDirection,
     route: &CanonicalValue,
@@ -5609,8 +5738,15 @@ fn partition_set_group_resume(
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let mut physical =
-        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let mut physical = partition_set_exact_physical_prefix(
+        step,
+        schema,
+        fields,
+        route_field,
+        order,
+        predicates,
+        route,
+    )?;
     let order_start = fields
         .len()
         .checked_sub(order.len())
@@ -6351,17 +6487,63 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .cloned()
                 .unwrap_or_default();
             rows.retain(|row| predicates_match(row, predicates) == Ok(true));
-            if after.is_some() && !after_inclusive && limit == 1 && !rows.is_empty() {
-                rows.remove(0);
-            }
+            let offset = match after {
+                Some([1, start]) if !after_inclusive => usize::from(*start).min(rows.len()),
+                Some(_) if !after_inclusive && limit == 1 && !rows.is_empty() => 1,
+                _ => 0,
+            };
+            rows.drain(..offset);
             let limit = usize::try_from(limit).expect("test limit");
             if rows.len() > limit {
                 rows.truncate(limit);
-                QueryScanPage::continued(rows, route.unwrap_or(1), limit as u64 + 1, vec![1])
-                    .ok_or(())
+                let next_offset = u8::try_from(offset + limit).expect("test offset");
+                QueryScanPage::continued(
+                    rows,
+                    route.unwrap_or(1),
+                    limit as u64 + 1,
+                    vec![1, next_offset],
+                )
+                .ok_or(())
             } else {
                 Ok(QueryScanPage::exact_end(rows, route.unwrap_or(1)))
             }
+        }
+
+        fn scan_covered(
+            &mut self,
+            step: &QueryAccessStep,
+            predicates: &[BoundPredicate],
+            limit: u64,
+            after: Option<&[u8]>,
+            policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+        ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+            let Some(layout) = step.covered_result_layout() else {
+                return Ok(None);
+            };
+            let page = self.scan(step, predicates, limit, after, false, policy)?;
+            let rows = page
+                .rows
+                .into_iter()
+                .map(|row| {
+                    layout
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            row.field(field.name())
+                                .cloned()
+                                .unwrap_or(CanonicalValue::Null)
+                        })
+                        .collect()
+                })
+                .collect();
+            Ok(CoveredResultBatch::checked(
+                layout.clone(),
+                rows,
+                page.epoch,
+                page.scanned_rows,
+                0,
+                page.continuation,
+            ))
         }
 
         fn nearest(
@@ -6521,7 +6703,8 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 &mut fuel,
                 step,
                 &predicates,
-                "experiment_ids",
+                &fields[0],
+                Some("experiment_ids"),
                 &routes,
                 fields,
                 order,
@@ -6593,12 +6776,12 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             )
         });
         for run in &mut runs {
-            sort_partition_rows(run, fields, order, key_fields).unwrap();
+            sort_partition_rows(run, &fields[0], order, key_fields).unwrap();
         }
         runs.push(Vec::new());
         for limit in [0, 1, 3, 64, 131, 132, 133] {
             let (actual, discarded) =
-                merge_partition_runs(runs.clone(), limit, fields, order, key_fields).unwrap();
+                merge_partition_runs(runs.clone(), limit, &fields[0], order, key_fields).unwrap();
             assert_eq!(actual, expected[..limit.min(expected.len())]);
             assert_eq!(discarded, limit < expected.len());
         }
@@ -6613,14 +6796,14 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             merge_partition_runs(
                 vec![vec![make(1, 1)], vec![invalid.clone()]],
                 2,
-                fields,
+                &fields[0],
                 order,
                 key_fields
             )
             .is_err()
         );
         assert!(
-            sort_partition_rows(&mut [make(1, 1), invalid], fields, order, key_fields).is_err()
+            sort_partition_rows(&mut [make(1, 1), invalid], &fields[0], order, key_fields).is_err()
         );
     }
 
@@ -8323,6 +8506,873 @@ query CategoryBreakdown($organization_id: Ticket.organization_id) {
             ),
             Err(QueryExecutionError::BoundExceeded),
             "exceeding explicit group by take N fails closed rather than truncating"
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, OQ-001, OQ-002, OQ-003
+    #[test]
+    fn order_family_with_presence_and_candidate_operational_predicates_execute() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketOrder { PriorityDesc, PriorityAsc }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: string<32>
+    field priority: i64
+    field title: string<120>
+    index by_org_priority (organization_id, priority, ticket_id)
+    index by_org_status_priority (organization_id, status, priority, ticket_id)
+  }
+  entity TicketSignal {
+    key (organization_id: uuid, signal_id: uuid)
+    field ticket_id: uuid
+    field score: i64
+    field resolved_at: optional<timestamp>
+    index by_score (organization_id, resolved_at, score, ticket_id, signal_id) presence(resolved_at)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate TicketSignals { root TicketSignal partition_by organization_id conflict_key (organization_id, signal_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query SignaledInbox(
+    $organization_id: Ticket.organization_id,
+    $min_score: TicketSignal.score,
+    $status: Ticket.status?,
+    $order: TicketOrder
+) {
+    candidates hot_ids: Ticket.ticket_id
+        from TicketSignal.ticket_id using by_score where organization_id == $organization_id && resolved_at is null && score >= $min_score
+        within 50 else IntegrityFailure
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+          && ticket_id in hot_ids
+        order by $order {
+            PriorityDesc: priority desc, ticket_id desc;
+            PriorityAsc: priority asc, ticket_id asc;
+        }
+        take 20
+
+    return Found {
+        tickets: tickets { ticket_id status priority title }
+    }
+    outcomes Found | IntegrityFailure
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(query).expect("parse"),
+            &catalog,
+        )
+        .expect("compile order family with presence and candidate operational predicates");
+        assert_eq!(family.members().len(), 4);
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                (
+                    "@candidate:hot_ids:0".to_owned(),
+                    vec![
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([91; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("score", CanonicalValue::I64(90)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([92; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("score", CanonicalValue::I64(85)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    "tickets".to_owned(),
+                    vec![
+                        row(
+                            "Ticket",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("status", CanonicalValue::string("Open").unwrap()),
+                                ("priority", CanonicalValue::I64(10)),
+                                ("title", CanonicalValue::string("First").unwrap()),
+                            ],
+                        ),
+                        row(
+                            "Ticket",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("status", CanonicalValue::string("Closed").unwrap()),
+                                ("priority", CanonicalValue::I64(20)),
+                                ("title", CanonicalValue::string("Second").unwrap()),
+                            ],
+                        ),
+                    ],
+                ),
+            ]),
+        };
+
+        let open_params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("min_score".to_owned(), CanonicalValue::I64(80)),
+            ("status".to_owned(), CanonicalValue::string("Open").unwrap()),
+            (
+                "order".to_owned(),
+                CanonicalValue::string("PriorityDesc").unwrap(),
+            ),
+        ]))
+        .expect("params");
+        let open_member = family
+            .select_name_with_presence(&[true], "PriorityDesc")
+            .expect("select open member");
+        let open_result = execute_operational_page_in_snapshot(
+            open_member.program(),
+            family.aggregates(),
+            &open_params,
+            None,
+            &mut view,
+        )
+        .expect("execute open member");
+        let Some(QueryResultValue::Many(open_rows)) = open_result.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(open_rows.len(), 1);
+        assert_eq!(
+            open_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([10; 16]))
+        );
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002
+    #[test]
+    fn non_partition_bounded_set_with_order_executes_k_way_merge() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketStatus { Open, InProgress, Blocked, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field updated_at: i64
+    field title: string<120>
+    index by_org_updated (organization_id, updated_at, ticket_id)
+    index by_org_status_updated (organization_id, status, updated_at, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query FilteredBoard(
+    $organization_id: Ticket.organization_id,
+    $statuses: Set<Ticket.status, 4>?,
+    $after: Cursor?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $statuses { status in $statuses }
+        order by updated_at desc, ticket_id desc
+        take 2 after $after
+
+    return Found {
+        tickets: tickets { ticket_id status updated_at title }
+    }
+    outcomes Found
+}
+"#;
+        let family =
+            compile_operational_query_family(&parse_query(query).expect("parse"), &catalog)
+                .expect("compile non-partition bounded set with order");
+        let present_member = family.select(&[true]).expect("present member");
+        assert!(matches!(
+            present_member.program().steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex { index, .. } if index == "by_org_status_updated"
+        ));
+
+        let status_enum = catalog.enumeration("TicketStatus").expect("TicketStatus");
+        let status_val = |name: &str| CanonicalValue::Enum {
+            type_id: status_enum.internal_id(),
+            variant_id: status_enum.variant(name).expect("variant"),
+        };
+
+        let all_tickets = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([4; 16])),
+                    ("status", status_val("Closed")),
+                    ("updated_at", CanonicalValue::I64(400)),
+                    ("title", CanonicalValue::string("Closed 400").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                    ("status", status_val("Blocked")),
+                    ("updated_at", CanonicalValue::I64(300)),
+                    ("title", CanonicalValue::string("Blocked 300").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([3; 16])),
+                    ("status", status_val("Open")),
+                    ("updated_at", CanonicalValue::I64(200)),
+                    ("title", CanonicalValue::string("Open 200").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                    ("status", status_val("Open")),
+                    ("updated_at", CanonicalValue::I64(100)),
+                    ("title", CanonicalValue::string("Open 100").unwrap()),
+                ],
+            ),
+        ];
+
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "statuses".to_owned(),
+                CanonicalValue::list(vec![status_val("Open"), status_val("Blocked")]).unwrap(),
+            ),
+        ]))
+        .expect("params");
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), all_tickets.clone())]),
+        };
+        let first_page = execute_operational_page_in_snapshot(
+            present_member.program(),
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute first page");
+        let Some(QueryResultValue::Many(first_rows)) = first_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(first_rows.len(), 2);
+        assert_eq!(
+            first_rows[0].field("updated_at"),
+            Some(&CanonicalValue::I64(300))
+        );
+        assert_eq!(
+            first_rows[1].field("updated_at"),
+            Some(&CanonicalValue::I64(200))
+        );
+        let next_cursor = QueryContinuation::checked(
+            first_page
+                .continuation_binding()
+                .expect("binding")
+                .to_owned(),
+            first_page.continuation().expect("next cursor").to_vec(),
+            first_page.index_epochs().clone(),
+        )
+        .expect("checked continuation");
+
+        let mut second_view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), all_tickets)]),
+        };
+        let second_page = execute_operational_page_in_snapshot(
+            present_member.program(),
+            family.aggregates(),
+            &params,
+            Some(&next_cursor),
+            &mut second_view,
+        )
+        .expect("execute second page");
+        let Some(QueryResultValue::Many(second_rows)) = second_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(second_rows.len(), 1);
+        assert_eq!(
+            second_rows[0].field("updated_at"),
+            Some(&CanonicalValue::I64(100))
+        );
+        assert!(second_page.continuation().is_none());
+    }
+
+    // req: RQL-002, RQL-003, QRY-001, QRY-002
+    #[test]
+    fn single_partition_mixed_direction_order_executes_bounded_merge() {
+        let contract = r#"
+contract Support version 1 {
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field priority: i64
+    field created_at: i64
+    field title: string<120>
+    index by_priority_created (organization_id, priority, created_at, ticket_id)
+  }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query MixedOrderQueue(
+    $organization_id: Ticket.organization_id,
+    $after: Cursor?
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by priority desc, created_at asc, ticket_id asc
+        take 2 after $after
+
+    return Found {
+        tickets: tickets { ticket_id priority created_at title }
+    }
+    outcomes Found
+}
+"#;
+        let program = compile_query(&parse_query(query).expect("parse"), &catalog)
+            .expect("compile single-partition mixed direction order");
+        assert!(matches!(
+            program.steps()[0].access(),
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex { index, .. } if index == "by_priority_created"
+        ));
+
+        let rows = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                    ("priority", CanonicalValue::I64(10)),
+                    ("created_at", CanonicalValue::I64(500)),
+                    ("title", CanonicalValue::string("P10 Later").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                    ("priority", CanonicalValue::I64(10)),
+                    ("created_at", CanonicalValue::I64(100)),
+                    ("title", CanonicalValue::string("P10 Earlier").unwrap()),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([3; 16])),
+                    ("priority", CanonicalValue::I64(5)),
+                    ("created_at", CanonicalValue::I64(50)),
+                    ("title", CanonicalValue::string("P5 Earliest").unwrap()),
+                ],
+            ),
+        ];
+
+        let params = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("params");
+
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), rows.clone())]),
+        };
+        let first_page =
+            execute_page_in_snapshot(&program, &params, None, &mut view).expect("first page");
+        let Some(QueryResultValue::Many(first_rows)) = first_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(first_rows.len(), 2);
+        // Priority 10 comes first (desc), and within priority 10 created_at 100 comes before 500 (asc)
+        assert_eq!(
+            first_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+        assert_eq!(
+            first_rows[1].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        let cursor = QueryContinuation::checked(
+            first_page
+                .continuation_binding()
+                .expect("binding")
+                .to_owned(),
+            first_page.continuation().expect("cursor").to_vec(),
+            first_page.index_epochs().clone(),
+        )
+        .expect("checked continuation");
+
+        let mut second_view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), rows)]),
+        };
+        let second_page =
+            execute_page_in_snapshot(&program, &params, Some(&cursor), &mut second_view)
+                .expect("second page");
+        let Some(QueryResultValue::Many(second_rows)) = second_page.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(second_rows.len(), 1);
+        assert_eq!(
+            second_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([3; 16]))
+        );
+        assert!(second_page.continuation().is_none());
+    }
+
+    // req: RQL-003, RQL-004, QRY-001, QRY-007
+    #[test]
+    fn covered_index_executes_across_multi_binding_singular_and_aggregate_steps() {
+        let contract = r#"
+contract Support version 1 {
+  enum TicketStatus { Open, Closed }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field slug: string<64>
+    field status: TicketStatus
+    field priority: i64
+    field title: string<120>
+    index by_org_ticket (organization_id, ticket_id) cover (slug, status, priority, title)
+    index by_org_status_priority (organization_id, status, priority, ticket_id) cover (title)
+  }
+  aggregate Tickets {
+    root Ticket
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let query = r#"
+query CoveredDashboard(
+    $organization_id: Ticket.organization_id,
+    $pinned_id: Ticket.ticket_id,
+    $status: Ticket.status
+) {
+    maybe pinned from Ticket
+        where organization_id == $organization_id
+          && ticket_id == $pinned_id
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && status == $status
+        order by priority desc, ticket_id desc
+        take 10
+
+    aggregate summary from tickets {
+        group by status
+        count() as ticket_count
+        sum(priority) as total_priority
+    }
+
+    return Found {
+        pinned: pinned { ticket_id slug status priority title }
+        tickets: tickets { ticket_id status priority title }
+        summary: summary { status ticket_count total_priority }
+    }
+    outcomes Found
+}
+"#;
+        let parsed = parse_query(query).expect("parse");
+        let family = compile_operational_query_family(&parsed, &catalog)
+            .expect("multi-binding + singular + aggregate covered query compiles");
+        let program = family.select(&[]).expect("sole member").program();
+        assert_eq!(program.steps().len(), 2);
+        assert!(program.steps()[0].covered_result_layout().is_some());
+        assert!(program.steps()[1].covered_result_layout().is_some());
+        assert_eq!(program.cost().point_reads(), 0);
+
+        let open = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(1).expect("variant id"),
+        };
+        let rows = BTreeMap::from([
+            (
+                "pinned".to_owned(),
+                vec![row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid([9; 16])),
+                        ("slug", CanonicalValue::string("pinned-1").expect("slug")),
+                        ("status", open.clone()),
+                        ("priority", CanonicalValue::I64(10)),
+                        ("title", CanonicalValue::string("Pinned").expect("title")),
+                    ],
+                )],
+            ),
+            (
+                "tickets".to_owned(),
+                vec![
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(5)),
+                            ("title", CanonicalValue::string("First").expect("title")),
+                        ],
+                    ),
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(3)),
+                            ("title", CanonicalValue::string("Second").expect("title")),
+                        ],
+                    ),
+                ],
+            ),
+        ]);
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("pinned_id".to_owned(), CanonicalValue::Uuid([9; 16])),
+            ("status".to_owned(), open),
+        ]))
+        .expect("params");
+        let mut view = FakeView { rows };
+        let snapshot = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("covered multi-binding + aggregate execution succeeds");
+        let Some(QueryResultValue::Maybe(Some(pinned_row))) = snapshot.fields().get("pinned")
+        else {
+            panic!("pinned missing");
+        };
+        assert_eq!(
+            pinned_row.field("title"),
+            Some(&CanonicalValue::string("Pinned").expect("title"))
+        );
+        let Some(QueryResultValue::Many(ticket_rows)) = snapshot.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(ticket_rows.len(), 2);
+        let Some(QueryResultValue::AggregateMany(summary_rows)) = snapshot.fields().get("summary")
+        else {
+            panic!("summary missing");
+        };
+        assert_eq!(summary_rows.len(), 1);
+        assert_eq!(
+            summary_rows[0].fields().get("ticket_count"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(2)))
+        );
+    }
+
+    // req: RQL-002, RQL-003, RQL-004, QRY-001, QRY-002, QRY-007
+    #[test]
+    fn real_world_complex_queries_compile_and_execute() {
+        let contract = r#"
+contract SupportWorkspace version 1 {
+  enum TicketStatus { Open, InProgress, Closed }
+  enum TicketOrder { PriorityDesc, PriorityAsc }
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field display_name: string<80>
+  }
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field status: TicketStatus
+    field priority: i64
+    field assignee_id: optional<uuid>
+    field title: string<120>
+    index by_org_ticket (organization_id, ticket_id) cover (status, priority, assignee_id, title)
+    index by_org_priority (organization_id, priority, ticket_id) cover (status, assignee_id, title)
+    index by_org_status_priority (organization_id, status, priority, ticket_id) cover (assignee_id, title)
+  }
+  entity TicketSignal {
+    key (organization_id: uuid, signal_id: uuid)
+    field ticket_id: uuid
+    field score: i64
+    field label: string<64>
+    field resolved_at: optional<timestamp>
+    index by_score (organization_id, resolved_at, score, ticket_id, signal_id) presence(resolved_at)
+    index by_label (organization_id, label, ticket_id, signal_id) text_key(label, binary_utf8_v1)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+  aggregate Users { root User partition_by organization_id conflict_key (organization_id, user_id) }
+  aggregate Tickets { root Ticket partition_by organization_id conflict_key (organization_id, ticket_id) }
+  aggregate TicketSignals { root TicketSignal partition_by organization_id conflict_key (organization_id, signal_id) }
+}
+"#;
+        let bundle = compile_contract_source(contract).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+
+        // 1. Combined `when $status` + `order by $order` + operational `candidates` + `in distinct(...)` + `aggregate`
+        let inbox_query = r#"
+query TriageWorkspace(
+    $organization_id: Ticket.organization_id,
+    $min_score: TicketSignal.score,
+    $label_prefix: TicketSignal.label,
+    $status: Ticket.status?,
+    $order: TicketOrder
+) {
+    candidates hot_ids: Ticket.ticket_id
+        from intersect {
+            TicketSignal.ticket_id using by_score where organization_id == $organization_id && resolved_at is null && score >= $min_score,
+            TicketSignal.ticket_id using by_label where organization_id == $organization_id && label prefix $label_prefix,
+        }
+        within 50 else IntegrityFailure
+
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && when $status { status == $status }
+          && ticket_id in hot_ids
+        order by $order {
+            PriorityDesc: priority desc, ticket_id desc;
+            PriorityAsc: priority asc, ticket_id asc;
+        }
+        take 25
+
+    many assignees from User
+        where organization_id == $organization_id
+          && user_id in distinct(tickets.assignee_id)
+        take 25
+
+    aggregate status_counts from tickets {
+        group by status
+        count() as ticket_count
+        sum(priority) as total_priority
+    }
+
+    return Found {
+        tickets: tickets { ticket_id status priority assignee_id title }
+        assignees: assignees { user_id display_name }
+        status_counts: status_counts { status ticket_count total_priority }
+    }
+    outcomes Found | IntegrityFailure
+}
+"#;
+        let family = riffdb_query_compiler::compile_order_query_family(
+            &parse_query(inbox_query).expect("parse inbox"),
+            &catalog,
+        )
+        .expect("compile triage workspace order family");
+        assert_eq!(family.members().len(), 4);
+
+        let open = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(1).expect("variant id"),
+        };
+        let in_progress = CanonicalValue::Enum {
+            type_id: riffdb_types::EnumTypeId::new(1).expect("enum id"),
+            variant_id: riffdb_types::EnumVariantId::new(2).expect("variant id"),
+        };
+        let mut view = FakeView {
+            rows: BTreeMap::from([
+                (
+                    "@candidate:hot_ids:0".to_owned(),
+                    vec![
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([81; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                                ("score", CanonicalValue::I64(95)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                        row(
+                            "TicketSignal",
+                            &[
+                                ("organization_id", CanonicalValue::Uuid([1; 16])),
+                                ("signal_id", CanonicalValue::Uuid([82; 16])),
+                                ("ticket_id", CanonicalValue::Uuid([20; 16])),
+                                ("score", CanonicalValue::I64(85)),
+                                ("resolved_at", CanonicalValue::Null),
+                            ],
+                        ),
+                    ],
+                ),
+                (
+                    "@candidate:hot_ids:1".to_owned(),
+                    vec![row(
+                        "TicketSignal",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("signal_id", CanonicalValue::Uuid([83; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                            (
+                                "label",
+                                CanonicalValue::string("sev:critical").expect("label"),
+                            ),
+                        ],
+                    )],
+                ),
+                (
+                    "tickets".to_owned(),
+                    vec![row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([10; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("assignee_id", CanonicalValue::Uuid([7; 16])),
+                            ("title", CanonicalValue::string("Outage").expect("title")),
+                        ],
+                    )],
+                ),
+                (
+                    "assignees".to_owned(),
+                    vec![row(
+                        "User",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("user_id", CanonicalValue::Uuid([7; 16])),
+                            (
+                                "display_name",
+                                CanonicalValue::string("On-Call").expect("name"),
+                            ),
+                        ],
+                    )],
+                ),
+            ]),
+        };
+        let params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("min_score".to_owned(), CanonicalValue::I64(80)),
+            (
+                "label_prefix".to_owned(),
+                CanonicalValue::string("sev:").expect("prefix"),
+            ),
+            ("status".to_owned(), open.clone()),
+            (
+                "order".to_owned(),
+                CanonicalValue::string("PriorityDesc").expect("order"),
+            ),
+        ]))
+        .expect("params");
+        let member = family
+            .select_name_with_presence(&[true], "PriorityDesc")
+            .expect("member");
+        let snapshot = execute_operational_page_in_snapshot(
+            member.program(),
+            family.aggregates(),
+            &params,
+            None,
+            &mut view,
+        )
+        .expect("execute triage workspace");
+        let Some(QueryResultValue::Many(tickets)) = snapshot.fields().get("tickets") else {
+            panic!("tickets missing");
+        };
+        assert_eq!(tickets.len(), 1);
+        assert_eq!(
+            tickets[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([10; 16]))
+        );
+        let Some(QueryResultValue::Many(assignees)) = snapshot.fields().get("assignees") else {
+            panic!("assignees missing");
+        };
+        assert_eq!(assignees.len(), 1);
+        let Some(QueryResultValue::AggregateMany(counts)) = snapshot.fields().get("status_counts")
+        else {
+            panic!("status_counts missing");
+        };
+        assert_eq!(counts.len(), 1);
+
+        // 2. Non-partition `status in $statuses` + mixed `priority desc, ticket_id asc` k-way merge
+        let multi_status_query = r#"
+query ActiveQueue(
+    $organization_id: Ticket.organization_id,
+    $statuses: Set<Ticket.status, 4>
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && status in $statuses
+        order by priority desc, ticket_id asc
+        take 5
+
+    return Found {
+        tickets: tickets { ticket_id status priority title }
+    }
+    outcomes Found
+}
+"#;
+        let queue_program = compile_query(
+            &parse_query(multi_status_query).expect("parse queue"),
+            &catalog,
+        )
+        .expect("compile multi-status mixed-order queue");
+        let mut queue_view = FakeView {
+            rows: BTreeMap::from([(
+                "tickets".to_owned(),
+                vec![
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                            ("status", open.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("title", CanonicalValue::string("B").expect("title")),
+                        ],
+                    ),
+                    row(
+                        "Ticket",
+                        &[
+                            ("organization_id", CanonicalValue::Uuid([1; 16])),
+                            ("ticket_id", CanonicalValue::Uuid([1; 16])),
+                            ("status", in_progress.clone()),
+                            ("priority", CanonicalValue::I64(10)),
+                            ("title", CanonicalValue::string("A").expect("title")),
+                        ],
+                    ),
+                ],
+            )]),
+        };
+        let queue_params = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            (
+                "statuses".to_owned(),
+                CanonicalValue::list(vec![open, in_progress]).expect("statuses"),
+            ),
+        ]))
+        .expect("queue params");
+        let queue_snapshot =
+            execute_page_in_snapshot(&queue_program, &queue_params, None, &mut queue_view)
+                .expect("execute queue");
+        let Some(QueryResultValue::Many(queue_rows)) = queue_snapshot.fields().get("tickets")
+        else {
+            panic!("tickets missing");
+        };
+        assert_eq!(queue_rows.len(), 2);
+        assert_eq!(
+            queue_rows[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        assert_eq!(
+            queue_rows[1].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([2; 16]))
         );
     }
 }

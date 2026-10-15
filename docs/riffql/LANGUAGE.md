@@ -252,10 +252,15 @@ continue to use one whole-request scan ceiling.
 
 The compiler proves the relationship mapping, common partition parameter,
 declared source index, exact key type, finite source count, and exactly one root
-`in` consumer. Candidate names, sources, operators, indexes, and budgets do not
-appear in SDK or MCP schemas. They are immutable module/plan/role identity,
-not request data. This is bounded same-partition existence filtering, not a
-general join, recursive query, caller-selected plan, or runtime optimizer.
+`in` consumer. Ordinary index-backed candidate sources accept exact equality as
+well as the closed operational predicate set (`!=`, `<`, `<=`, `>`, `>=`,
+bounded `in`, `prefix` over `text_key(...)`, and `is null`, `is not null`, or
+`exists` over `presence(...)`) when the declared source index prefix proves the
+predicate before projecting the root key. Candidate names, sources, operators,
+indexes, and budgets do not appear in SDK or MCP schemas. They are immutable
+module/plan/role identity, not request data. This is bounded same-partition
+existence filtering, not a general join, recursive query, caller-selected plan,
+or runtime optimizer.
 
 ## Bounded one-to-many expansion (language V14)
 
@@ -350,13 +355,16 @@ many experiments from Experiment
 ```
 
 The family must declare every variant of its contract enum exactly once and is
-limited to 32 members. The compiler expands each member before deployment and
-checks its fields, directions, null placement, unique tie-breaker, authority,
-cost, and candidate/root semantics independently. The service resolves the
-enum to a compiled member before storage work. Generated Rust, Go, Python,
-TypeScript, MCP, CLI, gRPC, local, and remote paths carry only that closed enum;
-there is no public field list, expression, index hint, collation, direction, or
-tie-breaker input.
+limited to 32 total compiled members (`2^k * |variants| <= 32`). Order families
+may compose with up to eight `when $param { ... }` optional predicates; the
+compiler expands every `(presence_mask, order_variant)` combination before
+deployment and checks its fields, directions, null placement, unique
+tie-breaker, authority, cost, and candidate/root semantics independently. The
+service resolves the submitted presence bits and enum variant to one compiled
+member before storage work. Generated Rust, Go, Python, TypeScript, MCP, CLI,
+gRPC, local, and remote paths carry only the declared optional parameters and
+closed enum; there is no public field list, expression, index hint, collation,
+direction, or tie-breaker input.
 
 Order families use additive RiffQL V12, query-family IR V15, and module V15.
 A successful result reports the complete finite family's compiler identity,
@@ -603,14 +611,20 @@ on `relation` and `user` proves both `order by relation, user, document_id` and,
 after `relation == $relation`, `order by user, document_id`. Binary equality
 compares exact UTF-8; Unicode-fold equality compares the frozen folded bytes.
 
-Bounded `in` may consume one declared text-key component when that component is
-also the first remaining order term. Each normalized set member becomes one
-exact profile byte prefix; the complete set shares one page limit, scan budget,
-plus-one continuation probe, and opaque cursor. Submitted sets are sorted and
-deduplicated once, and an empty set returns an exact empty page without storage
-work. Multiple `in` dimensions and an `in` predicate followed by another
-filtered index component are rejected rather than forming a Cartesian prefix
-product or a residual filter.
+Bounded `in` may consume one declared index component either when that component
+is the first remaining order term or when it is a non-partition prefix component
+followed by the remaining index `order by` suffix (for example,
+`status in $statuses` followed by `order by updated_at desc, ticket_id desc` on
+`(organization_id, status, updated_at, ticket_id)`). When `in` precedes trailing
+order columns, the executor performs a bounded k-way merge across the distinct
+canonical set values with one shared page limit, scan budget, and opaque cursor.
+Single-partition bindings may also declare mixed `asc`/`desc` directions across
+the ordered index suffix, executing a bounded in-memory group merge within the
+Whole-request scan ceiling. Submitted sets are sorted and deduplicated once, and
+an empty set returns an exact empty page without storage work. Multiple
+non-partition `in` dimensions in one binding and an `in` predicate followed by
+another filtered index component remain rejected rather than forming a Cartesian
+prefix product or a residual filter.
 
 The ordinary executable component matrix is closed: canonical components
 support exact equality, bounded membership at the first remaining order term,

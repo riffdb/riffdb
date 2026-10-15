@@ -264,6 +264,69 @@ pub enum CompiledNamedQueryPlan {
 }
 
 impl CompiledNamedQueryPlan {
+    pub(crate) fn has_partition_set_ir(&self) -> bool {
+        let program_has_partition_set = |program: &QueryAccessProgramV1| {
+            program.surface().has_bounded_set()
+                || matches!(
+                    program.ir_version(),
+                    QUERY_IR_VERSION_PARTITION_SET_V1
+                        | QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+                )
+        };
+        match self {
+            Self::V1(program) => program_has_partition_set(program),
+            Self::OperationalV1(family) => family
+                .members()
+                .iter()
+                .any(|member| program_has_partition_set(member.program())),
+            Self::OrderFamilyV1(family) => family
+                .members()
+                .iter()
+                .any(|member| program_has_partition_set(member.program())),
+            Self::ExactTextResultV1(exact) => {
+                program_has_partition_set(exact.representative_program())
+            }
+            Self::ExactPredicateV1(exact) => {
+                program_has_partition_set(exact.representative_program())
+            }
+            Self::NullableExactPredicateV1(exact) => {
+                program_has_partition_set(exact.representative_program())
+            }
+            Self::TokenizedTextV1(tokenized) => {
+                program_has_partition_set(tokenized.representative_program())
+            }
+        }
+    }
+
+    pub(crate) fn has_partition_set_exact_prefix_ir(&self) -> bool {
+        let program_has_exact_prefix = |program: &QueryAccessProgramV1| {
+            program.ir_version() == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+        };
+        match self {
+            Self::V1(program) => program_has_exact_prefix(program),
+            Self::OperationalV1(family) => family
+                .members()
+                .iter()
+                .any(|member| program_has_exact_prefix(member.program())),
+            Self::OrderFamilyV1(family) => family
+                .members()
+                .iter()
+                .any(|member| program_has_exact_prefix(member.program())),
+            Self::ExactTextResultV1(exact) => {
+                program_has_exact_prefix(exact.representative_program())
+            }
+            Self::ExactPredicateV1(exact) => {
+                program_has_exact_prefix(exact.representative_program())
+            }
+            Self::NullableExactPredicateV1(exact) => {
+                program_has_exact_prefix(exact.representative_program())
+            }
+            Self::TokenizedTextV1(tokenized) => {
+                program_has_exact_prefix(tokenized.representative_program())
+            }
+        }
+    }
+
     fn has_covered_result_layout(&self) -> bool {
         let program_has_cover = |program: &QueryAccessProgramV1| {
             program
@@ -293,10 +356,17 @@ impl CompiledNamedQueryPlan {
     #[must_use]
     pub fn common_covered_result_layout(&self) -> Option<CoveredResultLayoutV1> {
         let layout = |program: &QueryAccessProgramV1| {
-            if program.steps().len() != 1 {
+            if program.steps().len() != 1 || !program.surface().aggregates().is_empty() {
                 return None;
             }
-            program.steps()[0].covered_result_layout().cloned()
+            let step = &program.steps()[0];
+            if step.cardinality() != riffdb_riffql_syntax::Cardinality::Many
+                || step.result_names().len() != 1
+                || !step.dependencies().is_empty()
+            {
+                return None;
+            }
+            step.covered_result_layout().cloned()
         };
         match self {
             Self::V1(program) => layout(program),
@@ -328,13 +398,20 @@ impl CompiledNamedQueryPlan {
     #[must_use]
     pub fn common_covered_result(&self) -> Option<(String, CoveredResultLayoutV1, Vec<String>)> {
         let result = |program: &QueryAccessProgramV1| {
-            if program.steps().len() != 1 || program.steps()[0].result_names().len() != 1 {
+            if program.steps().len() != 1 || !program.surface().aggregates().is_empty() {
+                return None;
+            }
+            let step = &program.steps()[0];
+            if step.cardinality() != riffdb_riffql_syntax::Cardinality::Many
+                || step.result_names().len() != 1
+                || !step.dependencies().is_empty()
+            {
                 return None;
             }
             Some((
-                program.steps()[0].result_names()[0].clone(),
-                program.steps()[0].covered_result_layout()?.clone(),
-                program.steps()[0].selected_fields().to_vec(),
+                step.result_names()[0].clone(),
+                step.covered_result_layout()?.clone(),
+                step.selected_fields().to_vec(),
             ))
         };
         match self {
@@ -1036,18 +1113,17 @@ impl QueryModule {
                 == QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
         }) {
             QUERY_MODULE_FORMAT_VERSION_RELATIONAL_OPERATORS_V1
-        } else if self.queries.iter().any(|query| {
-            query.plan().representative_program().ir_version()
-                == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
-        }) {
+        } else if self
+            .queries
+            .iter()
+            .any(|query| query.plan().has_partition_set_exact_prefix_ir())
+        {
             QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
-        } else if self.queries.iter().any(|query| {
-            query
-                .plan()
-                .representative_program()
-                .surface()
-                .has_bounded_set()
-        }) {
+        } else if self
+            .queries
+            .iter()
+            .any(|query| query.plan().has_partition_set_ir())
+        {
             QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
         } else if self
             .queries
@@ -1513,7 +1589,17 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
                 format!("order_family.selector=${}", family.selector_parameter()),
                 format!("order_family.members={}", family.members().len()),
             ];
-            for member in family.members() {
+            if !family.presence_parameters().is_empty() {
+                lines.push(format!(
+                    "order_family.presence_parameters={}",
+                    family.presence_parameters().join(",")
+                ));
+            }
+            for member in family
+                .members()
+                .iter()
+                .filter(|member| member.presence_mask() == 0)
+            {
                 lines.push(format!(
                     "order_family.variant.{}=compiled",
                     member.variant_name()
@@ -1687,17 +1773,12 @@ fn encode_module(
             .surface()
             .has_bounded_result_pipeline()
     });
-    let partition_set = queries.iter().any(|query| {
-        query
-            .plan()
-            .representative_program()
-            .surface()
-            .has_bounded_set()
-    });
-    let partition_set_exact_prefix = queries.iter().any(|query| {
-        query.plan().representative_program().ir_version()
-            == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
-    });
+    let partition_set = queries
+        .iter()
+        .any(|query| query.plan().has_partition_set_ir());
+    let partition_set_exact_prefix = queries
+        .iter()
+        .any(|query| query.plan().has_partition_set_exact_prefix_ir());
     let relational_operators = queries.iter().any(|query| {
         query.plan().representative_program().ir_version()
             == QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1

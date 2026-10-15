@@ -370,7 +370,13 @@ impl ResolvedQueryV1 {
         self.schemas
             .parameters()
             .iter()
-            .any(|parameter| matches!(parameter.value_type(), NamedTypeSchema::BoundedSet { .. }))
+            .any(|parameter| match parameter.value_type() {
+                NamedTypeSchema::BoundedSet { .. } => true,
+                NamedTypeSchema::Optional(inner) => {
+                    matches!(inner.as_ref(), NamedTypeSchema::BoundedSet { .. })
+                }
+                _ => false,
+            })
     }
 
     /// Whether any public parameter uses ADR-0158's bounded page-limit type.

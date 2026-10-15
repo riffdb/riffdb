@@ -391,7 +391,6 @@ where
 struct StorageQueryView<'a, H> {
     snapshot: &'a H,
     program: &'a QueryAccessProgramV1,
-    parameters: &'a QueryParameters,
     head: u64,
     relationship_cache: BTreeMap<RelationshipLookupCacheKey, bool>,
 }
@@ -403,7 +402,7 @@ where
     fn new(
         snapshot: &'a H,
         program: &'a QueryAccessProgramV1,
-        parameters: &'a QueryParameters,
+        _parameters: &'a QueryParameters,
     ) -> Result<Self, QueryExecutionError> {
         let head = snapshot
             .application_frontier()
@@ -412,7 +411,6 @@ where
         Ok(Self {
             snapshot,
             program,
-            parameters,
             head,
             relationship_cache: BTreeMap::new(),
         })
@@ -598,10 +596,7 @@ where
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
         let schedule =
             crate::bound_index_range_schedule_v1(step, predicates).map_err(|_| invariant())?;
-        let partition_value = self
-            .parameters
-            .get(self.program.partition_parameter())
-            .ok_or_else(invariant)?;
+        let partition_value = partition_value(self.program, step, predicates)?;
         let partition = step
             .internal_partition_key_schema()
             .encode_partition(std::slice::from_ref(partition_value))
@@ -1049,16 +1044,16 @@ fn partition_value<'a>(
 ) -> Result<&'a CanonicalValue, StorageError> {
     predicates
         .iter()
-        .find(|predicate| predicate.operator() == QueryPredicateOperator::Equal)
-        .filter(|predicate| {
-            step.predicates().iter().any(|source| {
-                source.field() == predicate.field()
-                    && matches!(
-                        source.value(),
-                        riffdb_query_ir::QueryPredicateValue::Parameter(name)
-                            if name == program.partition_parameter()
-                    )
-            })
+        .find(|predicate| {
+            predicate.operator() == QueryPredicateOperator::Equal
+                && step.predicates().iter().any(|source| {
+                    source.field() == predicate.field()
+                        && matches!(
+                            source.value(),
+                            riffdb_query_ir::QueryPredicateValue::Parameter(name)
+                                if name == program.partition_parameter()
+                        )
+                })
         })
         .map(BoundPredicate::value)
         .ok_or_else(invariant)
