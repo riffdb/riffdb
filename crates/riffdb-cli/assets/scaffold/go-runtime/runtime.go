@@ -39,6 +39,7 @@ var (
 	hashPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	symbolPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
 	requestPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	tenantPattern  = regexp.MustCompile("^[\x21-\x7e]{1,128}$")
 	nextSession    atomic.Uint64
 )
 
@@ -505,6 +506,7 @@ type Identity struct {
 	Role                    string
 	RoleDefinitionHash      string
 	RemoteIdentityHash      string
+	Tenant                  string
 }
 
 type Operation struct {
@@ -701,6 +703,11 @@ type packet struct {
 }
 
 func Connect(ctx context.Context, socketPath string, identity Identity) (*Session, error) {
+	if identity.Tenant == "" {
+		if envTenant := os.Getenv("RIFFDB_TENANT"); envTenant != "" {
+			identity.Tenant = envTenant
+		}
+	}
 	if !strings.HasPrefix(socketPath, "/") || len(socketPath) > 4_096 || !validIdentity(identity) {
 		return nil, errors.New("invalid RiffDB driver configuration")
 	}
@@ -731,6 +738,10 @@ func Connect(ctx context.Context, socketPath string, identity Identity) (*Sessio
 		return nil, errors.New("RiffDB driver identity mismatch")
 	}
 	return session, nil
+}
+
+func (session *Session) Tenant() string {
+	return session.identity.Tenant
 }
 
 func (session *Session) Invoke(ctx context.Context, operation Operation, input map[string]Value, options Options) (Result, error) {
@@ -1341,7 +1352,7 @@ func validateValue(value Value, depth int) error {
 	return nil
 }
 func validIdentity(identity Identity) bool {
-	return hashPattern.MatchString(identity.ApplicationManifestHash) && hashPattern.MatchString(identity.OperationCatalogHash) && symbolPattern.MatchString(identity.ContractLineage) && identity.ContractVersion > 0 && hashPattern.MatchString(identity.ContractBundleHash) && symbolPattern.MatchString(identity.Database) && symbolPattern.MatchString(identity.Role) && hashPattern.MatchString(identity.RoleDefinitionHash) && hashPattern.MatchString(identity.RemoteIdentityHash)
+	return hashPattern.MatchString(identity.ApplicationManifestHash) && hashPattern.MatchString(identity.OperationCatalogHash) && symbolPattern.MatchString(identity.ContractLineage) && identity.ContractVersion > 0 && hashPattern.MatchString(identity.ContractBundleHash) && symbolPattern.MatchString(identity.Database) && symbolPattern.MatchString(identity.Role) && hashPattern.MatchString(identity.RoleDefinitionHash) && hashPattern.MatchString(identity.RemoteIdentityHash) && (identity.Tenant == "" || tenantPattern.MatchString(identity.Tenant))
 }
 func optionalString(value string) *string {
 	if value == "" {

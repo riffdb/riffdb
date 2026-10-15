@@ -389,6 +389,10 @@ export class DriverGeneratedApplicationTransport {
     constructor(driver) {
         this.driver = driver;
     }
+    /** Returns the bound tenant identifier when this session is tenant-scoped. */
+    get tenant() {
+        return this.driver.tenant;
+    }
     async executeNamedQuery(request, options = {}) {
         validateIdentity(request);
         const operation = requireDriverOperation(request.driverOperation);

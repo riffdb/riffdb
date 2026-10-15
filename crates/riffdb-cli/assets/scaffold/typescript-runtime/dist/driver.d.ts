@@ -68,10 +68,12 @@ export interface DriverApplicationIdentity {
     readonly role: string;
     readonly roleDefinitionHash: string;
     readonly remoteIdentityHash: string;
+    readonly tenant?: string;
 }
 export interface DriverApplicationTransportOptions {
     readonly socketPath: string;
     readonly identity: DriverApplicationIdentity;
+    readonly tenant?: string;
 }
 export interface DriverOperation {
     readonly name: string;
@@ -159,6 +161,8 @@ export declare class DriverApplicationError extends Error {
 export declare class DriverApplicationTransport {
     #private;
     private constructor();
+    /** Returns the bound tenant identifier when this session is tenant-scoped. */
+    get tenant(): string | undefined;
     static connect(options: DriverApplicationTransportOptions): Promise<DriverApplicationTransport>;
     invoke(operation: DriverOperation, input: Readonly<Record<string, DriverValue>>, options?: DriverInvokeOptions): Promise<DriverResult>;
     batch(operation: DriverOperation, items: ReadonlyArray<Readonly<Record<string, DriverValue>>>, concurrency: number, checkpoint: number, options?: DriverInvokeOptions): Promise<DriverBatchResult>;

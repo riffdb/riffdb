@@ -370,9 +370,11 @@ use crate::scaffold::{
     load_locked_project_migration_submission, migrate_application_source_v2,
     plan_application_migrations, plan_project_application_migrations, preview_application_lock,
     preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
-    preview_genesis_application_lock, refresh_application_lock_from_pinned_bundle,
-    reset_dev_workspace_state, write_application_lock, write_application_lock_with_bundle,
-    write_project_application_lock_with_bundle, write_runtime_operation_catalog,
+    preview_genesis_application_lock, read_dev_session_metadata,
+    refresh_application_lock_from_pinned_bundle, reset_dev_workspace_state,
+    resolve_workspace_contract_defaults, sync_application_manifest, write_application_lock,
+    write_application_lock_with_bundle, write_project_application_lock_with_bundle,
+    write_runtime_operation_catalog,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -527,7 +529,7 @@ pub async fn run() -> ExitCode {
     let uses_project = matches!(
         cli.command,
         TopLevel::Push { .. }
-            | TopLevel::Generate
+            | TopLevel::Generate { .. }
             | TopLevel::Status
             | TopLevel::Diff
             | TopLevel::Migrate { .. }
@@ -536,9 +538,17 @@ pub async fn run() -> ExitCode {
     if uses_project && cli.config.is_none() && std::env::var_os("RIFFDB_CONFIG").is_none() {
         cli.config = Some(DEFAULT_PROJECT_FILE.into());
     }
-    if matches!(cli.command, TopLevel::Generate) {
+    if let TopLevel::Generate {
+        sync_manifest,
+        sync_role,
+    } = &cli.command
+    {
         let path = project_config_path(&cli);
         return match crate::project::load(&path).and_then(|project| {
+            if *sync_manifest || sync_role.is_some() {
+                sync_application_manifest(project.schema(), sync_role.as_deref())
+                    .map_err(ProjectError::Scaffold)?;
+            }
             let coverage = generate_project_application_offline(
                 project.schema(),
                 &project_artifact_selection(&project),
@@ -644,7 +654,13 @@ pub async fn run() -> ExitCode {
                 );
             }
         };
-        let command = std::mem::replace(&mut cli.command, TopLevel::Generate);
+        let command = std::mem::replace(
+            &mut cli.command,
+            TopLevel::Generate {
+                sync_manifest: false,
+                sync_role: None,
+            },
+        );
         let TopLevel::Migrate { command } = command else {
             unreachable!("project migration was matched before replacement");
         };
@@ -727,6 +743,36 @@ pub async fn run() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if let TopLevel::Application {
+        command:
+            ApplicationCommand::Check {
+                source,
+                sync_manifest,
+                sync_role,
+                ..
+            }
+            | ApplicationCommand::Lock {
+                source,
+                sync_manifest,
+                sync_role,
+                ..
+            },
+    } = &cli.command
+        && (*sync_manifest || sync_role.is_some())
+        && let Err(error) = sync_application_manifest(Path::new(source), sync_role.as_deref())
+    {
+        if matches!(
+            &cli.command,
+            TopLevel::Application {
+                command: ApplicationCommand::Check { refusals: true, .. }
+            }
+        ) {
+            emit_refusal_report(error.diagnostics(), cli.output);
+        } else {
+            emit_scaffold_failure("riffdb application failed", &error, cli.output);
+        }
+        return ExitCode::FAILURE;
     }
     let networked_successor_lock = matches!(
         &cli.command,
@@ -850,6 +896,7 @@ pub async fn run() -> ExitCode {
             source,
             source_only,
             refusals,
+            ..
         } = command
         {
             let result = if *source_only {
@@ -907,6 +954,7 @@ pub async fn run() -> ExitCode {
                 write,
                 check,
                 lock,
+                ..
             } => {
                 debug_assert_ne!(write, check);
                 if *write {
@@ -940,6 +988,9 @@ pub async fn run() -> ExitCode {
     }
     if let TopLevel::Dev {
         role,
+        tenant,
+        sync_manifest,
+        sync_role,
         watch,
         run,
         go_runner_package,
@@ -952,6 +1003,9 @@ pub async fn run() -> ExitCode {
     {
         return run_dev(DevInvocation {
             role,
+            tenant: tenant.as_deref(),
+            sync_manifest: *sync_manifest,
+            sync_role: sync_role.as_deref(),
             watch: *watch,
             run: *run,
             go_runner_package: go_runner_package.as_deref(),
@@ -980,6 +1034,21 @@ pub async fn run() -> ExitCode {
         }
     };
     config.project_mode = uses_project;
+    if let Ok(workspace_root) = std::env::current_dir()
+        && apply_dev_inspection_defaults(&mut cli, &mut config, &environment, &workspace_root)
+            .is_err()
+    {
+        return local_error(
+            identity,
+            "configuration_invalid",
+            "local dev session or application manifest is invalid",
+        )
+        .emit(
+            config.output,
+            &mut io::stdout().lock(),
+            &mut io::stderr().lock(),
+        );
+    }
     let mut stdin = io::stdin().lock();
     let terminal = dispatch(cli.command, &config, &environment, &mut stdin).await;
     terminal.emit(
@@ -987,6 +1056,65 @@ pub async fn run() -> ExitCode {
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
     )
+}
+
+fn apply_dev_inspection_defaults(
+    cli: &mut Cli,
+    config: &mut EffectiveConfig,
+    environment: &dyn Environment,
+    workspace_root: &Path,
+) -> Result<(), ()> {
+    if !matches!(
+        cli.command,
+        TopLevel::Query {
+            command: QueryCommand::Run { .. } | QueryCommand::RunNamed { .. }
+        } | TopLevel::Entity {
+            command: EntityCommand::Get { .. }
+        }
+    ) {
+        return Ok(());
+    }
+    if let Some(session) = read_dev_session_metadata(workspace_root).map_err(|_| ())? {
+        if cli.endpoint.is_none()
+            && environment.value("RIFFDB_ENDPOINT").is_none()
+            && config.config_file.is_none()
+        {
+            config.endpoint = session.endpoint;
+        }
+        if cli.database.is_none()
+            && environment.value("RIFFDB_DATABASE").is_none()
+            && config.config_file.is_none()
+        {
+            config.database =
+                riffdb_types::DatabaseAlias::new(session.database).map_err(|_| ())?;
+        }
+        if cli.credential_file.is_none()
+            && environment.value("RIFFDB_CREDENTIAL_FILE").is_none()
+            && config.credential_file.is_none()
+        {
+            config.credential_file = Some(PathBuf::from(session.credential_file));
+        }
+    }
+    let contract = match &mut cli.command {
+        TopLevel::Query {
+            command:
+                QueryCommand::Run { contract, .. } | QueryCommand::RunNamed { contract, .. },
+        }
+        | TopLevel::Entity {
+            command: EntityCommand::Get { contract, .. },
+        } => Some(contract),
+        _ => None,
+    };
+    if let Some(contract) = contract
+        && contract.contract_lineage.is_none()
+        && contract.contract_version.is_none()
+        && let Some((lineage, version)) =
+            resolve_workspace_contract_defaults(workspace_root).map_err(|_| ())?
+    {
+        contract.contract_lineage = Some(lineage);
+        contract.contract_version = Some(version.to_string());
+    }
+    Ok(())
 }
 
 fn emit_scaffold_failure(
@@ -1461,6 +1589,9 @@ fn project_identity_state(
 
 struct DevInvocation<'a> {
     role: &'a str,
+    tenant: Option<&'a str>,
+    sync_manifest: bool,
+    sync_role: Option<&'a str>,
     watch: bool,
     run: bool,
     go_runner_package: Option<&'a std::ffi::OsStr>,
@@ -1522,6 +1653,15 @@ fn append_dev_script_arguments(
         "--seed-concurrency",
         invocation.seed_concurrency,
     ]);
+    if let Some(tenant) = invocation.tenant {
+        command.args(["--tenant", tenant]);
+    }
+    if invocation.sync_manifest {
+        command.arg("--sync-manifest");
+    }
+    if let Some(sync_role) = invocation.sync_role {
+        command.args(["--sync-role", sync_role]);
+    }
     if application_root.join("riffdb.application.json").is_file() {
         command.arg("--application-root").arg(application_root);
     }
@@ -1609,7 +1749,7 @@ async fn dispatch(
             "project_migration_dispatch_invalid",
             "project migration was not lowered to the staged migration path",
         ),
-        TopLevel::Init { .. } | TopLevel::Generate | TopLevel::Agent { .. } => local_error(
+        TopLevel::Init { .. } | TopLevel::Generate { .. } | TopLevel::Agent { .. } => local_error(
             CommandIdentity::ProjectInit,
             "project_local_dispatch_invalid",
             "a local project operation reached network dispatch",
@@ -1911,6 +2051,7 @@ async fn application_command(
         lock,
         write: true,
         check: false,
+        ..
     } = &command
     {
         return write_successor_application_lock(source, lock, config, environment).await;
@@ -4538,24 +4679,39 @@ async fn query_command(
         }
         QueryCommand::Run {
             source,
+            inline,
             parameters,
+            param,
+            params_json,
             cursor,
             read_after_commit,
             consistency,
             contract,
         } => {
-            let source = match read_text(&source, stdin) {
-                Ok(source) => source,
-                Err(error) => return input_terminal(identity, error),
-            };
-            let parameters = match parameters {
-                Some(path) => {
-                    match read_json::<serde_json::Map<String, serde_json::Value>>(&path, stdin) {
-                        Ok(parameters) => parameters,
-                        Err(error) => return input_terminal(identity, error),
+            let source = match (source, inline) {
+                (Some(path), None) => match read_text(&path, stdin) {
+                    Ok(source) => source,
+                    Err(error) => return input_terminal(identity, error),
+                },
+                (None, Some(inline_source)) => {
+                    if inline_source.trim().is_empty() {
+                        return invalid_input(identity);
                     }
+                    if inline_source.len() > MAX_INPUT_BYTES {
+                        return input_terminal(identity, InputError::TooLarge);
+                    }
+                    inline_source
                 }
-                None => serde_json::Map::new(),
+                _ => return invalid_input(identity),
+            };
+            let parameters = match merge_query_parameter_map(
+                parameters.as_ref(),
+                params_json.as_deref(),
+                &param,
+                stdin,
+            ) {
+                Ok(parameters) => parameters,
+                Err(error) => return input_terminal(identity, error),
             };
             execute_query_cli(
                 identity,
@@ -4574,12 +4730,19 @@ async fn query_command(
             query_name,
             module_hash,
             parameters,
+            param,
+            params_json,
             cursor,
             read_after_commit,
             consistency,
             contract,
         } => {
-            let parameters = match query_parameters(parameters.as_ref(), stdin) {
+            let parameters = match query_parameters(
+                parameters.as_ref(),
+                params_json.as_deref(),
+                &param,
+                stdin,
+            ) {
                 Ok(parameters) => parameters,
                 Err(error) => return input_terminal(identity, error),
             };
@@ -5560,14 +5723,63 @@ async fn execute_named_query_cli(
     }
 }
 
-fn query_parameters(
+fn merge_query_parameter_map(
     path: Option<&OsString>,
+    params_json: Option<&str>,
+    param_pairs: &[String],
     stdin: &mut dyn Read,
-) -> Result<Vec<app_v1::Parameter>, InputError> {
-    let parameters = match path {
+) -> Result<serde_json::Map<String, serde_json::Value>, InputError> {
+    let mut parameters = match path {
         Some(path) => read_json::<serde_json::Map<String, serde_json::Value>>(path, stdin)?,
         None => serde_json::Map::new(),
     };
+    if let Some(raw_json) = params_json {
+        if raw_json.len() > MAX_INPUT_BYTES {
+            return Err(InputError::TooLarge);
+        }
+        let parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(raw_json).map_err(|_| InputError::Invalid)?;
+        for (key, value) in parsed {
+            if key.is_empty() || parameters.contains_key(&key) {
+                return Err(InputError::Invalid);
+            }
+            parameters.insert(key, value);
+        }
+    }
+    for pair in param_pairs {
+        if pair.len() > MAX_INPUT_BYTES {
+            return Err(InputError::TooLarge);
+        }
+        let (key, raw_value) = pair.split_once('=').ok_or(InputError::Invalid)?;
+        if key.is_empty() || parameters.contains_key(key) {
+            return Err(InputError::Invalid);
+        }
+        let trimmed = raw_value.trim();
+        if trimmed.is_empty() {
+            return Err(InputError::Invalid);
+        }
+        let value = if trimmed.starts_with('{')
+            || trimmed.starts_with('[')
+            || trimmed.starts_with('"')
+        {
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .map_err(|_| InputError::Invalid)?
+        } else {
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_owned()))
+        };
+        parameters.insert(key.to_owned(), value);
+    }
+    Ok(parameters)
+}
+
+fn query_parameters(
+    path: Option<&OsString>,
+    params_json: Option<&str>,
+    param_pairs: &[String],
+    stdin: &mut dyn Read,
+) -> Result<Vec<app_v1::Parameter>, InputError> {
+    let parameters = merge_query_parameter_map(path, params_json, param_pairs, stdin)?;
     let mut parameters = parameters
         .into_iter()
         .map(|(name, value)| {
@@ -11751,7 +11963,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,
-        TopLevel::Generate => CommandIdentity::ProjectGenerate,
+        TopLevel::Generate { .. } => CommandIdentity::ProjectGenerate,
         TopLevel::Agent { .. } => CommandIdentity::AgentInit,
         TopLevel::Status => CommandIdentity::ProjectStatus,
         TopLevel::Diff => CommandIdentity::ProjectDiff,
@@ -13690,6 +13902,7 @@ mod tests {
         );
     }
 
+    // req: DX-004, DX-005, DX-016, DX-017, DX-046
     #[test]
     fn dev_script_receives_a_go_runner_package_only_when_explicitly_selected() {
         let directory =
@@ -13702,6 +13915,9 @@ mod tests {
         let arguments = |go_runner_package| {
             let invocation = DevInvocation {
                 role: "application",
+                tenant: Some("tenant-acme"),
+                sync_manifest: true,
+                sync_role: Some("AcmeRole"),
                 watch: false,
                 run: true,
                 go_runner_package,
@@ -13726,6 +13942,27 @@ mod tests {
                 .any(|argument| argument == "--run")
         );
         assert!(
+            typescript_default
+                .iter()
+                .any(|argument| argument == "--sync-manifest")
+        );
+        let tenant_index = typescript_default
+            .iter()
+            .position(|argument| argument == "--tenant")
+            .expect("tenant option");
+        assert_eq!(
+            typescript_default.get(tenant_index + 1),
+            Some(&"tenant-acme".into())
+        );
+        let sync_role_index = typescript_default
+            .iter()
+            .position(|argument| argument == "--sync-role")
+            .expect("sync-role option");
+        assert_eq!(
+            typescript_default.get(sync_role_index + 1),
+            Some(&"AcmeRole".into())
+        );
+        assert!(
             !typescript_default
                 .iter()
                 .any(|argument| argument == "--go-runner-package")
@@ -13737,6 +13974,106 @@ mod tests {
             .position(|argument| argument == "--go-runner-package")
             .expect("explicit Go package option");
         assert_eq!(explicit_go.get(option + 1), Some(&"cmd/server".into()));
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-046
+    #[test]
+    fn dev_session_defaults_and_inline_query_parameter_merging_are_bounded_and_workspace_confined()
+    {
+        let directory =
+            tempfile::TempDir::with_prefix("riffdb-cli-dev-session-").expect("scratch directory");
+        crate::scaffold::create_application(
+            "inspect-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            directory.path(),
+        )
+        .expect("scaffold inspect application");
+        let dev_dir = directory.path().join(".riffdb/dev");
+        fs::create_dir_all(&dev_dir).expect("create dev dir");
+        let cred_path = dev_dir.join("profile.credential");
+        fs::write(&cred_path, "dev-secret-token\n").expect("write dev credential");
+        crate::scaffold::write_dev_session_metadata(
+            directory.path(),
+            &crate::scaffold::DevSessionMetadata {
+                schema: crate::scaffold::DEV_SESSION_SCHEMA_V1.to_owned(),
+                endpoint: "http://127.0.0.1:7449".to_owned(),
+                database: "inspect-db".to_owned(),
+                credential_file: ".riffdb/dev/profile.credential".to_owned(),
+                contract_lineage: "InspectApp".to_owned(),
+                contract_version: 1,
+                role: "InspectAppApplication".to_owned(),
+                tenant: Some("dev-tenant".to_owned()),
+            },
+        )
+        .expect("write dev session metadata");
+
+        let mut cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "query",
+            "run",
+            "--inline",
+            "query Adhoc($item_id: Item.item_id) { one item from Item where item_id == $item_id else Missing return Found { item: item { item_id title } } outcomes Found | Missing }",
+            "--param",
+            "item_id={\"$uuid\":\"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10\"}",
+            "--param",
+            "label=welcome",
+        ]);
+        let environment = TestEnvironment::default();
+        let mut config = resolve(&cli, &environment).expect("resolve base config");
+        apply_dev_inspection_defaults(&mut cli, &mut config, &environment, directory.path())
+            .expect("apply dev inspection defaults");
+        assert_eq!(config.endpoint, "http://127.0.0.1:7449");
+        assert_eq!(config.database.as_str(), "inspect-db");
+        assert_eq!(
+            config.credential_file,
+            Some(fs::canonicalize(&cred_path).expect("canonical credential path"))
+        );
+        let TopLevel::Query {
+            command:
+                QueryCommand::Run {
+                    contract,
+                    param,
+                    params_json,
+                    ..
+                },
+        } = &cli.command
+        else {
+            panic!("expected query run");
+        };
+        assert_eq!(contract.contract_lineage.as_deref(), Some("InspectApp"));
+        assert_eq!(contract.contract_version.as_deref(), Some("1"));
+        let merged = merge_query_parameter_map(
+            None,
+            params_json.as_deref(),
+            param,
+            &mut Cursor::new(Vec::new()),
+        )
+        .expect("merge inline parameters");
+        assert_eq!(
+            merged.get("item_id"),
+            Some(&serde_json::json!({"$uuid": "018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"}))
+        );
+        assert_eq!(merged.get("label"), Some(&serde_json::json!("welcome")));
+
+        // Duplicate parameter keys fail closed across repeatable --param and --params-json.
+        assert!(
+            merge_query_parameter_map(
+                None,
+                None,
+                &["label=first".to_owned(), "label=second".to_owned()],
+                &mut Cursor::new(Vec::new()),
+            )
+            .is_err()
+        );
+        assert!(
+            merge_query_parameter_map(
+                None,
+                Some(r#"{"label":"second"}"#),
+                &["label=first".to_owned()],
+                &mut Cursor::new(Vec::new()),
+            )
+            .is_err()
+        );
     }
 
     fn assert_terminal_omits(terminal: Terminal, needle: &[u8], mode: crate::cli::OutputMode) {

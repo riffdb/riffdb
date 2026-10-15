@@ -55,13 +55,20 @@ the option is omitted, the CLI forwards no Go-only configuration: the runner
 detects `package.json` applications and executes `npm run build` followed by
 `npm run start` as usual.
 
-Current application command and RiffQL plans retain the accepted global
-tenant requirement. `riffdb dev` therefore accepts only an explicitly
-global development role. A tenant-scoped role is rejected before the
-disposable server starts because no reviewed contract-field-to-tenant mapping
-exists; development never invents that mapping or widens the role. Tenant
-binding remains available to interfaces whose operation target has a compiled
-tenant scope.
+When the selected development role declares `"tenant_scope": "tenant"`,
+`riffdb dev` binds the disposable role credential to `--tenant <TENANT_ID>`
+(defaulting to `"dev-tenant"` or `RIFFDB_TENANT` when `--tenant` is omitted),
+records the bound tenant in `.riffdb/dev/session.json`, and exports
+`RIFFDB_TENANT` to child application runners and generated SDK transports.
+
+When authoring new contract commands or adding `.riffq` files under
+`riffdb/queries/`, pass `--sync-manifest` to `riffdb application check`,
+`riffdb application lock`, `riffdb generate`, or `riffdb dev` to discover
+unregistered `riffdb/queries/*.riffq` files and grant newly compiled commands
+and queries to the sole application role in canonical sorted order before
+refreshing the lock and generated clients. Multi-role manifests require
+`--sync-role <ROLE>` alongside `--sync-manifest` and fail closed with
+`RDB-AR012` when `--sync-role` is omitted.
 
 Use `--role ticketdesk-agent` for the separately named agent allowlist. It
 still receives no ad-hoc query or kernel authority. Use
@@ -131,6 +138,21 @@ riffdb query run-named MyPage \
   --contract-lineage TicketDesk \
   --contract-version 1 \
   --parameters parameters.json
+```
+
+While `riffdb dev` is running in a workspace, it writes bounded local session
+metadata to `.riffdb/dev/session.json` and `.riffdb/dev/profile.credential`
+(mode `0600`) and removes them on exit. Read-only inspection commands
+(`riffdb query run`, `riffdb query run-named`, and `riffdb entity get`)
+automatically discover `--endpoint`, `--database`, `--credential-file`,
+`--contract-lineage`, and `--contract-version` from `.riffdb/dev/session.json`
+when those flags are omitted, and support `--inline <RIFFQL>`, repeatable
+`--param <KEY=VALUE>`, and `--params-json <JSON_OBJECT>`:
+
+```bash
+riffdb query run \
+  --inline 'query Adhoc($ticket_id: Ticket.ticket_id) { one t from Ticket where ticket_id == $ticket_id else Missing return Found { ticket: t { ticket_id title } } outcomes Found | Missing }' \
+  --param 'ticket_id={"$uuid":"535bbe7a-3f53-4792-97bb-5d9a692be0ef"}'
 ```
 
 The server resolves symbols, type-checks parameters, derives the complete

@@ -341,6 +341,28 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             _validate_batch([object()], CommandBatchOptions(385))
 
+    # req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
+    def test_call_metadata_and_transport_resolve_bound_tenant(self) -> None:
+        import os
+
+        credential = BearerCredential("A" * 43)
+        previous = os.environ.get("RIFFDB_TENANT")
+        try:
+            os.environ["RIFFDB_TENANT"] = "dev-tenant"
+            metadata = CallMetadata.authenticated(credential)
+            self.assertEqual(metadata.tenant, "dev-tenant")
+            overridden = metadata.with_tenant("acme-prod")
+            self.assertEqual(overridden.tenant, "acme-prod")
+            sync_transport = SyncApplicationTransport(object())  # type: ignore[arg-type]
+            self.assertEqual(sync_transport.tenant, "dev-tenant")
+            with self.assertRaises(InvalidInput):
+                metadata.with_tenant("bad tenant")
+        finally:
+            if previous is None:
+                os.environ.pop("RIFFDB_TENANT", None)
+            else:
+                os.environ["RIFFDB_TENANT"] = previous
+
 
 class AsyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_batch_preserves_empty_bounded_pull_and_uses_zero_wait(self) -> None:

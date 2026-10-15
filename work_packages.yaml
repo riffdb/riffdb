@@ -30790,7 +30790,7 @@ work_packages:
     riffdb.application.lock.json.
   requirements: [DX-004, DX-005, DX-014, DX-046]
   required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, scripts/**, fixtures/**, docs/**]
   deliverables:
   - Workspace-confined .riffdb/dev/session.json lifecycle in riffdb dev and scripts/riffdb-dev
   - Automatic dev-session and project-manifest fallback for endpoint, credential, and contract lineage/version in riffdb query run, query run-named, and entity get
@@ -30808,11 +30808,11 @@ work_packages:
   - Inline CLI query execution permits mutations, unbounded scans, or bypasses bearer authorization.
   - Dev session metadata writes outside <project_root>/.riffdb/dev or exposes raw credential secrets in session.json.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [DX-004, DX-005, DX-014, DX-046]
+    evidence: crates/riffdb-cli/src/scaffold.rs
+    decision: Added workspace-confined .riffdb/dev/session.json and .riffdb/dev/profile.credential lifecycle in scripts/riffdb-dev and crates/riffdb-cli, auto-discovery of endpoint, database, credential_file, and contract lineage/version in query run, query run-named, and entity get, and --inline <RIFFQL>, repeatable --param <KEY=VALUE>, and --params-json <JSON_OBJECT> query flags.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30828,7 +30828,7 @@ work_packages:
     regenerating SDKs.
   requirements: [DX-004, DX-005, DX-016, DX-017]
   required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0155, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, scripts/**, fixtures/**, docs/**]
   deliverables:
   - Deterministic riffdb/queries/*.riffq discovery and canonical manifest query registration under --sync-manifest
   - Single-role automatic operation grant synchronization and explicit --sync-role <ROLE> support
@@ -30846,11 +30846,11 @@ work_packages:
   human_review_triggers:
   - --sync-manifest silently grants operations across multiple roles without an explicit --sync-role target.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [DX-004, DX-005, DX-016, DX-017]
+    evidence: crates/riffdb-cli/src/scaffold.rs
+    decision: Added sync_application_manifest, extract_declared_query_name, RDB-AR012 ambiguous_manifest_sync_role diagnostic, and --sync-manifest / --sync-role <ROLE> flags on riffdb application check, application lock, generate, and dev.
     decisions_taken: []
     known_limitations: null
     follow_ups: []
@@ -30866,7 +30866,7 @@ work_packages:
     Python, and Go.
   requirements: [DX-004, DX-046, DRV-005, DRV-007, DRV-008]
   required_adrs: [ADR-0305, ADR-0015, ADR-0041, ADR-0121, ADR-0155, ADR-0303, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - --tenant <TENANT_ID> flag and dev-tenant local fallback for tenant-scoped roles in riffdb dev and scripts/riffdb-dev
   - RIFFDB_TENANT environment variable propagation and generated SDK connection option / client property exposure across Rust, TypeScript, Python, and Go
@@ -30883,11 +30883,11 @@ work_packages:
   human_review_triggers:
   - A tenant-scoped role is permitted to bind without a tenant identifier or override its server-bound bearer tenant scope from client options.
   closure:
-    status: open
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [DX-004, DX-046, DRV-005, DRV-007, DRV-008]
+    evidence: crates/riffdb-client-rust/src/metadata.rs
+    decision: Added --tenant <TENANT_ID> (defaulting to dev-tenant for tenant-scoped roles) and RIFFDB_TENANT propagation to riffdb dev and scripts/riffdb-dev, and exposed bound tenant configuration and inspection across Rust CallMetadata, TypeScript DriverApplicationTransport / DriverGeneratedApplicationTransport, Python CallMetadata / SyncApplicationTransport / AsyncApplicationTransport, and Go Identity / Session.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

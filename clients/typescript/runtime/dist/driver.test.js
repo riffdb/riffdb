@@ -661,3 +661,35 @@ function driverStatus() {
             dead_letters: { type: "u64", value: "0" },
         } };
 }
+// req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
+test("driver transport exposes bound tenant from options or RIFFDB_TENANT", async () => {
+    const fixture = await DriverFixture.start(() => undefined);
+    const previousTenant = process.env.RIFFDB_TENANT;
+    try {
+        process.env.RIFFDB_TENANT = "tenant-from-env";
+        const envTransport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+        const generated = new DriverGeneratedApplicationTransport(envTransport);
+        assert.equal(envTransport.tenant, "tenant-from-env");
+        assert.equal(generated.tenant, "tenant-from-env");
+        await envTransport.shutdown();
+        const explicitTransport = await DriverApplicationTransport.connect({
+            socketPath: fixture.path,
+            identity,
+            tenant: "tenant-explicit",
+        });
+        assert.equal(explicitTransport.tenant, "tenant-explicit");
+        await explicitTransport.shutdown();
+        await assert.rejects(DriverApplicationTransport.connect({
+            socketPath: fixture.path,
+            identity,
+            tenant: "invalid tenant with spaces",
+        }), /invalid RiffDB tenant identifier/u);
+    }
+    finally {
+        if (previousTenant === undefined)
+            delete process.env.RIFFDB_TENANT;
+        else
+            process.env.RIFFDB_TENANT = previousTenant;
+        await fixture.close();
+    }
+});

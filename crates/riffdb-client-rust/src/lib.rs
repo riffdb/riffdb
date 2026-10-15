@@ -121,5 +121,5 @@ pub use riffdb_types::{
     ArchiveNameV1, ArchiveRestoreStopV1, BackupNameV1, BackupNameV1Error,
     CapabilityApplicationExportScopeV1, CapabilityApplicationReimportScopeV1, CommitSequence,
     ContractMigrationOperationId, DEFAULT_DATABASE_ALIAS, DatabaseAlias, MigrationBundleHash,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RequestId,
+    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RequestId, TenantId,
 };

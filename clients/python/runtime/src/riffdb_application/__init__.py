@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
@@ -13,6 +14,16 @@ from . import _native
 
 T = TypeVar("T")
 U = TypeVar("U")
+
+
+def _validate_tenant(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or any(ord(ch) <= 0x20 or ord(ch) > 0x7E for ch in value)
+    ):
+        raise InvalidInput("RiffDB tenant must be 1..128 visible ASCII characters")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,16 +128,25 @@ class CallMetadata:
     credential: BearerCredential | None = None
     database: DatabaseAlias | None = None
     trace_parent: TraceParent | None = None
+    tenant: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.tenant is not None:
+            _validate_tenant(self.tenant)
 
     @classmethod
-    def authenticated(cls, credential: BearerCredential) -> Self:
-        return cls(credential=credential)
+    def authenticated(cls, credential: BearerCredential, *, tenant: str | None = None) -> Self:
+        resolved_tenant = tenant if tenant is not None else os.environ.get("RIFFDB_TENANT")
+        return cls(credential=credential, tenant=resolved_tenant)
 
     def with_database(self, database: DatabaseAlias) -> Self:
         return replace(self, database=database)
 
     def with_trace_parent(self, trace_parent: TraceParent) -> Self:
         return replace(self, trace_parent=trace_parent)
+
+    def with_tenant(self, tenant: str) -> Self:
+        return replace(self, tenant=_validate_tenant(tenant))
 
     def _native_value(self) -> _native._CallMetadata:
         return _native._CallMetadata(
@@ -469,16 +489,25 @@ def _translate_native(error: BaseException) -> Exception:
 
 
 class SyncApplicationTransport:
-    __slots__ = ("_client", "_closed")
+    __slots__ = ("_client", "_closed", "_tenant")
 
-    def __init__(self, client: _native._SyncClient) -> None:
+    def __init__(self, client: _native._SyncClient, tenant: str | None = None) -> None:
+        resolved_tenant = tenant if tenant is not None else os.environ.get("RIFFDB_TENANT")
         self._client = client
         self._closed = False
+        self._tenant = None if resolved_tenant is None else _validate_tenant(resolved_tenant)
+
+    @property
+    def tenant(self) -> str | None:
+        return self._tenant
 
     @classmethod
     def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
         try:
-            return cls(_native._SyncClient.connect_uri(endpoint, metadata._native_value()))
+            return cls(
+                _native._SyncClient.connect_uri(endpoint, metadata._native_value()),
+                tenant=metadata.tenant,
+            )
         except BaseException as error:
             raise _translate_native(error) from None
 
@@ -493,7 +522,8 @@ class SyncApplicationTransport:
                     config.pool_connections,
                     config.streams_per_connection,
                     metadata._native_value(),
-                )
+                ),
+                tenant=metadata.tenant,
             )
         except BaseException as error:
             raise _translate_native(error) from None
@@ -595,16 +625,25 @@ class SyncApplicationTransport:
 
 
 class AsyncApplicationTransport:
-    __slots__ = ("_client", "_closed")
+    __slots__ = ("_client", "_closed", "_tenant")
 
-    def __init__(self, client: _native._AsyncClient) -> None:
+    def __init__(self, client: _native._AsyncClient, tenant: str | None = None) -> None:
+        resolved_tenant = tenant if tenant is not None else os.environ.get("RIFFDB_TENANT")
         self._client = client
         self._closed = False
+        self._tenant = None if resolved_tenant is None else _validate_tenant(resolved_tenant)
+
+    @property
+    def tenant(self) -> str | None:
+        return self._tenant
 
     @classmethod
     async def connect_uri(cls, endpoint: str, metadata: CallMetadata) -> Self:
         try:
-            return cls(await _native.connect_async(endpoint, metadata._native_value()))
+            return cls(
+                await _native.connect_async(endpoint, metadata._native_value()),
+                tenant=metadata.tenant,
+            )
         except BaseException as error:
             raise _translate_native(error) from None
 
@@ -621,7 +660,8 @@ class AsyncApplicationTransport:
                     config.pool_connections,
                     config.streams_per_connection,
                     metadata._native_value(),
-                )
+                ),
+                tenant=metadata.tenant,
             )
         except BaseException as error:
             raise _translate_native(error) from None

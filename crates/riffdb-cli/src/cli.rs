@@ -52,7 +52,14 @@ pub(crate) enum TopLevel {
         generate: bool,
     },
     /// Regenerates configured SDK targets from the exact project lock.
-    Generate,
+    Generate {
+        /// Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before locking.
+        #[arg(long)]
+        sync_manifest: bool,
+        /// Explicit role name in `riffdb.application.json` to receive newly discovered operations.
+        #[arg(long, value_name = "ROLE")]
+        sync_role: Option<String>,
+    },
     /// Installs repository-local generated agent guidance and MCP configuration.
     Agent {
         #[command(subcommand)]
@@ -95,6 +102,9 @@ pub(crate) enum TopLevel {
     Dev {
         #[arg(long, default_value = "application", value_name = "ROLE_PRESET")]
         role: String,
+        /// Explicit tenant identifier when binding a tenant-scoped role in local development.
+        #[arg(long, value_name = "TENANT_ID")]
+        tenant: Option<String>,
         #[arg(long)]
         watch: bool,
         /// Runs the repository's generated application against the local server.
@@ -112,6 +122,12 @@ pub(crate) enum TopLevel {
         /// Resets disposable local development state under `.riffdb/dev` before starting.
         #[arg(long)]
         reset: bool,
+        /// Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before starting.
+        #[arg(long)]
+        sync_manifest: bool,
+        /// Explicit role name in `riffdb.application.json` to receive newly discovered operations.
+        #[arg(long, value_name = "ROLE")]
+        sync_role: Option<String>,
         #[arg(long, hide = true)]
         acceptance: bool,
     },
@@ -467,6 +483,12 @@ pub(crate) enum ApplicationCommand {
         /// Reports only anonymized operational refusal classes.
         #[arg(long)]
         refusals: bool,
+        /// Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before checking.
+        #[arg(long)]
+        sync_manifest: bool,
+        /// Explicit role name in `riffdb.application.json` to receive newly discovered operations.
+        #[arg(long, value_name = "ROLE")]
+        sync_role: Option<String>,
     },
     /// Compiles and prints the exact proposed lock without writing.
     Preview {
@@ -493,6 +515,12 @@ pub(crate) enum ApplicationCommand {
             value_name = "APPLICATION_LOCK"
         )]
         lock: OsString,
+        /// Discovers `riffdb/queries/*.riffq` and grants new operations to the target role before locking.
+        #[arg(long)]
+        sync_manifest: bool,
+        /// Explicit role name in `riffdb.application.json` to receive newly discovered operations.
+        #[arg(long, value_name = "ROLE")]
+        sync_role: Option<String>,
     },
     /// Regenerates V1 manifests or exact locked symbolic application bindings.
     Generate {
@@ -711,10 +739,23 @@ pub(crate) enum QueryCommand {
         contract: ContractSelectionArgs,
     },
     Run {
-        #[arg(value_name = "RIFFQL_SOURCE")]
-        source: OsString,
+        #[arg(
+            value_name = "RIFFQL_SOURCE",
+            required_unless_present = "inline",
+            conflicts_with = "inline"
+        )]
+        source: Option<OsString>,
+        /// Executes an inline read-only RiffQL query string.
+        #[arg(long, value_name = "RIFFQL", conflicts_with = "source")]
+        inline: Option<String>,
         #[arg(long, value_name = "JSON_PARAMETERS")]
         parameters: Option<OsString>,
+        /// Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable).
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        param: Vec<String>,
+        /// Inline query parameters as a JSON object string.
+        #[arg(long = "params-json", value_name = "JSON_OBJECT")]
+        params_json: Option<String>,
         #[arg(long, value_name = "CURSOR")]
         cursor: Option<String>,
         #[arg(long, value_name = "COMMIT_SEQUENCE")]
@@ -731,6 +772,12 @@ pub(crate) enum QueryCommand {
         module_hash: Option<String>,
         #[arg(long, value_name = "JSON_PARAMETERS")]
         parameters: Option<OsString>,
+        /// Inline query parameter as KEY=JSON_OR_STRING_VALUE (repeatable).
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        param: Vec<String>,
+        /// Inline query parameters as a JSON object string.
+        #[arg(long = "params-json", value_name = "JSON_OBJECT")]
+        params_json: Option<String>,
         #[arg(long, value_name = "CURSOR")]
         cursor: Option<String>,
         #[arg(long, value_name = "COMMIT_SEQUENCE")]
@@ -2054,7 +2101,10 @@ mod tests {
             Cli::try_parse_from(["riffdb", "generate"])
                 .expect("generate")
                 .command,
-            TopLevel::Generate
+            TopLevel::Generate {
+                sync_manifest: false,
+                sync_role: None
+            }
         ));
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "agent", "init"])
@@ -2791,6 +2841,90 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    // req: DX-004, DX-005, DX-014, DX-016, DX-017, DX-046
+    #[test]
+    fn inline_query_manifest_sync_and_dev_tenant_flags_parse_with_bounded_rules() {
+        let inline_query = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "run",
+            "--inline",
+            "query AdHoc($id: Item.item_id) { one item from Item where item_id == $id else NotFound return Found { item: item { item_id } } outcomes Found | NotFound }",
+            "--param",
+            "id=018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10",
+            "--params-json",
+            "{\"extra\":1}",
+            "--contract-lineage",
+            "Inventory",
+            "--contract-version",
+            "1",
+        ])
+        .expect("inline query run");
+        assert!(matches!(
+            inline_query.command,
+            TopLevel::Query {
+                command: QueryCommand::Run {
+                    source: None,
+                    inline: Some(_),
+                    param,
+                    params_json: Some(_),
+                    ..
+                }
+            } if param == vec!["id=018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10"]
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "riffdb",
+                "query",
+                "run",
+                "query.riffq",
+                "--inline",
+                "query Q() {}",
+                "--contract-lineage",
+                "Inventory",
+                "--contract-version",
+                "1",
+            ])
+            .is_err()
+        );
+
+        let generate_sync = Cli::try_parse_from([
+            "riffdb",
+            "generate",
+            "--sync-manifest",
+            "--sync-role",
+            "admin",
+        ])
+        .expect("generate --sync-manifest --sync-role");
+        assert!(matches!(
+            generate_sync.command,
+            TopLevel::Generate {
+                sync_manifest: true,
+                sync_role: Some(role),
+            } if role == "admin"
+        ));
+
+        let dev_tenant = Cli::try_parse_from([
+            "riffdb",
+            "dev",
+            "--role",
+            "tenant-member",
+            "--tenant",
+            "acme-corp",
+            "--sync-manifest",
+        ])
+        .expect("dev --tenant --sync-manifest");
+        assert!(matches!(
+            dev_tenant.command,
+            TopLevel::Dev {
+                role,
+                tenant: Some(tenant),
+                sync_manifest: true,
+                ..
+            } if role == "tenant-member" && tenant == "acme-corp"
+        ));
     }
 }
 

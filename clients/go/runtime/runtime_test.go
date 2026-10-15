@@ -322,3 +322,23 @@ func TestContextCancellationSendsCancel(t *testing.T) {
 	default:
 	}
 }
+
+// req: DRV-005, DRV-007, DRV-008, DX-004, DX-046
+func TestSessionResolvesBoundTenantFromIdentityOrEnvironment(t *testing.T) {
+	fixture := newFixture(t, func(request map[string]any) map[string]any { return nil })
+	t.Setenv("RIFFDB_TENANT", "dev-tenant")
+	session, err := Connect(context.Background(), fixture.path, testIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	if session.Tenant() != "dev-tenant" {
+		t.Fatalf("expected bound tenant dev-tenant, got %q", session.Tenant())
+	}
+	badIdentity := testIdentity
+	badIdentity.Tenant = "bad tenant"
+	if _, err := Connect(context.Background(), fixture.path, badIdentity); err == nil {
+		t.Fatal("expected invalid tenant with whitespace to fail closed")
+	}
+}
+
