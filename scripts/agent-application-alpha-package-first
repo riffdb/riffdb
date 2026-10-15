@@ -66,7 +66,6 @@ cp "$distribution/metadata/artifacts-v1.json" \
 rm "$legacy/packages/distribution/checksums.sha256" \
     "$legacy/packages/distribution/checksums.sha256.sig"
 find "$legacy/packages/distribution/crates" -maxdepth 1 -type f -name '*.crate' \
-    ! -name 'riffdb-api-grpc-0.1.0.crate' \
     ! -name 'riffdb-application-0.1.0.crate' \
     ! -name 'riffdb-client-rust-0.1.0.crate' \
     ! -name 'riffdb-config-0.1.0.crate' \

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/riffdb-api-grpc",
   "crates/riffdb-application",
   "crates/riffdb-client-rust",
   "crates/riffdb-config",
@@ -23,6 +22,7 @@ publish = false
 # smoke compiles only the public runtime surface. This exact pin mirrors the
 # authoritative workspace and prevents a clean exported SDK from depending on
 # ambient repository metadata.
+crc32c = { version = "=0.6.8", default-features = false }
 tempfile = { version = "=3.24.0", default-features = false }
 
 [workspace.lints.rust]

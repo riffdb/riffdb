@@ -120,7 +120,6 @@ cp "$repo_root/clients/typescript/runtime/package-lock.json" "$temporary/public/
 cp -R "$repo_root/clients/typescript/runtime/dist" "$temporary/public/typescript/"
 cp -R "$repo_root/clients/typescript/runtime/node_modules" "$temporary/public/typescript/"
 for crate in \
-    riffdb-api-grpc \
     riffdb-application \
     riffdb-client-rust \
     riffdb-config \
@@ -137,12 +136,12 @@ cp "$repo_root/release/agent-application-alpha/sdk-Cargo.toml" \
     "$temporary/public/rust-sdk/Cargo.toml"
 cp "$repo_root/templates/application/Cargo.lock" \
     "$temporary/public/rust-sdk/Cargo.lock"
-cp "$repo_root/release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml" \
-    "$temporary/public/rust-sdk/crates/riffdb-api-grpc/Cargo.toml"
 cp "$repo_root/release/agent-application-alpha/riffdb-application-client.Cargo.toml" \
     "$temporary/public/rust-sdk/crates/riffdb-application/Cargo.toml"
 cp "$repo_root/release/agent-application-alpha/riffdb-contract-ir-client.Cargo.toml" \
     "$temporary/public/rust-sdk/crates/riffdb-contract-ir/Cargo.toml"
+cp "$repo_root/release/agent-application-alpha/riffdb-proto-client.Cargo.toml" \
+    "$temporary/public/rust-sdk/crates/riffdb-proto/Cargo.toml"
 cp "$repo_root/release/agent-application-alpha/BUNDLE.md" "$temporary/README.md"
 cp "$repo_root/release/agent-application-alpha/cargo-config.toml" \
     "$temporary/.cargo/config.toml"

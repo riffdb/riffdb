@@ -15,7 +15,6 @@ MAX_FILES = 16_384
 MAX_FILE_BYTES = 256 * 1024 * 1024
 VERSION = "0.1.0"
 RUNTIME_PACKAGES = {
-    "riffdb-api-grpc",
     "riffdb-application",
     "riffdb-client-rust",
     "riffdb-config",
