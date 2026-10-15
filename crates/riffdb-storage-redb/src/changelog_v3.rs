@@ -564,27 +564,7 @@ pub(crate) fn receipt_from_journal_for_catalog(
     binding: AuthoritativeTransactionBindingV3,
     catalog: [u8; 32],
 ) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
-    if binding.predecessor.is_none()
-        || binding.database_id != frame.database_id()
-        || binding.predecessor_frontier
-            != DualFrontier::new(
-                frame.predecessor_sequence(),
-                frame.predecessor_administration_sequence(),
-            )
-        || binding.covered_frontier
-            != DualFrontier::new(
-                frame.covered_sequence(),
-                frame.covered_administration_sequence(),
-            )
-    {
-        return Err(ChangelogV3Error::PredecessorMismatch);
-    }
-    let source = match frame.kind() {
-        JournalFrameKind::Command => ChangelogAttributionV3::JournaledApplicationGroup,
-        JournalFrameKind::ServiceAudit => ChangelogAttributionV3::JournaledServiceAudit,
-        JournalFrameKind::RetentionPrune => ChangelogAttributionV3::RetentionPrune,
-        JournalFrameKind::SourceReclamation => ChangelogAttributionV3::HistoryReclamation,
-    };
+    let source = check_journal_frame_binding(frame, binding)?;
     receipt_from_sources(binding, source, catalog, frame.mutations(), |mutation| {
         Ok((
             mutation.table(),
@@ -712,20 +692,11 @@ pub(crate) fn summary_from_journal_for_catalog(
     binding: AuthoritativeTransactionBindingV3,
     catalog: [u8; 32],
 ) -> Result<ValidatedReceiptSummaryV3, ChangelogV3Error> {
-    let source = check_journal_frame_binding(frame, binding)?;
-    fold_borrowed_sources(
-        binding,
-        source,
-        frame.mutations().iter().map(|mutation| {
-            Ok((
-                mutation.table(),
-                mutation.key(),
-                mutation.expected_hash(),
-                mutation.value(),
-            ))
-        }),
-    )?
-    .into_summary(binding, source, catalog)
+    // Recovery admits an indexed fold and a capped net vector, not a B-tree
+    // node per source row. Keep full native receipt validation, then hash its
+    // canonical representation without retaining an encoded receipt buffer.
+    let receipt = receipt_from_journal_for_catalog(frame, binding, catalog)?;
+    ValidatedReceiptSummaryV3::from_receipt(&receipt)
 }
 
 pub(crate) fn summary_from_validated_mutations_for_catalog(
@@ -1190,6 +1161,29 @@ mod tests {
             super::receipt_from_journal(&frame(vec![allocator_mutation(), foreign]), binding())
                 .is_err()
         );
+    }
+
+    #[test]
+    // req: REC-005, STO-030, STO-032
+    fn descriptor_heavy_journal_summary_matches_exact_canonical_receipt() {
+        let mut mutations = vec![allocator_mutation()];
+        for ordinal in (0_u64..4_224).rev() {
+            mutations.push(
+                JournalMutation::put(JournalTable::AuditByRequest, ordinal.to_be_bytes(), [0x51])
+                    .unwrap(),
+            );
+        }
+        let source = frame(mutations);
+        crate::journal::admit_native_recovery_frame(&source).unwrap();
+        let catalog = riffdb_storage_api::AuthoritativeStateCatalogV1.digest();
+        let receipt = super::receipt_from_journal_for_catalog(&source, binding(), catalog).unwrap();
+        let encoded = receipt.encode().unwrap();
+        let summary = super::summary_from_journal_for_catalog(&source, binding(), catalog).unwrap();
+        assert_eq!(summary.binding(), receipt.binding());
+        assert_eq!(summary.attribution(), receipt.attribution());
+        assert_eq!(summary.history_hash(), receipt.history_hash().unwrap());
+        assert_eq!(summary.encoded_len(), encoded.len());
+        assert!(receipt.matches_canonical_v1(&encoded).unwrap());
     }
 
     #[test]

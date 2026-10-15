@@ -572,6 +572,25 @@ fn verify_materialized_frame_with_roots(
     )
     .map_err(value_error)?
     .point();
+    drop(materialized);
+    if let Some(recorded) = frame.changelog()
+        && (recorded.binding(frame) != binding
+            || recorded.catalog_digest() != history.lineage().catalog_digest())
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let recovered = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
+        .map_err(value_error)?;
+    // Preserve the complete byte comparison before releasing its scratch.
+    // A nested predecessor read retains only this checked receipt and the
+    // original frame, never another decoded receipt plus canonical buffer.
+    if !recovered
+        .matches_canonical_v1(&resolved)
+        .map_err(value_error)?
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    drop(resolved);
     if sequence == history.minimum_resume().sequence() {
         if point != history.minimum_resume() {
             return Err(storage_error(StorageErrorKind::CorruptData));
@@ -607,21 +626,6 @@ fn verify_materialized_frame_with_roots(
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }
-    }
-    if let Some(recorded) = frame.changelog()
-        && (recorded.binding(frame) != binding
-            || recorded.catalog_digest() != history.lineage().catalog_digest())
-    {
-        return Err(storage_error(StorageErrorKind::CorruptData));
-    }
-    let recovered = receipt_from_journal(frame, binding, history.lineage().catalog_digest())
-        .map_err(value_error)?;
-    // A history stub is compared by the receipt it resolves to (ADR-0263 C3).
-    if !recovered
-        .matches_canonical_v1(&resolved)
-        .map_err(value_error)?
-    {
-        return Err(storage_error(StorageErrorKind::CorruptData));
     }
     Ok((recovered, point))
 }

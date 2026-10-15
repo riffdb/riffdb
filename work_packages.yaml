@@ -29143,6 +29143,43 @@ work_packages:
     status: open
     decisions_taken:
     - >-
+      D-003 native recovery admission correction under accepted bounds: charge
+      the actual borrowed namespace/key/index sorting layout, with checked u32
+      indices and the existing capped net output vector. Bound nested source
+      headers and payload together using target descriptor sizes; preserve the
+      compiled 64-MiB owned-state ceiling. Reconstruct journal summaries through
+      the fully checked indexed receipt constructor instead of an uncharged
+      B-tree. Drop decoded materialized and canonical owners before predecessor
+      resolution while retaining the complete canonical-byte comparison. Preserve
+      ordering, all binding/checksum/lineage/allocator/attribution and predecessor
+      checks, fail-closed oversized/overflow refusal, durable/public identities,
+      formats, dependencies and fixtures. The unchanged 100-row loopback failure
+      and exact admitted-layout regression are retained; corrected required-host
+      checks pass 95 native receipt/recovery tests and six correlated/replication
+      tests, including acknowledged abrupt kill, native reopen and independent
+      state reconciliation, plus scoped Clippy and allowed-path checks. A separate
+      test-only stale scaffold checksum expectation is corrected and its closest
+      deterministic test passes. The proposed ordinary shipping release passes
+      saved-population public restore: original acknowledgement/all-ticket
+      reconciliation completes at 42.227415597 seconds, before the fixed release
+      at 45.000068648 seconds; first new write at 45.115350528 seconds and whole
+      exact replay/state reconciliation at 47.757662239 seconds satisfy the
+      unchanged 60-second gate. Receipt
+      0e44050bddfce8dffe1a2987c8b5c20ae058efc641b52ebc8b077e9474260a37.
+      Preserve the earlier pre-backup stale SDK-lock refusal. Ordinary public
+      lock write/check in an owned copy changes only four generated SDK hashes;
+      all semantic identities, source and non-SDK artifact bytes remain fixed,
+      with the original fixture preserved. Retain these guards before normal
+      public role renewal and original acknowledgement replay. Reclaim 29.059
+      GiB of idle temporary output without deleting original failures, archive
+      witnesses or frozen executables; 137.988 GiB free before build does not
+      prove final starting space after restore copies. Current loaded accounting
+      and latency, integrated acceptance/full CI, raw qualification join, final
+      free-space admission, actual scheduled restore and both complete campaigns
+      remain required. The tested proposal is not yet committed or final-source
+      CI qualified. WP-825 stays open; neither eight-hour rehearsal nor 24-hour
+      campaign has started. No threshold or retry changes.
+    - >-
       D-005: advance only the admitted rustls patch 0.23.45 to 0.23.46 for
       RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348 and RUSTSEC-2026-0349.
       cargo deny check PASS and cargo audit PASS on the required host; all 20

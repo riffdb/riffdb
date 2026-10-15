@@ -58,16 +58,42 @@ pub(crate) fn admit_native_frame(frame: &JournalFrame) -> Result<(), StorageErro
     admit_native_layout(frame.mutations().len(), payload).map_err(|_| capacity())
 }
 
+fn indexed_fold_workspace(count: usize) -> Option<usize> {
+    riffdb_storage_api::AuthoritativeMutationAccumulatorV3::indexed_fold_workspace_bytes_v1(count)
+        .ok()
+}
+
+fn nested_fold_window() -> Option<usize> {
+    let source_limit = MAX_JOURNAL_FRAME_BYTES / MUTATION_HEADER_BYTES;
+    let output_limit = riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES.min(source_limit);
+    // The source vector and sorting workspace can exceed the net receipt's
+    // row cap. Payload maxima also share the frame budget with source headers.
+    // This bound is linear on either side of the output cap, so its endpoints
+    // cover different target pointer/descriptor sizes without guessing them.
+    let bound = |count: usize| -> Option<usize> {
+        let payload = MAX_JOURNAL_FRAME_BYTES
+            .checked_sub(count.checked_mul(MUTATION_HEADER_BYTES)?)?
+            .checked_mul(2)?;
+        count
+            .checked_mul(std::mem::size_of::<JournalMutation>())?
+            .checked_add(indexed_fold_workspace(count)?)?
+            .checked_add(count.min(output_limit).checked_mul(std::mem::size_of::<
+                riffdb_storage_api::AuthoritativeMutationV3,
+            >())?)?
+            .checked_add(payload)?
+            .checked_add(256 * 1024)
+    };
+    Some(
+        bound(0)?
+            .max(bound(output_limit)?)
+            .max(bound(source_limit)?),
+    )
+}
+
 pub(super) fn admit_native_layout(count: usize, payload: usize) -> Result<(), JournalCodecError> {
     let capacity = || JournalCodecError::LimitExceeded;
     let source_count = count;
-    let count = MAX_JOURNAL_FRAME_BYTES / MUTATION_HEADER_BYTES;
-    let per_row = std::mem::size_of::<JournalMutation>()
-        + std::mem::size_of::<usize>()
-        + std::mem::size_of::<riffdb_storage_api::AuthoritativeMutationV3>();
-    let nested_fold = 2 * MAX_JOURNAL_FRAME_BYTES
-        + count * per_row.saturating_sub(2 * MUTATION_HEADER_BYTES)
-        + 256 * 1024;
+    let nested_fold = nested_fold_window().ok_or_else(capacity)?;
     let canonical_decode = riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES
         + riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
             * std::mem::size_of::<riffdb_storage_api::AuthoritativeMutationV3>()
@@ -77,10 +103,11 @@ pub(super) fn admit_native_layout(count: usize, payload: usize) -> Result<(), Jo
         .max(canonical_decode)
         .max(scanner_window().ok_or_else(capacity)?);
     let fold = source_count
-        .checked_mul(
-            std::mem::size_of::<riffdb_storage_api::AuthoritativeMutationV3>()
-                + std::mem::size_of::<usize>(),
-        )
+        .min(riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES)
+        .checked_mul(std::mem::size_of::<
+            riffdb_storage_api::AuthoritativeMutationV3,
+        >())
+        .and_then(|bytes| bytes.checked_add(indexed_fold_workspace(source_count)?))
         .and_then(|bytes| bytes.checked_add(payload))
         .ok_or_else(capacity)?;
     // A test/direct materializer can retain canonical bytes even for a recorded
@@ -359,16 +386,10 @@ mod tests {
     // req: REC-005, STO-030, STO-032
     #[test]
     fn source_cut_recovery_windows_fit_the_compiled_owned_state_ceiling() {
-        let count = MAX_JOURNAL_FRAME_BYTES / MUTATION_HEADER_BYTES;
         // The indexed fold owns the original decoded frame, one index vector,
         // one exact-capacity net vector, and at most two copies of key/value
         // payloads. Fixed mutation headers consume those same encoded bytes.
-        let per_row = std::mem::size_of::<JournalMutation>()
-            + std::mem::size_of::<usize>()
-            + std::mem::size_of::<riffdb_storage_api::AuthoritativeMutationV3>();
-        let fold_window = 2 * MAX_JOURNAL_FRAME_BYTES
-            + count * per_row.saturating_sub(2 * MUTATION_HEADER_BYTES)
-            + 256 * 1024;
+        let fold_window = nested_fold_window().unwrap();
         let cut_and_fixed_roots = 4 * 64 * 1024;
         assert!(
             fold_window + cut_and_fixed_roots <= crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES
@@ -382,5 +403,38 @@ mod tests {
                 <= crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES
         );
         assert!(legacy_retained_limit().unwrap() > 0);
+    }
+    // req: REC-005, STO-030, STO-032
+    #[test]
+    fn native_recovery_admits_a_hundred_row_correlated_command_layout() {
+        // Captured from the original 100-row native loopback failure: the
+        // admitted command produces 4,224 physical mutations and this payload.
+        // Its 1/9/19-row counterparts already pass the same admission boundary.
+        assert_eq!(admit_native_layout(4_224, 3_251_815), Ok(()));
+        assert_eq!(
+            crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES,
+            64 * 1024 * 1024
+        );
+    }
+
+    // req: REC-005, STO-030, STO-032
+    #[test]
+    fn native_recovery_refuses_excess_work_and_payload_without_overflow() {
+        assert_eq!(
+            admit_native_layout(usize::MAX, 1),
+            Err(JournalCodecError::LimitExceeded)
+        );
+        assert_eq!(
+            admit_native_layout(1, usize::MAX),
+            Err(JournalCodecError::LimitExceeded)
+        );
+        let payload = MAX_JOURNAL_FRAME_BYTES
+            - FRAME_HEADER_BYTES
+            - FRAME_FOOTER_BYTES
+            - 4_224 * MUTATION_HEADER_BYTES;
+        assert_eq!(
+            admit_native_layout(4_224, payload),
+            Err(JournalCodecError::LimitExceeded)
+        );
     }
 }

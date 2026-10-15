@@ -771,6 +771,15 @@ fn correlated_index_work_remote_redb_loopback_matches_model() {
     }
 }
 
+#[test]
+// req: BLK-024, BLK-025, BLK-027, REC-005, TXN-030, TXN-031
+fn correlated_index_work_remote_acknowledged_crash_reopen_matches_model() {
+    let agreement =
+        bulk_correlated_index_support::run_remote_correlated_index_crash_reopen_case(100);
+    assert_eq!(agreement.page_count(), 16);
+    assert_eq!(agreement.total_targets(), 4_020);
+}
+
 fn run_correlated_crash_case(count: usize, phase: CrashPhase) {
     use bulk_correlated_index_support::IndexedMutationBulkDatabase;
     use riffdb_testkit::model::{

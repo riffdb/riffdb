@@ -717,6 +717,19 @@ impl GeneratedCommand for RemoteApplyIndexedMutations {
 }
 
 pub(crate) fn run_remote_correlated_index_loopback_case(count: usize) -> CorrelatedStoreAgreement {
+    run_remote_correlated_index_case(count, false)
+}
+
+pub(crate) fn run_remote_correlated_index_crash_reopen_case(
+    count: usize,
+) -> CorrelatedStoreAgreement {
+    run_remote_correlated_index_case(count, true)
+}
+
+fn run_remote_correlated_index_case(
+    count: usize,
+    crash_after_ack: bool,
+) -> CorrelatedStoreAgreement {
     let riffdbd_bin = ensure_riffdbd_binary();
     let scratch = ScratchDir::new(&format!("correlated-remote-loopback-{count}"))
         .expect("create remote loopback scratch dir");
@@ -899,10 +912,15 @@ pub(crate) fn run_remote_correlated_index_loopback_case(count: usize) -> Correla
         assert_eq!(replayed.response().outcome_type, "IndexedMutationsApplied");
     });
 
-    let exit = child
-        .shutdown_cleanly(b"shutdown\n", STOP_TIMEOUT)
-        .expect("shutdown riffdbd cleanly");
-    assert!(exit.status.success(), "riffdbd must exit cleanly");
+    if crash_after_ack {
+        let exit = child.kill(STOP_TIMEOUT).expect("kill acknowledged riffdbd");
+        assert!(!exit.status.success(), "riffdbd must terminate abruptly");
+    } else {
+        let exit = child
+            .shutdown_cleanly(b"shutdown\n", STOP_TIMEOUT)
+            .expect("shutdown riffdbd cleanly");
+        assert!(exit.status.success(), "riffdbd must exit cleanly");
+    }
 
     let session = open_correlated_redb_inspection(
         &database_path,

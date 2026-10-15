@@ -4,6 +4,15 @@ use crate::{AuthoritativeNamespaceV1, MAX_CHANGELOG_FRAME_BYTES, ReplicationAuth
 
 use super::ChangelogV3Error;
 
+// The source-frame byte ceiling bounds every source index below u32::MAX.
+// Keep cached namespace/key sorting without a pointer-sized index per row.
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct BorrowedMutationIndex<'a> {
+    namespace: AuthoritativeNamespaceV1,
+    key: &'a [u8],
+    index: u32,
+}
+
 /// One checked net key transition. Fields are private so a caller cannot
 /// inject control state, an invalid metadata key, or an unbounded payload.
 #[derive(Clone, Eq, PartialEq)]
@@ -276,7 +285,20 @@ impl AuthoritativeMutationAccumulatorV3 {
         Ok(())
     }
 
-    /// First-party indexed source fold: retain only indices into one immutable
+    /// Exact sorting workspace retained by the first-party indexed fold.
+    /// The entry type is shared with allocation so recovery cannot charge an
+    /// obsolete index-only layout after cached sort keys change.
+    #[doc(hidden)]
+    pub fn indexed_fold_workspace_bytes_v1(count: usize) -> Result<usize, ChangelogV3Error> {
+        if count > MAX_CHANGELOG_FRAME_BYTES / 44 {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        count
+            .checked_mul(std::mem::size_of::<BorrowedMutationIndex<'_>>())
+            .ok_or(ChangelogV3Error::LimitExceeded)
+    }
+
+    /// First-party indexed source fold: retain borrowed sort keys into one immutable
     /// source, then copy each final net value once. None is a checked control
     /// mutation excluded by the physical owner. No mutation permit is granted.
     #[doc(hidden)]
@@ -295,9 +317,7 @@ impl AuthoritativeMutationAccumulatorV3 {
             ChangelogV3Error,
         >,
     ) -> Result<Vec<AuthoritativeMutationV3>, ChangelogV3Error> {
-        if count > MAX_CHANGELOG_FRAME_BYTES / 44 {
-            return Err(ChangelogV3Error::LimitExceeded);
-        }
+        Self::indexed_fold_workspace_bytes_v1(count)?;
         let mut indices = Vec::with_capacity(count);
         let mut input_bytes = 160_usize;
         for index in 0..count {
@@ -312,16 +332,25 @@ impl AuthoritativeMutationAccumulatorV3 {
                 .checked_add(44 + key.len() + value.map_or(0, <[u8]>::len))
                 .filter(|bytes| *bytes <= super::frame::MAX_RECEIPT_BYTES)
                 .ok_or(ChangelogV3Error::LimitExceeded)?;
-            indices.push((namespace, key, index));
+            indices.push(BorrowedMutationIndex {
+                namespace,
+                key,
+                index: u32::try_from(index).map_err(|_| ChangelogV3Error::LimitExceeded)?,
+            });
         }
         indices.sort_unstable();
         let mut result = Vec::with_capacity(indices.len().min(crate::MAX_CHANGELOG_FRAME_ENTRIES));
         let mut cursor = 0;
         let mut groups = 0_usize;
         while cursor < indices.len() {
-            let (namespace, key, first_index) = indices[cursor];
+            let BorrowedMutationIndex {
+                namespace,
+                key,
+                index,
+            } = indices[cursor];
             let (_, _, original, mut value) =
-                get(first_index)?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+                get(usize::try_from(index).map_err(|_| ChangelogV3Error::LimitExceeded)?)?
+                    .ok_or(ChangelogV3Error::InvalidEncoding)?;
             groups += 1;
             if groups > crate::MAX_CHANGELOG_FRAME_ENTRIES {
                 return Err(ChangelogV3Error::LimitExceeded);
@@ -329,12 +358,17 @@ impl AuthoritativeMutationAccumulatorV3 {
             let mut current_hash: Option<[u8; 32]> = None;
             cursor += 1;
             while cursor < indices.len() {
-                let (next_namespace, next_key, next_index) = indices[cursor];
+                let BorrowedMutationIndex {
+                    namespace: next_namespace,
+                    key: next_key,
+                    index: next_index,
+                } = indices[cursor];
                 if (next_namespace, next_key) != (namespace, key) {
                     break;
                 }
                 let (_, _, expected, next_value) =
-                    get(next_index)?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+                    get(usize::try_from(next_index).map_err(|_| ChangelogV3Error::LimitExceeded)?)?
+                        .ok_or(ChangelogV3Error::InvalidEncoding)?;
                 let actual = value
                     .map(|bytes| *current_hash.get_or_insert_with(|| Sha256::digest(bytes).into()));
                 if expected != actual {

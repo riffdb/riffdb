@@ -4462,7 +4462,7 @@ mod tests {
         assert!(cargo_lock.contains("name = \"order-desk\""));
         assert!(!cargo_lock.contains("{{APPLICATION_NAME}}"));
         assert!(cargo_lock.contains(
-            "checksum = \"d67f98a1f24828592f3103819ffc5572b77fd4996c493886e9877cb6d21ead92\""
+            "checksum = \"185a6baecd6c110d800336d95fa939f84b6d0de842207ba36975c98f776a0e6f\""
         ));
         let authoring = fs::read_to_string(first.join("AUTHORING.md")).expect("authoring guide");
         assert!(authoring.contains("exactMoney(\"USD\", \"25.00\")"));

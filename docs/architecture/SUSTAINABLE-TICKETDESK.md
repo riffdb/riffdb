@@ -8,70 +8,89 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-14 UTC)
+## Current status (2026-10-15 UTC)
 
 WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
-has started. Both local main and upstream main are integrated through the
-latest recorded source prerequisites.
+has started. Main is integrated through `c148a8bf`, including WP-757 and WP-749;
+the native recovery correction below still requires integrated-source acceptance.
 
-Ordinary shipping revision `282115c2` passes the saved primary-loss gate on the
-required host: the first new acknowledged write completes in **49.54 seconds**,
-and exact original replay plus independent reconciliation of all 65,536 tickets
-complete in **52.69 seconds**. Backup creation takes 17.52 seconds before loss;
-there are no later acknowledgements missing from the selected backup. A separate
-actual process kill after another acknowledged write preserves the same target
-inode, both earlier identities and the new identity, all ticket state, and
-unchanged immutable backup and receipt bytes after restart.
+A discovery sweep on the required host continues through independent failures.
+It runs 7,131 workspace tests: 7,129 pass, two fail, and 25 remain skipped under
+the existing CI configuration. The 396 lifecycle controller/evidence tests,
+version topology, durable-format and epoch-two inventories, both qualification
+validator self-tests, fresh daemon builds and workspace Clippy pass. This sweep
+does not replace complete `scripts/ci-all` or language/package conformance.
 
-These are saved-population results, not scheduled-population or campaign
-qualification. Native scoped acceptance passes 1,620 runtime/recovery tests;
-its only two failures are architecture guards corrected separately, after
-which all 59 architecture tests pass. Final combined-source CI, four-language
-conformance, actual scheduled population and the fixed 45-second campaign
-release still require qualification. That tighter release remains at risk:
-the saved-population first write still takes longer than 45 seconds.
+The two failures have separate causes. The native 100-row correlated command
+is rejected by recovery memory admission and returns `OutcomeUnknown`. The CLI
+scaffold test expects the previous SDK package checksum after main updated both
+lock templates. Their closest retests now pass: 95 native receipt/recovery tests,
+six correlated/replication tests including an acknowledged 100-row process
+kill and reopen, and the single corrected scaffold test. Scoped Clippy passes.
+These are tested implementation changes, not final-source CI qualification.
 
-The fixed-schedule diagnostic at `6f35ed7e` stops near load second 2,900,
-before restore, because exact source-byte observations exceed the unchanged
-95-second gap limit. Both earlier outages recover, and all completed offered
-load windows pass. The populated database and failure evidence are retained;
-this does not establish completion of the later faults or the 45-second release.
+The current native-fix proposal, built with the ordinary shipping release
+profile, passes the saved primary-loss component. Original acknowledgement
+replay and reconciliation of all 65,536 tickets finish at **42.227416 seconds**,
+before the unchanged fixed release at **45.000069 seconds**. The first new
+acknowledged write finishes at **45.115351 seconds**; its exact replay and
+complete reconciliation finish at **47.757662 seconds**, within the unchanged
+60-second deadline. This tests the proposed binaries before their integration
+commit; final-source CI and the real scheduled restore remain unproved.
 
-A separate copied-population diagnostic isolates the newly eligible interval:
-275,313 canonical source receipts finish in 23.63 seconds without foreground
-load. Under 100 public compiled commands and 400 named-query reads per second,
-the same scan expires at 30 seconds after 216,320 receipts. The diagnostic
-completes 24,000 fresh commands and 96,000 reads with zero retries, but its
-latency overflow prevents service-level qualification. It supplies no campaign
-or sole-cause proof. It exposes insufficient accounting throughput under
-contention without waiting for another scheduled population.
+The initial resumed restore attempt refuses before backup creation because
+the saved application's generated SDK hashes predate main's generator changes.
+The ordinary public `application lock --write` followed by `--check` updates
+only its Go, Python, Rust and TypeScript artifact hashes in an owned copy.
+Every source, contract, module, role, compiler-format, migration and exact
+manifest identity remains unchanged, as do all non-SDK artifact bytes. The
+successful retest enforces those guards before normal same-principal public
+role renewal and original acknowledgement replay. The original failed attempt
+and immutable population remain preserved; CLI lock validation is unchanged.
 
-The candidate correction reuses the existing fully checked native receipt
-constructor for unbudgeted point reads and encodes each admitted accounting
-successor once. Provider-admitted reads retain their original path. Full frame
-checks, canonical receipt bytes, source-chain checks, page and allocation bounds,
-capture freshness, scheduling and observation deadlines remain required. A
-regression compares both point readers with the original receipt and rejects
-later frame corruption. Focused accounting, cursor, architecture and Clippy checks pass on the required
-host. The same loaded retest still expires at 30 seconds after 259,328 receipts,
-so the correction does not close the accounting limitation. Preserve that
-failure before broader qualification. A process-scoped CPU profile attributes
-30.36 percent of sampled user CPU to namespace-to-table mapping and 32.89 percent
-to SHA-256 compression. The next candidate generates direct lookup from the
-same closed catalog declaration. Exhaustive table/key equivalence preserves
-unknown-key refusal, catalog identity and frozen fixtures, with no new cache,
-allocation, authority selector or skipped hash. The loaded retest completes the exact interval in 28.00 seconds within the
-unchanged 30-second limit. It finishes 24,000 commands and 96,000 reads without
-retries, but still reports latency overflow. Its unchanged shipping server emits
-no source-byte samples during the four-minute cold-start diagnostic. Thus the
-component pass does not establish native-worker freshness or service levels;
-the corrected server is tested separately. That actual native-worker check
-also emits no source-byte samples within 95 seconds. At shutdown it has checked
-71,168 initial rows, with no invalidations or admission refusals. The complete
-paced source/audit proof still gates initial byte capture. A separate guarantee
-review is required to decouple the read-only census from deletion authority;
-no freshness or validation threshold is relaxed. The [native accounting review](WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md)
-records the implementation boundary and failed comparisons.
+Earlier ordinary shipping revision `12e0dcae` completed the same component in
+47.805942 seconds, with pre-release reconciliation at 41.737534 seconds and
+15.818895 seconds of backup creation before loss. These historical observations
+remain separate from the current proposal's result.
+
+Independent investigations and code changes proceed in parallel; heavy checks
+and timing measurements share the required host sequentially. Each correction
+returns first to its closest failing test. Complete integrated acceptance follows
+the independent fixes, before either measured campaign starts.
+
+| Work item | Owner | Dependency and next check |
+| --- | --- | --- |
+| Native recovery admission | Storage implementation | `native_recovery_admits_a_hundred_row_correlated_command_layout` and remote correlated loopback/crash tests pass; integrate the correction and include it in final CI. |
+| Scaffold checksum expectation | CLI implementation | `scaffold::tests::scaffold_is_deterministic_and_compiled` passes; include the test-only correction in final CI. |
+| Integrated acceptance and CI | Integration | Integrate both fixes; run scoped acceptance and complete `scripts/ci-all`, including generated surfaces and language/package checks. |
+| Current shipping restore and accounting | Runtime qualification | Saved-population restore passes on the proposed ordinary release binaries; retest loaded native-worker accounting and bind qualification to the integrated source. |
+| Final raw qualification join | Controller/evidence | `scripts/check-ticketdesk-lifecycle --self-test` passes; check original worker witnesses, all seven faults, all 19 predicates and twelve frozen prerequisite artifacts against actual raw inputs. |
+| Starting free space | Host operations | Reclaimed 29.059 GiB of idle temporary output; prove the unchanged 134-GiB starting gate after final artifact freezing and cache cleanup. |
+| Eight-hour then 24-hour qualification | Campaign owner | All preceding gates pass; execute the actual schedule, close and merge WP-825, then run WP-826 against its merged dependency. |
+
+Accounting also needs a current measurement. Historical `6f35ed7e` stops near
+load second 2,900 on the unchanged 95-second source-byte gap, before restore.
+Later ordinary shipping revision `2bc25f14` completes the unchanged 1,500-second
+preparation load: 150,000 commands and 600,000 reads, zero retries, no
+post-duration operations and all 65,536 tickets independently reconciled.
+It records 25 complete source-byte observations, five per window, with a maximum
+gap of 66.8 seconds. That preparation resolves the earlier accounting-gap
+refusal but still refuses `probe_latency`: normal-window p99, and both final
+normal-window percentiles, exceed the histogram's 250-ms range.
+
+A later instrumented diagnostic at `48726d12` also passes native-worker source
+observations but fails the public latency gates; its private timing
+instrumentation supplies no qualifying timing evidence. These observations show
+accounting progress without qualifying current shipping code or the campaign.
+The [native accounting review](WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md) and
+[later live observations](WP-825-LIVE-OBSERVATIONS.md) retain the comparisons.
+Current loaded retests must establish capture freshness, latency and the
+unchanged deletion-authority checks together.
+
+Host cleanup recovers 29.059 GiB while preserving original failure images,
+archive witnesses and frozen executables. Free space is 137.988 GiB before the
+new build; later restore copies consume space, so that observation does not
+establish the final 134-GiB starting gate.
 
 The controller implements accepted ADR-0292's primary-loss method. It pauses the
 original workers before preparing the named backup, binds every acknowledged
@@ -110,6 +129,47 @@ methods. Historical failed receipts remain failures. Controller unit checks
 supply no native timing or campaign qualification. The
 [owned-backup review](WP-825-OWNED-BACKUP-HISTORY-REVIEW.md) records the native
 custody boundary and earlier attempts.
+
+### Native recovery admission correction
+
+The 100-row correlated command produces 4,224 physical mutations with 3,251,815
+payload bytes. Recovery admission previously refused it despite the smaller
+1/9/19-row cases passing. The correction retains the compiled 64-MiB ceiling
+and charges the actual borrowed namespace/key/index sorting entry, using checked
+`u32` indices under the existing source-byte bound. The net output vector is
+capped at the existing receipt-entry limit. Source headers consume the same
+frame budget as payload; endpoint bounds cover the resulting piecewise linear
+workspace maximum using the target's actual descriptor sizes.
+
+Journal summary reconstruction now uses the existing fully checked indexed
+receipt constructor and streams its canonical hash, matching the admitted
+workspace instead of retaining a separate B-tree. Overlap verification drops
+the decoded materialized receipt, compares every recovered canonical byte, then
+releases the canonical buffer before resolving the predecessor. It retains the
+original source and one checked recovered receipt during that nested read.
+Canonical ordering, checksum, binding, lineage, allocator, attribution and
+predecessor validation remain intact. Oversized and overflowing layouts still
+refuse before native publication or recovery mutation.
+
+Required-host checks pass 95 selected native receipt/recovery tests and six
+correlated/replication tests, including the original 1/9/19/100-row loopback and
+an abrupt kill after the 100-row acknowledgement followed by native reopen and
+independent state reconciliation. Scoped Clippy and the allowed-path check pass.
+The separate deterministic scaffold regression passes after updating only its
+stale expected checksum; canonical template and fixture bytes are unchanged.
+
+PR note: Package WP-825 (open); Tier guarantee; Behavior: correct native
+recovery workspace accounting and release redundant owners before nested
+validation, preserving the 64-MiB ceiling and byte-exact comparisons; Checks:
+the required-host targeted tests, scoped Clippy and allowed-path check above;
+Compatibility: public interfaces, durable identities, formats, fixtures and
+dependencies unchanged; Updated handbook: this page; Hazards and follow-ups:
+the proposed ordinary shipping binaries pass the saved-population restore
+component, while new receipt payload copying still needs loaded accounting
+and latency measurements. Integrated acceptance, full CI, the final raw
+evidence join, final free-space admission, the actual scheduled restore and both
+complete campaigns remain required. No fault clock, workload, retry policy,
+predicate or qualification threshold changes.
 
 ## Earlier qualified preparation (2026-10-11 UTC)
 
