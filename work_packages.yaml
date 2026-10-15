@@ -31428,4 +31428,80 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-862
+  name: Operator capability inventory and inspection CLI (riffdb capability list and show)
+  tier: surface
+  depends_on: [WP-861]
+  objective: Implement ADR-0311 Decision 1. Expose RedbOfflineCapabilityInventory
+    in riffdb-storage-redb and add riffdb capability list and riffdb capability
+    show to riffdb-cli with authoritative database inspection and non-secret
+    operator inventory ledger tracking.
+  requirements: [SEC-001, SEC-002, SEC-003, DX-014]
+  required_adrs: [ADR-0311, ADR-0052, ADR-0061, ADR-0092]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-cli/**, fixtures/**, release/**, scripts/**, docs/**]
+  deliverables:
+  - RedbOfflineCapabilityInventory in crates/riffdb-storage-redb/src/administration.rs for bounded offline capability listing and point lookup
+  - riffdb capability list and riffdb capability show subcommands in crates/riffdb-cli supporting --database-path, --inventory-file, --status, --principal, --after, and --limit
+  - Automatic non-secret operator inventory ledger updates during capability bootstrap, create, revoke, and role bind/revoke
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-862
+  exit_gate: riffdb capability list and riffdb capability show inspect issued and
+    revoked capabilities from either the database file or operator ledger without
+    exposing secret token material.
+  standing_design_tests:
+    interface_safety: Neither the offline reader nor the operator ledger ever stores, returns, or renders raw bearer tokens or secret token hashes.
+    scale: Capability listing is bounded by StorageScanLimit (1..=256) with deterministic cursor pagination.
+  human_review_triggers:
+  - Capability inventory output includes secret token material or token hashes.
+- id: WP-863
+  name: Branch-local workflow transitions and lease instructions inside decide arms
+  tier: guarantee
+  depends_on: [WP-862]
+  objective: Implement ADR-0311 Decision 2. Enable workflow transition and lease
+    instructions inside compiler-sealed decide arms across HIR validation,
+    command analysis, deterministic runtime execution, and commit-time zero-mutation
+    rejection validation.
+  requirements: [CMP-001, CMP-013, WF-001, WF-002, WF-007, TXN-001]
+  required_adrs: [ADR-0311, ADR-0118, ADR-0170, ADR-0256]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-contract-compiler/**, crates/riffdb-runtime/**, crates/riffdb-commit/**, tests/**, fixtures/**, docs/**]
+  deliverables:
+  - Per-arm workflow transition and lease deduplication, ObserveOrInitialize mode support, and decision-arm revision/lease input checks in crates/riffdb-contract-compiler/src/hir.rs
+  - Decision-arm WorkflowTransition and WorkflowLease analysis in crates/riffdb-contract-compiler/src/command_analysis.rs
+  - Deterministic runtime execution of WorkflowTransition and WorkflowLease inside execute_ordinary_decision_effects and execute_collection_decision_effects in crates/riffdb-runtime/src/lib.rs
+  - Commit-time validation of declared zero-mutation workflow/lease rejection outcomes from decision arms in crates/riffdb-commit/src/command_validation.rs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-863
+  exit_gate: Workflow transition and lease instructions inside decide arms
+    compile, enforce revision/state/lease preconditions at runtime, and pass
+    commit validation for both applied mutations and zero-mutation rejections.
+  standing_design_tests:
+    interface_safety: Branch-local transitions and leases enforce the exact same optimistic revision fencing, source state checks, lease epoch/holder checks, and declared rejection outcomes as top-level instructions.
+    scale: Decision-arm workflow and lease checks are bounded by the command's static instruction count and fuel budget.
+  human_review_triggers:
+  - Decision-arm workflow transitions or leases bypass revision fencing, state preconditions, or commit-time validation.
+- id: WP-864
+  name: Offline storage compaction CLI (riffdb storage compact) and known-limitations removal
+  tier: surface
+  depends_on: [WP-863]
+  objective: Implement ADR-0311 Decision 3. Add RedbOfflineCompaction in
+    riffdb-storage-redb and riffdb storage compact in riffdb-cli to compact
+    closed redb database files after retention pruning, and update
+    docs/known-limitations.md and handbook pages.
+  requirements: [STO-001, STO-010, STO-012, DX-014]
+  required_adrs: [ADR-0311, ADR-0071, ADR-0092]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-cli/**, fixtures/**, release/**, scripts/**, docs/**]
+  deliverables:
+  - RedbOfflineCompaction in crates/riffdb-storage-redb/src/compaction.rs with journal recovery, V3 retention verification, redb::Database::compact(), and post-compaction clean-close verification
+  - riffdb storage compact --database-path <PATH> in crates/riffdb-cli
+  - Removal of the three resolved limitations from docs/known-limitations.md and handbook documentation updates
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-864
+  exit_gate: riffdb storage compact reclaims freed pages on a closed database
+    while preserving database identity and retained history, and
+    docs/known-limitations.md and handbook checks pass.
+  standing_design_tests:
+    interface_safety: Compaction refuses unrecovered or format-incompatible files, checkpoints any journal suffix before compacting, and re-verifies retained history before leaving a clean close marker.
+    scale: Offline compaction operates strictly on closed local files without background daemons or unbounded memory buffers.
+  human_review_triggers:
+  - Offline compaction corrupts retained commit history, drops clean-close markers, or alters database identity.
 
