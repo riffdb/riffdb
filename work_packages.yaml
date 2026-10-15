@@ -30726,7 +30726,7 @@ work_packages:
     riffdb.application.lock.json.
   requirements: [DX-004, DX-005, DX-014, DX-046]
   required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, scripts/**, fixtures/**, docs/**]
   deliverables:
   - Workspace-confined .riffdb/dev/session.json lifecycle in riffdb dev and scripts/riffdb-dev
   - Automatic dev-session and project-manifest fallback for endpoint, credential, and contract lineage/version in riffdb query run, query run-named, and entity get
@@ -30764,7 +30764,7 @@ work_packages:
     regenerating SDKs.
   requirements: [DX-004, DX-005, DX-016, DX-017]
   required_adrs: [ADR-0305, ADR-0041, ADR-0121, ADR-0155, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, scripts/**, fixtures/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, scripts/**, fixtures/**, docs/**]
   deliverables:
   - Deterministic riffdb/queries/*.riffq discovery and canonical manifest query registration under --sync-manifest
   - Single-role automatic operation grant synchronization and explicit --sync-role <ROLE> support
@@ -30802,7 +30802,7 @@ work_packages:
     Python, and Go.
   requirements: [DX-004, DX-046, DRV-005, DRV-007, DRV-008]
   required_adrs: [ADR-0305, ADR-0015, ADR-0041, ADR-0121, ADR-0155, ADR-0303, ADR-0304]
-  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**, crates/riffdb-client-rust/**, templates/**, clients/**, examples/**, fixtures/**, scripts/**, docs/**]
   deliverables:
   - --tenant <TENANT_ID> flag and dev-tenant local fallback for tenant-scoped roles in riffdb dev and scripts/riffdb-dev
   - RIFFDB_TENANT environment variable propagation and generated SDK connection option / client property exposure across Rust, TypeScript, Python, and Go
