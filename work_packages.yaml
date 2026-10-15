@@ -24462,7 +24462,7 @@ work_packages:
 
 - id: WP-759
   name: Agent-audience handbook rewrite measured by campaign 04
-  tier: internal
+  tier: surface
   depends_on: [WP-757, WP-758, WP-579]
   objective: Rewrite docs/known-limitations.md as one sentence per limit, remove work-package and
     ADR numbers from every public handbook page, revise the quickstarts in public vocabulary, and
@@ -24472,8 +24472,11 @@ work_packages:
   required_adrs: [ADR-0056, ADR-0122, ADR-0181]
   allowed_paths: [SPEC.md, work_packages.yaml, docs/**, scripts/handbook,
     scripts/check-handbook-audience, scripts/check-handbook-source, scripts/ci-all,
-    evaluations/agent-application-alpha/**, release/evidence/**, fixtures/agent-guidance/**,
-    crates/riffdb-cli/src/scaffold.rs]
+    scripts/agent-application-alpha-package, scripts/agent-application-alpha-package-first,
+    scripts/prepare-rust-package-mirror, scripts/agent-package-campaign-receipt,
+    evaluations/agent-application-alpha/**, release/evidence/**, release/agent-application-alpha/**,
+    fixtures/agent-guidance/**, crates/riffdb-cli/src/scaffold.rs,
+    crates/riffdb-cli/assets/scaffold/application/Cargo.lock, templates/application/Cargo.lock]
   deliverables:
   - docs/known-limitations.md rewritten as one sentence per limit grouped by task, using only
     vocabulary defined in the handbook concept pages, with internal provenance moved to source
