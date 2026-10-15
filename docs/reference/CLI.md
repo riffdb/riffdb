@@ -616,6 +616,8 @@ Commands:
   bootstrap
   create
   revoke
+  list       Lists non-secret capability summaries from a quiescent database path or local operator inventory file
+  show       Shows non-secret capability details from a quiescent database path or local operator inventory file
 
 Options:
       --config <PATH>
@@ -2390,6 +2392,7 @@ Options:
       --bearer-output <PATH>
       --max-attempts <1..10>
       --credential-file <PATH>
+      --inventory-file <PATH>
   -h, --help                               Print help
 ```
 
@@ -2405,6 +2408,7 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --credential-output <PATH>
       --database <DATABASE>
+      --inventory-file <PATH>
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
@@ -2426,6 +2430,75 @@ Options:
           [possible values: requested, replaced, suspected_compromise, policy_change]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
+      --inventory-file <PATH>
+
+      --database <DATABASE>
+
+      --output <human|json>
+          [possible values: human, json]
+      --max-attempts <1..10>
+
+      --credential-file <PATH>
+
+  -h, --help
+          Print help
+```
+
+#### `riffdb capability list`
+
+```text
+Lists non-secret capability summaries from a quiescent database path or local operator inventory file
+
+Usage: riffdb capability list [OPTIONS]
+
+Options:
+      --config <PATH>
+
+      --database-path <PATH>
+          Quiescent local Redb database path to inspect
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --inventory-file <PATH>
+          Non-secret operator capability inventory JSON file to inspect
+      --database <DATABASE>
+
+      --status <STATUS>
+          Filter by capability lifecycle status (`active` or `revoked`) [possible values: active, revoked]
+      --output <human|json>
+          [possible values: human, json]
+      --principal <PRINCIPAL>
+          Filter by exact principal identifier
+      --after <CAPABILITY_UUIDV7>
+          Resume pagination strictly after the given capability UUIDv7
+      --max-attempts <1..10>
+
+      --credential-file <PATH>
+
+      --limit <COUNT>
+          Bounded page size (`1..=256`, default `100`) [default: 100]
+  -h, --help
+          Print help
+```
+
+#### `riffdb capability show`
+
+```text
+Shows non-secret capability details from a quiescent database path or local operator inventory file
+
+Usage: riffdb capability show [OPTIONS] <CAPABILITY_UUIDV7>
+
+Arguments:
+  <CAPABILITY_UUIDV7>
+
+Options:
+      --config <PATH>
+
+      --database-path <PATH>
+          Quiescent local Redb database path to inspect
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --inventory-file <PATH>
+          Non-secret operator capability inventory JSON file to inspect
       --database <DATABASE>
 
       --output <human|json>

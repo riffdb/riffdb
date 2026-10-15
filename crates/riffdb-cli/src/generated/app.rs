@@ -58,7 +58,7 @@ use crate::batch::{
     parse_source_with_validator as parse_batch_source_with_validator,
 };
 use crate::cli::{
-    FollowerCommand, FollowerSelectionArgs, AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli,
+    FollowerCommand, FollowerSelectionArgs, AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, CapabilityLifecycleFilter, Cli,
     CommandCommand, CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs,
     DemoCommand, EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope,
     MigrationCommand, OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand,
@@ -10854,6 +10854,234 @@ struct FieldVisibilityInput {
     secret_field_ids: Vec<u32>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct OperatorCapabilityInventoryDocument {
+    version: u16,
+    capabilities: Vec<OperatorCapabilityInventoryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct OperatorCapabilityInventoryEntry {
+    capability_id: String,
+    revision: String,
+    principal_id: String,
+    actor_kind: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revocation_reason: Option<String>,
+    requested_lifetime_seconds: u32,
+    audiences: Vec<String>,
+    permission_count: usize,
+    permissions: Vec<String>,
+    field_visibility_count: usize,
+    approval_required_count: usize,
+    row_policy_count: usize,
+    export_application_count: usize,
+    reimport_granted: bool,
+    vector_inspection_target_count: usize,
+    created_administration_sequence: String,
+    updated_administration_sequence: String,
+}
+
+fn default_create_inventory_path(
+    credential_output: &OsStr,
+    explicit: Option<&OsStr>,
+) -> PathBuf {
+    match explicit {
+        Some(path) => PathBuf::from(path),
+        None => {
+            let mut path = credential_output.to_os_string();
+            path.push(".inventory.json");
+            PathBuf::from(path)
+        }
+    }
+}
+
+fn load_operator_capability_inventory(
+    path: &Path,
+) -> Result<OperatorCapabilityInventoryDocument, ()> {
+    if !path.exists() {
+        return Ok(OperatorCapabilityInventoryDocument {
+            version: 1,
+            capabilities: Vec::new(),
+        });
+    }
+    let bytes = read_file(path, MAX_INPUT_BYTES).map_err(|_| ())?;
+    let document: OperatorCapabilityInventoryDocument =
+        serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if document.version != 1 {
+        return Err(());
+    }
+    Ok(document)
+}
+
+fn save_operator_capability_inventory(
+    path: &Path,
+    document: &OperatorCapabilityInventoryDocument,
+) -> Result<(), ()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|_| ())?;
+    }
+    let mut encoded = serde_json::to_vec_pretty(document).map_err(|_| ())?;
+    encoded.push(b'\n');
+    fs::write(path, encoded).map_err(|_| ())
+}
+
+fn permission_kind_label(permission: &v1::CapabilityPermission) -> &'static str {
+    use v1::capability_permission::Permission;
+    match permission.permission.as_ref() {
+        Some(Permission::ValidateContract(_)) => "validate_contract",
+        Some(Permission::ReadContract(_)) => "read_contract",
+        Some(Permission::ExplainCommand(_)) => "explain_command",
+        Some(Permission::DeployContract(_)) => "deploy_contract",
+        Some(Permission::InvokeCommand(_)) => "invoke_command",
+        Some(Permission::ReadEntity(_)) => "read_entity",
+        Some(Permission::ScanIndex(_)) => "scan_index",
+        Some(Permission::QueryProjection(_)) => "query_projection",
+        Some(Permission::ReadProjectionStatus(_)) => "read_projection_status",
+        Some(Permission::ReadCommit(_)) => "read_commit",
+        Some(Permission::ScanCommits(_)) => "scan_commits",
+        Some(Permission::SubscribeCommits(_)) => "subscribe_commits",
+        Some(Permission::ReadProvenance(_)) => "read_provenance",
+        Some(Permission::InspectOutbox(_)) => "inspect_outbox",
+        Some(Permission::ReadHealth(_)) => "read_health",
+        Some(Permission::ReadStatistics(_)) => "read_statistics",
+        Some(Permission::CreateCapability(_)) => "create_capability",
+        Some(Permission::RevokeCapability(_)) => "revoke_capability",
+        Some(Permission::AdministerCapabilities(_)) => "administer_capabilities",
+        Some(Permission::CheckAdHocQuery(_)) => "check_ad_hoc_query",
+        Some(Permission::ExplainAdHocQuery(_)) => "explain_ad_hoc_query",
+        Some(Permission::ExecuteAdHocQuery(_)) => "execute_ad_hoc_query",
+        Some(Permission::ExplainNamedQuery(_)) => "explain_named_query",
+        Some(Permission::ExecuteNamedQuery(_)) => "execute_named_query",
+        Some(Permission::ApplicationRoleIdentity(_)) => "application_role_identity",
+        Some(Permission::MigrateContract(_)) => "migrate_contract",
+        Some(Permission::InstallApplication(_)) => "install_application",
+        Some(Permission::InspectVectorState(_)) => "inspect_vector_state",
+        Some(Permission::ReplicateChangelog(_)) => "replicate_changelog",
+        Some(Permission::FenceReplicationPrimary(_)) => "fence_replication_primary",
+        Some(Permission::ConsumeEventStream(_)) => "consume_event_stream",
+        Some(Permission::SeekEventStreamConsumer(_)) => "seek_event_stream_consumer",
+        Some(Permission::WatchNamedQuery(_)) => "watch_named_query",
+        Some(Permission::ConsumeContextualSubscription(_)) => "consume_contextual_subscription",
+        None => "unspecified",
+    }
+}
+
+fn record_created_capability_in_inventory(
+    path: &Path,
+    request: &v1::CreateCapabilityRequest,
+    transition: &v1::CapabilityTransition,
+) -> Result<(), ()> {
+    let identity = transition.identity.as_ref().ok_or(())?;
+    let capability_id_bytes: [u8; 16] = identity
+        .capability_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| ())?;
+    let capability_id = CapabilityId::from_bytes(capability_id_bytes)
+        .map_err(|_| ())?
+        .to_string();
+    let grant = request.grant.as_ref().ok_or(())?;
+    let actor_kind = match v1::ActorKind::try_from(request.actor_kind).ok() {
+        Some(v1::ActorKind::Human) => "human",
+        Some(v1::ActorKind::Agent) => "agent",
+        Some(v1::ActorKind::Service) => "service",
+        _ => return Err(()),
+    };
+    let entry = OperatorCapabilityInventoryEntry {
+        capability_id: capability_id.clone(),
+        revision: identity.revision.to_string(),
+        principal_id: request.principal_id.clone(),
+        actor_kind: actor_kind.to_owned(),
+        status: "active".to_owned(),
+        revocation_reason: None,
+        requested_lifetime_seconds: request.requested_lifetime_seconds,
+        audiences: request.audiences.clone(),
+        permission_count: grant.permissions.len(),
+        permissions: grant
+            .permissions
+            .iter()
+            .map(|permission| permission_kind_label(permission).to_owned())
+            .collect(),
+        field_visibility_count: grant.field_visibility.len(),
+        approval_required_count: grant.approval_required.len(),
+        row_policy_count: grant
+            .row_policy
+            .as_ref()
+            .map_or(0, |row_policy| row_policy.policies.len()),
+        export_application_count: grant
+            .export
+            .as_ref()
+            .map_or(0, |export| export.applications.len()),
+        reimport_granted: grant.reimport.is_some(),
+        vector_inspection_target_count: grant
+            .vector_inspection
+            .as_ref()
+            .map_or(0, |inspection| inspection.targets.len()),
+        created_administration_sequence: transition.administration_sequence.to_string(),
+        updated_administration_sequence: transition.administration_sequence.to_string(),
+    };
+    let mut document = load_operator_capability_inventory(path)?;
+    if let Some(existing) = document
+        .capabilities
+        .iter_mut()
+        .find(|item| item.capability_id == capability_id)
+    {
+        *existing = entry;
+    } else {
+        document.capabilities.push(entry);
+        document
+            .capabilities
+            .sort_by(|left, right| left.capability_id.cmp(&right.capability_id));
+    }
+    save_operator_capability_inventory(path, &document)
+}
+
+fn record_revoked_capability_in_inventory(
+    path: &Path,
+    reason: RevocationReason,
+    response: &v1::RevokeCapabilityResponse,
+) -> Result<(), ()> {
+    use v1::revoke_capability_response::Result as RevokeResult;
+    let transition = match response.result.as_ref() {
+        Some(RevokeResult::Revoked(transition) | RevokeResult::AlreadyRevoked(transition)) => {
+            transition
+        }
+        _ => return Ok(()),
+    };
+    let identity = transition.identity.as_ref().ok_or(())?;
+    let capability_id_bytes: [u8; 16] = identity
+        .capability_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| ())?;
+    let capability_id = CapabilityId::from_bytes(capability_id_bytes)
+        .map_err(|_| ())?
+        .to_string();
+    let reason_label = match reason {
+        RevocationReason::Requested => "requested",
+        RevocationReason::Replaced => "replaced",
+        RevocationReason::SuspectedCompromise => "suspected_compromise",
+        RevocationReason::PolicyChange => "policy_change",
+    };
+    let mut document = load_operator_capability_inventory(path)?;
+    if let Some(existing) = document
+        .capabilities
+        .iter_mut()
+        .find(|item| item.capability_id == capability_id)
+    {
+        existing.revision = identity.revision.to_string();
+        existing.status = "revoked".to_owned();
+        existing.revocation_reason = Some(reason_label.to_owned());
+        existing.updated_administration_sequence = transition.administration_sequence.to_string();
+        save_operator_capability_inventory(path, &document)?;
+    }
+    Ok(())
+}
+
 async fn capability_command(
     command: CapabilityCommand,
     config: &EffectiveConfig,
@@ -10867,8 +11095,15 @@ async fn capability_command(
             bootstrap_file,
             bootstrap_stdin,
             bearer_output,
+            inventory_file,
         } => {
             if request.as_encoded_bytes() == b"-" {
+                return invalid_input(CommandIdentity::CapabilityBootstrap);
+            }
+            if let Some(inventory_path) = inventory_file.as_ref()
+                && (validate_path(inventory_path).is_err()
+                    || inventory_path.as_encoded_bytes() == b"-")
+            {
                 return invalid_input(CommandIdentity::CapabilityBootstrap);
             }
             let input = match read_json::<CapabilityCreateInput>(&request, stdin) {
@@ -10895,6 +11130,7 @@ async fn capability_command(
                 Ok(request) => request,
                 Err(()) => return invalid_input(CommandIdentity::CapabilityBootstrap),
             };
+            let request_for_inventory = request.clone();
             let template = match BootstrapCapabilityCreateTemplate::new(request) {
                 Ok(template) => template,
                 Err(_) => return invalid_input(CommandIdentity::CapabilityBootstrap),
@@ -10909,7 +11145,29 @@ async fn capability_command(
             };
             let attempts = AttemptBudget::new(config.max_attempts).expect("configuration bound");
             match submit_bootstrap_retry(&mut client, &template, attempts, &metadata).await {
-                Ok(response) => render_bootstrap(&response, material.bearer_retained),
+                Ok(response) => {
+                    if let Some(inventory_path) = inventory_file.as_deref()
+                        && let Some(v1::create_capability_response::Result::Bootstrap(bootstrap)) =
+                            response.result.as_ref()
+                        && let Some(
+                            v1::bootstrap_create_capability_result::Result::Created(transition)
+                            | v1::bootstrap_create_capability_result::Result::Replayed(transition),
+                        ) = bootstrap.result.as_ref()
+                        && record_created_capability_in_inventory(
+                            Path::new(inventory_path),
+                            &request_for_inventory,
+                            transition,
+                        )
+                        .is_err()
+                    {
+                        return local_error(
+                            CommandIdentity::CapabilityBootstrap,
+                            "capability_inventory_retention_failed",
+                            "capability inventory retention failed",
+                        );
+                    }
+                    render_bootstrap(&response, material.bearer_retained)
+                }
                 Err(ClientError::OutcomeUnknown(_)) => uncertain(
                     CommandIdentity::CapabilityBootstrap,
                     "bootstrap_outcome_unknown",
@@ -10924,6 +11182,7 @@ async fn capability_command(
             request,
             capability_id,
             credential_output,
+            inventory_file,
         } => {
             let input = match read_json::<CapabilityCreateInput>(&request, stdin) {
                 Ok(input) => input,
@@ -10949,6 +11208,12 @@ async fn capability_command(
             {
                 return invalid_input(CommandIdentity::CapabilityCreate);
             }
+            if let Some(inventory_path) = inventory_file.as_ref()
+                && (validate_path(inventory_path).is_err()
+                    || inventory_path.as_encoded_bytes() == b"-")
+            {
+                return invalid_input(CommandIdentity::CapabilityCreate);
+            }
             let request = match capability_request(
                 input,
                 capability_id.to_vec(),
@@ -10957,6 +11222,7 @@ async fn capability_command(
                 Ok(request) => request,
                 Err(()) => return invalid_input(CommandIdentity::CapabilityCreate),
             };
+            let request_for_inventory = request.clone();
             let template = match NormalCapabilityCreateTemplate::new(request) {
                 Ok(template) => template,
                 Err(_) => return invalid_input(CommandIdentity::CapabilityCreate),
@@ -10994,12 +11260,29 @@ async fn capability_command(
                 );
             };
             match (&disposition, token) {
-                (NormalCreateDisposition::Created(_), Some(token)) => {
+                (NormalCreateDisposition::Created(transition), Some(token)) => {
                     if retain_normal_token(&credential_output, token).is_err() {
                         return local_error(
                             CommandIdentity::CapabilityCreate,
                             "credential_retention_failed",
                             "credential retention failed",
+                        );
+                    }
+                    let inventory_path = default_create_inventory_path(
+                        &credential_output,
+                        inventory_file.as_deref(),
+                    );
+                    if record_created_capability_in_inventory(
+                        &inventory_path,
+                        &request_for_inventory,
+                        transition,
+                    )
+                    .is_err()
+                    {
+                        return local_error(
+                            CommandIdentity::CapabilityCreate,
+                            "capability_inventory_retention_failed",
+                            "capability inventory retention failed",
                         );
                     }
                 }
@@ -11017,11 +11300,18 @@ async fn capability_command(
         CapabilityCommand::Revoke {
             capability_id,
             reason,
+            inventory_file,
         } => {
             let capability_id = match parse_uuid_v7(&capability_id) {
                 Some(value) => value,
                 None => return invalid_input(CommandIdentity::CapabilityRevoke),
             };
+            if let Some(inventory_path) = inventory_file.as_ref()
+                && (validate_path(inventory_path).is_err()
+                    || inventory_path.as_encoded_bytes() == b"-")
+            {
+                return invalid_input(CommandIdentity::CapabilityRevoke);
+            }
             let metadata =
                 match required_metadata(CommandIdentity::CapabilityRevoke, config, environment) {
                     Ok(metadata) => metadata,
@@ -11041,8 +11331,287 @@ async fn capability_command(
                 reason: revocation_reason_to_proto(reason),
             };
             match client.revoke_capability(request, &metadata).await {
-                Ok(response) => render_revoke(CommandIdentity::CapabilityRevoke, &response),
+                Ok(response) => {
+                    if let Some(inventory_path) = inventory_file.as_deref()
+                        && record_revoked_capability_in_inventory(
+                            Path::new(inventory_path),
+                            reason,
+                            &response,
+                        )
+                        .is_err()
+                    {
+                        return local_error(
+                            CommandIdentity::CapabilityRevoke,
+                            "capability_inventory_retention_failed",
+                            "capability inventory retention failed",
+                        );
+                    }
+                    render_revoke(CommandIdentity::CapabilityRevoke, &response)
+                }
                 Err(error) => client_error(CommandIdentity::CapabilityRevoke, &error),
+            }
+        }
+        CapabilityCommand::List {
+            database_path,
+            inventory_file,
+            status,
+            principal,
+            after,
+            limit,
+        } => {
+            if limit == 0 || limit > 256 {
+                return invalid_input(CommandIdentity::CapabilityList);
+            }
+            let after_id = match after.as_deref() {
+                Some(raw) => match parse_uuid_v7(raw)
+                    .and_then(|bytes| CapabilityId::from_bytes(bytes).ok())
+                {
+                    Some(id) => Some(id),
+                    None => return invalid_input(CommandIdentity::CapabilityList),
+                },
+                None => None,
+            };
+            let status_filter = status.map(CapabilityLifecycleFilter::as_str);
+            if let Some(database_path) = database_path {
+                if validate_path(&database_path).is_err()
+                    || database_path.as_encoded_bytes() == b"-"
+                {
+                    return invalid_input(CommandIdentity::CapabilityList);
+                }
+                let page = match riffdb_storage_redb::RedbOfflineCapabilityInventory::list(
+                    Path::new(&database_path),
+                    after_id,
+                    limit,
+                    status_filter,
+                    principal.as_deref(),
+                ) {
+                    Ok(page) => page,
+                    Err(_) => {
+                        return local_error(
+                            CommandIdentity::CapabilityList,
+                            "capability_inventory_unavailable",
+                            "quiescent capability inventory inspection failed",
+                        );
+                    }
+                };
+                let capabilities: Vec<serde_json::Value> = page
+                    .capabilities
+                    .iter()
+                    .map(|summary| {
+                        let mut item = serde_json::json!({
+                            "capability_id": summary.capability_id.to_string(),
+                            "revision": summary.revision.to_string(),
+                            "principal_id": summary.principal_id,
+                            "actor_kind": summary.actor_kind,
+                            "status": summary.status,
+                            "issued_at_unix_seconds": summary.issued_at_unix_seconds.to_string(),
+                            "not_before_unix_seconds": summary.not_before_unix_seconds.to_string(),
+                            "expires_at_unix_seconds": summary.expires_at_unix_seconds.to_string(),
+                            "audiences": summary.audiences,
+                            "permission_count": summary.permission_count,
+                            "field_visibility_count": summary.field_visibility_count,
+                            "approval_required_count": summary.approval_required_count,
+                            "row_policy_count": summary.row_policy_count,
+                            "export_application_count": summary.export_application_count,
+                            "reimport_granted": summary.reimport_granted,
+                            "vector_inspection_target_count": summary.vector_inspection_target_count,
+                            "created_administration_sequence": summary.created_administration_sequence.to_string(),
+                            "updated_administration_sequence": summary.updated_administration_sequence.to_string(),
+                        });
+                        if let Some(reason) = summary.revocation_reason {
+                            item["revocation_reason"] = serde_json::json!(reason);
+                        }
+                        item
+                    })
+                    .collect();
+                let next_after = page.next_after.map(|id| id.to_string());
+                success(
+                    CommandIdentity::CapabilityList,
+                    "listed",
+                    &serde_json::json!({
+                        "status": "listed",
+                        "source": "database_path",
+                        "capabilities": capabilities,
+                        "next_after": next_after,
+                    }),
+                )
+            } else if let Some(inventory_file) = inventory_file {
+                if validate_path(&inventory_file).is_err()
+                    || inventory_file.as_encoded_bytes() == b"-"
+                {
+                    return invalid_input(CommandIdentity::CapabilityList);
+                }
+                let document =
+                    match load_operator_capability_inventory(Path::new(&inventory_file)) {
+                        Ok(document) => document,
+                        Err(()) => {
+                            return local_error(
+                                CommandIdentity::CapabilityList,
+                                "capability_inventory_unavailable",
+                                "operator capability inventory file could not be read",
+                            );
+                        }
+                    };
+                let after_text = after_id.map(|id| id.to_string());
+                let mut matched = Vec::new();
+                let mut next_after = None;
+                for entry in document.capabilities {
+                    if let Some(after_text) = after_text.as_deref()
+                        && entry.capability_id.as_str() <= after_text
+                    {
+                        continue;
+                    }
+                    if let Some(expected_status) = status_filter
+                        && entry.status != expected_status
+                    {
+                        continue;
+                    }
+                    if let Some(expected_principal) = principal.as_deref()
+                        && entry.principal_id != expected_principal
+                    {
+                        continue;
+                    }
+                    if matched.len() == usize::from(limit) {
+                        next_after = matched
+                            .last()
+                            .map(|last: &OperatorCapabilityInventoryEntry| {
+                                last.capability_id.clone()
+                            });
+                        break;
+                    }
+                    matched.push(entry);
+                }
+                success(
+                    CommandIdentity::CapabilityList,
+                    "listed",
+                    &serde_json::json!({
+                        "status": "listed",
+                        "source": "inventory_file",
+                        "capabilities": matched,
+                        "next_after": next_after,
+                    }),
+                )
+            } else {
+                invalid_input(CommandIdentity::CapabilityList)
+            }
+        }
+        CapabilityCommand::Show {
+            capability_id,
+            database_path,
+            inventory_file,
+        } => {
+            let parsed_id = match parse_uuid_v7(&capability_id)
+                .and_then(|bytes| CapabilityId::from_bytes(bytes).ok())
+            {
+                Some(id) => id,
+                None => return invalid_input(CommandIdentity::CapabilityShow),
+            };
+            if let Some(database_path) = database_path {
+                if validate_path(&database_path).is_err()
+                    || database_path.as_encoded_bytes() == b"-"
+                {
+                    return invalid_input(CommandIdentity::CapabilityShow);
+                }
+                let inspection = match riffdb_storage_redb::RedbOfflineCapabilityInventory::show(
+                    Path::new(&database_path),
+                    parsed_id,
+                ) {
+                    Ok(Some(inspection)) => inspection,
+                    Ok(None) => {
+                        return success(
+                            CommandIdentity::CapabilityShow,
+                            "not_found",
+                            &serde_json::json!({
+                                "status": "not_found",
+                                "capability_id": parsed_id.to_string(),
+                            }),
+                        );
+                    }
+                    Err(_) => {
+                        return local_error(
+                            CommandIdentity::CapabilityShow,
+                            "capability_inventory_unavailable",
+                            "quiescent capability inventory inspection failed",
+                        );
+                    }
+                };
+                let summary = &inspection.summary;
+                let mut capability_json = serde_json::json!({
+                    "capability_id": summary.capability_id.to_string(),
+                    "revision": summary.revision.to_string(),
+                    "principal_id": summary.principal_id,
+                    "actor_kind": summary.actor_kind,
+                    "status": summary.status,
+                    "issued_at_unix_seconds": summary.issued_at_unix_seconds.to_string(),
+                    "not_before_unix_seconds": summary.not_before_unix_seconds.to_string(),
+                    "expires_at_unix_seconds": summary.expires_at_unix_seconds.to_string(),
+                    "audiences": summary.audiences,
+                    "permission_count": summary.permission_count,
+                    "permissions": inspection.permissions,
+                    "field_visibility_count": summary.field_visibility_count,
+                    "approval_required_count": summary.approval_required_count,
+                    "row_policy_count": summary.row_policy_count,
+                    "export_application_count": summary.export_application_count,
+                    "reimport_granted": summary.reimport_granted,
+                    "vector_inspection_target_count": summary.vector_inspection_target_count,
+                    "created_administration_sequence": summary.created_administration_sequence.to_string(),
+                    "updated_administration_sequence": summary.updated_administration_sequence.to_string(),
+                });
+                if let Some(reason) = summary.revocation_reason {
+                    capability_json["revocation_reason"] = serde_json::json!(reason);
+                }
+                success(
+                    CommandIdentity::CapabilityShow,
+                    "found",
+                    &serde_json::json!({
+                        "status": "found",
+                        "source": "database_path",
+                        "capability": capability_json,
+                    }),
+                )
+            } else if let Some(inventory_file) = inventory_file {
+                if validate_path(&inventory_file).is_err()
+                    || inventory_file.as_encoded_bytes() == b"-"
+                {
+                    return invalid_input(CommandIdentity::CapabilityShow);
+                }
+                let document =
+                    match load_operator_capability_inventory(Path::new(&inventory_file)) {
+                        Ok(document) => document,
+                        Err(()) => {
+                            return local_error(
+                                CommandIdentity::CapabilityShow,
+                                "capability_inventory_unavailable",
+                                "operator capability inventory file could not be read",
+                            );
+                        }
+                    };
+                let target_id = parsed_id.to_string();
+                let Some(entry) = document
+                    .capabilities
+                    .into_iter()
+                    .find(|item| item.capability_id == target_id)
+                else {
+                    return success(
+                        CommandIdentity::CapabilityShow,
+                        "not_found",
+                        &serde_json::json!({
+                            "status": "not_found",
+                            "capability_id": target_id,
+                        }),
+                    );
+                };
+                success(
+                    CommandIdentity::CapabilityShow,
+                    "found",
+                    &serde_json::json!({
+                        "status": "found",
+                        "source": "inventory_file",
+                        "capability": entry,
+                    }),
+                )
+            } else {
+                invalid_input(CommandIdentity::CapabilityShow)
             }
         }
     }
@@ -12739,6 +13308,12 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Capability {
             command: CapabilityCommand::Revoke { .. },
         } => CommandIdentity::CapabilityRevoke,
+        TopLevel::Capability {
+            command: CapabilityCommand::List { .. },
+        } => CommandIdentity::CapabilityList,
+        TopLevel::Capability {
+            command: CapabilityCommand::Show { .. },
+        } => CommandIdentity::CapabilityShow,
         TopLevel::Follower { command: FollowerCommand::Register { .. } } => CommandIdentity::FollowerRegister,
         TopLevel::Follower { command: FollowerCommand::Retire { .. } } => CommandIdentity::FollowerRetire,
         TopLevel::Follower { command: FollowerCommand::FencePrimary { .. } } => CommandIdentity::FollowerFencePrimary,
@@ -17084,5 +17659,186 @@ query GetDocument(
             .expect("auto-minted operation_id");
         assert!(parse_uuid_v7(auto_fence_id).is_some());
         assert!(parse_uuid_v7(auto_op_id).is_some());
+    }
+
+    #[test]
+    // req: SEC-001, SEC-002, SEC-003, DX-014
+    fn capability_list_and_show_cli_inspect_authoritative_and_ledger_records_without_secrets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inventory_path = dir.path().join("capabilities.inventory.json");
+        let cap_1 = CapabilityId::from_bytes([
+            0x01, 0x8f, 0x22, 0xa1, 0x7b, 0x3c, 0x7d, 0xef, 0x81, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0x01,
+        ])
+        .expect("cap 1");
+        let cap_2 = CapabilityId::from_bytes([
+            0x01, 0x8f, 0x22, 0xa1, 0x7b, 0x3c, 0x7d, 0xef, 0x81, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0x02,
+        ])
+        .expect("cap 2");
+
+        let request_1 = v1::CreateCapabilityRequest {
+            request_id: Vec::new(),
+            mode: v1::CapabilityCreateMode::Normal as i32,
+            capability_id: cap_1.into_bytes().to_vec(),
+            principal_id: "service:alpha".to_owned(),
+            actor_kind: v1::ActorKind::Service as i32,
+            requested_lifetime_seconds: 3600,
+            audiences: vec!["riffdb.grpc.v1".to_owned()],
+            grant: Some(v1::CapabilityGrant {
+                tenant_scope: Some(v1::TenantScope {
+                    scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+                }),
+                partition_scope: Some(v1::PartitionScope {
+                    scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+                }),
+                permissions: vec![v1::CapabilityPermission {
+                    permission: Some(v1::capability_permission::Permission::ReadHealth(
+                        v1::Unit {},
+                    )),
+                }],
+                field_visibility: Vec::new(),
+                max_scan_rows: 100,
+                approval_required: Vec::new(),
+                row_policy: None,
+                export: None,
+                reimport: None,
+                vector_inspection: None,
+            }),
+        };
+        let transition_1 = v1::CapabilityTransition {
+            identity: Some(v1::CapabilityIdentity {
+                capability_id: cap_1.into_bytes().to_vec(),
+                revision: 1,
+            }),
+            administration_sequence: 11,
+        };
+        record_created_capability_in_inventory(&inventory_path, &request_1, &transition_1)
+            .expect("record cap 1");
+
+        let mut request_2 = request_1.clone();
+        request_2.capability_id = cap_2.into_bytes().to_vec();
+        request_2.principal_id = "service:beta".to_owned();
+        let transition_2 = v1::CapabilityTransition {
+            identity: Some(v1::CapabilityIdentity {
+                capability_id: cap_2.into_bytes().to_vec(),
+                revision: 1,
+            }),
+            administration_sequence: 12,
+        };
+        record_created_capability_in_inventory(&inventory_path, &request_2, &transition_2)
+            .expect("record cap 2");
+        record_revoked_capability_in_inventory(
+            &inventory_path,
+            RevocationReason::SuspectedCompromise,
+            &v1::RevokeCapabilityResponse {
+                result: Some(v1::revoke_capability_response::Result::Revoked(
+                    v1::CapabilityTransition {
+                        identity: Some(v1::CapabilityIdentity {
+                            capability_id: cap_2.into_bytes().to_vec(),
+                            revision: 2,
+                        }),
+                        administration_sequence: 13,
+                    },
+                )),
+            },
+        )
+        .expect("revoke cap 2 in inventory");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let env = TestEnvironment::default();
+        let list_cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "capability",
+            "list",
+            "--inventory-file",
+            inventory_path.to_str().expect("inventory path"),
+            "--status",
+            "revoked",
+        ]);
+        assert_eq!(
+            command_identity(&list_cli.command),
+            CommandIdentity::CapabilityList
+        );
+        let config = resolve(&list_cli, &env).expect("resolve list config");
+        let TopLevel::Capability { command } = list_cli.command else {
+            panic!("expected capability list command");
+        };
+        let mut empty_stdin = io::empty();
+        let terminal = runtime.block_on(capability_command(
+            command,
+            &config,
+            &env,
+            &mut empty_stdin,
+        ));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        let list_json: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("capability list JSON");
+        assert_eq!(list_json["command"], "capability.list");
+        assert_eq!(list_json["result"]["status"], "listed");
+        assert_eq!(list_json["result"]["source"], "inventory_file");
+        let listed = list_json["result"]["capabilities"]
+            .as_array()
+            .expect("capabilities array");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["capability_id"], cap_2.to_string());
+        assert_eq!(listed[0]["status"], "revoked");
+        assert_eq!(listed[0]["revocation_reason"], "suspected_compromise");
+
+        let show_cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "capability",
+            "show",
+            &cap_1.to_string(),
+            "--inventory-file",
+            inventory_path.to_str().expect("inventory path"),
+        ]);
+        assert_eq!(
+            command_identity(&show_cli.command),
+            CommandIdentity::CapabilityShow
+        );
+        let TopLevel::Capability { command } = show_cli.command else {
+            panic!("expected capability show command");
+        };
+        stdout.clear();
+        stderr.clear();
+        let terminal = runtime.block_on(capability_command(
+            command,
+            &config,
+            &env,
+            &mut empty_stdin,
+        ));
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        let show_text = String::from_utf8(stdout.clone()).expect("utf8 stdout");
+        assert!(!show_text.contains("token"));
+        assert!(!show_text.contains("verifier"));
+        assert!(!show_text.contains("salt"));
+        let show_json: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("capability show JSON");
+        assert_eq!(show_json["command"], "capability.show");
+        assert_eq!(show_json["result"]["status"], "found");
+        assert_eq!(
+            show_json["result"]["capability"]["capability_id"],
+            cap_1.to_string()
+        );
+        assert_eq!(
+            show_json["result"]["capability"]["principal_id"],
+            "service:alpha"
+        );
+        assert_eq!(
+            show_json["result"]["capability"]["permissions"],
+            serde_json::json!(["read_health"])
+        );
     }
 }

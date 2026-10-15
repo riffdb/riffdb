@@ -1293,6 +1293,8 @@ pub(crate) enum CapabilityCommand {
         bootstrap_stdin: bool,
         #[arg(long, value_name = "PATH")]
         bearer_output: Option<OsString>,
+        #[arg(long, value_name = "PATH")]
+        inventory_file: Option<OsString>,
     },
     Create {
         #[arg(long, value_name = "JSON_REQUEST")]
@@ -1301,12 +1303,68 @@ pub(crate) enum CapabilityCommand {
         capability_id: Option<String>,
         #[arg(long, value_name = "PATH")]
         credential_output: OsString,
+        #[arg(long, value_name = "PATH")]
+        inventory_file: Option<OsString>,
     },
     Revoke {
         #[arg(value_name = "CAPABILITY_UUIDV7")]
         capability_id: String,
         #[arg(long, value_enum, value_name = "REASON")]
         reason: RevocationReason,
+        #[arg(long, value_name = "PATH")]
+        inventory_file: Option<OsString>,
+    },
+    /// Lists non-secret capability summaries from a quiescent database path or local operator inventory file.
+    List {
+        /// Quiescent local Redb database path to inspect.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "inventory_file",
+            conflicts_with = "inventory_file"
+        )]
+        database_path: Option<OsString>,
+        /// Non-secret operator capability inventory JSON file to inspect.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "database_path",
+            conflicts_with = "database_path"
+        )]
+        inventory_file: Option<OsString>,
+        /// Filter by capability lifecycle status (`active` or `revoked`).
+        #[arg(long, value_enum, value_name = "STATUS")]
+        status: Option<CapabilityLifecycleFilter>,
+        /// Filter by exact principal identifier.
+        #[arg(long, value_name = "PRINCIPAL")]
+        principal: Option<String>,
+        /// Resume pagination strictly after the given capability UUIDv7.
+        #[arg(long, value_name = "CAPABILITY_UUIDV7")]
+        after: Option<String>,
+        /// Bounded page size (`1..=256`, default `100`).
+        #[arg(long, value_name = "COUNT", default_value_t = 100)]
+        limit: u16,
+    },
+    /// Shows non-secret capability details from a quiescent database path or local operator inventory file.
+    Show {
+        #[arg(value_name = "CAPABILITY_UUIDV7")]
+        capability_id: String,
+        /// Quiescent local Redb database path to inspect.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "inventory_file",
+            conflicts_with = "inventory_file"
+        )]
+        database_path: Option<OsString>,
+        /// Non-secret operator capability inventory JSON file to inspect.
+        #[arg(
+            long,
+            value_name = "PATH",
+            required_unless_present = "database_path",
+            conflicts_with = "database_path"
+        )]
+        inventory_file: Option<OsString>,
     },
 }
 
@@ -1538,6 +1596,22 @@ pub(crate) enum RevocationReason {
     Replaced,
     SuspectedCompromise,
     PolicyChange,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub(crate) enum CapabilityLifecycleFilter {
+    Active,
+    Revoked,
+}
+
+impl CapabilityLifecycleFilter {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

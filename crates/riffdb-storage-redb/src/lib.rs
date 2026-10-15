@@ -404,4 +404,8 @@ pub use validated_prefix::{
     GracefulCheckpointCloseReceiptV1, GracefulCheckpointDispositionV1, GracefulLifecycleOutcomeV1,
 };
 
+pub use administration::{
+    OfflineCapabilityInspectionV1, OfflineCapabilityListPageV1, OfflineCapabilitySummaryV1,
+    RedbOfflineCapabilityInventory,
+};
 pub use owned_snapshot::RedbOwnedSnapshot;

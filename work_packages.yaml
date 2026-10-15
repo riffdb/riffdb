@@ -31453,6 +31453,15 @@ work_packages:
     scale: Capability listing is bounded by StorageScanLimit (1..=256) with deterministic cursor pagination.
   human_review_triggers:
   - Capability inventory output includes secret token material or token hashes.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [SEC-001, SEC-002, SEC-003, DX-014]
+    evidence: cargo test -p riffdb-cli capability_list_and_show_cli_inspect_authoritative_and_ledger_records_without_secrets
+    decision: Exposed RedbOfflineCapabilityInventory in riffdb-storage-redb and added riffdb capability list and riffdb capability show to riffdb-cli with non-secret operator inventory ledger support.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-863
   name: Branch-local workflow transitions and lease instructions inside decide arms
   tier: guarantee
