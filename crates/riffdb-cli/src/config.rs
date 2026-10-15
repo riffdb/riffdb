@@ -272,6 +272,98 @@ pub(crate) fn resolve(
     })
 }
 
+pub(crate) fn resolve_secondary(
+    base: &EffectiveConfig,
+    config_path: Option<&OsStr>,
+    endpoint_override: Option<&str>,
+    credential_override: Option<&OsStr>,
+) -> Result<EffectiveConfig, ConfigError> {
+    let client = match config_path {
+        Some(path) => {
+            validate_path(path).map_err(|_| ConfigError::Invalid)?;
+            read_document(Path::new(path))?.client.unwrap_or_default()
+        }
+        None => ClientDocument::default(),
+    };
+    let endpoint = match (endpoint_override, client.endpoint.as_deref()) {
+        (Some(endpoint), _) => nonempty(endpoint)?,
+        (None, Some(endpoint)) => nonempty(endpoint)?,
+        (None, None) => return Err(ConfigError::Invalid),
+    };
+    validate_endpoint(&endpoint)?;
+    let database = match client.database.as_deref() {
+        Some(database) => DatabaseAlias::new(database).map_err(|_| ConfigError::Invalid)?,
+        None => base.database.clone(),
+    };
+    let attempts = client.max_attempts.unwrap_or(base.max_attempts);
+    if !(1..=10).contains(&attempts) {
+        return Err(ConfigError::Invalid);
+    }
+    let credential_file = match (credential_override, client.credential_file.as_deref()) {
+        (Some(path), _) => {
+            validate_path(path).map_err(|_| ConfigError::Invalid)?;
+            Some(PathBuf::from(path))
+        }
+        (None, Some(path)) => {
+            let os = OsString::from(path);
+            validate_path(&os).map_err(|_| ConfigError::Invalid)?;
+            Some(PathBuf::from(os))
+        }
+        (None, None) => base.credential_file.clone(),
+    };
+    let tls = match (
+        endpoint.starts_with("https://"),
+        client.tls_trust_root.as_deref(),
+        client.tls_server_name.as_deref(),
+    ) {
+        (false, None, None) => None,
+        (true, Some(trust_root), Some(server_name)) => Some(
+            TlsClientConfig::new(
+                CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| ConfigError::Invalid)?,
+                ProtectedFilePath::new(PathBuf::from(trust_root))
+                    .map_err(|_| ConfigError::Invalid)?,
+                TlsServerIdentity::parse(server_name).map_err(|_| ConfigError::Invalid)?,
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                NonZeroU32::new(4).expect("fixed nonzero pool bound"),
+                NonZeroU32::new(64).expect("fixed nonzero stream bound"),
+            )
+            .map_err(|_| ConfigError::Invalid)?,
+        ),
+        (true, None, None) => match &base.tls {
+            Some(base_tls) => {
+                let parsed_endpoint =
+                    CanonicalHttpsEndpoint::parse(&endpoint).map_err(|_| ConfigError::Invalid)?;
+                let expected_identity = parsed_endpoint.identity().clone();
+                Some(
+                    TlsClientConfig::new(
+                        parsed_endpoint,
+                        base_tls.trust_root().clone(),
+                        expected_identity,
+                        Duration::from_secs(5),
+                        Duration::from_secs(30),
+                        NonZeroU32::new(4).expect("fixed nonzero pool bound"),
+                        NonZeroU32::new(64).expect("fixed nonzero stream bound"),
+                    )
+                    .map_err(|_| ConfigError::Invalid)?,
+                )
+            }
+            None => return Err(ConfigError::Invalid),
+        },
+        _ => return Err(ConfigError::Invalid),
+    };
+    Ok(EffectiveConfig {
+        endpoint,
+        database,
+        output: base.output,
+        max_attempts: attempts,
+        credential_file,
+        tls,
+        config_file: config_path.map(PathBuf::from),
+        project_mode: false,
+    })
+}
+
 const fn resolution_error(output: OutputMode) -> ResolutionError {
     ResolutionError { output }
 }

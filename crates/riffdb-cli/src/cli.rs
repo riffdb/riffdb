@@ -1329,6 +1329,40 @@ pub(crate) struct FollowerSelectionArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum FollowerCommand {
+    /// Inspects replication role, frontiers, lag sequences, and registered followers.
+    Status,
+    /// Fences the primary and promotes this follower in one audited cutover sequence.
+    Failover {
+        #[command(flatten)]
+        target: FollowerSelectionArgs,
+        #[arg(long)]
+        registration_generation: std::num::NonZeroU64,
+        /// Primary endpoint URI to fence before promoting this follower.
+        #[arg(
+            long = "primary-endpoint",
+            value_name = "URI",
+            required_unless_present = "primary_config",
+            conflicts_with = "primary_config"
+        )]
+        primary_endpoint: Option<String>,
+        /// Operator client configuration file targeting the primary to fence.
+        #[arg(
+            long = "primary-config",
+            value_name = "PATH",
+            required_unless_present = "primary_endpoint",
+            conflicts_with = "primary_endpoint"
+        )]
+        primary_config: Option<OsString>,
+        /// Optional credential file for fencing the primary (defaults to primary config or current credential).
+        #[arg(long = "primary-credential-file", value_name = "PATH")]
+        primary_credential_file: Option<OsString>,
+        /// Promotion operation UUIDv7 (minted automatically when omitted).
+        #[arg(long, value_name = "PROMOTION_OPERATION_UUIDV7")]
+        operation_id: Option<String>,
+        /// Primary fence operation UUIDv7 (minted automatically when omitted).
+        #[arg(long, value_name = "FENCE_OPERATION_UUIDV7")]
+        fence_operation_id: Option<String>,
+    },
     /// Promotes a follower using the configured source's authenticated fence proof.
     Promote {
         #[command(flatten)]

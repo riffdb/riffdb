@@ -89,6 +89,8 @@ pub(crate) enum CommandIdentity {
     FollowerRetire,
     FollowerFencePrimary,
     FollowerPromote,
+    FollowerStatus,
+    FollowerFailover,
     ServerHealth,
     BackupCreate,
     BackupRestore,
@@ -183,6 +185,8 @@ impl CommandIdentity {
             Self::FollowerRetire => "follower.retire",
             Self::FollowerFencePrimary => "follower.fence-primary",
             Self::FollowerPromote => "follower.promote",
+            Self::FollowerStatus => "follower.status",
+            Self::FollowerFailover => "follower.failover",
             Self::ServerHealth => "server.health",
             Self::BackupCreate => "backup.create",
             Self::BackupRestore => "backup.restore",
@@ -348,6 +352,34 @@ pub(crate) fn installation_uncertain(
         },
         "outcome_unknown",
         "the installation campaign outcome remains unknown",
+        3,
+    )
+}
+
+pub(crate) fn follower_failover_uncertain(
+    stage: &'static str,
+    fence_operation_id: &[u8; 16],
+    operation_id: &[u8; 16],
+) -> Terminal {
+    let Some(fence_operation_id) = format_uuid(fence_operation_id) else {
+        return rendering_failure(CommandIdentity::FollowerFailover);
+    };
+    let Some(operation_id) = format_uuid(operation_id) else {
+        return rendering_failure(CommandIdentity::FollowerFailover);
+    };
+    error_with_exit(
+        CommandIdentity::FollowerFailover,
+        &FollowerFailoverUncertainError {
+            kind: "uncertain",
+            code: "outcome_unknown",
+            message: "the failover cutover outcome remains unknown",
+            recovery_action: "retry_with_same_operation_ids",
+            stage,
+            fence_operation_id: &fence_operation_id,
+            operation_id: &operation_id,
+        },
+        "outcome_unknown",
+        "the failover cutover outcome remains unknown",
         3,
     )
 }
@@ -1113,6 +1145,80 @@ pub(crate) fn render_health(response: &v1::HealthResponse) -> Terminal {
     }
 }
 
+pub(crate) fn render_follower_status(response: &v1::HealthResponse) -> Terminal {
+    use v1::health_response::Result;
+    let Some(Result::Authenticated(health)) = response.result.as_ref() else {
+        return rendering_failure(CommandIdentity::FollowerStatus);
+    };
+    let Some(component) = health.components.iter().find(|component| {
+        v1::HealthComponentKind::try_from(component.component)
+            == Ok(v1::HealthComponentKind::Replication)
+    }) else {
+        return rendering_failure(CommandIdentity::FollowerStatus);
+    };
+    let status = match v1::HealthComponentStatus::try_from(component.status) {
+        Ok(v1::HealthComponentStatus::Healthy) => "healthy",
+        Ok(v1::HealthComponentStatus::Degraded) => "degraded",
+        Ok(v1::HealthComponentStatus::Unavailable) => "unavailable",
+        _ => return rendering_failure(CommandIdentity::FollowerStatus),
+    };
+    let Some(replication) = component.replication.as_ref() else {
+        return rendering_failure(CommandIdentity::FollowerStatus);
+    };
+    let role = match v1::ReplicationRole::try_from(replication.role) {
+        Ok(v1::ReplicationRole::Primary) => "primary",
+        Ok(v1::ReplicationRole::Follower) => "follower",
+        _ => return rendering_failure(CommandIdentity::FollowerStatus),
+    };
+    let Some(applied_frontier) = replication.applied_frontier.as_ref() else {
+        return rendering_failure(CommandIdentity::FollowerStatus);
+    };
+    #[derive(Serialize)]
+    struct FollowerStatusSummary<'a> {
+        status: &'a str,
+        database: &'a str,
+        history_incarnation: String,
+        role: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_frontier: Option<ReplicationFrontierDto<'a>>,
+        applied_frontier: ReplicationFrontierDto<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        acknowledged_frontier: Option<ReplicationFrontierDto<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        registered_followers: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        application_lag_sequences: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        administration_lag_sequences: Option<String>,
+    }
+    success(
+        CommandIdentity::FollowerStatus,
+        status,
+        &FollowerStatusSummary {
+            status,
+            database: &response.database_alias,
+            history_incarnation: health.history_incarnation.to_string(),
+            role,
+            source_frontier: replication
+                .source_frontier
+                .as_ref()
+                .map(ReplicationFrontierDto),
+            applied_frontier: ReplicationFrontierDto(applied_frontier),
+            acknowledged_frontier: replication
+                .acknowledged_frontier
+                .as_ref()
+                .map(ReplicationFrontierDto),
+            registered_followers: replication.registered_followers,
+            application_lag_sequences: replication
+                .application_lag_sequences
+                .map(|value| value.to_string()),
+            administration_lag_sequences: replication
+                .administration_lag_sequences
+                .map(|value| value.to_string()),
+        },
+    )
+}
+
 fn rendering_failure(command: CommandIdentity) -> Terminal {
     Terminal {
         command,
@@ -1641,6 +1747,18 @@ struct InstallationUncertainError<'a> {
     message: &'static str,
     recovery_action: &'static str,
     campaign_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct FollowerFailoverUncertainError<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    code: &'static str,
+    message: &'static str,
+    recovery_action: &'static str,
+    stage: &'a str,
+    fence_operation_id: &'a str,
+    operation_id: &'a str,
 }
 
 impl Serialize for MaintenanceUncertainError<'_> {

@@ -31351,11 +31351,11 @@ work_packages:
   human_review_triggers:
   - Failover promotes a follower without first fencing the primary or weakens lineage/incarnation verification.
   closure:
-    status: pending
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-002, REP-004, REP-005, REP-006, DX-014]
+    evidence: cargo test -p riffdb-cli follower_status_and_failover
+    decision: Added riffdb follower status and riffdb follower failover with auto-minted UUIDv7 operation IDs and uncertainty recovery output.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

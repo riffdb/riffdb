@@ -635,6 +635,8 @@ Manages audited follower retention policy and permanent primary fencing
 Usage: riffdb follower [OPTIONS] <COMMAND>
 
 Commands:
+  status         Inspects replication role, frontiers, lag sequences, and registered followers
+  failover       Fences the primary and promotes this follower in one audited cutover sequence
   promote        Promotes a follower using the configured source's authenticated fence proof
   fence-primary  Permanently fences this primary; it may remain unavailable if promotion fails
   register       Registers or exactly replays the selected immutable policy
@@ -2432,6 +2434,67 @@ Options:
 
       --credential-file <PATH>
 
+  -h, --help
+          Print help
+```
+
+#### `riffdb follower status`
+
+```text
+Inspects replication role, frontiers, lag sequences, and registered followers
+
+Usage: riffdb follower status [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb follower failover`
+
+```text
+Fences the primary and promotes this follower in one audited cutover sequence
+
+Usage: riffdb follower failover [OPTIONS] --database-id <SOURCE_DATABASE_UUIDV7> --history-incarnation <NONZERO_U64> --leadership-epoch <NONZERO_U64> --hold-id <32_LOWERCASE_HEX_DIGITS> --registration-generation <REGISTRATION_GENERATION>
+
+Options:
+      --config <PATH>
+
+      --database-id <SOURCE_DATABASE_UUIDV7>
+
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --history-incarnation <NONZERO_U64>
+
+      --database <DATABASE>
+
+      --leadership-epoch <NONZERO_U64>
+
+      --hold-id <32_LOWERCASE_HEX_DIGITS>
+
+      --output <human|json>
+          [possible values: human, json]
+      --max-attempts <1..10>
+
+      --registration-generation <REGISTRATION_GENERATION>
+
+      --credential-file <PATH>
+
+      --primary-endpoint <URI>
+          Primary endpoint URI to fence before promoting this follower
+      --primary-config <PATH>
+          Operator client configuration file targeting the primary to fence
+      --primary-credential-file <PATH>
+          Optional credential file for fencing the primary (defaults to primary config or current credential)
+      --operation-id <PROMOTION_OPERATION_UUIDV7>
+          Promotion operation UUIDv7 (minted automatically when omitted)
+      --fence-operation-id <FENCE_OPERATION_UUIDV7>
+          Primary fence operation UUIDv7 (minted automatically when omitted)
   -h, --help
           Print help
 ```
