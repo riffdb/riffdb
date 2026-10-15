@@ -710,7 +710,7 @@ fn validate_extension_shapes(object: &Map<String, Value>) -> Result<(), SchemaVa
         })
         || object
             .get("x-riffdb-moneyCurrency")
-            .is_some_and(|value| value.as_str().is_none_or(is_currency))
+            .is_some_and(|value| !value.as_str().is_some_and(is_currency))
         || object
             .get("x-riffdb-relation")
             .is_some_and(|value| value.as_str() != Some("start<=end"))
@@ -1748,5 +1748,53 @@ mod tests {
         RiffDbSchemaValidator
             .validate(&composed, &committed)
             .expect("composed instance");
+    }
+
+    // req: DX-012
+    #[test]
+    fn compiler_money_currency_extension_accepts_valid_iso_codes_and_rejects_invalid_codes() {
+        let valid_source = concat!(
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+            "\"additionalProperties\":false,\"properties\":{\"price\":{",
+            "\"pattern\":\"^-?(0|[1-9][0-9]{0,35})\\\\.[0-9]{2}$\",\"type\":\"string\",",
+            "\"x-riffdb-decimalPrecision\":38,\"x-riffdb-decimalScale\":2,",
+            "\"x-riffdb-moneyCurrency\":\"USD\"}},",
+            "\"required\":[\"price\"],\"type\":\"object\"}"
+        );
+        let valid_hash = hash_schema(valid_source.as_bytes());
+        let schema = SchemaDocument::from_public_generated(
+            crate::McpGeneratedSchemaKind::CommandInput,
+            1,
+            valid_hash.as_bytes(),
+            valid_source.to_owned(),
+        )
+        .expect("money<USD> generated command input schema");
+        RiffDbSchemaValidator
+            .validate(&schema, &json!({"price": "19.99"}))
+            .expect("valid money string");
+
+        for invalid_currency in ["\"usd\"", "\"US\"", "\"USDA\"", "123"] {
+            let invalid_source = format!(
+                concat!(
+                    "{{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",",
+                    "\"additionalProperties\":false,\"properties\":{{\"price\":{{",
+                    "\"pattern\":\"^-?(0|[1-9][0-9]{{0,35}})\\\\.[0-9]{{2}}$\",\"type\":\"string\",",
+                    "\"x-riffdb-decimalPrecision\":38,\"x-riffdb-decimalScale\":2,",
+                    "\"x-riffdb-moneyCurrency\":{invalid_currency}}}}},",
+                    "\"required\":[\"price\"],\"type\":\"object\"}}"
+                ),
+                invalid_currency = invalid_currency,
+            );
+            let invalid_hash = hash_schema(invalid_source.as_bytes());
+            assert!(
+                SchemaDocument::from_public_generated(
+                    crate::McpGeneratedSchemaKind::CommandInput,
+                    1,
+                    invalid_hash.as_bytes(),
+                    invalid_source,
+                )
+                .is_err()
+            );
+        }
     }
 }
