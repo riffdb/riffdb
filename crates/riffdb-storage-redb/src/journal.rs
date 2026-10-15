@@ -191,6 +191,26 @@ static COMMAND_WRITE_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_WRITE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SYNC_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SYNC_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_EXTENT_MAINTENANCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) struct ExtentMaintenanceGuard;
+
+impl ExtentMaintenanceGuard {
+    pub(crate) fn enter() -> Self {
+        ACTIVE_EXTENT_MAINTENANCE.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ExtentMaintenanceGuard {
+    fn drop(&mut self) {
+        ACTIVE_EXTENT_MAINTENANCE.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) fn extent_maintenance_active() -> bool {
+    ACTIVE_EXTENT_MAINTENANCE.load(Ordering::Acquire) > 0
+}
 
 pub(crate) const fn commands_per_durable_flush_bucket(commands: usize) -> usize {
     match commands {
@@ -3155,6 +3175,7 @@ pub(crate) fn retire_checkpoint_extent_with_media(
     database_path: &Path,
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
+    let _maintenance = ExtentMaintenanceGuard::enter();
     let checkpoint = checkpoint_journal_path(database_path);
     if !media
         .try_exists(&checkpoint)
@@ -3185,6 +3206,7 @@ pub(crate) fn seal_extent_with_media(
     database_path: &Path,
     database_id: DatabaseId,
 ) -> Result<Option<PathBuf>, JournalIoError> {
+    let _maintenance = ExtentMaintenanceGuard::enter();
     let sealing = sealing_journal_path(database_path);
     if !media.try_exists(&sealing).map_err(|_| JournalIoError::Io)? {
         return Ok(None);
@@ -3439,6 +3461,7 @@ pub(crate) fn prepare_spare_extent_with_media(
     header: &JournalFileHeader,
     spare_lock: &std::sync::Mutex<()>,
 ) -> Result<bool, JournalIoError> {
+    let _maintenance = ExtentMaintenanceGuard::enter();
     let spare = spare_journal_path(database_path);
     if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
         return Ok(false);

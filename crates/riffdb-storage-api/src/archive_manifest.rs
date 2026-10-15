@@ -110,14 +110,14 @@ impl ArchiveManifestV1 {
     /// Cross-frame receipt ancestry is bound by the manifest predecessor chain;
     /// transport frame checksums may restart at a negotiated receipt after reconnect.
     pub fn verify_frame(&self, bytes: &[u8]) -> Result<(), Error> {
-        if bytes.len() as u64 != self.frame_bytes
-            || bytes.len() > MAX_CHANGELOG_FRAME_BYTES
-            || <[u8; 32]>::from(Sha256::digest(bytes)) != self.frame_digest
-        {
+        if bytes.len() as u64 != self.frame_bytes || bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(Error::InvalidFrame);
         }
-        let frame = ChangelogFrameV3::decode(bytes).map_err(|_| Error::InvalidFrame)?;
-        let binding = frame.binding();
+        let (binding, first, covered, digest) =
+            ChangelogFrameV3::inspect_canonical(bytes).map_err(|_| Error::InvalidFrame)?;
+        if digest != self.frame_digest {
+            return Err(Error::InvalidFrame);
+        }
         if binding.database_id() != self.lineage.database_id()
             || binding.history_incarnation() != self.lineage.history_incarnation()
             || binding.leadership_epoch() != self.lineage.leadership_epoch().get()
@@ -125,18 +125,11 @@ impl ArchiveManifestV1 {
         {
             return Err(Error::ForeignLineage);
         }
-        let first = frame
-            .receipts()
-            .first()
-            .ok_or(Error::InvalidFrame)?
-            .binding();
-        let last = frame.receipts().last().ok_or(Error::InvalidFrame)?;
         if first.predecessor != Some(self.before.sequence())
             || Some(first.sequence) != self.before.sequence().checked_next()
             || first.predecessor_frontier != self.before.frontier()
             || first.prior_history_hash != self.before.history_hash()
-            || ChangelogHistoryPointV3::from_receipt(last).map_err(|_| Error::InvalidFrame)?
-                != self.covered
+            || covered != self.covered
         {
             return Err(Error::InvalidPosition);
         }

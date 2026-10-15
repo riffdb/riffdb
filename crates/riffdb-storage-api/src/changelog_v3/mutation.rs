@@ -312,51 +312,46 @@ impl AuthoritativeMutationAccumulatorV3 {
                 .checked_add(44 + key.len() + value.map_or(0, <[u8]>::len))
                 .filter(|bytes| *bytes <= super::frame::MAX_RECEIPT_BYTES)
                 .ok_or(ChangelogV3Error::LimitExceeded)?;
-            indices.push(index);
+            indices.push((namespace, key, index));
         }
-        let mut failure = None;
-        indices.sort_unstable_by(|left, right| match (get(*left), get(*right)) {
-            (Ok(Some((ln, lk, _, _))), Ok(Some((rn, rk, _, _)))) => {
-                (ln, lk, left).cmp(&(rn, rk, right))
-            }
-            (Err(error), _) | (_, Err(error)) => {
-                failure = Some(error);
-                left.cmp(right)
-            }
-            _ => {
-                failure = Some(ChangelogV3Error::InvalidEncoding);
-                left.cmp(right)
-            }
-        });
-        if let Some(error) = failure {
-            return Err(error);
-        }
+        indices.sort_unstable();
         let mut result = Vec::with_capacity(indices.len().min(crate::MAX_CHANGELOG_FRAME_ENTRIES));
         let mut cursor = 0;
         let mut groups = 0_usize;
         while cursor < indices.len() {
-            let (namespace, key, original, mut value) =
-                get(indices[cursor])?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+            let (namespace, key, first_index) = indices[cursor];
+            let (_, _, original, mut value) =
+                get(first_index)?.ok_or(ChangelogV3Error::InvalidEncoding)?;
             groups += 1;
             if groups > crate::MAX_CHANGELOG_FRAME_ENTRIES {
                 return Err(ChangelogV3Error::LimitExceeded);
             }
-            let mut current_hash = value.map(|value| <[u8; 32]>::from(Sha256::digest(value)));
+            let mut current_hash: Option<[u8; 32]> = None;
             cursor += 1;
             while cursor < indices.len() {
-                let (next_namespace, next_key, expected, next_value) =
-                    get(indices[cursor])?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+                let (next_namespace, next_key, next_index) = indices[cursor];
                 if (next_namespace, next_key) != (namespace, key) {
                     break;
                 }
-                if expected != current_hash {
+                let (_, _, expected, next_value) =
+                    get(next_index)?.ok_or(ChangelogV3Error::InvalidEncoding)?;
+                let actual = value
+                    .map(|bytes| *current_hash.get_or_insert_with(|| Sha256::digest(bytes).into()));
+                if expected != actual {
                     return Err(ChangelogV3Error::PredecessorMismatch);
                 }
                 value = next_value;
-                current_hash = value.map(|value| <[u8; 32]>::from(Sha256::digest(value)));
+                current_hash = None;
                 cursor += 1;
             }
-            if original != current_hash {
+            let restored = match (original, value) {
+                (None, None) => true,
+                (Some(expected), Some(bytes)) => {
+                    expected == *current_hash.get_or_insert_with(|| Sha256::digest(bytes).into())
+                }
+                _ => false,
+            };
+            if !restored {
                 result.push(match (value, original) {
                     (Some(value), expected) => {
                         AuthoritativeMutationV3::put(namespace, key, expected, value)?

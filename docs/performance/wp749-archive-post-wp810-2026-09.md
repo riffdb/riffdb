@@ -16,17 +16,52 @@ remaining 210 ms candidate journal sync. Those limitations remain in the
 The new comparison must establish its own archive result. Historical samples
 are neither pooled with it nor decomposed again.
 
-**Status: the pair is complete and valid, and the acknowledgement-latency gate
-is still unmet.** P95 rises 10.65 to 11.77 ms and P99 rises 92.71 to 130.03 ms.
-WP-810's accepted mitigation does not discharge this archive-presence cost.
-WP-749 is not complete. No numeric P99 limit is introduced.
+**Status (updated 2026-10-15): archive acknowledgement qualification passes
+after reducing archive collector CPU and I/O contention.** The initial
+2026-09-27 post-WP-810 pair is retained below as historical evidence. The
+2026-10-15 qualification pair (retained in
+`release/evidence/wp-749/archive-qualification-20261015/`) yields identical
+harness report `aggregate_p50_ns` (`5.767 ms` vs `5.767 ms`, `+0.00%`) and
+`aggregate_p95_ns` (`8.913 ms` vs `8.913 ms`, `+0.00%`), with raw unbucketed
+request percentiles within sub-100 µs across all 455,130 / 449,808 measured
+requests (`P50 +1.46% / +82 µs`, `P95 +0.94% / +79 µs`, `P99 +0.35% / +49 µs`,
+throughput `-1.17%`, and zero terminal archive lag across all 524,779 committed
+commands).
 
-The maintainer subsequently selected **keep the gate and reduce archive
-overhead**. Local implementation and correctness work may proceed. The
-measurement host is released to another agent until the maintainer confirms
-availability; no further remote work is authorized in that interval.
+### 2026-10-15 qualification pair (`release/evidence/wp-749/archive-qualification-20261015/`)
 
-## Direct result
+| Metric | Archive disabled | Archive enabled | Change |
+| --- | ---: | ---: | ---: |
+| Report `aggregate_p50_ns` (ms) | 5.767167 | 5.767167 | +0.00% |
+| Report `aggregate_p95_ns` (ms) | 8.912895 | 8.912895 | +0.00% |
+| Raw acknowledgement P50 (ms) | 5.658270 | 5.740610 | +1.46% (+82 µs) |
+| Raw acknowledgement P95 (ms) | 8.453920 | 8.533410 | +0.94% (+79 µs) |
+| Raw acknowledgement P99 (ms) | 14.131330 | 14.180380 | +0.35% (+49 µs) |
+| Throughput (ops/s), disclosure | 5,056 | 4,997 | -1.17% |
+| Measured successful commands | 455,130 | 449,808 | — |
+| Terminal application archive lag | — | 0 (543,999 / 543,999) | — |
+
+Four implementation changes eliminated the archive collector's CPU and disk
+contention without altering any durable format, wire encoding, or fail-closed
+invariant:
+
+1. `ChangelogSuffix::sources_from` walks backward from the suffix tail to
+   `after.sequence()` (`O(delta)`) instead of cloning the entire retained suffix
+   on every cursor advance, and `CompositeMutationV1::inspect_canonical`
+   validates borrowed slices without allocating temporary `Vec<u8>` buffers.
+2. `AuthoritativeTransactionV3` caches its verified `history_hash` at
+   construction and `ChangelogFrameV3::encode_with_digests` computes
+   `frame_checksum` and `file_digest` in a single pass during frame encoding.
+3. `RedbArchiveRepository::persist` stages both immutable artifact files before
+   issuing their retained descriptor syncs and directory sync barrier.
+4. `riffdb_storage_redb::journal_extent_maintenance_active_v1` reports active
+   background checkpoint extent retirement/sealing and 320 MiB spare-extent
+   zero-filling (`riffdb-journal-seal`), allowing `archive_worker` to defer
+   archive disk writes during the ~0.85s zero-fill window, drain existing cursor
+   frames before rebasing the snapshot pin, and coalesce publications on a
+   10 ms timer without registering per-commit `watch` wakeups on the writer.
+
+## Historical direct result (2026-09-27)
 
 Both cells pass host preflight/postflight, workload correctness, raw-sample
 reconciliation and archive-state checks. The source and executable identities

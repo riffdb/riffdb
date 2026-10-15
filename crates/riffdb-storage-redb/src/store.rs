@@ -7975,6 +7975,12 @@ impl SharedRedb {
         let database_id = spare_header.database_id();
         #[cfg(feature = "test-fixtures")]
         let controller = self.test_controller.clone();
+        #[cfg(feature = "test-fixtures")]
+        let maintenance = controller
+            .is_none()
+            .then(crate::journal::ExtentMaintenanceGuard::enter);
+        #[cfg(not(feature = "test-fixtures"))]
+        let maintenance = Some(crate::journal::ExtentMaintenanceGuard::enter());
         let previous = sealer.take();
         let publication_complete = Arc::new(AtomicBool::new(false));
         let published = Arc::clone(&publication_complete);
@@ -7984,6 +7990,7 @@ impl SharedRedb {
             .name("riffdb-journal-seal".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
+                let _maintenance = maintenance;
                 if let Some(previous) = previous {
                     let _ = previous.handle.join();
                 }
@@ -8019,6 +8026,7 @@ impl SharedRedb {
                         &spare_lock,
                     ),
                 );
+                drop(_maintenance);
                 completion.publish(Ok(()));
             })
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;

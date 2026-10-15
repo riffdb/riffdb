@@ -5,10 +5,9 @@
 //! resolves any source retention acknowledgement through its existing owner.
 use std::fmt;
 
-use sha2::{Digest, Sha256};
-
 use crate::{
-    ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogLineageV3, MAX_CHANGELOG_FRAME_BYTES,
+    ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogLineageV3, EmittedChangelogFrameV3,
+    MAX_CHANGELOG_FRAME_BYTES,
 };
 
 /// Value-free archive failures. No keys, payloads, paths or checksums are exposed.
@@ -148,6 +147,39 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
         self.retry_pending()
     }
 
+    /// Appends a frame already checked and encoded by `ChangelogFrameCursorV3`,
+    /// verifying lineage, position, and frame-chain continuity without re-hashing
+    /// the frame payload.
+    pub fn append_emitted(
+        &mut self,
+        frame: EmittedChangelogFrameV3,
+    ) -> Result<ChangelogHistoryPointV3, ArchiveConsumerErrorV1> {
+        self.check_live()?;
+        if self.pending.is_some() {
+            return self.fail(ArchiveConsumerErrorV1::ResyncRequired);
+        }
+        let (bytes, lineage, before, covered, prior_frame_hash, frame_checksum, digest) =
+            frame.into_verified_parts();
+        if bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
+            return self.fail(ArchiveConsumerErrorV1::InvalidFrame);
+        }
+        if lineage != self.lineage {
+            return self.fail(ArchiveConsumerErrorV1::ForeignLineage);
+        }
+        if prior_frame_hash != self.prior_frame_checksum || before != self.position {
+            return self.fail(ArchiveConsumerErrorV1::InvalidPosition);
+        }
+        self.pending = Some(ArchiveFrameV1 {
+            bytes,
+            lineage,
+            before,
+            covered,
+            digest,
+            frame_checksum,
+        });
+        self.retry_pending()
+    }
+
     /// Retries only retained, already validated bytes. Sink success is the sole
     /// transition that clears pending and advances this consumer's local fence.
     pub fn retry_pending(&mut self) -> Result<ChangelogHistoryPointV3, ArchiveConsumerErrorV1> {
@@ -197,9 +229,8 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
         if bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
             return Err(ArchiveConsumerErrorV1::InvalidFrame);
         }
-        let frame =
-            ChangelogFrameV3::decode(&bytes).map_err(|_| ArchiveConsumerErrorV1::InvalidFrame)?;
-        let binding = frame.binding();
+        let (binding, first, covered, digest) = ChangelogFrameV3::inspect_canonical(&bytes)
+            .map_err(|_| ArchiveConsumerErrorV1::InvalidFrame)?;
         if binding.database_id() != self.lineage.database_id()
             || binding.history_incarnation() != self.lineage.history_incarnation()
             || binding.leadership_epoch() != self.lineage.leadership_epoch().get()
@@ -207,11 +238,6 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
         {
             return Err(ArchiveConsumerErrorV1::ForeignLineage);
         }
-        let first = frame
-            .receipts()
-            .first()
-            .ok_or(ArchiveConsumerErrorV1::InvalidFrame)?
-            .binding();
         if binding.prior_frame_hash() != self.prior_frame_checksum
             || first.predecessor != Some(self.position.sequence())
             || Some(first.sequence) != self.position.sequence().checked_next()
@@ -220,12 +246,6 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
         {
             return Err(ArchiveConsumerErrorV1::InvalidPosition);
         }
-        let last = frame
-            .receipts()
-            .last()
-            .ok_or(ArchiveConsumerErrorV1::InvalidFrame)?;
-        let covered = ChangelogHistoryPointV3::from_receipt(last)
-            .map_err(|_| ArchiveConsumerErrorV1::InvalidFrame)?;
         let frame_checksum = *bytes
             .last_chunk::<32>()
             .ok_or(ArchiveConsumerErrorV1::InvalidFrame)?;
@@ -234,7 +254,7 @@ impl<S: ArchiveFrameSinkV1> ArchiveConsumerV1<S> {
             before: self.position,
             covered,
             frame_checksum,
-            digest: Sha256::digest(&bytes).into(),
+            digest,
             bytes,
         })
     }

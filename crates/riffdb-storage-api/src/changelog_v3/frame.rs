@@ -163,6 +163,21 @@ impl ChangelogFrameV3 {
         binding: ChangelogFrameBindingV3,
         receipts: Vec<AuthoritativeTransactionV3>,
     ) -> Result<Self, ChangelogV3Error> {
+        Self::build(binding, receipts, true)
+    }
+
+    pub(super) fn from_checked_stream(
+        binding: ChangelogFrameBindingV3,
+        receipts: Vec<AuthoritativeTransactionV3>,
+    ) -> Result<Self, ChangelogV3Error> {
+        Self::build(binding, receipts, false)
+    }
+
+    fn build(
+        binding: ChangelogFrameBindingV3,
+        receipts: Vec<AuthoritativeTransactionV3>,
+        rehash_edges: bool,
+    ) -> Result<Self, ChangelogV3Error> {
         if receipts.is_empty() {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
@@ -189,7 +204,7 @@ impl ChangelogFrameV3 {
                 let prior = previous.binding();
                 if row.predecessor != Some(prior.sequence)
                     || row.predecessor_frontier != prior.covered_frontier
-                    || row.prior_history_hash != previous.history_hash()?
+                    || (rehash_edges && row.prior_history_hash != previous.history_hash()?)
                 {
                     return Err(ChangelogV3Error::PredecessorMismatch);
                 }
@@ -238,6 +253,13 @@ impl ChangelogFrameV3 {
 
     /// Canonical V3 only; no V1/V2 fallback or journal-format translation.
     pub fn encode(&self) -> Result<Vec<u8>, ChangelogV3Error> {
+        Ok(self.encode_with_digests()?.0)
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(super) fn encode_with_digests(
+        &self,
+    ) -> Result<(Vec<u8>, [u8; 32], [u8; 32]), ChangelogV3Error> {
         let total = self.encoded_len()?;
         let first = self
             .receipts
@@ -279,15 +301,18 @@ impl ChangelogFrameV3 {
             bytes.extend_from_slice(&count.to_be_bytes());
         }
         for receipt in &self.receipts {
-            let encoded = receipt.encode()?;
+            let encoded_len = receipt.encoded_len()?;
             bytes.extend_from_slice(
-                &u32::try_from(encoded.len())
+                &u32::try_from(encoded_len)
                     .map_err(|_| ChangelogV3Error::LimitExceeded)?
                     .to_be_bytes(),
             );
-            bytes.extend_from_slice(&encoded);
+            receipt.encode_into(&mut bytes)?;
         }
-        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let checksum: [u8; 32] = hasher.clone().finalize().into();
+        let body_end = bytes.len();
         bytes.extend_from_slice(FOOTER_MAGIC);
         bytes.extend_from_slice(
             &u64::try_from(total)
@@ -295,7 +320,141 @@ impl ChangelogFrameV3 {
                 .to_be_bytes(),
         );
         bytes.extend_from_slice(&checksum);
-        Ok(bytes)
+        hasher.update(&bytes[body_end..]);
+        let file_digest: [u8; 32] = hasher.finalize().into();
+        Ok((bytes, checksum, file_digest))
+    }
+
+    /// Validates checksums, exact ends, counts, identities and every receipt edge
+    /// without allocating owned mutation vectors when only frame endpoints are needed.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn inspect_canonical(
+        bytes: &[u8],
+    ) -> Result<
+        (
+            ChangelogFrameBindingV3,
+            super::AuthoritativeTransactionBindingV3,
+            super::ChangelogHistoryPointV3,
+            [u8; 32],
+        ),
+        ChangelogV3Error,
+    > {
+        if bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        if bytes.len() < HEADER_BYTES + FOOTER_BYTES {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let end = bytes.len() - FOOTER_BYTES;
+        let mut footer = ReceiptReader {
+            remaining: &bytes[end..],
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes[..end]);
+        let checksum: [u8; 32] = hasher.clone().finalize().into();
+        if footer.take(8)? != FOOTER_MAGIC
+            || footer.u64()? != bytes.len() as u64
+            || footer.take(32)? != checksum
+        {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        hasher.update(&bytes[end..]);
+        let file_digest: [u8; 32] = hasher.finalize().into();
+        let mut reader = ReceiptReader {
+            remaining: &bytes[..end],
+        };
+        if reader.take(8)? != MAGIC || reader.u16()? != 3 {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let database_id = DatabaseId::from_bytes(reader.array()?)
+            .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+        let incarnation = reader.u64()?;
+        let epoch = reader.u64()?;
+        let catalog = reader.array()?;
+        let predecessor = reader.u64()?;
+        let covered = reader.u64()?;
+        let predecessor_frontier = DualFrontier::from_canonical_bytes(reader.array()?)
+            .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+        let covered_frontier = DualFrontier::from_canonical_bytes(reader.array()?)
+            .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+        let binding = ChangelogFrameBindingV3::new(
+            database_id,
+            incarnation,
+            epoch,
+            catalog,
+            reader.array()?,
+        )?;
+        let count = usize::try_from(reader.u32()?).map_err(|_| ChangelogV3Error::LimitExceeded)?;
+        let payload_len =
+            usize::try_from(reader.u32()?).map_err(|_| ChangelogV3Error::LimitExceeded)?;
+        if count > MAX_STAGED_COMMANDS {
+            return Err(ChangelogV3Error::LimitExceeded);
+        }
+        let mut source_counts = [0; SOURCE_COUNT];
+        for slot in source_counts.iter_mut().take(binding.source_count) {
+            *slot = reader.u32()?;
+        }
+        if count == 0 || payload_len != reader.remaining.len() || count > payload_len / 164 {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let mut observed_counts = [0_u32; SOURCE_COUNT];
+        let mut transitions = 0_u64;
+        let mut first_row = None;
+        let mut previous_row: Option<(super::AuthoritativeTransactionBindingV3, [u8; 32])> = None;
+        for _ in 0..count {
+            let length =
+                usize::try_from(reader.u32()?).map_err(|_| ChangelogV3Error::LimitExceeded)?;
+            let (row, attribution, row_transitions, row_hash) =
+                AuthoritativeTransactionV3::inspect_canonical_row(
+                    reader.take(length)?,
+                    binding.catalog_digest,
+                )?;
+            if row.database_id != binding.database_id
+                || row.history_incarnation != binding.history_incarnation
+            {
+                return Err(ChangelogV3Error::PredecessorMismatch);
+            }
+            transitions = transitions
+                .checked_add(row_transitions)
+                .ok_or(ChangelogV3Error::LimitExceeded)?;
+            if transitions > MAX_STAGED_COMMANDS as u64 {
+                return Err(ChangelogV3Error::LimitExceeded);
+            }
+            if let Some((prior, prior_hash)) = previous_row
+                && (row.predecessor != Some(prior.sequence)
+                    || row.predecessor_frontier != prior.covered_frontier
+                    || row.prior_history_hash != prior_hash)
+            {
+                return Err(ChangelogV3Error::PredecessorMismatch);
+            }
+            let slot = observed_counts
+                .get_mut(attribution as usize - 1)
+                .ok_or(ChangelogV3Error::InvalidEncoding)?;
+            *slot += 1;
+            if first_row.is_none() {
+                first_row = Some(row);
+            }
+            previous_row = Some((row, row_hash));
+        }
+        if !reader.remaining.is_empty() {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        let first = first_row.ok_or(ChangelogV3Error::InvalidEncoding)?;
+        let (last, last_hash) = previous_row.ok_or(ChangelogV3Error::InvalidEncoding)?;
+        if predecessor != first.predecessor.map_or(0, |p| p.get())
+            || covered != last.sequence.get()
+            || predecessor_frontier != first.predecessor_frontier
+            || covered_frontier != last.covered_frontier
+            || source_counts != observed_counts
+        {
+            return Err(ChangelogV3Error::InvalidEncoding);
+        }
+        Ok((
+            binding,
+            first,
+            super::ChangelogHistoryPointV3::new(last.sequence, last_hash, last.covered_frontier),
+            file_digest,
+        ))
     }
 
     /// Validates checksums, exact ends, counts, identities and every receipt edge

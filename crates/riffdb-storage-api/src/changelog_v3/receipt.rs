@@ -204,6 +204,8 @@ pub struct AuthoritativeTransactionV3 {
     binding: AuthoritativeTransactionBindingV3,
     attribution: ChangelogAttributionV3,
     mutations: Vec<AuthoritativeMutationV3>,
+    encoded_len: usize,
+    pub(super) history_hash: [u8; 32],
 }
 
 impl AuthoritativeTransactionV3 {
@@ -229,22 +231,42 @@ impl AuthoritativeTransactionV3 {
         attribution: ChangelogAttributionV3,
         mutations: Vec<AuthoritativeMutationV3>,
     ) -> Result<Self, ChangelogV3Error> {
+        Self::new_with_history_hash(binding, attribution, mutations, None)
+    }
+
+    pub(super) fn new_with_history_hash(
+        binding: AuthoritativeTransactionBindingV3,
+        attribution: ChangelogAttributionV3,
+        mutations: Vec<AuthoritativeMutationV3>,
+        verified_history_hash: Option<[u8; 32]>,
+    ) -> Result<Self, ChangelogV3Error> {
         Self::validate_shape(binding, attribution, mutations.len(), None)?;
         if mutations.windows(2).any(|pair| {
             (pair[0].namespace(), pair[0].key()) >= (pair[1].namespace(), pair[1].key())
         }) {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
-        let receipt = Self {
-            binding,
-            attribution,
-            mutations,
-        };
-        if receipt.encoded_len()? > super::frame::MAX_RECEIPT_BYTES
-            || receipt.transition_count() > MAX_STAGED_COMMANDS as u64
+        let encoded_len = mutations.iter().try_fold(160_usize, |bytes, mutation| {
+            bytes
+                .checked_add(mutation.encoded_len())
+                .ok_or(ChangelogV3Error::LimitExceeded)
+        })?;
+        if encoded_len > super::frame::MAX_RECEIPT_BYTES
+            || Self::binding_transition_count(binding, attribution) > MAX_STAGED_COMMANDS as u64
         {
             return Err(ChangelogV3Error::LimitExceeded);
         }
+        let mut receipt = Self {
+            binding,
+            attribution,
+            mutations,
+            encoded_len,
+            history_hash: [0; 32],
+        };
+        receipt.history_hash = match verified_history_hash {
+            Some(hash) => hash,
+            None => receipt.compute_history_hash()?,
+        };
         Ok(receipt)
     }
 
@@ -298,7 +320,7 @@ impl AuthoritativeTransactionV3 {
         Self::binding_transition_count(self.binding, self.attribution)
     }
 
-    fn binding_transition_count(
+    pub(super) fn binding_transition_count(
         row: AuthoritativeTransactionBindingV3,
         attribution: ChangelogAttributionV3,
     ) -> u64 {
@@ -327,14 +349,8 @@ impl AuthoritativeTransactionV3 {
     }
 
     /// Complete receipt size, including its fixed header and checksum.
-    pub fn encoded_len(&self) -> Result<usize, ChangelogV3Error> {
-        self.mutations
-            .iter()
-            .try_fold(160_usize, |bytes, mutation| {
-                bytes
-                    .checked_add(mutation.encoded_len())
-                    .ok_or(ChangelogV3Error::LimitExceeded)
-            })
+    pub const fn encoded_len(&self) -> Result<usize, ChangelogV3Error> {
+        Ok(self.encoded_len)
     }
 }
 
@@ -346,5 +362,5 @@ impl std::fmt::Debug for AuthoritativeTransactionV3 {
 
 riffdb_types::inspect_owned_capacity_struct_v1!(AuthoritativeTransactionV3 {
     owned: [mutations],
-    inline: [binding, attribution]
+    inline: [binding, attribution, encoded_len, history_hash]
 });

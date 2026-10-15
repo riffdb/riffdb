@@ -61,7 +61,6 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 ## Replication, Backup, and Restore
 
 - Follower replication, follower reads, operator registration/retirement, and experimental primary fencing/promotion are POC-scoped capabilities pending full multi-consumer release qualification; see [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
-- Archive collection and point-in-time archive restore remain open for write-path latency qualification; see [backup and restore](backup-restore.md#archive-restore-integration-status).
 - Restore publication requires the database directory to be private to the sole configured service identity, and shared write access or concurrent server processes are unsupported.
 - Backup and restore are offline maintenance operations, with no online, incremental, encrypted, or remote-object backup.
 - Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`), leaving clients that omit `observed_history_incarnation` unvalidated.

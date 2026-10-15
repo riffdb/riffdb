@@ -202,6 +202,14 @@ pub fn writer_overlay_census_v1() -> u64 {
     checkpoint_census::peak_overlay_charge()
 }
 
+/// Reports whether background journal extent retirement or spare-extent
+/// preparation is currently issuing heavy device I/O.
+#[doc(hidden)]
+#[must_use]
+pub fn journal_extent_maintenance_active_v1() -> bool {
+    journal::extent_maintenance_active()
+}
+
 /// Fixed execute-stage order for the bounded query-growth diagnostic.
 ///
 /// Stages `point_lookup` through `scan_setup` are physically disjoint segments

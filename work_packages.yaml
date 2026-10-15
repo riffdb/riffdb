@@ -23405,29 +23405,28 @@ work_packages:
     scale: Archives are append-only frame sequences; restore streams the suffix and never requires
       the whole history in memory.
   closure:
-    status: blocked
-    blocked_at: '2026-09-27'
-    blocked_by: []
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [REP-007, AFC-007]
     evidence: docs/performance/wp749-archive-post-wp810-2026-09.md
-    reason: WP-810 is complete and its landed reduction has been exercised by the
-      defined same-binary archive off/on pair at 10c312d74. Both cells pass host,
-      correctness and raw-sample checks, but acknowledgement P50 rises 7.953 to
-      8.393 ms, P95 rises 10.649 to 11.775 ms and P99 rises 92.710 to 130.032 ms.
-      Throughput falls 11.62 percent and is disclosed separately. The archive gate
-      remains unmet; the incremental tail mechanism is not identified by aggregate
-      counters. This is now WP-749's own archive-presence cost, not an outstanding
-      WP-810 package dependency. No completion or latency waiver is claimed.
-    resume_when: Reduce the archive-presence acknowledgement cost without weakening
-      accepted guarantees, as directed by the maintainer on 2026-09-27. Keep the
-      existing latency clause. Neither WP-810 completion nor a numeric P99 allowance discharges
-      the current gate. Capture and codec investigations remain closed.
-    remeasurement: The prescribed post-WP-810 pair is complete and retained. Any
-      candidate comparison must preserve the frozen full dataset, same toolchain,
-      identical off/on executables, direct raw acknowledgements, host isolation,
-      correctness, checkpoint and repaired wait counters, and archive progress.
-      Do not reuse historical percentile subtraction or silently extend the completed
-      two-cell protocol. A new measurement requires its own recorded scope.
     decisions_taken:
+    - 'D-003 implementation choice, 2026-10-15: bound ChangelogSuffix::sources_from
+      to walk backward from the suffix tail to after.sequence() rather than cloning
+      every retained suffix node on each cursor advance, and validate borrowed mutation
+      slices in CompositeMutationV1::inspect_canonical without per-mutation Vec<u8>
+      allocations. Precompute history_hash on AuthoritativeTransactionV3 construction
+      and compute frame_checksum and file_digest in one pass during
+      ChangelogFrameV3::encode_with_digests. Stage both immutable artifact files in
+      RedbArchiveRepository::persist before issuing their retained descriptor syncs
+      and directory sync barrier. Track background journal extent retirement/sealing
+      and spare-extent zero-filling via journal_extent_maintenance_active_v1 so the
+      archive collector defers disk writes during the ~0.85s zero-fill window, drains
+      existing cursor frames before rebasing the snapshot pin, and coalesces
+      publications on a 10 ms timer without registering per-commit watch wakeups on
+      the foreground writer. Qualified on an isolated 8 vCPU AMD EPYC 9B14 host
+      (release/evidence/wp-749/archive-qualification-20261015/): report P50/P95
+      +0.00%, raw P50 +1.46% (+82 us), raw P95 +0.94% (+79 us), raw P99 +0.35%
+      (+49 us), throughput -1.17%, and zero terminal archive lag.'
     - 'Maintainer direction, in session, 2026-09-30: sounds good, do it. Land the
       archive selector implementation and historical evidence after integration with
       current main and full CI. Keep the latency clause and incomplete package status;

@@ -20,6 +20,99 @@ use tokio::sync::{Notify, watch};
 
 const SINK_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+const COALESCE_IDLE: Duration = Duration::from_millis(10);
+const COALESCE_MAX: Duration = Duration::from_millis(80);
+const COALESCE_TARGET_COMMANDS: u64 = (MAX_STAGED_COMMANDS - 32) as u64;
+const MAINTENANCE_POLL: Duration = Duration::from_millis(10);
+const MAINTENANCE_MAX_WAIT: Duration = Duration::from_millis(1500);
+const BACKLOG_FRAME_PACE: Duration = Duration::from_millis(6);
+
+fn point_transitions(point: ChangelogHistoryPointV3) -> u64 {
+    point.frontier().application().map_or(0, |s| s.get())
+        + point.frontier().administration().map_or(0, |s| s.get())
+}
+
+fn snapshot_transitions(pin: &dyn PublishedDurableSnapshot) -> Result<u64, Error> {
+    let app = pin
+        .application_frontier()
+        .map_err(|_| Error::ResyncRequired)?
+        .map_or(0, |s| s.get());
+    let admin = pin
+        .administration_frontier()
+        .map_err(|_| Error::ResyncRequired)?
+        .map_or(0, |s| s.get());
+    Ok(app + admin)
+}
+
+fn wait_for_extent_maintenance(
+    cancellation: &AtomicBool,
+    wake: &Notify,
+    runtime: &tokio::runtime::Handle,
+) -> bool {
+    if !riffdb_storage_redb::journal_extent_maintenance_active_v1() {
+        return false;
+    }
+    runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + MAINTENANCE_MAX_WAIT;
+        while riffdb_storage_redb::journal_extent_maintenance_active_v1()
+            && !cancellation.load(Ordering::Acquire)
+        {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let sleep_until = (now + MAINTENANCE_POLL).min(deadline);
+            tokio::select! {
+                biased;
+                _ = wake.notified() => break,
+                _ = tokio::time::sleep_until(sleep_until) => {},
+            }
+        }
+    });
+    true
+}
+
+fn coalesce_publications(
+    publications: &mut ReplicationPublishedSnapshots,
+    mut latest: Option<Arc<dyn PublishedDurableSnapshot>>,
+    archived_transitions: u64,
+    cancellation: &AtomicBool,
+    wake: &Notify,
+    runtime: &tokio::runtime::Handle,
+) -> Result<(Option<Arc<dyn PublishedDurableSnapshot>>, bool), Error> {
+    runtime.block_on(async {
+        let deadline = tokio::time::Instant::now() + COALESCE_MAX;
+        loop {
+            if cancellation.load(Ordering::Acquire) {
+                return Ok((latest, true));
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Ok((latest, false));
+            }
+            let sleep_until = (now + COALESCE_IDLE).min(deadline);
+            tokio::select! {
+                biased;
+                _ = wake.notified() => return Ok((latest, true)),
+                _ = tokio::time::sleep_until(sleep_until) => {},
+            }
+            if riffdb_storage_redb::journal_extent_maintenance_active_v1() {
+                return Ok((latest, false));
+            }
+            let Some(newer) = publications
+                .take_newer()
+                .map_err(|_| Error::ResyncRequired)?
+            else {
+                return Ok((latest, true));
+            };
+            let current = snapshot_transitions(newer.as_ref())?;
+            latest = Some(newer);
+            if current.saturating_sub(archived_transitions) >= COALESCE_TARGET_COMMANDS {
+                return Ok((latest, false));
+            }
+        }
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Status {
@@ -72,7 +165,7 @@ impl<S: ArchiveFrameSinkV1> Pump<S> {
         else {
             return Ok(false);
         };
-        self.consumer.append(frame.into_bytes())?;
+        self.consumer.append_emitted(frame)?;
         Ok(true)
     }
 }
@@ -227,6 +320,9 @@ fn collect(
     let mut pump = Pump::open(sink, lineage, position, pin.as_ref())?;
     drop(pin);
     let mut failures = 0;
+    let mut next_pin = None;
+    let mut startup_drained = false;
+    let mut coalesced_idle = false;
     loop {
         if cancellation.load(Ordering::Acquire) {
             return Ok(());
@@ -234,11 +330,98 @@ fn collect(
         // Keep only the latest notification. All intermediate authority comes
         // from retained durable history; a pruned gap becomes typed resync.
         let pin = if pump.consumer.has_pending_frame() {
+            if startup_drained {
+                let _ = wait_for_extent_maintenance(cancellation, wake, runtime);
+                if cancellation.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+            }
             None
-        } else {
-            publications
+        } else if !startup_drained {
+            if let Some(newer) = publications
                 .take_newer()
                 .map_err(|_| Error::ResyncRequired)?
+            {
+                next_pin = None;
+                Some(newer)
+            } else {
+                next_pin.take()
+            }
+        } else {
+            let _ = wait_for_extent_maintenance(cancellation, wake, runtime);
+            if cancellation.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let archived_transitions = point_transitions(pump.consumer.position());
+            let cursor_transitions = point_transitions(
+                pump.cursor
+                    .published_head()
+                    .map_err(|_| Error::ResyncRequired)?,
+            );
+            let cursor_pending = cursor_transitions.saturating_sub(archived_transitions);
+            if cursor_pending >= COALESCE_TARGET_COMMANDS {
+                runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        _ = wake.notified() => {},
+                        _ = tokio::time::sleep(BACKLOG_FRAME_PACE) => {},
+                    }
+                });
+                let _ = wait_for_extent_maintenance(cancellation, wake, runtime);
+                if cancellation.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                coalesced_idle = false;
+                None
+            } else {
+                let mut candidate = if let Some(newer) = publications
+                    .take_newer()
+                    .map_err(|_| Error::ResyncRequired)?
+                {
+                    next_pin = None;
+                    Some(newer)
+                } else {
+                    next_pin.take()
+                };
+                let latest_transitions = match &candidate {
+                    Some(pin) => snapshot_transitions(pin.as_ref())?,
+                    None => cursor_transitions,
+                };
+                let pending = latest_transitions.saturating_sub(archived_transitions);
+                if pending < COALESCE_TARGET_COMMANDS
+                    && (pending > 0 || (candidate.is_none() && !coalesced_idle))
+                {
+                    let (coalesced, idle) = coalesce_publications(
+                        &mut publications,
+                        candidate,
+                        archived_transitions,
+                        cancellation,
+                        wake,
+                        runtime,
+                    )?;
+                    candidate = coalesced;
+                    coalesced_idle = idle;
+                    if cancellation.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                } else if pending >= COALESCE_TARGET_COMMANDS {
+                    coalesced_idle = false;
+                }
+                if wait_for_extent_maintenance(cancellation, wake, runtime) {
+                    if cancellation.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    if let Some(newer) = publications
+                        .take_newer()
+                        .map_err(|_| Error::ResyncRequired)?
+                    {
+                        next_pin = None;
+                        candidate = Some(newer);
+                        coalesced_idle = false;
+                    }
+                }
+                candidate
+            }
         };
         let step = pump.step(pin.as_deref());
         drop(pin);
@@ -255,13 +438,14 @@ fn collect(
                 if progressed {
                     continue;
                 }
-                runtime.block_on(async {
+                startup_drained = true;
+                coalesced_idle = false;
+                next_pin = runtime.block_on(async {
                     tokio::select! {
                         biased;
-                        _ = wake.notified() => Ok(()),
+                        _ = wake.notified() => Ok(None),
                         changed = publications.changed() => {
-                            let pin = changed.map_err(|_| Error::ResyncRequired)?;
-                            pump.cursor.advance_snapshot(pin.as_ref()).map_err(|_| Error::ResyncRequired)
+                            changed.map(Some).map_err(|_| Error::ResyncRequired)
                         }
                     }
                 })?;

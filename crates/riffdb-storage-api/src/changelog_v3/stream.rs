@@ -87,7 +87,12 @@ impl ReplicationHandshakeV3 {
 /// Complete checksummed frame bytes plus the emitted (not acknowledged) fence.
 pub struct EmittedChangelogFrameV3 {
     bytes: Vec<u8>,
+    lineage: ChangelogLineageV3,
+    before: ChangelogHistoryPointV3,
     covered: ChangelogHistoryPointV3,
+    prior_frame_hash: [u8; 32],
+    frame_checksum: [u8; 32],
+    file_digest: [u8; 32],
 }
 
 impl EmittedChangelogFrameV3 {
@@ -108,6 +113,30 @@ impl EmittedChangelogFrameV3 {
     #[must_use]
     pub const fn covered(&self) -> ChangelogHistoryPointV3 {
         self.covered
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[must_use]
+    pub(crate) fn into_verified_parts(
+        self,
+    ) -> (
+        Vec<u8>,
+        ChangelogLineageV3,
+        ChangelogHistoryPointV3,
+        ChangelogHistoryPointV3,
+        [u8; 32],
+        [u8; 32],
+        [u8; 32],
+    ) {
+        (
+            self.bytes,
+            self.lineage,
+            self.before,
+            self.covered,
+            self.prior_frame_hash,
+            self.frame_checksum,
+            self.file_digest,
+        )
     }
 }
 
@@ -288,14 +317,21 @@ impl ChangelogFrameCursorV3 {
         if receipts.is_empty() {
             return Ok(None);
         }
-        let frame = ChangelogFrameV3::new(frame_binding, receipts)?;
-        let bytes = frame.encode()?;
-        let checksum = bytes
-            .last_chunk::<32>()
-            .ok_or(ReplicationStreamErrorV3::CorruptHistory)?;
-        self.prior_frame_hash = *checksum;
+        let before = self.position;
+        let prior_frame_hash = self.prior_frame_hash;
+        let frame = ChangelogFrameV3::from_checked_stream(frame_binding, receipts)?;
+        let (bytes, frame_checksum, file_digest) = frame.encode_with_digests()?;
+        self.prior_frame_hash = frame_checksum;
         self.position = covered;
-        Ok(Some(EmittedChangelogFrameV3 { bytes, covered }))
+        Ok(Some(EmittedChangelogFrameV3 {
+            bytes,
+            lineage: self.lineage,
+            before,
+            covered,
+            prior_frame_hash,
+            frame_checksum,
+            file_digest,
+        }))
     }
 }
 

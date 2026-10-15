@@ -275,20 +275,52 @@ impl ChangelogSuffix {
         Ok(Some(receipt))
     }
 
+    #[cfg(test)]
     fn sources(&self) -> Result<Vec<Arc<Source>>, StorageError> {
+        self.sources_from(ChangelogTransactionSequence::new(1).expect("sequence one"))
+    }
+
+    fn sources_from(
+        &self,
+        min_sequence: ChangelogTransactionSequence,
+    ) -> Result<Vec<Arc<Source>>, StorageError> {
         if self.frames > MAX_JOURNAL_SUFFIX_TRANSITIONS {
             return Err(limit());
         }
-        let mut sources = Vec::with_capacity(self.frames);
-        let mut head = self.head.as_ref();
-        while let Some(node) = head {
+        let Some(head) = self.head.as_ref() else {
+            if self.frames != 0 {
+                return Err(corrupt());
+            }
+            return Ok(Vec::new());
+        };
+        if self.frames == 0 {
+            return Err(corrupt());
+        }
+        let tail_seq = head.source.binding.sequence.get();
+        let min_seq = min_sequence.get();
+        if tail_seq < min_seq {
+            return Ok(Vec::new());
+        }
+        let capacity = usize::try_from(tail_seq - min_seq)
+            .ok()
+            .and_then(|diff| diff.checked_add(1))
+            .unwrap_or(self.frames)
+            .min(self.frames);
+        let mut sources = Vec::with_capacity(capacity);
+        let mut current = Some(head);
+        let mut reached_cutoff = false;
+        while let Some(node) = current {
             if sources.len() >= self.frames {
                 return Err(corrupt());
             }
+            if node.source.binding.sequence < min_sequence {
+                reached_cutoff = true;
+                break;
+            }
             sources.push(Arc::clone(&node.source));
-            head = node.predecessor.as_ref();
+            current = node.predecessor.as_ref();
         }
-        if sources.len() != self.frames {
+        if !reached_cutoff && sources.len() != self.frames {
             return Err(corrupt());
         }
         sources.reverse();
@@ -378,15 +410,6 @@ pub(crate) fn open(
     after: ChangelogHistoryPointV3,
 ) -> Result<Box<dyn ChangelogReceiptCursorV3>, ChangelogCursorErrorV3> {
     let history = history(access)?;
-    let (root, sources) = match access {
-        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            (Arc::clone(root), Vec::new())
-        }
-        RedbReadAccess::Composite(view) => (
-            view.checkpoint_root_shared(),
-            view.changelog_suffix().sources()?,
-        ),
-    };
     if lineage.database_id() != history.lineage().database_id()
         || lineage.history_incarnation() != history.lineage().history_incarnation()
     {
@@ -401,6 +424,15 @@ pub(crate) fn open(
     if after.sequence() > history.tail().sequence() {
         return Err(ChangelogCursorErrorV3::InvalidPosition);
     }
+    let (root, sources) = match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            (Arc::clone(root), Vec::new())
+        }
+        RedbReadAccess::Composite(view) => (
+            view.checkpoint_root_shared(),
+            view.changelog_suffix().sources_from(after.sequence())?,
+        ),
+    };
     let cursor = ReceiptCursor {
         root,
         history,
@@ -409,8 +441,8 @@ pub(crate) fn open(
         failure: None,
         _provider_metadata: None,
     };
-    let receipt = cursor.read_receipt(after.sequence())?;
-    if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(value_error)? != after {
+    let summary = cursor.read_summary(after.sequence())?;
+    if summary.point() != after {
         return Err(ChangelogCursorErrorV3::InvalidPosition);
     }
     Ok(Box::new(cursor))
@@ -434,15 +466,6 @@ pub(crate) fn open_admitted_v1(
         .and_then(|work| work.commit())
         .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
     let history = history_admitted_v1(access, budget)?;
-    let (root, sources) = match access {
-        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
-            (Arc::clone(root), Vec::new())
-        }
-        RedbReadAccess::Composite(view) => (
-            view.checkpoint_root_shared(),
-            view.changelog_suffix().sources()?,
-        ),
-    };
     if lineage.database_id() != history.lineage().database_id()
         || lineage.history_incarnation() != history.lineage().history_incarnation()
     {
@@ -457,6 +480,15 @@ pub(crate) fn open_admitted_v1(
     if after.sequence() > history.tail().sequence() {
         return Err(ChangelogCursorErrorV3::InvalidPosition);
     }
+    let (root, sources) = match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            (Arc::clone(root), Vec::new())
+        }
+        RedbReadAccess::Composite(view) => (
+            view.checkpoint_root_shared(),
+            view.changelog_suffix().sources_from(after.sequence())?,
+        ),
+    };
     let cursor = ReceiptCursor {
         root,
         history,
@@ -485,10 +517,53 @@ struct ReceiptCursor {
 use crate::history_stub::ProviderReceiptCandidate;
 
 impl ReceiptCursor {
+    fn read_summary(
+        &self,
+        sequence: ChangelogTransactionSequence,
+    ) -> Result<crate::changelog_v3::ValidatedReceiptSummaryV3, StorageError> {
+        if let Ok(index) = self
+            .sources
+            .binary_search_by_key(&sequence, |source| source.binding.sequence)
+        {
+            let source = &self.sources[index];
+            let summary = crate::changelog_v3::summary_from_validated_mutations_for_catalog(
+                source.binding,
+                source.attribution,
+                &source.mutations,
+                source.history.lineage().catalog_digest(),
+            )
+            .map_err(value_error)?;
+            summary
+                .validate_terminal_receipt(source.history)
+                .map_err(value_error)?;
+            return Ok(summary);
+        }
+        let table = self.root.open_table(HISTORY).map_err(table_error)?;
+        let value = table
+            .get(sequence.get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let summary = crate::history_stub::resolve_history_summary_for_journal(value.value())?;
+        if summary.binding().sequence != sequence
+            || summary.binding().database_id != self.history.lineage().database_id()
+            || summary.binding().history_incarnation != self.history.lineage().history_incarnation()
+        {
+            return Err(corrupt());
+        }
+        Ok(summary)
+    }
+
     fn read_receipt(
         &self,
         sequence: ChangelogTransactionSequence,
     ) -> Result<AuthoritativeTransactionV3, StorageError> {
+        Ok(self.read_receipt_with_point(sequence)?.0)
+    }
+
+    fn read_receipt_with_point(
+        &self,
+        sequence: ChangelogTransactionSequence,
+    ) -> Result<(AuthoritativeTransactionV3, Option<ChangelogHistoryPointV3>), StorageError> {
         if let Ok(index) = self
             .sources
             .binary_search_by_key(&sequence, |source| source.binding.sequence)
@@ -505,7 +580,7 @@ impl ReceiptCursor {
                 .history
                 .validate_terminal_receipt(&receipt)
                 .map_err(value_error)?;
-            return Ok(receipt);
+            return Ok((receipt, Some(source.history.tail())));
         }
         let table = self.root.open_table(HISTORY).map_err(table_error)?;
         let value = table
@@ -519,7 +594,7 @@ impl ReceiptCursor {
         {
             return Err(corrupt());
         }
-        Ok(receipt)
+        Ok((receipt, None))
     }
 
     fn read_receipt_candidate_admitted_v1(
@@ -615,7 +690,7 @@ impl ReceiptCursor {
             return Ok(None);
         }
         let sequence = self.current.sequence().checked_next().ok_or_else(corrupt)?;
-        let receipt = self.read_receipt(sequence)?;
+        let (receipt, verified_point) = self.read_receipt_with_point(sequence)?;
         let before = ChangelogHistoryStateV3::new(
             self.history.lineage(),
             self.history.anchor(),
@@ -623,7 +698,29 @@ impl ReceiptCursor {
             self.history.minimum_resume(),
         )
         .map_err(value_error)?;
-        let after = before.advance(&receipt).map_err(value_error)?.tail();
+        let after = if let Some(point) = verified_point {
+            let row = receipt.binding();
+            if row.database_id != before.lineage().database_id()
+                || row.history_incarnation != before.lineage().history_incarnation()
+                || row.predecessor != Some(before.tail().sequence())
+                || row.predecessor_frontier != before.tail().frontier()
+                || row.prior_history_hash != before.tail().history_hash()
+            {
+                return Err(
+                    value_error(riffdb_storage_api::ChangelogV3Error::PredecessorMismatch).into(),
+                );
+            }
+            ChangelogHistoryStateV3::new(
+                before.lineage(),
+                before.anchor(),
+                point,
+                before.minimum_resume(),
+            )
+            .map_err(value_error)?
+            .tail()
+        } else {
+            before.advance(&receipt).map_err(value_error)?.tail()
+        };
         if after.sequence() != sequence
             || (sequence == self.history.tail().sequence() && after != self.history.tail())
         {

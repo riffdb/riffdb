@@ -439,16 +439,16 @@ median throughput fell 8.49% and request P95 rose 4.35%. The later isolated diag
 measured acknowledgement P99 at 88.35 ms off and 114.93 ms on. Checkpoint-coupled
 journal durability is the named dominant mechanism, present without archive;
 roughly 11.7 ms remained unattributed. The checkpoint-coupled journal durability
-mitigation is complete, with its remaining shared tail accepted. The
+mitigation is complete, with its remaining shared tail accepted. After bounding
+cursor tail walks, single-pass frame digest computation, and deferring archive
+disk writes during background spare-extent zero-filling, the
 [post-mitigation direct pair](performance/wp749-archive-post-wp810-2026-09.md)
-passes host and correctness checks but still finds P95 10.65 to 11.77 ms and
-P99 92.71 to 130.03 ms with archive enabled. **The archive latency gate remains
-unmet.** This archive-presence movement is not attributed by the aggregate
-counters. Further subtraction of historical samples remains closed; no
-completion or latency waiver is claimed.
-The full replication qualification campaign is also
-outstanding, so these paths do not yet constitute a qualified disaster-recovery
-deployment.
+passes host, correctness, and acknowledgement-latency qualification (`+0.00%`
+report P50/P95, raw P50 `+1.46%`, raw P95 `+0.94%`, raw P99 `+0.35%`, throughput
+`-1.17%`, and zero terminal archive lag).
+The full replication qualification campaign remains separate, so multi-node
+replication paths still require their own campaign before production
+disaster-recovery deployment.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

@@ -20,10 +20,14 @@ impl AuthoritativeTransactionV3 {
     /// checkpoint materialization, not reconstructed from current row values.
     pub fn encode(&self) -> Result<Vec<u8>, ChangelogV3Error> {
         let mut bytes = Vec::with_capacity(self.encoded_len()?);
-        self.write_canonical(|chunk| bytes.extend_from_slice(chunk))?;
-        let checksum: [u8; 32] = Sha256::digest(&bytes).into();
-        bytes.extend_from_slice(&checksum);
+        self.encode_into(&mut bytes)?;
         Ok(bytes)
+    }
+
+    pub(super) fn encode_into(&self, bytes: &mut Vec<u8>) -> Result<(), ChangelogV3Error> {
+        self.write_canonical(|chunk| bytes.extend_from_slice(chunk))?;
+        bytes.extend_from_slice(&self.history_hash);
+        Ok(())
     }
 
     fn write_canonical(&self, mut write: impl FnMut(&[u8])) -> Result<(), ChangelogV3Error> {
@@ -70,7 +74,10 @@ impl AuthoritativeTransactionV3 {
         if !reader.remaining.is_empty() {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
-        Self::new(binding, attribution, mutations)
+        let checksum: [u8; 32] = bytes[bytes.len() - CHECKSUM_BYTES..]
+            .try_into()
+            .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+        Self::new_with_history_hash(binding, attribution, mutations, Some(checksum))
     }
 
     /// First-party history validation without owning mutation payloads. The
@@ -79,6 +86,22 @@ impl AuthoritativeTransactionV3 {
         bytes: &[u8],
         catalog: [u8; 32],
     ) -> Result<(AuthoritativeTransactionBindingV3, [u8; 32]), ChangelogV3Error> {
+        let (binding, _, _, hash) = Self::inspect_canonical_row(bytes, catalog)?;
+        Ok((binding, hash))
+    }
+
+    pub(super) fn inspect_canonical_row(
+        bytes: &[u8],
+        catalog: [u8; 32],
+    ) -> Result<
+        (
+            AuthoritativeTransactionBindingV3,
+            ChangelogAttributionV3,
+            u64,
+            [u8; 32],
+        ),
+        ChangelogV3Error,
+    > {
         let (binding, attribution, count, mut reader) = receipt_header(bytes)?;
         Self::validate_shape(binding, attribution, count, Some(bytes.len()))?;
         super::frame::validate_receipt_shape(attribution, bytes.len(), catalog)?;
@@ -95,6 +118,8 @@ impl AuthoritativeTransactionV3 {
         }
         Ok((
             binding,
+            attribution,
+            Self::binding_transition_count(binding, attribution),
             bytes[bytes.len() - CHECKSUM_BYTES..]
                 .try_into()
                 .map_err(|_| ChangelogV3Error::InvalidEncoding)?,
@@ -137,11 +162,15 @@ impl AuthoritativeTransactionV3 {
             equal &= bytes.get(cursor..end) == Some(chunk);
             cursor = end;
         })?;
-        Ok(equal && bytes.get(cursor..) == Some(self.history_hash()?.as_slice()))
+        Ok(equal && bytes.get(cursor..) == Some(self.history_hash.as_slice()))
     }
 
     /// Exact receipt checksum used as the next row's prior-history hash.
-    pub fn history_hash(&self) -> Result<[u8; 32], ChangelogV3Error> {
+    pub const fn history_hash(&self) -> Result<[u8; 32], ChangelogV3Error> {
+        Ok(self.history_hash)
+    }
+
+    pub(super) fn compute_history_hash(&self) -> Result<[u8; 32], ChangelogV3Error> {
         let mut hash = Sha256::new();
         self.write_canonical(|chunk| hash.update(chunk))?;
         Ok(hash.finalize().into())

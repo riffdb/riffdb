@@ -431,7 +431,7 @@ while last-archived includes the selected terminal frontier. The maintenance
 driver exposes these paths through `RestoreArchivedBackup`, the Rust operator
 client and `riffdb storage restore --archive`; see [archive restore](backup-restore.md#archive-restore-integration-status)
 for selection, retry and staged-authorization rules. Full CI and write-path
-performance qualification remain required before archive restore qualification closes.
+archive-presence qualification pass.
 
 Inspect the format while the server is stopped:
 

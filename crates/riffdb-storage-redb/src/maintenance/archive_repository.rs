@@ -436,12 +436,14 @@ impl RedbArchiveRepository {
 
     fn remove_bounded(&self, name: &str, maximum: usize) -> Result<(), Error> {
         self.verify()?;
-        if self
+        let Some(length) = self
             .directory
             .regular_file_length(OsStr::new(name))
             .map_err(storage)?
-            .is_some_and(|length| length > maximum as u64)
-        {
+        else {
+            return Ok(());
+        };
+        if length > maximum as u64 {
             return Err(Error::InvalidManifest);
         }
         self.directory
@@ -516,7 +518,7 @@ impl RedbArchiveRepository {
             .map_err(storage)?
             .into_std();
         file.write_all(bytes).map_err(io)?;
-        self.sync_retained(name, &file)?;
+        self.verify_retained(name, &file)?;
         Ok(file)
     }
 
@@ -638,7 +640,7 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             return Err(Error::ResyncRequired);
         }
         let (frame_name, manifest_name) = names(frame.before())?;
-        self.immutable(
+        let frame_file = self.immutable(
             &frame_name,
             FRAME_TEMP,
             frame.as_bytes(),
@@ -653,10 +655,12 @@ impl ArchiveFrameSinkV1 for RedbArchiveRepository {
             ARCHIVE_MANIFEST_V1_BYTES,
             ["manifest-staged", "manifest-linked", "manifest-published"],
         )?;
-        // Both immutable files have durable bytes. This barrier persists
-        // their final names (and temporary-name cleanup) before CURRENT can
-        // select them. A pre-selector crash leaves only an unselected pair,
-        // which recovery validates the old prefix before discarding.
+        // Sync both immutable files and their final directory names (plus
+        // temporary-name cleanup) together before CURRENT can select them. A
+        // pre-selector crash leaves only an unselected pair, which recovery
+        // validates the old prefix before discarding.
+        self.sync_retained(&frame_name, &frame_file)?;
+        self.sync_retained(&manifest_name, &manifest)?;
         self.directory.sync().map_err(storage)?;
         self.boundary("artifacts-synced")?;
         self.stage_current(&manifest_name, &manifest)?;

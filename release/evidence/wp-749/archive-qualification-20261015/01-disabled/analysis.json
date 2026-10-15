@@ -1,0 +1,451 @@
+{
+  "raw_percentiles": {
+    "p50_ns": 5658270,
+    "p95_ns": 8453920,
+    "p99_ns": 14131330
+  },
+  "sample_count": 455130,
+  "raw_arrays_sha256": "4c917c85580c658efbddecd1f48989f6aa8fc786d0220e0458e03165d6ea0f62",
+  "slowest_20": [
+    {
+      "elapsed_ns": 194376990,
+      "worker": 25,
+      "worker_ordinal": 11081
+    },
+    {
+      "elapsed_ns": 194364360,
+      "worker": 22,
+      "worker_ordinal": 11095
+    },
+    {
+      "elapsed_ns": 194202040,
+      "worker": 28,
+      "worker_ordinal": 11097
+    },
+    {
+      "elapsed_ns": 194108210,
+      "worker": 2,
+      "worker_ordinal": 11085
+    },
+    {
+      "elapsed_ns": 194089790,
+      "worker": 13,
+      "worker_ordinal": 11088
+    },
+    {
+      "elapsed_ns": 194068470,
+      "worker": 21,
+      "worker_ordinal": 11080
+    },
+    {
+      "elapsed_ns": 194041180,
+      "worker": 18,
+      "worker_ordinal": 11087
+    },
+    {
+      "elapsed_ns": 193829240,
+      "worker": 12,
+      "worker_ordinal": 11073
+    },
+    {
+      "elapsed_ns": 193743650,
+      "worker": 31,
+      "worker_ordinal": 11087
+    },
+    {
+      "elapsed_ns": 193712250,
+      "worker": 8,
+      "worker_ordinal": 11091
+    },
+    {
+      "elapsed_ns": 193708430,
+      "worker": 15,
+      "worker_ordinal": 11093
+    },
+    {
+      "elapsed_ns": 193696710,
+      "worker": 7,
+      "worker_ordinal": 11074
+    },
+    {
+      "elapsed_ns": 193687030,
+      "worker": 29,
+      "worker_ordinal": 11082
+    },
+    {
+      "elapsed_ns": 193615690,
+      "worker": 5,
+      "worker_ordinal": 11090
+    },
+    {
+      "elapsed_ns": 193603950,
+      "worker": 9,
+      "worker_ordinal": 11080
+    },
+    {
+      "elapsed_ns": 193574920,
+      "worker": 20,
+      "worker_ordinal": 11094
+    },
+    {
+      "elapsed_ns": 193553250,
+      "worker": 1,
+      "worker_ordinal": 11083
+    },
+    {
+      "elapsed_ns": 193550870,
+      "worker": 27,
+      "worker_ordinal": 11085
+    },
+    {
+      "elapsed_ns": 193539120,
+      "worker": 24,
+      "worker_ordinal": 11080
+    },
+    {
+      "elapsed_ns": 193499750,
+      "worker": 6,
+      "worker_ordinal": 11077
+    }
+  ],
+  "raw_mean_ns": 6325702,
+  "throughput_ops_s": 5056,
+  "measured_elapsed_ns": 90005754941,
+  "archive": {
+    "archived_application_sequence": null,
+    "archived_history_transactions": 0,
+    "backup_application_sequence": 19220,
+    "caught_up_at_shutdown": "not_claimed",
+    "collector_terminal_failure_observed": false,
+    "enabled": false,
+    "manifest_digest": null
+  },
+  "archive_lag_application_commands": null,
+  "lag_method": "backup application frontier plus process-generation committed commands minus confirmed archived frontier; includes warmup",
+  "checkpoint": {
+    "failures": 0,
+    "installed": 19,
+    "materialized": 20,
+    "max_bytes": 135443310,
+    "max_transitions": 26655,
+    "min_bytes": 134384680,
+    "min_transitions": 26145,
+    "scope": "actual_async_checkpoint_selections_before_graceful_close",
+    "selected_bytes": 2695573215,
+    "selected_commands": 529400,
+    "selected_transitions": 529400,
+    "starts": 20,
+    "trigger_counts_nonexclusive": {
+      "bytes": 20,
+      "physical": 0,
+      "reanchor": 0,
+      "transitions": 0
+    }
+  },
+  "publication": {
+    "durable_to_publish_max_us": 37695,
+    "durable_to_publish_sum_us": 8219384,
+    "instrument_version": 2,
+    "labels": "closed_fixed_cardinality",
+    "legacy_publication_recheck_max_us": null,
+    "legacy_publication_recheck_sum_us": null,
+    "publication_work_max_us": 37666,
+    "publication_work_sum_us": 6696997,
+    "publications": 35878,
+    "receipt_block_max_us": 187873,
+    "receipt_block_sum_us": 38778038,
+    "receipt_wait_calls": 71756,
+    "receipt_wait_coverage": "all_command_receipt_wait_calls_including_ready_rechecks_and_errors",
+    "receipt_wait_errors": 0,
+    "residence_max_us": 188254,
+    "residence_sum_us": 65292884
+  },
+  "journal": {
+    "encode_max_us": 248,
+    "encode_sum_us": 1919260,
+    "labels": "closed_fixed_cardinality",
+    "physical_flushes": 34367,
+    "positional_write_max_us": 1620,
+    "positional_write_sum_us": 1838493,
+    "queue_max_us": 185304,
+    "queue_observations": 35878,
+    "queue_sum_us": 15548331,
+    "sync_max_us": 187791,
+    "sync_sum_us": 36158833
+  },
+  "flush": {
+    "command_frames": 35878,
+    "complete_frame_bytes": 2696462337,
+    "io_duration_us": 39950535,
+    "labels": "closed_fixed_cardinality",
+    "logical_commands": 529576,
+    "max_frames_per_flush": 4,
+    "max_io_duration_us": 187871,
+    "mean_command_frames_per_flush": 1.0439665958623097,
+    "mean_io_duration_us": 1162.4679198067913,
+    "mean_logical_commands_per_flush": 15.409433468152589,
+    "physical_flushes": 34367,
+    "scope": "successful_command_bearing_physical_flushes_in_process_generation"
+  },
+  "frames": {
+    "checkpoint_segment_reduction_ratio": 0.0,
+    "commands": 529576,
+    "complete_frame_reduction_ratio": 0.0,
+    "frames": 35878,
+    "labels": "closed_fixed_cardinality",
+    "raw_command_segment_bytes": 1864786687,
+    "raw_equivalent_complete_frame_bytes": 2696462337,
+    "scope": "successfully_fenced_command_frames_in_process_generation",
+    "selected_command_segment_bytes": 1864786687,
+    "selected_complete_frame_bytes": 2696462337
+  },
+  "writer": {
+    "busy_us": 88479474,
+    "commit_batch_size": {
+      "count": 35878,
+      "cumulative_buckets": [
+        0,
+        2015,
+        2319,
+        3045,
+        4679,
+        25906,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 529576
+    },
+    "commit_duration_us": {
+      "count": 35878,
+      "cumulative_buckets": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        724,
+        35756,
+        35836,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 85022505
+    },
+    "compatibility_commutative_shared_groups": 9,
+    "compatibility_conflict_key_splits": 49379,
+    "compatibility_exact_access_splits": 0,
+    "compatibility_groups": 35878,
+    "compatibility_selected": 529576,
+    "dispatch_deferred": 0,
+    "dispatch_selected": 529576,
+    "durable_flush_duration_us": {
+      "count": 35878,
+      "cumulative_buckets": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        724,
+        35756,
+        35836,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 85022505
+    },
+    "final_apply_duration_us": {
+      "count": 35878,
+      "cumulative_buckets": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1244,
+        2812,
+        5545,
+        35861,
+        35878,
+        35878,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 11456750
+    },
+    "frontier_equivalence_checks": 35878,
+    "frontier_equivalence_failures": 0,
+    "group_residence_duration_us": {
+      "count": 35878,
+      "cumulative_buckets": [
+        78,
+        1673,
+        1711,
+        1721,
+        1734,
+        1737,
+        1739,
+        1739,
+        1739,
+        4626,
+        13668,
+        35855,
+        35878,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 41906166
+    },
+    "idle_us": 18791454,
+    "journal_submit_duration_us": {
+      "count": 35878,
+      "cumulative_buckets": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        1911,
+        3534,
+        35694,
+        35859,
+        35878,
+        35878,
+        35878,
+        35878
+      ],
+      "sum": 17907754
+    },
+    "logical_commands_committed": 529576,
+    "mean_commands_per_physical_commit": 14.760466023747144,
+    "physical_commits": 35878,
+    "preparation_pool_depth": {
+      "count": 30838,
+      "cumulative_buckets": [
+        15419,
+        19433,
+        20030,
+        21738,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838,
+        30838
+      ],
+      "sum": 64885
+    },
+    "prepared_epoch_proof_mismatches": 0,
+    "prepared_epoch_rollbacks": 0,
+    "queue_delay_estimate_us": 5164,
+    "reorder_buffer_occupancy": {
+      "count": 64885,
+      "cumulative_buckets": [
+        45119,
+        51768,
+        55661,
+        62193,
+        64291,
+        64884,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885,
+        64885
+      ],
+      "sum": 55483
+    },
+    "storage_queue_duration_us": {
+      "count": 529576,
+      "cumulative_buckets": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        4,
+        656,
+        2602,
+        8060,
+        30838,
+        242697,
+        529189,
+        529576,
+        529576,
+        529576,
+        529576
+      ],
+      "sum": 616654290
+    }
+  },
+  "resource_delta": {
+    "cpu_ticks": 21875,
+    "durable_bytes_after": 6004118828,
+    "durable_bytes_before": 740877612,
+    "durable_bytes_growth": 5263241216,
+    "durable_bytes_growth_per_process_scope_committed_command": 9938,
+    "durable_bytes_growth_per_successful_mutation": 11564,
+    "heap_envelope_bytes": 1288065024,
+    "normalization_scope": "complete measured process generation including warmup",
+    "process_identity_stable": true,
+    "process_read_bytes": 73728,
+    "process_scope_committed_commands": 529576,
+    "process_write_bytes": 39707529216,
+    "process_write_bytes_per_process_scope_committed_command": 74979,
+    "process_write_bytes_per_successful_mutation": 87244,
+    "rss_bytes_after": 1227231232,
+    "rss_bytes_before": 79118336,
+    "rss_bytes_peak_sampled": 1227231232,
+    "scope": "before_after_point",
+    "successful_mutations": 455130,
+    "vm_data_bytes_after": 1518616576,
+    "vm_data_bytes_before": 230551552
+  },
+  "input_sha256": {
+    "report.json": "9e7ade6db0fbfe06b6b693bf6a4c843c2a48acaa11e16687003e6c143acff696",
+    "raw/raw-request-tail.json": "4a55c90fb32cc2a09cf7c44515704dbdcbbb57ad54c68114d736bd0c1015a984",
+    "run.log": "210a3e09d67576a1db577c8c98b65c5c2b5629289216b0600b1dd986cba4e7f8",
+    "preflight.json": "95ac5801c30d515b429f6b5633f14b805ab64a23c96e7a7b07b6be94905c0ac8",
+    "postflight.json": "12234da91477899d7483e463679f90296c25aca66e4d03a66a490b281da6c098",
+    "execution.json": "d6aa73b04a47627e7ee4a4d8dacf5644c35d72c0d37e82b1e15c742b06e0ead9"
+  },
+  "counter_scope": "Counters include warmup. Raw acknowledgements are measured-only. Overlapping timers are not added or subtracted; busy plus idle is not writer wall."
+}
