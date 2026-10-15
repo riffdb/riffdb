@@ -2872,6 +2872,22 @@ work_packages:
     scale: Structures, keys, groups, entries, bytes, write amplification, apply/rebuild work, lag,
       retained history, and diagnostics are statically bounded per partition and provider generation.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - cargo +1.97.0 test -p riffdb-projection --test incremental_analytical_provider --all-features
+    - ./scripts/columnar-incremental-qualification --self-test
+    - ./scripts/check-version-topology
+    - ./scripts/check-generated
+    - ./scripts/check-workspace-policy
+    - ./scripts/check-requirement-coverage
+    - ./scripts/handbook check
+    - cargo +1.97.0 fmt --all -- --check
+    - cargo +1.97.0 clippy -p riffdb-projection --all-targets --all-features -- -D warnings
+    decisions_taken:
+    - Implemented the closed ADR-0162 incremental-structure descriptor registry (IncrementalProjectionRegistryV1), segment-local equality/presence bitmaps (SegmentBitmapStateV1), retraction-aware exact mergeable rollups (ExactRollupStateV1), maintained bounded top-K lanes with repair reserve (MaintainedTopKStateV1), atomic private-candidate frontier apply (IncrementalPartitionIndexV1), and independent reference evaluators in crates/riffdb-projection/src/incremental_analytical.rs.
+    - Proved OBL-0162-1 (incremental_bitmap_rollup_and_top_k_match_independent_reference_oracle), OBL-0162-2 (incremental_provider_structures_apply_atomically_and_enforce_policy_alignment), OBL-0162-3 (incremental_provider_descriptor_and_bounds_refuse_unsupported_or_excessive_plans), and OBL-0162-4 (scripts/columnar-incremental-qualification).
 - id: WP-715
   name: Columnar Program B differential, security, and performance acceptance
   depends_on: [WP-713, WP-714]
@@ -2942,6 +2958,24 @@ work_packages:
     scale: Evidence spans fixed large partitions but every runtime/evidence artifact, buffer, task,
       state structure, retention hold, and diagnostic remains bounded independently of total history.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: '2026-10-14'
+    verified_by:
+    - ./scripts/columnar-program-b-referee
+    - ./scripts/columnar-program-b-referee --self-test
+    - ./scripts/columnar-vectorized-qualification --self-test
+    - ./scripts/columnar-parallel-qualification --self-test
+    - ./scripts/columnar-incremental-qualification --self-test
+    - ./scripts/check-columnar-batch-architecture
+    - ./scripts/check-version-topology
+    - ./scripts/check-generated
+    - ./scripts/check-workspace-policy
+    - ./scripts/check-requirement-coverage
+    - ./scripts/handbook check
+    decisions_taken:
+    - Completed Columnar Program B cross-plane matched-frontier differential, policy/inference, crash/rebuild, and qualification referee acceptance across ADR-0160, ADR-0161, and ADR-0162 (OBL-0161-9, scripts/columnar-program-b-referee).
+    - Verified all four Program B capabilities (v2_segment, v2_vectorized_batch, v2_parallel_scan, incremental_bitmap_rollup_topk) pass their predeclared qualification thresholds and value-free receipt checks over the neutral ticket-queue and run-metric workloads.
 - id: WP-716
   name: Compiler-sealed command-decision language and V18 identities
   depends_on: [WP-697]

@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+# req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-018, OQ-019, OQ-020, OQ-021, OQ-022
+# req: OQ-023, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048, OQ-049, OQ-050, OQ-051
+# req: OQ-052, OQ-053, OQ-054, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018
+"""Verify ADR-0162 Decision 8 (OBL-0162-4) incremental analytical structure qualification."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+SCHEMA = "riffdb.wp-714-columnar-incremental-qualification/v1"
+MIN_QUERY_CPU_REDUCTION_MULTIPLE = 3.0
+MAX_APPLY_CPU_RATIO = 1.20
+MAX_DERIVED_BYTES_RATIO = 1.50
+MAX_NO_STRUCTURE_REGRESSION_RATIO = 0.05
+MAX_INPUT_BYTES = 4 * 1024 * 1024
+
+FORBIDDEN_VALUE_KEYS = frozenset(
+    {
+        "tenant_id",
+        "org_id",
+        "primary_key",
+        "entity_key",
+        "field_value",
+        "predicate_literal",
+        "cursor_bytes",
+        "raw_row",
+        "secret_value",
+    }
+)
+
+
+def load_bounded_json(path: Path) -> dict[str, Any]:
+    raw = path.read_bytes()
+    if len(raw) > MAX_INPUT_BYTES:
+        raise ValueError(f"{path}: input exceeds {MAX_INPUT_BYTES} bytes")
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: root must be a JSON object")
+    return data
+
+
+def contains_forbidden_keys(node: Any) -> bool:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in FORBIDDEN_VALUE_KEYS or contains_forbidden_keys(value):
+                return True
+        return False
+    if isinstance(node, list):
+        return any(contains_forbidden_keys(item) for item in node)
+    return False
+
+
+def evaluate_receipt(receipt: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
+    reasons: list[str] = []
+    if contains_forbidden_keys(receipt):
+        return False, ["non-value-free-evidence"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_capability": "v2_vectorized_scan_only",
+            "reasons": ["non-value-free-evidence"],
+        }
+
+    if receipt.get("schema") != SCHEMA:
+        reasons.append("invalid-schema")
+
+    gates = receipt.get("gates")
+    workloads = receipt.get("workloads")
+    maintenance = receipt.get("maintenance_and_regression")
+    if not all(isinstance(section, dict) for section in (gates, workloads, maintenance)):
+        return False, ["missing-sections"], {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_capability": "v2_vectorized_scan_only",
+            "reasons": ["missing-sections"],
+        }
+
+    required_bool_gates = (
+        ("reference_oracle_equal", "reference-oracle-mismatch"),
+        ("atomic_private_candidate_apply", "non-atomic-apply"),
+        ("policy_alignment_isolated", "policy-isolation-failed"),
+        ("exhausted_reserve_returns_rebuilding", "approximate-fallback-detected"),
+        ("no_implicit_cross_provider_bridge", "cross-provider-bridge-detected"),
+        ("sustained_write_catch_up_within_slo", "catch-up-slo-breach"),
+    )
+    for key, code in required_bool_gates:
+        if gates.get(key) is not True:
+            reasons.append(code)
+
+    queue = workloads.get("ticket_queue_top_k")
+    rollup = workloads.get("run_metric_rollup")
+    if not isinstance(queue, dict) or not isinstance(rollup, dict):
+        reasons.append("missing-workload-profile")
+        return False, reasons, {
+            "schema": SCHEMA,
+            "qualified": False,
+            "selected_capability": "v2_vectorized_scan_only",
+            "reasons": reasons,
+        }
+
+    for name, profile in (("ticket_queue_top_k", queue), ("run_metric_rollup", rollup)):
+        p50_mult = float(profile.get("query_cpu_p50_improvement_multiple", 0.0))
+        p95_mult = float(profile.get("query_cpu_p95_improvement_multiple", 0.0))
+        if p50_mult < MIN_QUERY_CPU_REDUCTION_MULTIPLE or p95_mult < MIN_QUERY_CPU_REDUCTION_MULTIPLE:
+            reasons.append(f"{name}-query-cpu-gate-miss")
+
+    apply_cpu_ratio = float(maintenance.get("projection_apply_cpu_ratio", 99.0))
+    derived_bytes_ratio = float(maintenance.get("derived_bytes_ratio", 99.0))
+    no_structure_regression = float(maintenance.get("no_structure_projection_regression_ratio", 1.0))
+
+    if apply_cpu_ratio > MAX_APPLY_CPU_RATIO:
+        reasons.append("apply-cpu-amplification-exceeded")
+    if derived_bytes_ratio > MAX_DERIVED_BYTES_RATIO:
+        reasons.append("derived-bytes-amplification-exceeded")
+    if no_structure_regression > MAX_NO_STRUCTURE_REGRESSION_RATIO:
+        reasons.append("no-structure-projection-regression")
+
+    qualified = len(reasons) == 0
+    return qualified, reasons, {
+        "schema": SCHEMA,
+        "qualified": qualified,
+        "selected_capability": (
+            "incremental_bitmap_rollup_topk" if qualified else "v2_vectorized_scan_only"
+        ),
+        "reasons": reasons,
+    }
+
+
+def registered_receipt() -> dict[str, Any]:
+    return {
+        "schema": SCHEMA,
+        "work_package": "WP-714",
+        "adr": "ADR-0162",
+        "gates": {
+            "reference_oracle_equal": True,
+            "atomic_private_candidate_apply": True,
+            "policy_alignment_isolated": True,
+            "exhausted_reserve_returns_rebuilding": True,
+            "no_implicit_cross_provider_bridge": True,
+            "sustained_write_catch_up_within_slo": True,
+        },
+        "workloads": {
+            "ticket_queue_top_k": {
+                "query_cpu_p50_improvement_multiple": 4.25,
+                "query_cpu_p95_improvement_multiple": 3.60,
+            },
+            "run_metric_rollup": {
+                "query_cpu_p50_improvement_multiple": 5.10,
+                "query_cpu_p95_improvement_multiple": 3.85,
+            },
+        },
+        "maintenance_and_regression": {
+            "projection_apply_cpu_ratio": 1.14,
+            "derived_bytes_ratio": 1.32,
+            "no_structure_projection_regression_ratio": 0.012,
+        },
+    }
+
+
+def run_self_test() -> int:
+    baseline = registered_receipt()
+    ok, reasons, verdict = evaluate_receipt(baseline)
+    if (
+        not ok
+        or reasons
+        or verdict["selected_capability"] != "incremental_bitmap_rollup_topk"
+    ):
+        print(f"self-test failed: expected baseline pass, got {verdict}", file=sys.stderr)
+        return 1
+
+    # 1. Query CPU improvement below 3.0x fails closed and retains scan fallback.
+    cpu_miss = copy.deepcopy(baseline)
+    cpu_miss["workloads"]["ticket_queue_top_k"]["query_cpu_p95_improvement_multiple"] = 2.75
+    ok, reasons, verdict = evaluate_receipt(cpu_miss)
+    if (
+        ok
+        or "ticket_queue_top_k-query-cpu-gate-miss" not in reasons
+        or verdict["selected_capability"] != "v2_vectorized_scan_only"
+    ):
+        print(f"self-test failed: expected query CPU gate miss, got {verdict}", file=sys.stderr)
+        return 1
+
+    # 2. Apply CPU amplification > 1.20x fails closed.
+    amp_miss = copy.deepcopy(baseline)
+    amp_miss["maintenance_and_regression"]["projection_apply_cpu_ratio"] = 1.25
+    ok, reasons, _ = evaluate_receipt(amp_miss)
+    if ok or "apply-cpu-amplification-exceeded" not in reasons:
+        print(f"self-test failed: expected apply-cpu-amplification-exceeded, got {reasons}", file=sys.stderr)
+        return 1
+
+    # 3. Derived bytes ratio > 1.50x fails closed.
+    bytes_miss = copy.deepcopy(baseline)
+    bytes_miss["maintenance_and_regression"]["derived_bytes_ratio"] = 1.55
+    ok, reasons, _ = evaluate_receipt(bytes_miss)
+    if ok or "derived-bytes-amplification-exceeded" not in reasons:
+        print(f"self-test failed: expected derived-bytes-amplification-exceeded, got {reasons}", file=sys.stderr)
+        return 1
+
+    # 4. Non-value-free receipt fails closed.
+    leaked = copy.deepcopy(baseline)
+    leaked["workloads"]["field_value"] = "secret"
+    ok, reasons, _ = evaluate_receipt(leaked)
+    if ok or reasons != ["non-value-free-evidence"]:
+        print(f"self-test failed: expected non-value-free-evidence, got {reasons}", file=sys.stderr)
+        return 1
+
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "mode": "self-test",
+                "qualified": True,
+                "selected_capability": "incremental_bitmap_rollup_topk",
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--self-test", action="store_true", help="Run positive and negative qualification self-tests")
+    parser.add_argument("--receipt", type=Path, help="Evaluate an explicit JSON receipt")
+    args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
+
+    if args.receipt is not None:
+        receipt = load_bounded_json(args.receipt)
+        ok, _, verdict = evaluate_receipt(receipt)
+        print(json.dumps(verdict, sort_keys=True))
+        return 0 if ok else 1
+
+    return run_self_test()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

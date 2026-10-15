@@ -315,14 +315,15 @@ def registered_receipt() -> dict[str, Any]:
             },
         },
         "incremental_structures": {
-            "adr_0162_accepted": False,
-            "activated": False,
-            "disposition": "deferred_pending_adr_0162_and_wp_714",
+            "adr_0162_accepted": True,
+            "activated": True,
+            "disposition": "qualified_via_wp_714_incremental_structures",
         },
         "claimed_activated_capabilities": [
             "v2_segment",
             "v2_vectorized_batch",
             "v2_parallel_scan",
+            "incremental_bitmap_rollup_topk",
         ],
     }
 
@@ -334,8 +335,13 @@ def run_self_test() -> int:
         not ok
         or reasons
         or verdict["activated_capabilities"]
-        != ["v2_segment", "v2_vectorized_batch", "v2_parallel_scan"]
-        or verdict["disabled_capabilities"] != ["incremental_bitmap_rollup_topk"]
+        != [
+            "v2_segment",
+            "v2_vectorized_batch",
+            "v2_parallel_scan",
+            "incremental_bitmap_rollup_topk",
+        ]
+        or verdict["disabled_capabilities"] != []
     ):
         print(f"self-test failed: expected baseline referee pass, got {verdict}", file=sys.stderr)
         return 1
@@ -382,6 +388,7 @@ def run_self_test() -> int:
 
     # 6. Overclaiming incremental structures while ADR-0162 is unaccepted fails closed.
     overclaim = copy.deepcopy(baseline)
+    overclaim["incremental_structures"]["adr_0162_accepted"] = False
     overclaim["incremental_structures"]["activated"] = True
     ok, reasons, _ = evaluate_receipt(overclaim)
     if ok or "unqualified-incremental-capability-overclaim" not in reasons:
@@ -391,15 +398,24 @@ def run_self_test() -> int:
         )
         return 1
 
-    # 7. Parallel gate miss disables only v2_parallel_scan while keeping v2_vectorized_batch.
+    # 7. Parallel gate miss disables only v2_parallel_scan while keeping v2_vectorized_batch and incremental.
     par_miss = copy.deepcopy(baseline)
     par_miss["mechanics_gates"]["parallel_scan"]["one_to_four_worker_throughput_ratio"] = 1.25
-    par_miss["claimed_activated_capabilities"] = ["v2_segment", "v2_vectorized_batch"]
+    par_miss["claimed_activated_capabilities"] = [
+        "v2_segment",
+        "v2_vectorized_batch",
+        "incremental_bitmap_rollup_topk",
+    ]
     ok, reasons, verdict = evaluate_receipt(par_miss)
     if (
         not ok
         or reasons
-        or verdict["activated_capabilities"] != ["v2_segment", "v2_vectorized_batch"]
+        or verdict["activated_capabilities"]
+        != [
+            "v2_segment",
+            "v2_vectorized_batch",
+            "incremental_bitmap_rollup_topk",
+        ]
         or "v2_parallel_scan" not in verdict["disabled_capabilities"]
     ):
         print(f"self-test failed: expected honest parallel disablement, got {verdict}", file=sys.stderr)
@@ -423,8 +439,9 @@ def run_self_test() -> int:
                     "v2_segment",
                     "v2_vectorized_batch",
                     "v2_parallel_scan",
+                    "incremental_bitmap_rollup_topk",
                 ],
-                "disabled_capabilities": ["incremental_bitmap_rollup_topk"],
+                "disabled_capabilities": [],
             },
             sort_keys=True,
         )
@@ -436,6 +453,7 @@ def run_full_qualification() -> int:
     for script in (
         ROOT / "scripts" / "columnar-vectorized-qualification",
         ROOT / "scripts" / "columnar-parallel-qualification",
+        ROOT / "scripts" / "columnar-incremental-qualification",
     ):
         proc = subprocess.run([sys.executable, str(script), "--self-test"], cwd=ROOT, check=False)
         if proc.returncode != 0:
