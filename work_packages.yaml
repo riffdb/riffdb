@@ -31325,3 +31325,107 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-859
+  name: CLI follower status and one-command audited failover orchestration
+  tier: surface
+  depends_on: [WP-854]
+  objective: Implement ADR-0310 Decision 1. Add riffdb follower status to
+    extract and render ReplicationStatistics from server health, and add riffdb
+    follower failover to orchestrate primary fencing followed by follower
+    promotion in a single audited command with deterministic operation IDs.
+  requirements: [REP-002, REP-004, REP-005, REP-006, DX-014]
+  required_adrs: [ADR-0310, ADR-0072, ADR-0093, ADR-0100, ADR-0178]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-cli/**, crates/riffdb-client-rust/**, fixtures/**, scripts/**, docs/**]
+  deliverables:
+  - riffdb follower status subcommand rendering replication role, frontiers, lag sequences, and registered followers
+  - riffdb follower failover subcommand orchestrating fence_replication_primary and promote_follower with auto-minted UUIDv7 operation IDs and uncertainty preservation
+  - Unit tests in crates/riffdb-cli proving follower status, failover receipt rendering, and uncertainty recovery IDs
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-859
+  exit_gate: riffdb follower status and riffdb follower failover compile, render
+    canonical JSON and human output, and preserve both fence and promotion
+    operation IDs on uncertain outcomes.
+  standing_design_tests:
+    interface_safety: Failover always fences the primary before promoting the follower and requires explicit lineage and registration generation parameters.
+    scale: Failover executes at most two bounded unary administrative RPCs.
+  human_review_triggers:
+  - Failover promotes a follower without first fencing the primary or weakens lineage/incarnation verification.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-860
+  name: Standby-aware client failover and follower read-replica routing
+  tier: surface
+  depends_on: [WP-859]
+  objective: Implement ADR-0310 Decision 2. Extend StableApplicationClient and
+    DriverPool / DriverRuntime in riffdb-driver-host with bounded
+    standby_endpoints and read_replica_endpoints, automatic standby promotion on
+    fenced-primary or transport refusal, and read-replica routing for queries.
+  requirements: [REP-004, REP-005, DRV-001, DRV-005]
+  required_adrs: [ADR-0310, ADR-0072, ADR-0093, ADR-0178]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-config/**, fixtures/**, tests/**, docs/**]
+  deliverables:
+  - Standby failover and read-replica routing in StableApplicationClient and DriverPool / DriverRuntime
+  - Bounded standby_endpoints and read_replica_endpoints configuration in riffdb-driver-host
+  - Unit and integration tests proving standby cutover on fenced primary and read-replica query routing with primary fallback
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-860
+  exit_gate: StableApplicationClient and DriverPool automatically fail over to a
+    verified standby on fenced-primary or transport refusal and route eligible
+    read queries to healthy follower replicas with primary fallback.
+  standing_design_tests:
+    interface_safety: Client failover verifies active contract identity before switching primary and preserves idempotency and monotonic incarnation fencing.
+    scale: Standby and read-replica endpoint lists are bounded to at most 4 endpoints each.
+  human_review_triggers:
+  - Client failover bypasses contract verification or silently drops idempotency or incarnation checks.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-861
+  name: Helm chart follower mode deployment and replication operations handbook updates
+  tier: surface
+  depends_on: [WP-859, WP-860]
+  objective: Implement ADR-0310 Decision 3. Add optional follower mode and
+    replication_source configuration to release/helm/riffdb, add helm render
+    verification, and update docs/operations/FOLLOWER-ADMINISTRATION.md,
+    docs/operations/HELM-OPERATIONS.md, and docs/reference/CLI.md.
+  requirements: [REP-002, REP-004, REP-005, DX-014]
+  required_adrs: [ADR-0310, ADR-0093, ADR-0178, ADR-0271]
+  allowed_paths: [work_packages.yaml, adr/**, release/helm/**, scripts/**, docs/**, crates/riffdb-cli/**, fixtures/**]
+  deliverables:
+  - server.mode and server.replicationSource values and ConfigMap/StatefulSet support in release/helm/riffdb
+  - Follower-mode Helm render verification in scripts/check-helm-render
+  - Updated replication and Helm handbook documentation in docs/operations/FOLLOWER-ADMINISTRATION.md, docs/operations/HELM-OPERATIONS.md, and docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-861
+  exit_gate: Helm chart renders valid primary and follower configurations with
+    Secrets-mounted replication credentials, scripts/check-helm-render passes,
+    and handbook documentation covers follower status, one-command failover,
+    standby client routing, and Helm follower deployment.
+  standing_design_tests:
+    interface_safety: Replication credentials remain in Kubernetes Secrets and never enter Helm ConfigMaps or values.yaml.
+    scale: Single-writer pod invariants remain enforced for both primary and follower releases.
+  human_review_triggers:
+  - Helm templates render secret tokens in ConfigMaps or permit multi-replica StatefulSets without fencing.
+  closure:
+    status: pending
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
