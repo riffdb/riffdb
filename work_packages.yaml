@@ -31531,3 +31531,81 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-865
+  name: Columnar transient activation retry and retention checkpoint documentation
+  tier: guarantee
+  depends_on: [WP-864]
+  objective: Implement ADR-0312 Decision 1. Keep columnar slots in Activating on
+    transient control read unavailability so the worker retries on the next pass
+    without wedging for the process generation, and reconcile docs/known-limitations.md
+    for columnar rebuild recovery, unqueried projection detach, and online
+    retention startup checkpoint refresh.
+  requirements: [PRJ-002, PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022, STO-010, STO-012]
+  required_adrs: [ADR-0312, ADR-0085, ADR-0086, ADR-0195]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-server/**, crates/riffdb-storage-redb/**, crates/riffdb-service/**, crates/riffdb-query-executor/**, benchmarks/**, docs/**]
+  deliverables:
+  - Transient ColumnarPortError::Unavailable handling in activate_requested_slot_controlled in crates/riffdb-server/src/columnar_worker.rs
+  - Unit test proving transient control unavailability during activation retries and recovers on the next worker pass
+  - Updated docs/known-limitations.md entries for columnar activation recovery and online retention startup checkpoint refresh
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-865
+  exit_gate: Columnar activation survives transient control-read unavailability
+    without wedging the slot, and docs/known-limitations.md accurately reflects
+    rebuild recovery and validated-prefix refresh.
+  standing_design_tests:
+    interface_safety: Integrity errors still transition the slot to Failed immediately and never serve unvalidated rows.
+    scale: Activation retry reuses the single server-owned columnar worker without per-request tasks or loops.
+  human_review_triggers:
+  - Startup opens or decodes columnar artifacts before first semantic demand.
+- id: WP-866
+  name: Ad-hoc projected query aggregate parity (mean, any, all, count variants, Decimal/Money sum)
+  tier: guarantee
+  depends_on: [WP-865]
+  objective: Implement ADR-0312 Decision 2. Extend ad-hoc projected queries
+    across proto, riffdb-columnar, riffdb-service, riffdb-api-grpc,
+    riffdb-client-rust, and riffdb-cli to support mean, any, all, count_present,
+    count_distinct, count_distinct_present, and uniform-scale Decimal/Money sum
+    and mean.
+  requirements: [PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014]
+  required_adrs: [ADR-0312, ADR-0086, ADR-0087, ADR-0152]
+  allowed_paths: [work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**, crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, crates/riffdb-storage-redb/**, crates/riffdb-query-executor/**, benchmarks/**, fixtures/**, release/**, docs/**]
+  deliverables:
+  - Additive ProjectedAggregateOp and ProjectedAggregateValue variants in proto/riffdb/app/v1/application.proto and regenerated riffdb-proto artifacts
+  - Uniform-scale Decimal and Money support in riffdb-columnar Accumulator for Sum and Mean
+  - Full ProjectedAggregateOp mapping in riffdb-service, riffdb-api-grpc, riffdb-client-rust, and riffdb-cli
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-866
+  exit_gate: riffdb query projected and the Rust client execute count,
+    count_present, count_distinct, count_distinct_present, sum, mean, min, max,
+    any, and all over projected columns with strict wire descriptor cross-checks.
+  standing_design_tests:
+    interface_safety: Wire conversion rejects any mismatch between requested aggregate descriptor op and returned value arm, and rejects mixed-scale or mixed-currency Decimal/Money folds.
+    scale: Distinct and arithmetic folds remain bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, and MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1.
+  human_review_triggers:
+  - Wire aggregate conversion accepts mismatched descriptor/value arms or unbounded distinct state.
+- id: WP-867
+  name: Locked idempotent Codex MCP registration and source convenience uninstall
+  tier: guarantee
+  depends_on: [WP-866]
+  objective: Implement ADR-0312 Decision 3. Add flock-serialized idempotent
+    Codex MCP registration to scripts/release-source-bootstrap and add
+    cargo riffdb uninstall (--user|--system) [--no-stop] to remove installed
+    binaries and units while preserving databases, backups, keys, and credentials.
+  requirements: [DX-002, DX-014]
+  required_adrs: [ADR-0312, ADR-0092]
+  allowed_paths: [work_packages.yaml, adr/**, xtask/**, scripts/**, crates/riffdb-storage-redb/**, crates/riffdb-service/**, crates/riffdb-query-executor/**, benchmarks/**, docs/**]
+  deliverables:
+  - Exclusive flock lockfile and idempotent same-target check in scripts/release-source-bootstrap --register-codex
+  - scripts/release-source-uninstall, xtask uninstall subcommand, and --uninstall flag in scripts/release-source-install
+  - Smoke test coverage in scripts/release-source-bootstrap-smoke and scripts/release-source-install-smoke plus handbook updates
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-867
+  exit_gate: Concurrent Codex MCP registration is serialized by flock and
+    idempotent for identical targets, cargo riffdb uninstall removes binaries
+    and units while preserving data and keys, and smoke tests and handbook
+    checks pass.
+  standing_design_tests:
+    interface_safety: Uninstall never deletes database files, backups, digest keys, configuration, or credentials, and Codex registration refuses conflicting existing server definitions.
+    scale: Lock acquisition and uninstall operate on fixed local paths with O(1) work.
+  human_review_triggers:
+  - Uninstall deletes database files, backups, digest keys, or credentials.

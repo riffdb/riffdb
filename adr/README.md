@@ -346,6 +346,7 @@ record with no front matter.
 | [0309](0309-saas-complete-riffql-aggregations.md) | SaaS-Complete RiffQL Aggregations Filtered Measures Group Ordering Temporal Buckets Quantiles And Nested Rollups | Accepted | surface |
 | [0310](0310-audited-failover-orchestration-standby-client-routing-and-helm-follower-deployment.md) | Audited failover orchestration, standby client routing, and Helm follower deployment | Accepted | surface |
 | [0311](0311-capability-inventory-decision-arm-workflows-and-offline-storage-compaction.md) | Capability Inventory, Decision-Arm Workflows, and Offline Storage Compaction | Accepted | guarantee |
+| [0312](0312-columnar-activation-recovery-projected-aggregate-parity-and-installer-lifecycle.md) | Columnar Activation Recovery, Projected Aggregate Parity, and Installer Lifecycle | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
