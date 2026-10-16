@@ -3478,7 +3478,9 @@ fn lower_commands(
                     }
                     if !matches!(
                         binding.mode,
-                        BindingMode::Mutate | BindingMode::InitOrMutate
+                        BindingMode::Mutate
+                            | BindingMode::InitOrMutate
+                            | BindingMode::ObserveOrInitialize
                     ) {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowTransition,
@@ -3507,7 +3509,19 @@ fn lower_commands(
                         ));
                         continue;
                     };
-                    if !transitioned_bindings.insert(binding.id) {
+                    let duplicate_transition = match decision_action {
+                        Some(_) => {
+                            transitioned_bindings.contains(&(None, binding.id))
+                                || !transitioned_bindings.insert((decision_action, binding.id))
+                        }
+                        None => {
+                            transitioned_bindings
+                                .iter()
+                                .any(|(_, existing)| *existing == binding.id)
+                                || !transitioned_bindings.insert((None, binding.id))
+                        }
+                    };
+                    if duplicate_transition {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowTransition,
                             effect.span,
@@ -3586,10 +3600,24 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    let duplicate_lease = match decision_action {
+                        Some(_) => {
+                            leased_bindings.contains(&(None, binding.id))
+                                || !leased_bindings.insert((decision_action, binding.id))
+                        }
+                        None => {
+                            leased_bindings
+                                .iter()
+                                .any(|(_, existing)| *existing == binding.id)
+                                || !leased_bindings.insert((None, binding.id))
+                        }
+                    };
                     if !matches!(
                         binding.mode,
-                        BindingMode::Mutate | BindingMode::InitOrMutate
-                    ) || !leased_bindings.insert(binding.id)
+                        BindingMode::Mutate
+                            | BindingMode::InitOrMutate
+                            | BindingMode::ObserveOrInitialize
+                    ) || duplicate_lease
                     {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowLease,
@@ -3877,7 +3905,18 @@ fn lower_commands(
                 continue;
             }
         };
-        for effect in &effects {
+        let decision_arm_effects = decisions.iter().flat_map(|decision| {
+            decision
+                .when_arms
+                .iter()
+                .map(|arm| &arm.action)
+                .chain(std::iter::once(&decision.else_action))
+                .flat_map(|action| match action {
+                    HirDecisionAction::Apply { effects, .. } => effects.iter().collect::<Vec<_>>(),
+                    HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => Vec::new(),
+                })
+        });
+        for effect in effects.iter().chain(decision_arm_effects) {
             let (code, span, roots): (CompilerDiagnosticCode, Span, Vec<&HirExpressionRoot>) =
                 match effect {
                     HirEffect::WorkflowTransition {

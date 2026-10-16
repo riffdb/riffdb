@@ -163,6 +163,12 @@ the normal lock-writing workflow. Existing deployed artifacts retain their
 behavior; explain labels their classification as legacy dependency evidence.
 They acquire the new checks only when their source is migrated and recompiled.
 
+Mutually exclusive `decide` arms (`when ... => { ... }` and `else => { ... }`)
+may also declare branch-local workflow `transition` and `lease` instructions on
+`mutate`, `init_or_mutate`, or `observe_or_initialize` bindings, using the same
+expected revision, allowed source state, lease holder/epoch fences, and
+zero-mutation declared rejection outcomes as top-level instructions.
+
 ## Unique values
 
 Declare uniqueness on the entity:

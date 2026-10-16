@@ -1949,6 +1949,340 @@ impl CapabilityInventoryReader for RedbOperationalPorts {
     }
 }
 
+fn read_bootstrap_marker_readonly(
+    transaction: &redb::ReadTransaction,
+) -> Result<Option<CapabilityBootstrapMarkerV1>, StorageError> {
+    let table = transaction.open_table(META).map_err(table_error)?;
+    table
+        .get(META_CAPABILITY_BOOTSTRAP)
+        .map_err(precommit_storage_error)?
+        .map(|value| decode_capability_bootstrap_marker_v1(value.value()).map(decoded_value))
+        .transpose()
+}
+
+/// Non-secret summary of a stored capability record for offline CLI inventory and inspection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineCapabilitySummaryV1 {
+    /// Stable capability UUIDv7.
+    pub capability_id: CapabilityId,
+    /// Nonzero lifecycle revision (`1` for active, `2` for revoked).
+    pub revision: u64,
+    /// Permanent database identity.
+    pub database_id: riffdb_types::DatabaseId,
+    /// Configured environment name.
+    pub environment: String,
+    /// Target principal ID.
+    pub principal_id: String,
+    /// Actor class (`"human"`, `"agent"`, or `"service"`).
+    pub actor_kind: &'static str,
+    /// Whether this capability is the database's one-time bootstrap capability.
+    pub is_bootstrap: bool,
+    /// Lifecycle status (`"active"` or `"revoked"`).
+    pub status: &'static str,
+    /// Issued timestamp in UTC seconds.
+    pub issued_at_unix_seconds: i64,
+    /// Not-before timestamp in UTC seconds.
+    pub not_before_unix_seconds: i64,
+    /// Exclusive expiry timestamp in UTC seconds.
+    pub expires_at_unix_seconds: i64,
+    /// Creating administration sequence.
+    pub created_administration_sequence: u64,
+    /// Latest updating administration sequence (creation or revocation).
+    pub updated_administration_sequence: u64,
+    /// Creating invocation request ID.
+    pub creation_request_id: RequestId,
+    /// Revoked timestamp in UTC seconds when revoked.
+    pub revoked_at_unix_seconds: Option<i64>,
+    /// Revoking administration sequence when revoked.
+    pub revocation_sequence: Option<u64>,
+    /// Closed revocation reason when revoked.
+    pub revocation_reason: Option<&'static str>,
+    /// Configured audiences in canonical order.
+    pub audiences: Vec<String>,
+    /// Tenant scope (`"global"` or `"tenant:<id>"`).
+    pub tenant_scope: String,
+    /// Maximum scan rows permitted by the grant.
+    pub max_scan_rows: u16,
+    /// Number of granted permissions.
+    pub permission_count: usize,
+    /// Canonical permission descriptions.
+    pub permissions: Vec<String>,
+    /// Number of field-visibility entries.
+    pub field_visibility_count: usize,
+    /// Number of approval-required permission kinds.
+    pub approval_required_count: usize,
+    /// Number of row-policy bindings.
+    pub row_policy_count: usize,
+    /// Number of export application grants.
+    pub export_application_count: usize,
+    /// Whether reimport is granted.
+    pub reimport_granted: bool,
+    /// Number of vector-inspection targets.
+    pub vector_inspection_target_count: usize,
+}
+
+impl OfflineCapabilitySummaryV1 {
+    /// Builds a non-secret summary from a durable capability record.
+    #[must_use]
+    pub fn from_record(record: &StoredCapabilityRecordV1, is_bootstrap: bool) -> Self {
+        let actor_kind = match record.actor_kind() {
+            riffdb_types::ActorKind::Human => "human",
+            riffdb_types::ActorKind::Agent => "agent",
+            riffdb_types::ActorKind::Service => "service",
+        };
+        let (status, revoked_at_unix_seconds, revocation_sequence, revocation_reason) =
+            match record.lifecycle() {
+                CapabilityLifecycleV1::Active => ("active", None, None, None),
+                CapabilityLifecycleV1::Revoked {
+                    revoked_at,
+                    administration_sequence,
+                    reason,
+                } => (
+                    "revoked",
+                    Some(revoked_at.seconds()),
+                    Some(administration_sequence.get()),
+                    Some(match reason {
+                        riffdb_types::RevocationReasonCodeV1::Requested => "requested",
+                        riffdb_types::RevocationReasonCodeV1::Replaced => "replaced",
+                        riffdb_types::RevocationReasonCodeV1::SuspectedCompromise => {
+                            "suspected_compromise"
+                        }
+                        riffdb_types::RevocationReasonCodeV1::PolicyChange => "policy_change",
+                    }),
+                ),
+            };
+        let tenant_scope = match record.grant().tenant_scope() {
+            riffdb_types::TenantScope::Global => "global".to_owned(),
+            riffdb_types::TenantScope::Tenant(tenant_id) => {
+                format!("tenant:{}", tenant_id.as_str())
+            }
+        };
+        let permissions = record
+            .grant()
+            .permissions()
+            .as_slice()
+            .iter()
+            .map(|permission| format!("{permission:?}"))
+            .collect::<Vec<_>>();
+        let created_sequence = record.creation_sequence().get();
+        let updated_sequence = revocation_sequence.unwrap_or(created_sequence);
+        let grant = record.grant();
+        Self {
+            capability_id: record.capability_id(),
+            revision: record.revision().get(),
+            database_id: record.database_id(),
+            environment: record.environment().as_str().to_owned(),
+            principal_id: record.principal_id().as_str().to_owned(),
+            actor_kind,
+            is_bootstrap,
+            status,
+            issued_at_unix_seconds: record.issued_at().seconds(),
+            not_before_unix_seconds: record.issued_at().seconds(),
+            expires_at_unix_seconds: record.expires_at().seconds(),
+            created_administration_sequence: created_sequence,
+            updated_administration_sequence: updated_sequence,
+            creation_request_id: record.creation_request_id(),
+            revoked_at_unix_seconds,
+            revocation_sequence,
+            revocation_reason,
+            audiences: record
+                .audiences()
+                .iter()
+                .map(|audience| audience.as_str().to_owned())
+                .collect(),
+            tenant_scope,
+            max_scan_rows: grant.max_scan_rows().get(),
+            permission_count: permissions.len(),
+            permissions,
+            field_visibility_count: grant.field_visibility().len(),
+            approval_required_count: grant.approval_required().len(),
+            row_policy_count: grant
+                .internal_row_policy()
+                .map_or(0, |row_policy| row_policy.bindings().len()),
+            export_application_count: grant
+                .internal_export()
+                .map_or(0, |export| export.applications().len()),
+            reimport_granted: grant.internal_reimport().is_some(),
+            vector_inspection_target_count: grant
+                .internal_vector_inspection()
+                .map_or(0, |inspection| inspection.targets().len()),
+        }
+    }
+}
+
+/// Offline capability inventory page returned by [`RedbOfflineCapabilityInventory::list`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineCapabilityListPageV1 {
+    /// Permanent database identity.
+    pub database_id: riffdb_types::DatabaseId,
+    /// Bootstrap capability ID when capability bootstrap has occurred.
+    pub bootstrap_capability_id: Option<CapabilityId>,
+    /// Bounded page of non-secret capability summaries in ascending capability ID order.
+    pub capabilities: Vec<OfflineCapabilitySummaryV1>,
+    /// Whether additional capabilities remain after this page.
+    pub has_more: bool,
+    /// Exclusive lower bound for the next page when `has_more` is true.
+    pub next_after: Option<CapabilityId>,
+}
+
+/// Offline capability inspection record returned by [`RedbOfflineCapabilityInventory::show`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineCapabilityInspectionV1 {
+    /// Permanent database identity.
+    pub database_id: riffdb_types::DatabaseId,
+    /// Whether this capability was issued by one-time capability bootstrap.
+    pub is_bootstrap: bool,
+    /// Non-secret summary view.
+    pub summary: OfflineCapabilitySummaryV1,
+    /// Canonical permission descriptions.
+    pub permissions: Vec<String>,
+    /// Complete non-secret durable capability record.
+    pub record: StoredCapabilityRecordV1,
+}
+
+/// Read-only offline capability inventory over a closed redb database file.
+pub struct RedbOfflineCapabilityInventory {
+    database_path: std::path::PathBuf,
+}
+
+impl RedbOfflineCapabilityInventory {
+    /// Binds an offline database file for capability inventory and inspection.
+    #[must_use]
+    pub fn bind(database_path: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            database_path: database_path.as_ref().to_path_buf(),
+        }
+    }
+
+    /// Scans a bounded page of capability records in ascending capability ID order.
+    pub fn list(
+        database_path: impl AsRef<std::path::Path>,
+        after: Option<CapabilityId>,
+        limit: u16,
+        status_filter: Option<&str>,
+        principal_filter: Option<&str>,
+    ) -> Result<OfflineCapabilityListPageV1, StorageError> {
+        Self::bind(database_path).list_page(after, limit, status_filter, principal_filter)
+    }
+
+    /// Reads one capability record by capability ID from a quiescent database path.
+    pub fn show(
+        database_path: impl AsRef<std::path::Path>,
+        capability_id: CapabilityId,
+    ) -> Result<Option<OfflineCapabilityInspectionV1>, StorageError> {
+        Self::bind(database_path).get(capability_id)
+    }
+
+    /// Scans a bounded page of capability records in ascending capability ID order.
+    pub fn list_page(
+        &self,
+        after: Option<CapabilityId>,
+        limit: u16,
+        status_filter: Option<&str>,
+        principal_filter: Option<&str>,
+    ) -> Result<OfflineCapabilityListPageV1, StorageError> {
+        let scan_limit = StorageScanLimit::new(limit)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let store = crate::store::RedbStore::open(&self.database_path)?;
+        let ports = RedbOperationalPorts {
+            shared: std::sync::Arc::clone(&store.shared),
+        };
+        let transaction = ports.begin_read()?;
+        let database_id = read_database_id_readonly(&transaction)?;
+        let bootstrap_capability_id =
+            read_bootstrap_marker_readonly(&transaction)?.map(|marker| marker.capability_id());
+        let table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+        let lookups = transaction
+            .open_table(CAPABILITY_TOKENS)
+            .map_err(table_error)?;
+        let mut capabilities = Vec::new();
+        let mut bytes = 0usize;
+        let mut has_more = false;
+        for entry in table.iter().map_err(precommit_storage_error)? {
+            let (key, value) = entry.map_err(precommit_storage_error)?;
+            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
+            if after.is_some_and(|after| capability_id <= after) {
+                continue;
+            }
+            let record = decoded_value(decode_capability_record_v1(value.value())?);
+            if record.capability_id() != capability_id || record.database_id() != database_id {
+                return Err(corrupt());
+            }
+            let lookup_key = encode_capability_token_key(record.token_digest());
+            let Some(lookup) = lookups
+                .get(lookup_key.as_slice())
+                .map_err(precommit_storage_error)?
+            else {
+                return Err(corrupt());
+            };
+            let lookup = decoded_value(decode_capability_token_lookup_v1(lookup.value())?);
+            if lookup != CapabilityTokenLookupV1::new(capability_id) {
+                return Err(corrupt());
+            }
+            let summary = OfflineCapabilitySummaryV1::from_record(
+                &record,
+                bootstrap_capability_id == Some(capability_id),
+            );
+            if status_filter.is_some_and(|expected| summary.status != expected) {
+                continue;
+            }
+            if principal_filter.is_some_and(|expected| summary.principal_id != expected) {
+                continue;
+            }
+            let next_bytes = bytes
+                .checked_add(record.semantic_bytes().map_err(|_| corrupt())?)
+                .ok_or_else(corrupt)?;
+            if capabilities.len() == usize::from(scan_limit.get())
+                || next_bytes > MAX_SCAN_PAGE_BYTES
+            {
+                has_more = true;
+                break;
+            }
+            bytes = next_bytes;
+            capabilities.push(summary);
+        }
+        let next_after = has_more
+            .then(|| capabilities.last().map(|item| item.capability_id))
+            .flatten();
+        Ok(OfflineCapabilityListPageV1 {
+            database_id,
+            bootstrap_capability_id,
+            capabilities,
+            has_more,
+            next_after,
+        })
+    }
+
+    /// Reads one capability record by capability ID.
+    pub fn get(
+        &self,
+        capability_id: CapabilityId,
+    ) -> Result<Option<OfflineCapabilityInspectionV1>, StorageError> {
+        let store = crate::store::RedbStore::open(&self.database_path)?;
+        let ports = RedbOperationalPorts {
+            shared: std::sync::Arc::clone(&store.shared),
+        };
+        let transaction = ports.begin_read()?;
+        let database_id = read_database_id_readonly(&transaction)?;
+        let bootstrap_capability_id =
+            read_bootstrap_marker_readonly(&transaction)?.map(|marker| marker.capability_id());
+        drop(transaction);
+        let record = ports.read_capability(capability_id)?;
+        Ok(record.map(|record| {
+            let is_bootstrap = bootstrap_capability_id == Some(capability_id);
+            let summary = OfflineCapabilitySummaryV1::from_record(&record, is_bootstrap);
+            let permissions = summary.permissions.clone();
+            OfflineCapabilityInspectionV1 {
+                database_id,
+                is_bootstrap,
+                summary,
+                permissions,
+                record,
+            }
+        }))
+    }
+}
+
 #[derive(Clone)]
 enum ServiceLifecycle {
     Standalone,

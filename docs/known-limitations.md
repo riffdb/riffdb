@@ -18,7 +18,6 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Ordinary redb reads validate RiffDB envelopes, CRCs, schemas, and keys without verifying every engine page checksum, whereas offline physical verification requires extra disk space for a private copy and refuses repair or unrecovered journal suffixes; see [startup integrity](operations/STARTUP-INTEGRITY.md).
 - The shared crash-recovery matrix covers the enumerated POC recovery boundaries rather than providing a general disaster-recovery guarantee.
 - The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.
-- Capability administration provides create and revoke operations without an operator-facing inventory command, so operators must retain issued capability IDs in a private inventory and never treat file deletion as revocation.
 - Generic bootstrap deploys no application and grants its MCP developer no wildcard application-data authority until an administrator binds a compiled role or lineage-scoped capability.
 - Convenience bootstrap capabilities expire after at most 30 days with no automatic renewal.
 - Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and does not perform configuration migration, key rotation, uninstall, or format upgrades.
@@ -35,7 +34,6 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 ## Contracts and Writes
 
 - There is no general SQL surface, arbitrary transaction callback, analytical join engine, distributed transaction, automatic failover, or consensus protocol.
-- Compiler-sealed command decisions support bounded branch-local entity field assignments, embeddings, creates, and durable events, while workflow transition and lease instructions remain dedicated command forms outside decision arms.
 - An ordinary command may atomically delete and return the transaction-current preimage of at most one complete-key, partition-local `no_inbound` entity, whereas multi-row deletes must use the separately compiler-bounded collection deletion forms.
 - Reactive applications are partition-local and bounded, with no raw CDC, cross-partition ordering, wall-clock event retention, exactly-once external effects, event-sourced reconstruction, webhooks, or in-process agent inference.
 - Protected event replay and reaction validation acquire the storage mutation fence to obtain a transaction-current capability, row, and relationship view, and protected workers use bounded consumer long-poll rather than the global reactive wakeup.
@@ -79,7 +77,6 @@ expect:
 
 ## Storage reclamation
 
-- Retention pruning frees pages for internal reuse inside the redb file without calling compaction or lowering the file's high-water mark, so capacity planning must size for the historical peak rather than the retained working set.
 - Sealed journal extents (`<database>.riffjournal.sealed.<generation>`) retain command and receipt history referenced by compact stubs in the database file and must never be deleted by hand.
 - A sealed journal extent is retired only after logical pruning and source-history reclamation release every command and receipt reference with no active reader or scrub holding it.
 

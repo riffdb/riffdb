@@ -105,7 +105,11 @@ loopback and authorization rules remain authoritative.
 
 For suspected bearer compromise, revoke the capability through the public
 service and replace the credential file. Replacing a file alone does not revoke
-the durable capability.
+the durable capability. Operators can list and inspect issued or revoked
+capabilities without exposing bearer tokens or secret verifiers using
+`riffdb capability list` and `riffdb capability show`, either against a closed
+database file (`--database-path <PATH>`) or against the local non-secret
+operator inventory ledger (`--inventory-file <PATH>`).
 
 For digest-key compromise, stop admission and obtain architecture review before
 rotation. Capability and idempotency keys are distinct typed namespaces and

@@ -1557,6 +1557,14 @@ fn validate_evaluated_output(
             }) || plan
                 .instructions()
                 .iter()
+                .chain(plan.decisions().iter().flat_map(|decision| {
+                    decision
+                        .when_arms()
+                        .iter()
+                        .map(riffdb_contract_ir::CommandDecisionArmV1::action)
+                        .chain(std::iter::once(decision.else_action()))
+                        .flat_map(riffdb_contract_ir::CommandDecisionActionV1::instructions)
+                }))
                 .any(|instruction| match instruction {
                     Instruction::Require { reject, .. } => {
                         reject.outcome_id() == outcome.outcome_id()
@@ -4578,5 +4586,216 @@ contract ReadOnlyValidation version 1 {
                 dependencies != *fixture.evaluated.read_dependencies()
             })
         );
+    }
+
+    const DECISION_WORKFLOW_LEASE_SOURCE: &str = r#"
+contract DecisionWorkflowLeases version 1 {
+  enum WorkState { Queued, Running, Complete }
+  entity WorkItem {
+    key (organization_id: uuid, work_id: uuid)
+    field state: WorkState
+    field lease_owner: optional<uuid>
+    field lease_expires_at: optional<timestamp>
+    field lease_fence: u64
+    field lease_attempts: u64
+  }
+  aggregate WorkItems {
+    root WorkItem
+    partition_by organization_id
+    conflict_key (organization_id, work_id)
+  }
+  workflow WorkLifecycle {
+    entity WorkItem
+    state state
+    transition Start from (Queued) to Running
+    transition Finish from (Running) to Complete
+    lease execution {
+      owner lease_owner
+      expires_at lease_expires_at
+      fencing_token lease_fence
+      attempts lease_attempts
+      duration_seconds (5, 900)
+    }
+  }
+  command AdvanceWork {
+    input request_key: string<128>
+    input organization_id: uuid
+    input work_id: uuid
+    input owner_id: uuid
+    input token: u64
+    input duration: u64
+    input expected_revision: u64
+    idempotency_key request_key
+    observe_or_initialize WorkItem(organization_id, work_id) as work initialize {
+      state: WorkState.Queued,
+      lease_fence: 0,
+      lease_attempts: 0,
+    }
+    decide work {
+      when work.state == WorkState.Queued => apply {
+        lease claim execution on work owner owner_id duration_seconds duration revision expected_revision
+          stale ClaimStale {} unavailable ClaimUnavailable {} invalid ClaimInvalid {} exhausted ClaimExhausted {}
+        transition Start on work revision expected_revision
+          stale StartStale {} illegal StartIllegal {}
+      }
+      when work.state == WorkState.Running => apply {
+        lease release execution on work owner owner_id fencing_token token revision expected_revision
+          stale ReleaseStale {} invalid ReleaseInvalid {}
+        transition Finish on work revision expected_revision
+          stale FinishStale {} illegal FinishIllegal {}
+      }
+      else => no_effect
+    }
+    return Advanced { state: work.state, fence: work.lease_fence }
+  }
+}
+"#;
+
+    // req: CMP-001, CMP-013, WF-001, WF-002, WF-007, TXN-001
+    #[test]
+    fn decision_arm_workflow_transition_and_lease_instructions_compile_execute_and_commit() {
+        let claim_prepared = prepare(
+            DECISION_WORKFLOW_LEASE_SOURCE,
+            "AdvanceWork",
+            &[
+                ("request_key", string("advance-claim-1")),
+                ("organization_id", CanonicalValue::Uuid([0x71; 16])),
+                ("work_id", CanonicalValue::Uuid([0x72; 16])),
+                ("owner_id", CanonicalValue::Uuid([0x73; 16])),
+                ("token", CanonicalValue::U64(0)),
+                ("duration", CanonicalValue::U64(30)),
+                ("expected_revision", CanonicalValue::U64(0)),
+            ],
+        );
+        let absent_target = claim_prepared.binding_targets[0].clone();
+        let claim_fixture = evaluate(
+            claim_prepared,
+            vec![EntityObservation::Absent(absent_target)],
+            Vec::new(),
+        );
+        assert_eq!(claim_fixture.evaluated.mutations().len(), 1);
+        assert!(matches!(
+            validation(&claim_fixture),
+            Ok(CheckedCommandDecision::NonZero(_))
+        ));
+
+        let schema = claim_fixture.prepared.resolved.bundle().bundle().schema();
+        let work_state_enum = schema
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "WorkState")
+            .expect("WorkState enum");
+        let variant_value = |name: &str| CanonicalValue::Enum {
+            type_id: work_state_enum.id(),
+            variant_id: work_state_enum
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == name)
+                .expect("WorkState variant")
+                .id(),
+        };
+        let state_field = entity_field(&claim_fixture, "WorkItem", "state");
+        let fence_field = entity_field(&claim_fixture, "WorkItem", "lease_fence");
+        let owner_field = entity_field(&claim_fixture, "WorkItem", "lease_owner");
+        assert_eq!(
+            record_field(
+                claim_fixture.evaluated.mutations()[0].post_image().fields(),
+                state_field
+            ),
+            Some(&variant_value("Running"))
+        );
+        assert_eq!(
+            record_field(
+                claim_fixture.evaluated.mutations()[0].post_image().fields(),
+                fence_field
+            ),
+            Some(&CanonicalValue::U64(1))
+        );
+        assert_eq!(
+            record_field(
+                claim_fixture.evaluated.mutations()[0].post_image().fields(),
+                owner_field
+            ),
+            Some(&CanonicalValue::Uuid([0x73; 16]))
+        );
+
+        let release_prepared = prepare(
+            DECISION_WORKFLOW_LEASE_SOURCE,
+            "AdvanceWork",
+            &[
+                ("request_key", string("advance-release-1")),
+                ("organization_id", CanonicalValue::Uuid([0x71; 16])),
+                ("work_id", CanonicalValue::Uuid([0x72; 16])),
+                ("owner_id", CanonicalValue::Uuid([0x73; 16])),
+                ("token", CanonicalValue::U64(1)),
+                ("duration", CanonicalValue::U64(30)),
+                ("expected_revision", CanonicalValue::U64(1)),
+            ],
+        );
+        let running_observation = release_prepared.present_binding(
+            0,
+            first_version(),
+            &[
+                ("state", variant_value("Running")),
+                ("lease_owner", CanonicalValue::Uuid([0x73; 16])),
+                (
+                    "lease_expires_at",
+                    CanonicalValue::Timestamp(Timestamp::new(130, 0).expect("lease expiry")),
+                ),
+                ("lease_fence", CanonicalValue::U64(1)),
+                ("lease_attempts", CanonicalValue::U64(1)),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let release_fixture = evaluate(release_prepared, vec![running_observation], Vec::new());
+        assert_eq!(release_fixture.evaluated.mutations().len(), 1);
+        assert!(matches!(
+            validation(&release_fixture),
+            Ok(CheckedCommandDecision::NonZero(_))
+        ));
+        assert_eq!(
+            record_field(
+                release_fixture.evaluated.mutations()[0]
+                    .post_image()
+                    .fields(),
+                state_field
+            ),
+            Some(&variant_value("Complete"))
+        );
+        assert_eq!(
+            record_field(
+                release_fixture.evaluated.mutations()[0]
+                    .post_image()
+                    .fields(),
+                owner_field
+            ),
+            Some(&CanonicalValue::Null)
+        );
+
+        let stale_prepared = prepare(
+            DECISION_WORKFLOW_LEASE_SOURCE,
+            "AdvanceWork",
+            &[
+                ("request_key", string("advance-stale-1")),
+                ("organization_id", CanonicalValue::Uuid([0x71; 16])),
+                ("work_id", CanonicalValue::Uuid([0x72; 16])),
+                ("owner_id", CanonicalValue::Uuid([0x73; 16])),
+                ("token", CanonicalValue::U64(1)),
+                ("duration", CanonicalValue::U64(30)),
+                ("expected_revision", CanonicalValue::U64(99)),
+            ],
+        );
+        let stale_target = stale_prepared.binding_targets[0].clone();
+        let stale_fixture = evaluate(
+            stale_prepared,
+            vec![EntityObservation::Absent(stale_target)],
+            Vec::new(),
+        );
+        assert!(stale_fixture.evaluated.mutations().is_empty());
+        assert!(matches!(
+            validation(&stale_fixture),
+            Ok(CheckedCommandDecision::ZeroMutation)
+        ));
     }
 }
