@@ -82,4 +82,5 @@ class CampaignMaintenanceScheduleTests(unittest.TestCase):
                              for command, *_ in runtime.calls), 1)
         self.assertGreater(runtime.now_ns, 53 * SECOND)
         self.assertLess(runtime.now_ns, 60 * SECOND)
-        self.assertTrue(all(0 < timeout <= 5 for *_rest, timeout in runtime.calls))
+        self.assertTrue(all(0 < timeout <= min(30, (60 * SECOND - now) / SECOND)
+                            for _command, _arguments, now, timeout in runtime.calls))

@@ -13,6 +13,7 @@ import threading
 import time
 
 from .ticketdesk_lifecycle_campaign_maintenance import CampaignMaintenance, MAX_POLLS
+from .ticketdesk_lifecycle_campaign_operator import CLI_REQUEST_TIMEOUT_SECONDS
 from .ticketdesk_lifecycle_campaign_quiescence import QuiescentRelease
 from .ticketdesk_lifecycle_campaign_restore_clock import RestoreRecoveryClock
 from .ticketdesk_lifecycle_campaign_restore_inputs import AcknowledgedPrefix, SelectedBackup
@@ -113,7 +114,7 @@ class CampaignActions:
     def call(self, command, arguments, deadline, *, credential=None):
         runtime = self.runtime
         value = runtime.operator.run_as(str(runtime.root / (credential or "operator.credential")),
-            command, arguments, elapsed_ns=runtime.elapsed(), timeout_s=min(5, runtime.remaining(deadline)))
+            command, arguments, elapsed_ns=runtime.elapsed(), timeout_s=min(CLI_REQUEST_TIMEOUT_SECONDS, runtime.remaining(deadline)))
         runtime.remaining(deadline)
         return value
 

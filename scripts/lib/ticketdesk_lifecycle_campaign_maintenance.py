@@ -6,6 +6,8 @@ component owns no server process and grants no extension to the whole fault.
 """
 import re
 
+from .ticketdesk_lifecycle_campaign_operator import CLI_REQUEST_TIMEOUT_SECONDS
+
 SECOND = 10**9
 MAX_POLLS = 16
 UUID7 = r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -41,7 +43,7 @@ class CampaignMaintenance:
         require(type(now_ns) is int and self.last_ns <= now_ns < self.deadline_ns,
                 "campaign_maintenance_deadline")
         self.last_ns = now_ns
-        return min(5, (self.deadline_ns - now_ns) / SECOND)
+        return min(CLI_REQUEST_TIMEOUT_SECONDS, (self.deadline_ns - now_ns) / SECOND)
 
     def _observe(self, value, *, polling):
         require(type(value) is dict and value.get("schema") == "riffdb.cli.output/v1"
