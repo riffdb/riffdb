@@ -290,8 +290,9 @@ events or commit, and commit scans that start at or below the watermark,
 return the typed `HistoryPruned` error.
 
 Read the retention limits in [Known limitations](known-limitations.md#retention)
-before enabling it. In particular, this POC delivers no outbox events, so a
-contract that emits events compacts only the history before its first event.
+before enabling it. In particular, unless `outbox_archive_root` is configured so
+the local outbox worker archives and acknowledges emitted events, a contract
+that emits events compacts only the history before its first undelivered event.
 The offline `riffdb retention` operations remain available on a stopped
 database; see [Backup and Restore](backup-restore.md).
 

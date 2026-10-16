@@ -366,12 +366,23 @@ fn aggregate_value_to_proto(
     let op =
         app_v1::ProjectedAggregateOp::try_from(descriptor.op).map_err(|_| internal_defect())?;
     let wire = match (value, op) {
-        (ProjectedAggregateValue::Count(count), app_v1::ProjectedAggregateOp::Count) => {
-            WireValue::Count(*count)
-        }
+        (
+            ProjectedAggregateValue::Count(count),
+            app_v1::ProjectedAggregateOp::Count
+            | app_v1::ProjectedAggregateOp::CountPresent
+            | app_v1::ProjectedAggregateOp::CountDistinct
+            | app_v1::ProjectedAggregateOp::CountDistinctPresent,
+        ) => WireValue::Count(*count),
         (ProjectedAggregateValue::Sum(sum), app_v1::ProjectedAggregateOp::Sum) => {
             WireValue::Sum(aggregate_sum_to_proto(*sum))
         }
+        (
+            ProjectedAggregateValue::ExactMean { total, count },
+            app_v1::ProjectedAggregateOp::Mean,
+        ) => WireValue::ExactMean(app_v1::ProjectedAggregateExactMean {
+            total: Some(aggregate_sum_to_proto(*total)),
+            count: *count,
+        }),
         (
             ProjectedAggregateValue::Scalar(scalar),
             app_v1::ProjectedAggregateOp::Min | app_v1::ProjectedAggregateOp::Max,
@@ -384,6 +395,10 @@ fn aggregate_value_to_proto(
                 .transpose()
                 .map_err(|_| internal_defect())?,
         }),
+        (
+            ProjectedAggregateValue::Bool(boolean),
+            app_v1::ProjectedAggregateOp::Any | app_v1::ProjectedAggregateOp::All,
+        ) => WireValue::Boolean(*boolean),
         _ => return Err(internal_defect()),
     };
     Ok(app_v1::ProjectedAggregateValue { value: Some(wire) })
@@ -402,13 +417,33 @@ fn projected_aggregate_from_proto(
             }
             Ok(ProjectedAggregateOp::Count)
         }
+        app_v1::ProjectedAggregateOp::CountPresent => Ok(ProjectedAggregateOp::CountPresent {
+            field: aggregate_field(aggregate.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::CountDistinct => Ok(ProjectedAggregateOp::CountDistinct {
+            field: aggregate_field(aggregate.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::CountDistinctPresent => {
+            Ok(ProjectedAggregateOp::CountDistinctPresent {
+                field: aggregate_field(aggregate.field)?,
+            })
+        }
         app_v1::ProjectedAggregateOp::Sum => Ok(ProjectedAggregateOp::Sum {
+            field: aggregate_field(aggregate.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::Mean => Ok(ProjectedAggregateOp::Mean {
             field: aggregate_field(aggregate.field)?,
         }),
         app_v1::ProjectedAggregateOp::Min => Ok(ProjectedAggregateOp::Min {
             field: aggregate_field(aggregate.field)?,
         }),
         app_v1::ProjectedAggregateOp::Max => Ok(ProjectedAggregateOp::Max {
+            field: aggregate_field(aggregate.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::Any => Ok(ProjectedAggregateOp::Any {
+            field: aggregate_field(aggregate.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::All => Ok(ProjectedAggregateOp::All {
             field: aggregate_field(aggregate.field)?,
         }),
         app_v1::ProjectedAggregateOp::Unspecified => Err(invalid_request()),
@@ -673,6 +708,7 @@ mod aggregate_carriage_tests {
     /// Every op lowers to its name-addressed domain form, and the field it
     /// names survives lowering (an aggregate whose column were dropped would
     /// authorize against nothing).
+    // req: PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014
     #[test]
     fn every_aggregate_op_lowers_with_its_column() {
         let cases: Vec<(app_v1::ProjectedAggregateOp, &str, ProjectedAggregateOp)> = vec![
@@ -682,9 +718,37 @@ mod aggregate_carriage_tests {
                 ProjectedAggregateOp::Count,
             ),
             (
+                app_v1::ProjectedAggregateOp::CountPresent,
+                "assignee",
+                ProjectedAggregateOp::CountPresent {
+                    field: "assignee".to_owned(),
+                },
+            ),
+            (
+                app_v1::ProjectedAggregateOp::CountDistinct,
+                "status",
+                ProjectedAggregateOp::CountDistinct {
+                    field: "status".to_owned(),
+                },
+            ),
+            (
+                app_v1::ProjectedAggregateOp::CountDistinctPresent,
+                "assignee",
+                ProjectedAggregateOp::CountDistinctPresent {
+                    field: "assignee".to_owned(),
+                },
+            ),
+            (
                 app_v1::ProjectedAggregateOp::Sum,
                 "story_points",
                 ProjectedAggregateOp::Sum {
+                    field: "story_points".to_owned(),
+                },
+            ),
+            (
+                app_v1::ProjectedAggregateOp::Mean,
+                "story_points",
+                ProjectedAggregateOp::Mean {
                     field: "story_points".to_owned(),
                 },
             ),
@@ -700,6 +764,20 @@ mod aggregate_carriage_tests {
                 "title",
                 ProjectedAggregateOp::Max {
                     field: "title".to_owned(),
+                },
+            ),
+            (
+                app_v1::ProjectedAggregateOp::Any,
+                "is_open",
+                ProjectedAggregateOp::Any {
+                    field: "is_open".to_owned(),
+                },
+            ),
+            (
+                app_v1::ProjectedAggregateOp::All,
+                "is_open",
+                ProjectedAggregateOp::All {
+                    field: "is_open".to_owned(),
                 },
             ),
         ];
@@ -1169,6 +1247,7 @@ mod aggregate_carriage_tests {
     /// daemon, and every request-anchored decode invariant — echoed key names,
     /// echoed descriptors, whole-set cardinality, group order — is checked
     /// against the request this loop actually sent.
+    // req: PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014
     #[test]
     fn sdk_request_round_trips_through_the_adapter_into_the_sdk_decoder() {
         use riffdb_client_rust::{
@@ -1190,8 +1269,26 @@ mod aggregate_carriage_tests {
         let grouped = base()
             .group_by(vec!["status".to_owned()])
             .aggregate(ProjectedAggregate::Count)
+            .aggregate(ProjectedAggregate::CountPresent {
+                field: "assignee".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::CountDistinct {
+                field: "status".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::CountDistinctPresent {
+                field: "assignee".to_owned(),
+            })
             .aggregate(ProjectedAggregate::Sum {
                 field: "story_points".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::Mean {
+                field: "story_points".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::Any {
+                field: "is_open".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::All {
+                field: "is_open".to_owned(),
             });
         let wire = grouped.clone().into_wire_request().expect("wire");
         // The adapter accepts what the SDK built.
@@ -1199,7 +1296,7 @@ mod aggregate_carriage_tests {
             .expect("the adapter must accept the SDK's grouped request");
         let spec = lowered.group_by().expect("grouped");
         assert_eq!(spec.keys, vec!["status".to_owned()]);
-        assert_eq!(spec.aggregates.len(), 2);
+        assert_eq!(spec.aggregates.len(), 8);
 
         let response = execute_projected_query_result_to_proto_for_request(
             aggregate_ready(
@@ -1211,14 +1308,29 @@ mod aggregate_carriage_tests {
                             vec![CanonicalValue::string("open").expect("bounded")],
                             vec![
                                 ProjectedAggregateValue::Count(4),
+                                ProjectedAggregateValue::Count(3),
+                                ProjectedAggregateValue::Count(1),
+                                ProjectedAggregateValue::Count(2),
                                 ProjectedAggregateValue::Sum(i128::MAX),
+                                ProjectedAggregateValue::ExactMean {
+                                    total: 35,
+                                    count: 4,
+                                },
+                                ProjectedAggregateValue::Bool(true),
+                                ProjectedAggregateValue::Bool(false),
                             ],
                         ),
                         (
                             vec![CanonicalValue::string("closed").expect("bounded")],
                             vec![
                                 ProjectedAggregateValue::Count(2),
+                                ProjectedAggregateValue::Count(0),
+                                ProjectedAggregateValue::Count(1),
+                                ProjectedAggregateValue::Count(0),
                                 ProjectedAggregateValue::Sum(-7),
+                                ProjectedAggregateValue::ExactMean { total: 0, count: 0 },
+                                ProjectedAggregateValue::Bool(false),
+                                ProjectedAggregateValue::Bool(true),
                             ],
                         ),
                     ],
@@ -1243,9 +1355,27 @@ mod aggregate_carriage_tests {
             aggregates,
             vec![
                 ProjectedAggregate::Count,
+                ProjectedAggregate::CountPresent {
+                    field: "assignee".to_owned()
+                },
+                ProjectedAggregate::CountDistinct {
+                    field: "status".to_owned()
+                },
+                ProjectedAggregate::CountDistinctPresent {
+                    field: "assignee".to_owned()
+                },
                 ProjectedAggregate::Sum {
                     field: "story_points".to_owned()
-                }
+                },
+                ProjectedAggregate::Mean {
+                    field: "story_points".to_owned()
+                },
+                ProjectedAggregate::Any {
+                    field: "is_open".to_owned()
+                },
+                ProjectedAggregate::All {
+                    field: "is_open".to_owned()
+                },
             ]
         );
         assert_eq!(
@@ -1255,12 +1385,30 @@ mod aggregate_carriage_tests {
                     keys: vec![CanonicalValue::string("open").expect("bounded")],
                     values: vec![
                         SdkAggregateValue::Count(4),
-                        SdkAggregateValue::Sum(i128::MAX)
+                        SdkAggregateValue::Count(3),
+                        SdkAggregateValue::Count(1),
+                        SdkAggregateValue::Count(2),
+                        SdkAggregateValue::Sum(i128::MAX),
+                        SdkAggregateValue::ExactMean {
+                            total: 35,
+                            count: 4,
+                        },
+                        SdkAggregateValue::Bool(true),
+                        SdkAggregateValue::Bool(false),
                     ],
                 },
                 ProjectedAggregateGroup {
                     keys: vec![CanonicalValue::string("closed").expect("bounded")],
-                    values: vec![SdkAggregateValue::Count(2), SdkAggregateValue::Sum(-7)],
+                    values: vec![
+                        SdkAggregateValue::Count(2),
+                        SdkAggregateValue::Count(0),
+                        SdkAggregateValue::Count(1),
+                        SdkAggregateValue::Count(0),
+                        SdkAggregateValue::Sum(-7),
+                        SdkAggregateValue::ExactMean { total: 0, count: 0 },
+                        SdkAggregateValue::Bool(false),
+                        SdkAggregateValue::Bool(true),
+                    ],
                 },
             ],
             "every key and every value must survive the whole carriage"

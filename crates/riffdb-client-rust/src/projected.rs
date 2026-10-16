@@ -76,9 +76,29 @@ pub struct ProjectedOrder {
 pub enum ProjectedAggregate {
     /// Number of matching rows.
     Count,
-    /// Exact integer sum of one column.
+    /// Number of matching rows where the named optional column is non-null.
+    CountPresent {
+        /// Field name to count when present.
+        field: String,
+    },
+    /// Number of distinct values of the named column (`NULL` counts as one value).
+    CountDistinct {
+        /// Field name to count distinct values over.
+        field: String,
+    },
+    /// Number of distinct non-null values of the named optional column.
+    CountDistinctPresent {
+        /// Field name to count distinct non-null values over.
+        field: String,
+    },
+    /// Exact integer/fixed-point sum of one column (`I64`, `U64`, uniform-scale `Decimal`, or uniform-currency `Money`).
     Sum {
         /// Field name to sum.
+        field: String,
+    },
+    /// Exact integer/fixed-point mean (`(total, count)`) of one column (`I64`, `U64`, uniform-scale `Decimal`, or uniform-currency `Money`).
+    Mean {
+        /// Field name to average.
         field: String,
     },
     /// Smallest value of one column.
@@ -91,21 +111,41 @@ pub enum ProjectedAggregate {
         /// Field name to maximize.
         field: String,
     },
+    /// Logical OR over a boolean column (`false` on empty input).
+    Any {
+        /// Boolean field name.
+        field: String,
+    },
+    /// Logical AND over a boolean column (`true` on empty input).
+    All {
+        /// Boolean field name.
+        field: String,
+    },
 }
 
 /// One aggregate result cell.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProjectedAggregateValue {
-    /// Result of [`ProjectedAggregate::Count`].
+    /// Result of [`ProjectedAggregate::Count`], [`ProjectedAggregate::CountPresent`],
+    /// [`ProjectedAggregate::CountDistinct`], or [`ProjectedAggregate::CountDistinctPresent`].
     Count(u64),
     /// Result of [`ProjectedAggregate::Sum`], exact to the full `i128` range.
     Sum(i128),
+    /// Result of [`ProjectedAggregate::Mean`]: exact sum and contributing row count.
+    ExactMean {
+        /// Exact `i128` numerator (`0` when `count == 0`).
+        total: i128,
+        /// Number of contributing rows (`0` when no row contributed).
+        count: u64,
+    },
     /// Result of [`ProjectedAggregate::Min`] / [`ProjectedAggregate::Max`].
     ///
     /// `None` means no row contributed to the group. That is distinct from
     /// `Some(CanonicalValue::Null)`, which is a real NULL extreme over an
     /// optional column.
     Scalar(Option<CanonicalValue>),
+    /// Result of [`ProjectedAggregate::Any`] / [`ProjectedAggregate::All`].
+    Bool(bool),
 }
 
 /// One aggregate group: key cells and aggregate cells.
@@ -565,9 +605,21 @@ fn lower_aggregate(
 ) -> Result<app_v1::ProjectedAggregate, ApplicationClientError> {
     let (op, field) = match aggregate {
         ProjectedAggregate::Count => (app_v1::ProjectedAggregateOp::Count, String::new()),
+        ProjectedAggregate::CountPresent { field } => {
+            (app_v1::ProjectedAggregateOp::CountPresent, field)
+        }
+        ProjectedAggregate::CountDistinct { field } => {
+            (app_v1::ProjectedAggregateOp::CountDistinct, field)
+        }
+        ProjectedAggregate::CountDistinctPresent { field } => {
+            (app_v1::ProjectedAggregateOp::CountDistinctPresent, field)
+        }
         ProjectedAggregate::Sum { field } => (app_v1::ProjectedAggregateOp::Sum, field),
+        ProjectedAggregate::Mean { field } => (app_v1::ProjectedAggregateOp::Mean, field),
         ProjectedAggregate::Min { field } => (app_v1::ProjectedAggregateOp::Min, field),
         ProjectedAggregate::Max { field } => (app_v1::ProjectedAggregateOp::Max, field),
+        ProjectedAggregate::Any { field } => (app_v1::ProjectedAggregateOp::Any, field),
+        ProjectedAggregate::All { field } => (app_v1::ProjectedAggregateOp::All, field),
     };
     if op != app_v1::ProjectedAggregateOp::Count && (field.is_empty() || field.len() > 256) {
         return Err(ApplicationClientError::InvalidInput);
@@ -905,13 +957,33 @@ fn raise_aggregate_descriptor(
                 Err(ApplicationClientError::InvalidResponse)
             }
         }
+        app_v1::ProjectedAggregateOp::CountPresent => Ok(ProjectedAggregate::CountPresent {
+            field: named_column(descriptor.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::CountDistinct => Ok(ProjectedAggregate::CountDistinct {
+            field: named_column(descriptor.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::CountDistinctPresent => {
+            Ok(ProjectedAggregate::CountDistinctPresent {
+                field: named_column(descriptor.field)?,
+            })
+        }
         app_v1::ProjectedAggregateOp::Sum => Ok(ProjectedAggregate::Sum {
+            field: named_column(descriptor.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::Mean => Ok(ProjectedAggregate::Mean {
             field: named_column(descriptor.field)?,
         }),
         app_v1::ProjectedAggregateOp::Min => Ok(ProjectedAggregate::Min {
             field: named_column(descriptor.field)?,
         }),
         app_v1::ProjectedAggregateOp::Max => Ok(ProjectedAggregate::Max {
+            field: named_column(descriptor.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::Any => Ok(ProjectedAggregate::Any {
+            field: named_column(descriptor.field)?,
+        }),
+        app_v1::ProjectedAggregateOp::All => Ok(ProjectedAggregate::All {
             field: named_column(descriptor.field)?,
         }),
         app_v1::ProjectedAggregateOp::Unspecified => Err(ApplicationClientError::InvalidResponse),
@@ -936,14 +1008,32 @@ fn raise_aggregate_value(
     use app_v1::projected_aggregate_value::Value as WireValue;
     let arm = value.value.ok_or(ApplicationClientError::InvalidResponse)?;
     match (arm, descriptor) {
-        (WireValue::Count(count), ProjectedAggregate::Count) => {
-            Ok(ProjectedAggregateValue::Count(count))
-        }
+        (
+            WireValue::Count(count),
+            ProjectedAggregate::Count
+            | ProjectedAggregate::CountPresent { .. }
+            | ProjectedAggregate::CountDistinct { .. }
+            | ProjectedAggregate::CountDistinctPresent { .. },
+        ) => Ok(ProjectedAggregateValue::Count(count)),
         (WireValue::Sum(decimal), ProjectedAggregate::Sum { .. }) => {
             // Scale 0, no asserted precision, minimal 1..=16 byte coefficient.
             let sum = aggregate_sum_from_proto(&decimal)
                 .map_err(|_| ApplicationClientError::InvalidResponse)?;
             Ok(ProjectedAggregateValue::Sum(sum))
+        }
+        (WireValue::ExactMean(exact_mean), ProjectedAggregate::Mean { .. }) => {
+            let decimal = exact_mean
+                .total
+                .ok_or(ApplicationClientError::InvalidResponse)?;
+            let total = aggregate_sum_from_proto(&decimal)
+                .map_err(|_| ApplicationClientError::InvalidResponse)?;
+            if exact_mean.count == 0 && total != 0 {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+            Ok(ProjectedAggregateValue::ExactMean {
+                total,
+                count: exact_mean.count,
+            })
         }
         (
             WireValue::Scalar(scalar),
@@ -957,6 +1047,10 @@ fn raise_aggregate_value(
                 .map_err(|_| ApplicationClientError::InvalidResponse)?;
             Ok(ProjectedAggregateValue::Scalar(value))
         }
+        (
+            WireValue::Boolean(boolean),
+            ProjectedAggregate::Any { .. } | ProjectedAggregate::All { .. },
+        ) => Ok(ProjectedAggregateValue::Bool(boolean)),
         _ => Err(ApplicationClientError::InvalidResponse),
     }
 }
@@ -1883,12 +1977,25 @@ mod aggregate_tests {
         .expect("query")
     }
 
+    // req: PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014
     #[test]
     fn aggregate_builder_lowers_every_op_and_keeps_request_order() {
         let wire = query()
             .group_by(vec!["status".to_owned()])
             .aggregate(ProjectedAggregate::Count)
+            .aggregate(ProjectedAggregate::CountPresent {
+                field: "assignee".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::CountDistinct {
+                field: "status".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::CountDistinctPresent {
+                field: "assignee".to_owned(),
+            })
             .aggregate(ProjectedAggregate::Sum {
+                field: "story_points".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::Mean {
                 field: "story_points".to_owned(),
             })
             .aggregate(ProjectedAggregate::Min {
@@ -1896,6 +2003,12 @@ mod aggregate_tests {
             })
             .aggregate(ProjectedAggregate::Max {
                 field: "title".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::Any {
+                field: "is_open".to_owned(),
+            })
+            .aggregate(ProjectedAggregate::All {
+                field: "is_open".to_owned(),
             })
             .into_wire_request()
             .expect("wire");
@@ -1909,11 +2022,35 @@ mod aggregate_tests {
             vec![
                 (app_v1::ProjectedAggregateOp::Count as i32, String::new()),
                 (
+                    app_v1::ProjectedAggregateOp::CountPresent as i32,
+                    "assignee".to_owned()
+                ),
+                (
+                    app_v1::ProjectedAggregateOp::CountDistinct as i32,
+                    "status".to_owned()
+                ),
+                (
+                    app_v1::ProjectedAggregateOp::CountDistinctPresent as i32,
+                    "assignee".to_owned()
+                ),
+                (
                     app_v1::ProjectedAggregateOp::Sum as i32,
+                    "story_points".to_owned()
+                ),
+                (
+                    app_v1::ProjectedAggregateOp::Mean as i32,
                     "story_points".to_owned()
                 ),
                 (app_v1::ProjectedAggregateOp::Min as i32, "title".to_owned()),
                 (app_v1::ProjectedAggregateOp::Max as i32, "title".to_owned()),
+                (
+                    app_v1::ProjectedAggregateOp::Any as i32,
+                    "is_open".to_owned()
+                ),
+                (
+                    app_v1::ProjectedAggregateOp::All as i32,
+                    "is_open".to_owned()
+                ),
             ]
         );
     }

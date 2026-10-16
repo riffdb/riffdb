@@ -27,6 +27,11 @@ fn main() -> ExitCode {
             repository.join("scripts/release-source-install"),
             std::iter::once(command).chain(arguments).collect(),
         )
+    } else if command == "uninstall" {
+        (
+            repository.join("scripts/release-source-uninstall"),
+            std::iter::once(command).chain(arguments).collect(),
+        )
     } else if command == "bootstrap" {
         (
             repository.join("scripts/release-source-bootstrap"),
@@ -56,10 +61,12 @@ RiffDB source installation
 
 Usage:
   cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]
+  cargo riffdb uninstall (--user|--system) [--no-stop]
   cargo riffdb bootstrap (--user|--system) [--database ALIAS] [--register-codex]
 
 Commands:
   install    Build and install the three binaries, configuration, and systemd unit
+  uninstall  Remove installed binaries and systemd unit while preserving data and keys
   bootstrap  Create generic operator authority and an MCP developer capability
 "
     );

@@ -29118,8 +29118,8 @@ work_packages:
     Produce a separate hash-bound rehearsal protocol with 64 organizations, 65,536 seeded
     tickets, 100 commands/s, 400 reads/s, and at most 32 requests in flight.
   requirements: [NET-001, NET-002, NET-003, NET-005, AFC-001, AFC-002, STO-030, STO-031, STO-032, EFF-002, EFF-003, REC-001, REC-004, REC-005, REC-006, REC-007, REC-008, END-001, END-002, END-003, END-004, END-007, END-008, END-009, END-010, TXN-042]
-  required_adrs: [ADR-0226, ADR-0113, ADR-0157, ADR-0188, ADR-0280, ADR-0244, ADR-0301, ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0296, ADR-0288, ADR-0289, ADR-0284, ADR-0285, ADR-0290, ADR-0291, ADR-0292, ADR-0293, ADR-0294, ADR-0295, ADR-0299, ADR-0300, ADR-0313]
-  # Exact decision and registration accepted as ADR-0311 in session, 2026-10-15; identifier reconciliation to ADR-0313 only.
+  required_adrs: [ADR-0226, ADR-0113, ADR-0157, ADR-0188, ADR-0280, ADR-0244, ADR-0301, ADR-0265, ADR-0266, ADR-0267, ADR-0268, ADR-0269, ADR-0271, ADR-0272, ADR-0273, ADR-0275, ADR-0276, ADR-0277, ADR-0278, ADR-0279, ADR-0296, ADR-0288, ADR-0289, ADR-0284, ADR-0285, ADR-0290, ADR-0291, ADR-0292, ADR-0293, ADR-0294, ADR-0295, ADR-0299, ADR-0300, ADR-0314]
+  # Exact decision and registration accepted as ADR-0311 in session, 2026-10-15; identifier reconciliation to ADR-0314 only.
   # Exact ADR-0290, ADR-0291 and ADR-0292 accepted in session, 2026-10-12.
   # Exact ADR-0293 accepted in session, 2026-10-12; one native restore preparation owner.
   # Maintainer approved necessary native fixes in session, 2026-10-04.
@@ -29149,7 +29149,7 @@ work_packages:
   # Exact ADR-0300 and its WP-825 registration accepted in session, 2026-10-13.
   # Owned-backup ADR-0299 was accepted as ADR-0298 with its WP-825 registration; identifier reconciliation approved 2026-10-13.
   # D-005: preserve the accepted TLS provider/features while applying an advisory patch.
-  allowed_paths: [Cargo.lock, crates/riffdb-server/tests/architecture.rs, adr/0226-rustls-security-patch-within-the-reviewed-tls-boundary.md, crates/riffdb-sim/tests/seeded_campaign/**, adr/0300-bounded-owned-backup-validation-read-intervals.md, adr/0299-native-restore-borrows-sealed-history-from-one-owned-backup.md, adr/0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md, adr/0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md, adr/0289-owned-private-restore-validation-custody.md, adr/0285-owned-private-restore-validation-custody.md, adr/0297-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0296-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md, adr/0313-snapshot-owned-exact-command-locator-generations.md]
+  allowed_paths: [Cargo.lock, crates/riffdb-server/tests/architecture.rs, adr/0226-rustls-security-patch-within-the-reviewed-tls-boundary.md, crates/riffdb-sim/tests/seeded_campaign/**, adr/0300-bounded-owned-backup-validation-read-intervals.md, adr/0299-native-restore-borrows-sealed-history-from-one-owned-backup.md, adr/0295-consumed-native-restore-uses-ordinary-engine-crash-recovery.md, adr/0294-native-restore-transfers-one-sealed-artifact-set-into-publication.md, adr/0289-owned-private-restore-validation-custody.md, adr/0285-owned-private-restore-validation-custody.md, adr/0297-finite-direct-mutation-checkpoint-handoff.md, adr/RESERVED.yaml, tests/replication_follower/**, crates/riffdb-query-executor/src/**, crates/riffdb-storage-redb/tests/architecture.rs, adr/0284-bounded-native-bootstrap-source-custody-validation.md, adr/0288-bounded-native-bootstrap-source-custody-validation.md, crates/riffdb-commit/src/**, adr/0296-bounded-native-follower-acknowledgement-validation.md, adr/0279-finite-checkpoint-licensing-for-sustainable-source-reclamation.md, adr/0278-journaled-bounded-source-reclamation.md, crates/riffdb-driver-host/tests/**, crates/riffdb-driver-host/src/**, adr/0277-native-offline-upgrade-free-space-admission.md, crates/riffdb-storage-api/fixtures/**, crates/riffdb-storage-api/tests/**, crates/riffdb-storage-api/examples/**, release/durable-format-manifest-v1.json, adr/0276-registry-completion-writer-compatibility-edge.md, proto/**, crates/riffdb-proto/**, adr/0275-retention-independent-bounded-startup-eligibility.md, examples/ticketdesk/**, scripts/**, tests/ticketdesk_lifecycle/**, fixtures/**, release/evidence/ticketdesk-lifecycle/**, docs/**, crates/riffdb-api-grpc/src/**, crates/riffdb-service/src/**, crates/riffdb-server/src/**, crates/riffdb-storage-redb/src/**, crates/riffdb-storage-redb/Cargo.toml, crates/riffdb-outbox/src/**, crates/riffdb-sim/src/**, crates/riffdb-cli/src/**, crates/riffdb-storage-api/src/**, adr/0268-bounded-native-continuation-of-source-reclamation-proofs.md, adr/0269-explicit-engine-integrity-verification-and-reviewed-redb-upgrade.md, adr/0271-fair-bounded-native-source-reclamation-admission.md, adr/0272-source-progress-aware-maintenance-rechecks.md, adr/0313-snapshot-owned-exact-command-locator-generations.md, adr/0314-snapshot-owned-exact-command-locator-generations.md]
   deliverables:
   - Generated command updates with explicit write evidence and retained TypeScript smoke coverage
   - Frozen workload/fault/resource manifest, redacted actual observations, and independent result reconciliation
@@ -31657,6 +31657,15 @@ work_packages:
     scale: Distinct and arithmetic folds remain bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, and MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1.
   human_review_triggers:
   - Wire aggregate conversion accepts mismatched descriptor/value arms or unbounded distinct state.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014]
+    evidence: cargo nextest run -p riffdb-columnar -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --lib -E 'test(aggregate)'
+    decision: Extended proto/riffdb/app/v1/application.proto, riffdb-columnar, riffdb-service, riffdb-api-grpc, riffdb-client-rust, and riffdb-cli to support count_present, count_distinct, count_distinct_present, mean, any, all, and uniform-scale Decimal/Money sum and mean, and updated docs/known-limitations.md and docs/reference/CLI.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-867
   name: Locked idempotent Codex MCP registration and source convenience uninstall
   tier: guarantee
@@ -31683,3 +31692,51 @@ work_packages:
     scale: Lock acquisition and uninstall operate on fixed local paths with O(1) work.
   human_review_triggers:
   - Uninstall deletes database files, backups, digest keys, or credentials.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [DX-002, DX-014]
+    evidence: ./scripts/release-source-install-smoke && ./scripts/release-source-bootstrap-smoke
+    decision: Added exclusive flock serialization ($config_dir/.codex-mcp.lock) and idempotent same-target verification to scripts/release-source-bootstrap --register-codex, added scripts/release-source-uninstall and cargo riffdb uninstall (--user|--system) [--no-stop] to remove only installed binaries and units while preserving databases, backups, keys, configuration, and credentials, and updated smoke suites and handbook pages.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+- id: WP-868
+  name: Projected group-by canonical ordering, follower ANN graph cache parity, and transactional installer binary swap
+  tier: guarantee
+  depends_on: [WP-867]
+  objective: Implement ADR-0313. Order projected group-by buckets by canonical
+    compare_values order in riffdb-columnar, attach per-view NearestGraphCache
+    HNSW caching to FollowerColumnarRuntime in riffdb-server, make three-binary
+    publication rollback-safe in scripts/release-source-install, and reconcile
+    durable_local outbox retention documentation in docs/known-limitations.md
+    and docs/configuration.md.
+  requirements: [PRJ-002, PRJ-005, OQ-045, VEC-007, VEC-008, VEC-009, EFF-002, STO-010, DX-002, DX-014]
+  required_adrs: [ADR-0313, ADR-0086, ADR-0087, ADR-0091, ADR-0182, ADR-0229, ADR-0312]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-columnar/**, crates/riffdb-server/**, scripts/**, docs/**]
+  deliverables:
+  - Canonical compare_values group ordering in execute_group_by in crates/riffdb-columnar/src/query.rs
+  - Per-LocalView NearestGraphCache in FollowerColumnarRuntime in crates/riffdb-server/src/columnar_follower.rs
+  - Unit verification before binary swap and rollback-safe three-binary publication in scripts/release-source-install
+  - Updated docs/known-limitations.md, docs/configuration.md, docs/installation.md, and docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-868
+  exit_gate: Ad-hoc projected group-by emits groups in canonical value order,
+    follower vector queries warm and reuse NearestGraphCache above ann_threshold,
+    interrupted or failed binary installation rolls back all three binaries, and
+    unit/smoke/handbook checks pass.
+  standing_design_tests:
+    interface_safety: Follower ANN graph caching runs after full scalar predicate and principal-policy admission under ADR-0229 and is scoped to a single immutable LocalView. Binary rollback touches only the three product binaries in the target bin directory.
+    scale: Group sorting is bounded by max_group_cardinality (at most 10,000 groups), and follower ANN caching shares the process-wide 64 MiB ADR-0229 budget.
+  human_review_triggers:
+  - Follower ANN graph caching reuses a graph across different LocalView ordinals, frontiers, or policy bindings.
+  - Binary rollback deletes or overwrites server configuration, digest keys, or database files.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PRJ-002, PRJ-005, OQ-045, VEC-007, VEC-008, VEC-009, EFF-002, STO-010, DX-002, DX-014]
+    evidence: cargo nextest run -p riffdb-columnar --test acceptance projected_group_by_orders_groups_by_canonical_value_order && cargo nextest run -p riffdb-server --lib -E 'test(follower_vector_projection_warms_and_reuses_ann_graph_cache) | test(follower_columnar)' && ./scripts/release-source-install-smoke && ./scripts/handbook check
+    decision: Sorted projected group-by buckets by canonical compare_values order in execute_group_by, attached per-LocalView NearestGraphCache instances to FollowerColumnarRuntime in riffdb-server, added .riffdb-binary-rollback-v1 backup/rollback/recovery across three-binary installation and systemd-analyze verification in scripts/release-source-install, and reconciled outbox_archive_root and known-limitations documentation.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

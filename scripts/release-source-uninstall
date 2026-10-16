@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# req: DX-002, DX-014
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+    printf '%s\n' \
+        'usage: cargo riffdb uninstall (--user|--system) [--no-stop]' \
+        '       cargo riffdb install (--user|--system) --uninstall [--no-stop]' >&2
+}
+
+fail() {
+    printf 'riffdb source uninstall: %s\n' "$1" >&2
+    exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 2
+fi
+
+subcommand="$1"
+shift
+case "$subcommand" in
+    uninstall)
+        require_uninstall_flag=0
+        ;;
+    install)
+        require_uninstall_flag=1
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
+
+scope=
+no_stop=0
+saw_uninstall_flag=0
+while (($#)); do
+    case "$1" in
+        --user|--system)
+            [[ -z "$scope" ]] || {
+                usage
+                exit 2
+            }
+            scope="${1#--}"
+            shift
+            ;;
+        --uninstall)
+            ((saw_uninstall_flag == 0)) || {
+                usage
+                exit 2
+            }
+            saw_uninstall_flag=1
+            shift
+            ;;
+        --no-stop|--no-start)
+            ((no_stop == 0)) || {
+                usage
+                exit 2
+            }
+            no_stop=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+if ((require_uninstall_flag == 1 && saw_uninstall_flag == 0)); then
+    usage
+    exit 2
+fi
+[[ -n "$scope" ]] || {
+    usage
+    exit 2
+}
+((EUID != 0)) || fail 'run this command as the target unprivileged user, without sudo'
+[[ "$(uname -s)" == Linux ]] || fail 'the POC uninstaller supports Linux only'
+
+for tool in id rm stat uname; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"
+done
+if ((no_stop == 0)); then
+    command -v systemctl >/dev/null 2>&1 || fail 'required tool is missing: systemctl'
+fi
+if [[ "$scope" == system ]]; then
+    command -v sudo >/dev/null 2>&1 || fail 'required tool is missing: sudo'
+    sudo -v
+fi
+
+require_absolute_path() {
+    local label="$1"
+    local path="$2"
+    [[ "$path" == /* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] \
+        || fail "$label must be an absolute path without line breaks"
+}
+
+test_system_root=
+if [[ -n "${RIFFDB_INSTALL_TEST_SYSTEM_ROOT:-}" ]]; then
+    [[ "$scope" == system && "${RIFFDB_INSTALL_TEST_MODE:-}" == 1 ]] \
+        || fail 'the simulated system root is available only to the installer acceptance test'
+    [[ "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" == /* \
+       && -d "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" \
+       && ! -L "$RIFFDB_INSTALL_TEST_SYSTEM_ROOT" ]] \
+        || fail 'the simulated system root must be an existing absolute non-link directory'
+    test_system_root="${RIFFDB_INSTALL_TEST_SYSTEM_ROOT%/}"
+fi
+
+managed_type() {
+    local path="$1"
+    if [[ "$scope" == user ]]; then
+        if [[ -L "$path" ]]; then
+            printf '%s\n' link
+        elif [[ -d "$path" ]]; then
+            printf '%s\n' directory
+        elif [[ -f "$path" ]]; then
+            printf '%s\n' file
+        elif [[ -e "$path" ]]; then
+            printf '%s\n' other
+        else
+            printf '%s\n' absent
+        fi
+    elif sudo test -L "$path"; then
+        printf '%s\n' link
+    elif sudo test -d "$path"; then
+        printf '%s\n' directory
+    elif sudo test -f "$path"; then
+        printf '%s\n' file
+    elif sudo test -e "$path"; then
+        printf '%s\n' other
+    else
+        printf '%s\n' absent
+    fi
+}
+
+validate_removable_file() {
+    local path="$1"
+    local expected_mode="$2"
+    local kind
+    kind="$(managed_type "$path")"
+    case "$kind" in
+        absent)
+            return 0
+            ;;
+        file)
+            if [[ "$scope" == user ]]; then
+                [[ "$(stat -c '%u' "$path")" == "$(id -u)" ]] \
+                    || fail "refusing to remove file not owned by current user: $path"
+                [[ "$(stat -c '%a' "$path")" == "$expected_mode" ]] \
+                    || fail "refusing to remove file with unexpected mode: $path"
+            else
+                if [[ -z "$test_system_root" ]]; then
+                    [[ "$(sudo stat -c '%u:%g' "$path")" == "0:0" ]] \
+                        || fail "refusing to remove non-root system file: $path"
+                fi
+                [[ "$(sudo stat -c '%a' "$path")" == "$expected_mode" ]] \
+                    || fail "refusing to remove system file with unexpected mode: $path"
+            fi
+            ;;
+        *)
+            fail "refusing to remove non-regular or linked path ($kind): $path"
+            ;;
+    esac
+}
+
+if [[ "$scope" == user ]]; then
+    [[ -n "${HOME:-}" ]] || fail 'HOME must be set for --user uninstall'
+    require_absolute_path HOME "$HOME"
+    config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+    state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+    require_absolute_path XDG_CONFIG_HOME "$config_home"
+    require_absolute_path XDG_DATA_HOME "$data_home"
+    require_absolute_path XDG_STATE_HOME "$state_home"
+
+    unit_path="$config_home/systemd/user/riffdbd.service"
+    bin_dir="$HOME/.local/bin"
+    binary_paths=(
+        "$bin_dir/riffdbd"
+        "$bin_dir/riffdb"
+        "$bin_dir/riffdb-mcp"
+    )
+
+    validate_removable_file "$unit_path" 644
+    for binary_path in "${binary_paths[@]}"; do
+        validate_removable_file "$binary_path" 755
+    done
+
+    unit_was_present=0
+    if [[ "$(managed_type "$unit_path")" == file ]]; then
+        unit_was_present=1
+    fi
+
+    if ((no_stop == 0 && unit_was_present == 1)); then
+        systemctl --user disable --now riffdbd.service
+    fi
+
+    rm -f -- "$unit_path" "${binary_paths[@]}"
+
+    if ((no_stop == 0 && unit_was_present == 1)); then
+        systemctl --user daemon-reload
+    fi
+
+    printf '%s\n' \
+        'RiffDB user-scope binaries and systemd unit removed.' \
+        "Preserved configuration and keys: $config_home/riffdb" \
+        "Preserved databases and backups: $data_home/riffdb" \
+        "Preserved state and recovery files: $state_home/riffdb"
+else
+    unit_path="${test_system_root}/etc/systemd/system/riffdbd.service"
+    sysusers_path="${test_system_root}/usr/local/lib/sysusers.d/riffdb.conf"
+    tmpfiles_path="${test_system_root}/usr/local/lib/tmpfiles.d/riffdb.conf"
+    bin_dir="${test_system_root}/usr/local/bin"
+    binary_paths=(
+        "$bin_dir/riffdbd"
+        "$bin_dir/riffdb"
+        "$bin_dir/riffdb-mcp"
+    )
+
+    validate_removable_file "$unit_path" 644
+    validate_removable_file "$sysusers_path" 644
+    validate_removable_file "$tmpfiles_path" 644
+    for binary_path in "${binary_paths[@]}"; do
+        validate_removable_file "$binary_path" 755
+    done
+
+    unit_was_present=0
+    if [[ "$(managed_type "$unit_path")" == file ]]; then
+        unit_was_present=1
+    fi
+
+    if ((no_stop == 0 && unit_was_present == 1)); then
+        sudo systemctl disable --now riffdbd.service
+    fi
+
+    sudo rm -f -- \
+        "$unit_path" \
+        "$sysusers_path" \
+        "$tmpfiles_path" \
+        "${binary_paths[@]}"
+
+    if ((no_stop == 0 && unit_was_present == 1)); then
+        sudo systemctl daemon-reload
+    fi
+
+    printf '%s\n' \
+        'RiffDB system-scope binaries and systemd unit removed.' \
+        "Preserved configuration and keys: ${test_system_root}/etc/riffdb" \
+        "Preserved databases and backups: ${test_system_root}/var/lib/riffdb"
+fi

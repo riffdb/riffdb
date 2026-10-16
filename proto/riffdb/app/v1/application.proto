@@ -488,9 +488,9 @@ message ProjectedOrder {
 
 // One aggregate descriptor.
 //
-// COUNT counts matching rows and MUST carry an empty `field`; SUM, MIN, and
-// MAX MUST name one projected column. A descriptor that names a column for
-// COUNT is rejected typed rather than silently ignored.
+// COUNT counts matching rows and MUST carry an empty `field`; every other op
+// MUST name one projected column. A descriptor that names a column for COUNT is
+// rejected typed rather than silently ignored.
 message ProjectedAggregate {
   string field = 1;
   ProjectedAggregateOp op = 2;
@@ -502,6 +502,12 @@ enum ProjectedAggregateOp {
   PROJECTED_AGGREGATE_OP_SUM = 2;
   PROJECTED_AGGREGATE_OP_MIN = 3;
   PROJECTED_AGGREGATE_OP_MAX = 4;
+  PROJECTED_AGGREGATE_OP_MEAN = 5;
+  PROJECTED_AGGREGATE_OP_ANY = 6;
+  PROJECTED_AGGREGATE_OP_ALL = 7;
+  PROJECTED_AGGREGATE_OP_COUNT_PRESENT = 8;
+  PROJECTED_AGGREGATE_OP_COUNT_DISTINCT = 9;
+  PROJECTED_AGGREGATE_OP_COUNT_DISTINCT_PRESENT = 10;
 }
 
 message ProjectedQueryBody {
@@ -609,23 +615,35 @@ message ProjectedAggregateScalar {
   optional riffdb.v1.Value value = 1;
 }
 
+// Exact MEAN carriage: exact sum coefficient and exact contributing row count.
+message ProjectedAggregateExactMean {
+  riffdb.v1.Decimal total = 1;
+  uint64 count = 2;
+}
+
 // One aggregate result cell, positionally aligned with the descriptor at the
 // same index in ProjectedReadyAggregates.aggregates. The arm always matches
-// that descriptor's op: COUNT -> count, SUM -> sum, MIN/MAX -> scalar.
+// that descriptor's op: COUNT/COUNT_PRESENT/COUNT_DISTINCT/COUNT_DISTINCT_PRESENT
+// -> count, SUM -> sum, MIN/MAX -> scalar, MEAN -> exact_mean, ANY/ALL -> boolean.
 message ProjectedAggregateValue {
   oneof value {
-    // COUNT: exact number of matching rows in this group.
+    // COUNT / COUNT_PRESENT / COUNT_DISTINCT / COUNT_DISTINCT_PRESENT: exact count.
     uint64 count = 1;
-    // SUM: exact integer sum carried as a scale-0 Decimal.
+    // SUM: exact coefficient carried as a scale-0 Decimal.
     //
-    // The engine sums i64/u64 columns into an exact i128, which no Value arm
-    // can hold. `coefficient_twos_complement` is the minimal big-endian two's
-    // complement encoding of that i128 (1 through 16 bytes), `scale` is always
-    // 0, and `precision` is always absent: an i128 needs up to 39 significant
-    // digits, one more than a decimal precision can assert.
+    // The engine sums i64/u64 or uniform-scale Decimal/Money columns into an
+    // exact i128, which no Value arm can hold. `coefficient_twos_complement`
+    // is the minimal big-endian two's complement encoding of that i128 (1
+    // through 16 bytes), `scale` is always 0, and `precision` is always absent:
+    // an i128 needs up to 39 significant digits, one more than a decimal
+    // precision can assert.
     riffdb.v1.Decimal sum = 2;
     // MIN / MAX: the extreme column value, or absent for an empty group.
     ProjectedAggregateScalar scalar = 3;
+    // MEAN: exact total coefficient and contributing row count without division.
+    ProjectedAggregateExactMean exact_mean = 4;
+    // ANY / ALL: exact boolean disjunction or conjunction.
+    bool boolean = 5;
   }
 }
 

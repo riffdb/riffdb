@@ -2239,7 +2239,7 @@ Options:
       --order <FIELD[:desc]>
           Order key as `FIELD` or `FIELD:desc` (repeatable)
       --aggregate <OP:FIELD|count>
-          Aggregate as `OP:FIELD` where OP is `sum`, `min`, or `max`, or the bare word `count` (repeatable). Any aggregate returns groups instead of rows; more than one requires `--group-by`
+          Aggregate as `OP:FIELD` where OP is `count_present`, `count_distinct`, `count_distinct_present`, `sum`, `mean`, `min`, `max`, `any`, or `all`, or the bare word `count` (repeatable). Any aggregate returns groups instead of rows; more than one requires `--group-by`
       --credential-file <PATH>
 
       --group-by <FIELD>
