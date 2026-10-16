@@ -625,9 +625,16 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
     };
     assert_eq!(opened.database_id(), database_id());
     let (_, _, _, dormant) = opened.into_parts();
-    dormant
+    let ports = dormant
         .into_operational_after_catalog_validation()
-        .expect("activate simulated storage fixture")
+        .expect("activate simulated storage fixture");
+    // The raw fixture starts no service-owned native dependency waiter. Finish
+    // exactly this captured locator construction before exercising command reads;
+    // all structural, catalog, and simulated recovery checks above remain cold.
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete simulated fixture's exact native locator construction");
+    ports
 }
 
 fn activate_catalog(ports: &mut RedbOperationalPorts) {

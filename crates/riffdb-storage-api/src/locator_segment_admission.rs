@@ -13,7 +13,7 @@ use riffdb_types::inspect_canonical_decode_capacity_v1;
 
 use crate::{
     AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, CommandDerivedIndexManifestEntryV1,
-    DurableCodecError, DurableCodecErrorKind, StoredCommandCapsuleV2, StoredProvenanceRecordV1,
+    DurableCodecError, DurableCodecErrorKind, StoredCommandCapsuleV2,
 };
 
 fn corrupt() -> DurableCodecError {
@@ -51,12 +51,10 @@ pub fn locator_segment_decode_work_bound_v1(
     let Some(shape) = shape.map_err(|_| corrupt())? else {
         return Ok(None);
     };
-    // Largest generated containing shape dominates its inline children. The
-    // repeated manifest/reference elements are covered explicitly, independent
-    // of the containing Vec's inline size. Fourfold capacity covers first push
-    // and geometric growth; a second complete graph covers mapper/verification
-    // copies while the original generated graph is still resident.
-    let wire_node = maximum_wire_node_bytes();
+    // Each encountered generated DTO contributes its actual inline size.
+    // Optional/oneof children are conservatively counted again; repeated elements
+    // contribute their real element footprint. Eightfold capacity preserves the
+    // existing fourfold growth plus a second mapper/verification graph.
     let mut bytes = 512u64 * 1024;
     // General provider receipt admission includes its ownership inspector's
     // transient workspace. Prefix reconstruction is sequential; retained
@@ -73,10 +71,67 @@ pub fn locator_segment_decode_work_bound_v1(
         u64::try_from(encoded.len()).map_err(|_| capacity())?,
         16,
     )?;
+    bytes = bytes
+        .checked_add(
+            shape
+                .wire_inline_bytes
+                .checked_mul(8)
+                .ok_or_else(capacity)?,
+        )
+        .ok_or_else(capacity)?;
+    add(&mut bytes, shape.messages, 8 * 64)?;
+    // The capsule charge below already includes outcome, provenance, commit and
+    // both audit records inline. Their repeated semantic buffers require their
+    // own element sizes, not another whole provenance per nested wire message.
     add(
         &mut bytes,
-        shape.messages,
-        8 * (wire_node + size_of::<StoredProvenanceRecordV1>() + 64),
+        shape.semantic_read_dependencies,
+        8 * (size_of::<crate::StoredReadDependencyV1>() + size_of::<(Vec<u8>, usize)>()),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_entity_references,
+        8 * (size_of::<crate::CommittedEntityReferenceV2>() + size_of::<crate::AffectedEntityV1>()),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_event_references,
+        8 * size_of::<crate::EventReferenceV2>(),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_event_ids,
+        8 * size_of::<riffdb_types::EventId>(),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_events,
+        8 * (size_of::<crate::StoredDurableEventV1>() + 64),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_index_transitions,
+        8 * size_of::<crate::IndexEpochAdvanceV1>(),
+    )?;
+    // Transition provenance owns affected entities, and validation retains a
+    // temporary live-reference list. A full owned reference bounds that smaller
+    // borrowed tuple without introducing another semantic representation.
+    add(
+        &mut bytes,
+        shape.semantic_entity_transitions,
+        8 * (size_of::<crate::CommittedEntityTransitionV1>()
+            + size_of::<crate::AffectedEntityV1>()
+            + size_of::<crate::CommittedEntityReferenceV2>()),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_audit_targets,
+        8 * 2 * size_of::<riffdb_types::ServiceAuditTargetV1>(),
+    )?;
+    add(
+        &mut bytes,
+        shape.semantic_conflict_hashes,
+        8 * 3 * size_of::<riffdb_types::ConflictKeyHash>(),
     )?;
     add(&mut bytes, shape.buffers, 256)?;
     add(&mut bytes, shape.packed_items, 64)?;
@@ -176,74 +231,4 @@ fn prefix_work_bound(bytes: &[u8]) -> Result<u64, DurableCodecError> {
         return Err(corrupt());
     }
     Ok(work)
-}
-
-// All 59 generated DTOs reachable from the six accepted segment schemas.
-// Inline optional children and repeated element sizes are both represented;
-// changes to these durable shapes must revisit this construction allowance.
-fn maximum_wire_node_bytes() -> usize {
-    [
-        size_of::<wire::AdmittedActorContextV1>(),
-        size_of::<wire::AuditPrincipalV1>(),
-        size_of::<wire::CommandAuditTargetV1>(),
-        size_of::<wire::CommandDerivedIndexManifestEntryV1>(),
-        size_of::<wire::CommandSegmentManifestV1>(),
-        size_of::<wire::CommittedEntityReferenceV2>(),
-        size_of::<wire::ContractVersionAuditTargetV1>(),
-        size_of::<wire::DeclaredOutcomeV1>(),
-        size_of::<wire::DurableKeySchemaBindingV1>(),
-        size_of::<wire::EntityReadDependencyV1>(),
-        size_of::<wire::EntityTargetV1>(),
-        size_of::<wire::EntityTypeAuditTargetV1>(),
-        size_of::<wire::EventConsumerAuditTargetV2>(),
-        size_of::<wire::EventIdV1>(),
-        size_of::<wire::EventReferenceV2>(),
-        size_of::<wire::ExecutablePlanRefV1>(),
-        size_of::<wire::ExpectedEntityStateV1>(),
-        size_of::<wire::IdempotencyIdentityV1>(),
-        size_of::<wire::IdempotencyKeyDigestV1>(),
-        size_of::<wire::IndexAuditTargetV1>(),
-        size_of::<wire::IndexEpochPositionV1>(),
-        size_of::<wire::IndexRangeReadDependencyV1>(),
-        size_of::<wire::ProjectionAuditTargetV1>(),
-        size_of::<wire::ServiceAuditTargetV2>(),
-        size_of::<wire::StoredAdmittedProvenanceClaimsV1>(),
-        size_of::<wire::StoredCommandAuditInvocationV1>(),
-        size_of::<wire::StoredCommandCapsuleV1>(),
-        size_of::<wire::StoredCommandCapsuleV2>(),
-        size_of::<wire::StoredCommandCapsuleV3>(),
-        size_of::<wire::StoredCommandCapsuleV4>(),
-        size_of::<wire::StoredCommandCapsuleV5>(),
-        size_of::<wire::StoredCommandCapsuleV6>(),
-        size_of::<wire::StoredCommandCapsuleV7>(),
-        size_of::<wire::StoredCommandCausationV1>(),
-        size_of::<wire::StoredCommandSegmentBodyV1>(),
-        size_of::<wire::StoredCommandSegmentBodyV2>(),
-        size_of::<wire::StoredCommandSegmentBodyV3>(),
-        size_of::<wire::StoredCommandSegmentBodyV4>(),
-        size_of::<wire::StoredCommandSegmentBodyV5>(),
-        size_of::<wire::StoredCommandSegmentBodyV6>(),
-        size_of::<wire::StoredCommandSegmentV1>(),
-        size_of::<wire::StoredCommandSegmentV2>(),
-        size_of::<wire::StoredCommandSegmentV3>(),
-        size_of::<wire::StoredCommandSegmentV4>(),
-        size_of::<wire::StoredCommandSegmentV5>(),
-        size_of::<wire::StoredCommandSegmentV6>(),
-        size_of::<wire::StoredCommittedEntityTransitionV1>(),
-        size_of::<wire::StoredDurableEventV1>(),
-        size_of::<wire::StoredDurableEventV2>(),
-        size_of::<wire::StoredDurableEventVariantV1>(),
-        size_of::<wire::StoredEntityChainStateV1>(),
-        size_of::<wire::StoredEventPolicyAnchorV1>(),
-        size_of::<wire::StoredIndexGenerationTransitionV1>(),
-        size_of::<wire::StoredIndexGenerationV2>(),
-        size_of::<wire::StoredReadDependenciesV1>(),
-        size_of::<wire::StoredReadDependencyV1>(),
-        size_of::<wire::TenantScopeV1>(),
-        size_of::<wire::TimestampV1>(),
-        size_of::<wire::UnitV1>(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0)
 }

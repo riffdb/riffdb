@@ -146,6 +146,7 @@ impl RedbCompositeViewBuilder {
             overlay: self.overlay.freeze(),
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
+            decoded_cache: OnceLock::new(),
         }
     }
 }
@@ -163,6 +164,7 @@ pub(crate) struct RedbCompositeReadView {
     snapshot_head: OnceLock<Option<CommitSequence>>,
     // Actual shared view metadata remains charged until its final owner drops.
     provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell,
+    decoded_cache: OnceLock<crate::checkpoint_root::SnapshotDecodedCache>,
     // Last: native metadata remains admitted throughout data/cell destruction.
     locator_descriptor: LocatorCharge,
 }
@@ -380,6 +382,7 @@ impl RedbCompositeMutationStage {
             overlay,
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
+            decoded_cache: OnceLock::new(),
         })
     }
 
@@ -420,6 +423,7 @@ impl RedbCompositeMutationStage {
             overlay,
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
+            decoded_cache: OnceLock::new(),
         })
     }
 
@@ -468,6 +472,7 @@ impl RedbCompositeMutationStage {
                 snapshot_head: OnceLock::new(),
                 provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(
                 ),
+                decoded_cache: OnceLock::new(),
             },
             mutations,
         ))
@@ -590,6 +595,13 @@ impl RedbCompositePublication {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    pub(crate) fn try_cached_application_frontier(&self) -> Option<Option<CommitSequence>> {
+        self.current
+            .try_read()
+            .ok()?
+            .cached_provider_snapshot_head_v1()
+    }
+
     pub(crate) fn publish_successor(
         &self,
         expected: &Arc<RedbCompositeReadView>,
@@ -659,6 +671,7 @@ impl PreparedRedbCompositeRebase {
             overlay: self.overlay,
             snapshot_head: OnceLock::new(),
             provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
+            decoded_cache: OnceLock::new(),
         }
     }
 }
@@ -783,6 +796,11 @@ impl RedbCompositeReadView {
     /// immutable root; it cannot start an unadmitted metadata decode.
     pub(crate) fn cached_provider_snapshot_head_v1(&self) -> Option<Option<CommitSequence>> {
         self.snapshot_head.get().copied()
+    }
+
+    pub(crate) fn decoded_cache(&self) -> &crate::checkpoint_root::SnapshotDecodedCache {
+        self.decoded_cache
+            .get_or_init(crate::checkpoint_root::SnapshotDecodedCache::default)
     }
 
     pub(crate) fn snapshot_head<E>(

@@ -56,10 +56,53 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
+use riffdb_storage_api::{
+    EntityTarget, PartitionIndexTarget, SnapshotIndexRangePageV1, SnapshotIndexRangeRequestV1,
+    StorageError, StoredEntityRecordV1,
+};
 use riffdb_types::CommitSequence;
 
 use crate::journal::{JournalIoError, JournalTable};
 use crate::layout::{CAPABILITIES, META};
+
+/// Decoded snapshot access facade, retaining no decoded data between requests.
+///
+/// Memoized variable-size values require admitted byte ownership, including all
+/// hydrated page aliases. Keep derivation direct until that ownership is provided.
+#[derive(Default)]
+pub(crate) struct SnapshotDecodedCache;
+
+#[allow(
+    clippy::unused_self,
+    reason = "the access facade retains the shared call interface without decoded ownership"
+)]
+impl SnapshotDecodedCache {
+    pub(crate) fn read_entity(
+        &self,
+        _target: &EntityTarget,
+        derive: impl FnOnce() -> Result<Option<StoredEntityRecordV1>, StorageError>,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        derive()
+    }
+
+    pub(crate) fn index_epoch(
+        &self,
+        _target: &PartitionIndexTarget,
+        derive: impl FnOnce() -> Result<u64, StorageError>,
+    ) -> Result<u64, StorageError> {
+        derive()
+    }
+
+    pub(crate) fn scan_index_range(
+        &self,
+        request: SnapshotIndexRangeRequestV1,
+        derive: impl FnOnce(
+            &SnapshotIndexRangeRequestV1,
+        ) -> Result<SnapshotIndexRangePageV1, StorageError>,
+    ) -> Result<SnapshotIndexRangePageV1, StorageError> {
+        derive(&request)
+    }
+}
 
 /// Byte-keyed operational table handle.
 type ByteTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
@@ -188,6 +231,7 @@ pub(crate) struct CheckpointRoot {
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
     snapshot_head: OnceLock<Option<CommitSequence>>,
+    decoded_cache: OnceLock<SnapshotDecodedCache>,
     transaction: ReadTransaction,
     // Original retained extents remain resolvable after the live ports close.
     // A resolver holds no shared engine or later locator generations.
@@ -294,6 +338,7 @@ impl CheckpointRoot {
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
             transaction,
             history_resolver: None,
             engine: None,
@@ -341,6 +386,11 @@ impl CheckpointRoot {
 
     pub(crate) fn locator_capability(&self) -> &crate::locator_capability::LocatorCapability {
         &self.locator_capability
+    }
+
+    pub(crate) fn decoded_cache(&self) -> &SnapshotDecodedCache {
+        self.decoded_cache
+            .get_or_init(SnapshotDecodedCache::default)
     }
 
     pub(crate) const fn identity(&self) -> u64 {

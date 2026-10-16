@@ -452,6 +452,28 @@ impl BlockingPortDriver {
     {
         BlockingPortExecutor {
             inner: Arc::clone(&self.inner),
+            inline_fast_path: None,
+            operation: Arc::new(operation),
+        }
+    }
+
+    /// Creates a typed cloneable executor that may satisfy a reserved permit
+    /// inline from an already validated in-memory cache without dispatching a
+    /// job to the worker queue, while still enforcing every reservation and
+    /// submission gate.
+    pub(crate) fn executor_with_inline_fast_path<Request, Response, Failure>(
+        &self,
+        inline_fast_path: impl Fn(&Request) -> Option<Result<Response, Failure>> + Send + Sync + 'static,
+        operation: impl Fn(Request) -> Result<Response, Failure> + Send + Sync + 'static,
+    ) -> BlockingPortExecutor<Request, Response, Failure>
+    where
+        Request: Send + 'static,
+        Response: Send + 'static,
+        Failure: Send + 'static,
+    {
+        BlockingPortExecutor {
+            inner: Arc::clone(&self.inner),
+            inline_fast_path: Some(Arc::new(inline_fast_path)),
             operation: Arc::new(operation),
         }
     }
@@ -528,9 +550,13 @@ impl Reservation {
     }
 }
 
+type InlineFastPath<Request, Response, Failure> =
+    Arc<dyn Fn(&Request) -> Option<Result<Response, Failure>> + Send + Sync + 'static>;
+
 /// Cloneable typed admission entry point for one blocking consumer operation.
 pub(crate) struct BlockingPortExecutor<Request, Response, Failure> {
     inner: Arc<BlockingPortDriverInner>,
+    inline_fast_path: Option<InlineFastPath<Request, Response, Failure>>,
     operation: Arc<dyn Fn(Request) -> Result<Response, Failure> + Send + Sync + 'static>,
 }
 
@@ -538,6 +564,7 @@ impl<Request, Response, Failure> Clone for BlockingPortExecutor<Request, Respons
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            inline_fast_path: self.inline_fast_path.as_ref().map(Arc::clone),
             operation: Arc::clone(&self.operation),
         }
     }
@@ -562,6 +589,22 @@ where
         self.inner.ensure_accepting()
     }
 
+    /// Synchronously executes the inline fast path when admission gates pass
+    /// and at least one permit is available, without allocating a permit or
+    /// completion receipt.
+    pub(crate) fn try_inline(
+        &self,
+        control: &RequestControl,
+        request: &Request,
+    ) -> Option<Result<Response, Failure>> {
+        if self.inner.permits.available_permits() == 0 {
+            return None;
+        }
+        self.precheck(control).ok()?;
+        let try_inline = self.inline_fast_path.as_ref()?;
+        try_inline(request)
+    }
+
     /// Reserves one typed move-only permit without waiting (sync fast path).
     pub(crate) fn reserve(
         &self,
@@ -570,6 +613,7 @@ where
         let reservation = self.inner.try_reserve(control)?;
         Ok(Box::new(BlockingPortPermit {
             inner: Arc::clone(&self.inner),
+            inline_fast_path: self.inline_fast_path.as_ref().map(Arc::clone),
             operation: Arc::clone(&self.operation),
             reservation,
         }))
@@ -583,6 +627,7 @@ where
         let reservation = self.inner.reserve_async(control).await?;
         Ok(Box::new(BlockingPortPermit {
             inner: Arc::clone(&self.inner),
+            inline_fast_path: self.inline_fast_path.as_ref().map(Arc::clone),
             operation: Arc::clone(&self.operation),
             reservation,
         }))
@@ -597,6 +642,7 @@ impl<Request, Response, Failure> fmt::Debug for BlockingPortExecutor<Request, Re
 
 struct BlockingPortPermit<Request, Response, Failure> {
     inner: Arc<BlockingPortDriverInner>,
+    inline_fast_path: Option<InlineFastPath<Request, Response, Failure>>,
     operation: Arc<dyn Fn(Request) -> Result<Response, Failure> + Send + Sync + 'static>,
     reservation: Reservation,
 }
@@ -614,10 +660,19 @@ where
     ) -> Result<PortReceipt<Response, Failure>, PortAdmissionError> {
         let Self {
             inner,
+            inline_fast_path,
             operation,
             reservation,
         } = *self;
         inner.ensure_submission_open()?;
+        if let Some(try_inline) = inline_fast_path.as_ref()
+            && let Some(result) = try_inline(&request)
+        {
+            reservation.release();
+            let (completion, receipt) = port_completion_channel();
+            completion.complete(result);
+            return Ok(receipt);
+        }
         let (completion, receipt) = port_completion_channel();
         let job: BlockingJob = Box::new(move || {
             let result = operation(request);
