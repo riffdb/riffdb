@@ -31557,6 +31557,15 @@ work_packages:
     scale: Activation retry reuses the single server-owned columnar worker without per-request tasks or loops.
   human_review_triggers:
   - Startup opens or decodes columnar artifacts before first semantic demand.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PRJ-002, PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022, STO-010, STO-012]
+    evidence: cargo nextest run -p riffdb-server transient_control_unavailability_during_activation_retries_and_recovers_on_next_pass
+    decision: Kept columnar slots in Activating on transient ColumnarPortError::Unavailable during activation control reads so the worker retries on the next pass, and updated docs/known-limitations.md for rebuild recovery, projection detach, and online retention validated-prefix checkpoint refresh.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-866
   name: Ad-hoc projected query aggregate parity (mean, any, all, count variants, Decimal/Money sum)
   tier: guarantee

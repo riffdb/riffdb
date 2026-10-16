@@ -6123,6 +6123,81 @@ contract VectorBoard version 1 {
         }
     }
 
+    // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022, STO-010, STO-012
+    #[test]
+    fn transient_control_unavailability_during_activation_retries_and_recovers_on_next_pass() {
+        use crate::columnar_worker::{
+            SelectedFailureRecordTestMode, activate_one_test_slot_with_selected_failure_mode,
+        };
+
+        let (runtime, scope) = board_runtime("transient-control-unavailability");
+        append_board_ticket_for_worker(&runtime);
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        runtime
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("board slot")
+            .with_engine_mut(|engine| engine.checkpoint().expect("checkpoint selected V1"))
+            .expect("engine lock")
+            .expect("active engine");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let selected_snapshot = ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+            .observe("ticket_board")
+            .expect("capture selected V1")
+            .snapshot_arc();
+        let expected_rows =
+            query_snapshot(binding.definition(), &selected_snapshot, &board_query())
+                .expect("query selected V1");
+        drop(runtime);
+
+        let reopened = reopen_board_runtime(&scope);
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let cold = port
+            .observe("ticket_board")
+            .expect("request demand activation");
+        assert!(!cold.has_published());
+        assert!(
+            !activate_one_test_slot_with_selected_failure_mode(
+                &reopened,
+                "ticket_board",
+                SelectedFailureRecordTestMode::ControlReadUnavailableBeforeOpen,
+            ),
+            "transient control unavailability before artifact open must not activate the slot"
+        );
+        let slot = reopened
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("board slot");
+        assert_eq!(
+            slot.lifecycle(),
+            Ok(ColumnarSlotLifecycle::Activating),
+            "transient control unavailability must leave the slot in Activating rather than wedging in Failed"
+        );
+        assert!(
+            crate::columnar_worker::run_one_test_pass(&reopened),
+            "next worker pass retries activation and installs the valid selected artifact"
+        );
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Active));
+        let active = port
+            .observe("ticket_board")
+            .expect("capture activated V1 after retry");
+        assert!(active.has_published());
+        assert_eq!(
+            query_snapshot(
+                binding.definition(),
+                active.snapshot().as_ref(),
+                &board_query()
+            )
+            .expect("query activated V1"),
+            expected_rows,
+            "retry activation serves the exact authoritative population without rebuild"
+        );
+    }
+
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-020, OQ-022
     #[test]
     fn columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback() {

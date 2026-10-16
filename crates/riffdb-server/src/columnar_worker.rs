@@ -358,6 +358,8 @@ pub(crate) use ColumnarPublicationMode as ColumnarPublicationTestMode;
 pub(crate) enum SelectedFailureRecordMode {
     Ordinary,
     #[cfg(test)]
+    ControlReadUnavailableBeforeOpen,
+    #[cfg(test)]
     StateChangedBeforeCommit,
     #[cfg(test)]
     StorageFailureBeforeCommit,
@@ -1582,11 +1584,21 @@ fn activate_requested_slot_controlled(
     slot: &ColumnarEngineSlot,
     failure_mode: SelectedFailureRecordMode,
 ) -> Result<bool, ColumnarWorkerError> {
+    #[cfg(test)]
+    if matches!(
+        failure_mode,
+        SelectedFailureRecordMode::ControlReadUnavailableBeforeOpen
+    ) {
+        return Err(ColumnarWorkerError::Unavailable);
+    }
     let spec = match runtime.current_activation_spec(name, slot) {
         Ok(spec) => spec,
-        Err(error) => {
+        Err(riffdb_service::ColumnarPortError::Unavailable) => {
+            return Err(ColumnarWorkerError::Unavailable);
+        }
+        Err(riffdb_service::ColumnarPortError::Integrity) => {
             slot.fail_activation(slot.generation());
-            return Err(map_port_error(error));
+            return Err(ColumnarWorkerError::Integrity);
         }
     };
     let Some(spec) = spec else {
@@ -1746,7 +1758,8 @@ fn issue_selected_failure_record(
             runtime.storage().record_published_failure(expected)
         }
         #[cfg(test)]
-        SelectedFailureRecordMode::RepeatedStorageFailureBeforeCommit => {
+        SelectedFailureRecordMode::ControlReadUnavailableBeforeOpen
+        | SelectedFailureRecordMode::RepeatedStorageFailureBeforeCommit => {
             Err(StorageError::new(StorageErrorKind::Unavailable, None))
         }
     }
