@@ -4,6 +4,9 @@ mod transient_access;
 
 mod read_census;
 
+mod locator_root_tracking;
+use locator_root_tracking::RootTracking;
+
 mod checkpoint_completion;
 mod source_reclamation_drain;
 use checkpoint_completion::{CheckpointCompletion, CheckpointPublisher};
@@ -176,9 +179,10 @@ use crate::layout::{
     VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
     VECTOR_PROJECTION_CONTROLS, create_all_tables,
 };
+use crate::locator_memory::LocatorAllocationClass;
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
-    TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
+    LocatorGeneration, TransientIndexDelta, TransientIndexState, TransientIndexes,
 };
 
 /// Fixed redb page-cache budget for the derived sidecar.
@@ -188,7 +192,7 @@ use crate::transient::{
 /// population-sized process-owned memory while retaining one bounded cache for
 /// reads and writes. This is an internal performance bound; it does not alter
 /// the durable format or transaction semantics.
-const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;
 
 /// The authoritative checkpoint needs its own bounded point-read cache while
 /// command history is retained in the journal. Keep the derived sidecar at the
@@ -426,13 +430,15 @@ pub(crate) struct JournalSealer {
 }
 
 pub(crate) struct SharedRedb {
-    extent_roots: Mutex<Vec<std::sync::Weak<CheckpointRoot>>>,
+    /// Charged tracking headroom survives dead weak pins, and its final release
+    /// retires at most one weak allocation per queued cleanup item.
+    extent_roots: crate::locator_memory::ChargedLocatorAllocation<RootTracking>,
     extent_scrubs: std::sync::atomic::AtomicUsize,
     extent_cursor: Mutex<extent_reclamation::Cursor>,
     pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
-    pub(crate) database: Database,
+    pub(crate) database: Arc<Database>,
     pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     pub(super) restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
     pub(crate) outbox_stage_census: crate::outbox_stage_census::Census,
@@ -440,7 +446,7 @@ pub(crate) struct SharedRedb {
     /// acquire `mutation_gate` or the primary store's write transaction.
     /// Opened on first derived read or write so archive inventories that never
     /// touch derived state keep their closed three-file sets.
-    derived: std::sync::OnceLock<Database>,
+    derived: std::sync::OnceLock<Arc<Database>>,
     /// Serialises the first open of `derived`. redb takes an exclusive file
     /// lock, so two threads racing to open the sidecar leave one holding an
     /// `Unavailable` that says nothing about the store's health. Only the
@@ -488,6 +494,9 @@ pub(crate) struct SharedRedb {
     /// Readers use the adjacent condition variable only while an odd value is
     /// observed. The writer never holds that mutex across engine I/O.
     durable_root_publication: AtomicU64,
+    /// Exact locator ownership published under the same odd/even engine fence.
+    /// An absent or pending entry never proves a command-derived absence.
+    durable_locator_capability: RwLock<Option<(u64, crate::locator_capability::LocatorCapability)>>,
     durable_root_publication_wait: Mutex<()>,
     durable_root_publication_changed: Condvar,
     /// Predecessor read root installed before the first unpublished subgroup.
@@ -532,13 +541,10 @@ pub(crate) struct SharedRedb {
     /// Registers this store's retained extents for history-stub resolution
     /// (ADR-0263 Amendment 3) once its database identity is known.
     history_resolver: std::sync::OnceLock<Arc<crate::history_stub::HistoryResolver>>,
+    snapshot_history_resolver: std::sync::OnceLock<crate::history_stub::SnapshotHistoryResolverRef>,
     command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
-    /// Process-local affine proof for ADR-0197's fresh-history locator prefix.
-    /// Exact identities in sealed command epochs that are not public yet.
-    /// Writers consult this overlay; operational readers never do.
-    unpublished_command_indexes: Mutex<UnpublishedCommandIndexes>,
     /// True only after this handle's startup validation session finished with
     /// ZERO structural findings of any scope. Gates every validated-prefix
     /// checkpoint write (ADR-0019 A1: a finding of any severity vetoes the
@@ -680,9 +686,18 @@ impl SharedRedb {
             return Ok(database);
         }
         let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
-        let _ = self.derived.set(opened);
+        let _ = self.derived.set(Arc::new(opened));
         self.derived
             .get()
+            .map(Arc::as_ref)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    pub(crate) fn retain_derived_engine(&self) -> Result<Arc<Database>, StorageError> {
+        self.derived_database()?;
+        self.derived
+            .get()
+            .cloned()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
@@ -1293,6 +1308,28 @@ impl SharedRedb {
             && self.durable_root_publication.load(Ordering::Acquire) == publication
     }
 
+    pub(crate) fn owns_current_locator_source(&self, access: &RedbReadAccess) -> bool {
+        let root = match access {
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => root,
+            RedbReadAccess::Composite(_) => return false,
+        };
+        let publication = self.durable_root_publication.load(Ordering::Acquire);
+        if !publication.is_multiple_of(2) || publication != root.identity() {
+            return false;
+        }
+        let Ok(current) = self.durable_locator_capability.read() else {
+            return false;
+        };
+        // This is an ownership/cancellation check, not a completeness proof.
+        // Require the exact admitted source owner and both stable epoch reads;
+        // a scalar application head cannot establish this relationship.
+        current.as_ref().is_some_and(|(epoch, capability)| {
+            *epoch == publication
+                && capability.same_construction(root.locator_capability())
+                && self.durable_root_publication.load(Ordering::Acquire) == publication
+        })
+    }
+
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
         self.commit_with_source_footprint(
             transaction,
@@ -1305,6 +1342,47 @@ impl SharedRedb {
         transaction: WriteTransaction,
         footprint: crate::source_continuation::SourceContinuationFootprint,
     ) -> Result<(), StorageError> {
+        let capability = crate::locator_capability::LocatorCapability::try_pending(
+            LocatorAllocationClass::Maintenance,
+        )?;
+        self.commit_with_source_footprint_and_locator(transaction, footprint, capability)
+    }
+
+    pub(crate) fn commit_with_source_footprint_and_locator(
+        &self,
+        transaction: WriteTransaction,
+        footprint: crate::source_continuation::SourceContinuationFootprint,
+        capability: crate::locator_capability::LocatorCapability,
+    ) -> Result<(), StorageError> {
+        // These fixed metadata roots bind the admitted directory to the staged
+        // database incarnation and registered durable schema. Exact membership
+        // is established by the captured predecessor plus its complete delta.
+        if let Ok(generation) = capability.prepared_generation() {
+            let metadata = transaction.open_table(META).map_err(table_error)?;
+            let database = metadata
+                .get(META_DATABASE_ID)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let incarnation = metadata
+                .get(META_HISTORY_INCARNATION)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let registry = metadata
+                .get(META_RECORD_REGISTRY)
+                .map_err(precommit_storage_error)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let database = *decode_database_identity_v1(database.value())
+                .map_err(crate::error::codec_error)?
+                .value();
+            let incarnation = *decode_history_incarnation_v1(incarnation.value())
+                .map_err(crate::error::codec_error)?
+                .value();
+            let registry = *decode_record_registry_digest(registry.value())
+                .map_err(crate::error::codec_error)?
+                .value();
+            generation.validate_database_incarnation(database, incarnation)?;
+            capability.bind_source(database, incarnation, registry)?;
+        }
         if !footprint.is_append_only() {
             self.invalidate_source_continuation();
         }
@@ -1342,6 +1420,20 @@ impl SharedRedb {
         {
             controller.wait_after_engine_commit_before_root_publication();
         }
+        // This slot is installed while engine publication is odd: no reader
+        // may capture the new physical root with an older locator directory.
+        let locator_publication = self.durable_locator_capability.write();
+        let locator_poisoned = match locator_publication {
+            Ok(mut slot) => {
+                *slot = Some((stable_successor, capability));
+                false
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = None;
+                self.fence_writes();
+                true
+            }
+        };
         let publication_wait = self.durable_root_publication_wait.lock();
         self.durable_root_publication
             .store(stable_successor, Ordering::Release);
@@ -1362,7 +1454,7 @@ impl SharedRedb {
             self.fence_writes();
             return Err(commit_error(error));
         }
-        if publication_wait_poisoned {
+        if publication_wait_poisoned || locator_poisoned {
             return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
         if self
@@ -1503,13 +1595,44 @@ impl SharedRedb {
                 .lock()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             extent_roots.retain(|root| root.strong_count() != 0);
+            // One stable engine identity denotes one immutable physical root.
+            // Reuse its admitted descriptor rather than allocating another
+            // CheckpointRoot behind a clone of the same charged capability.
+            if let Some(root) = extent_roots
+                .iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .find(|root| root.identity() == version)
+            {
+                if self.durable_root_publication.load(Ordering::Acquire) == version
+                    && version.is_multiple_of(2)
+                {
+                    return Ok(root);
+                }
+                drop(root);
+                drop(extent_roots);
+                version = self.stable_durable_root_version()?;
+                continue;
+            }
             if extent_roots.len() >= extent_reclamation::MAX_EXTENT_READ_ROOTS {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let transaction = self.database.begin_read().map_err(transaction_error)?;
             let after = self.durable_root_publication.load(Ordering::Acquire);
             if version == after && after.is_multiple_of(2) {
-                let root = Arc::new(CheckpointRoot::new(transaction, after));
+                let capability = self
+                    .durable_locator_capability
+                    .read()
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+                    .as_ref()
+                    .filter(|(publication, _)| *publication == after)
+                    .map(|(_, capability)| capability.clone());
+                let root = match capability {
+                    Some(capability) => {
+                        CheckpointRoot::new_with_locator_capability(transaction, after, capability)
+                    }
+                    None => CheckpointRoot::new(transaction, after),
+                }?;
+                let root = Arc::new(self.retain_snapshot_root(root)?);
                 extent_roots.push(Arc::downgrade(&root));
                 return Ok(root);
             }
@@ -1520,9 +1643,129 @@ impl SharedRedb {
         Err(storage_error(StorageErrorKind::Unavailable))
     }
 
-    fn capture_checkpoint_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
+    pub(crate) fn retain_snapshot_root(
+        &self,
+        root: CheckpointRoot,
+    ) -> Result<CheckpointRoot, StorageError> {
+        if self.snapshot_history_resolver.get().is_none()
+            && let Some(resolver) = self.history_resolver.get()
+        {
+            let candidate = resolver.snapshot_custody()?;
+            let _ = self.snapshot_history_resolver.set(candidate);
+        }
+        Ok(root.retain_engine_and_history(
+            Arc::clone(&self.database),
+            self.snapshot_history_resolver.get().cloned(),
+        ))
+    }
+
+    pub(crate) fn capture_checkpoint_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
         let version = self.stable_durable_root_version()?;
         self.capture_checkpoint_root_at(version)
+    }
+
+    /// Binds a genuinely committed raw fixture to a fresh source owner. Tests
+    /// call this only while quiescent; old pins retain their original owner.
+    #[cfg(test)]
+    pub(crate) fn bind_test_locator_generation(
+        &self,
+        generation: LocatorGeneration,
+    ) -> Result<(), StorageError> {
+        let capability = crate::locator_capability::LocatorCapability::try_complete(
+            generation,
+            LocatorAllocationClass::Ordinary,
+        )?;
+        let previous = self.stable_durable_root_version()?;
+        let successor = previous
+            .checked_add(2)
+            .ok_or_else(|| storage_error(StorageErrorKind::SequenceExhausted))?;
+        self.durable_root_publication
+            .compare_exchange(previous, successor - 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        *self
+            .durable_locator_capability
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))? =
+            Some((successor, capability));
+        self.retire_current_read_root();
+        self.durable_root_publication
+            .store(successor, Ordering::Release);
+        self.durable_root_publication_changed.notify_all();
+        let root = self.capture_checkpoint_root()?;
+        let metadata = root.meta_table().map_err(table_error)?;
+        let database = metadata
+            .get(META_DATABASE_ID)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let incarnation = metadata
+            .get(META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let registry = metadata
+            .get(META_RECORD_REGISTRY)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        root.locator_capability().bind_source(
+            *decode_database_identity_v1(database.value())
+                .map_err(crate::error::codec_error)?
+                .value(),
+            *decode_history_incarnation_v1(incarnation.value())
+                .map_err(crate::error::codec_error)?
+                .value(),
+            *decode_record_registry_digest(registry.value())
+                .map_err(crate::error::codec_error)?
+                .value(),
+        )?;
+        drop(database);
+        drop(incarnation);
+        drop(registry);
+        let mut frontier = self
+            .durable_read_frontier
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        if frontier.is_some() {
+            *frontier = Some(root);
+        }
+        drop(frontier);
+        self.clear_composite_publication()?;
+        Ok(())
+    }
+
+    /// Rebuilds the exact fresh physical source after quiescent raw-row fixture
+    /// writes. Callers already holding the mutation lease must remain its sole
+    /// writer. This is not a startup bypass or an authoritative journal drain:
+    /// fixtures with a published/unpublished suffix must retain that source.
+    #[cfg(test)]
+    pub(crate) fn rebuild_test_source_indexes(&self) -> Result<(), StorageError> {
+        let _lease = if self.mutation_gate.is_held() {
+            None
+        } else {
+            Some(self.mutation_gate.acquire()?)
+        };
+        let (_, unmaterialized) = self.journal_suffix_activity()?;
+        if unmaterialized != 0 {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let identity = self
+            .stable_durable_root_version()?
+            .checked_add(2)
+            .ok_or_else(|| storage_error(StorageErrorKind::SequenceExhausted))?;
+        let transaction = self.database.begin_read().map_err(transaction_error)?;
+        let root = self.retain_snapshot_root(CheckpointRoot::new(transaction, identity)?)?;
+        let access = RedbReadAccess::Current(Arc::new(root));
+        let (indexes, _) = TransientIndexes::rebuild_from_access_with_owner(
+            &access,
+            access.locator_capability().construction_owner()?,
+            LocatorAllocationClass::Ordinary,
+            || false,
+        )?;
+        self.bind_test_locator_generation(indexes.locator_generation()?)?;
+        *self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+            TransientIndexState::Ready(indexes);
+        Ok(())
     }
 
     /// Whether a reusable frontier-free root is held right now.
@@ -1567,7 +1810,7 @@ impl SharedRedb {
             .transpose()
     }
 
-    fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
+    pub(crate) fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
         // A published composite view is the complete standard-profile state:
         // one immutable redb checkpoint plus the exact fenced journal suffix.
         // Capture it before consulting the legacy deferred-redb frontier so a
@@ -1949,6 +2192,7 @@ struct JournalCheckpointBatch {
 struct AsyncJournalCheckpoint {
     batch: JournalCheckpointBatch,
     covered_view: Arc<crate::composite_view::RedbCompositeReadView>,
+    locator_descriptor: Option<crate::locator_memory::LocatorCharge>,
     completion: Option<Arc<CheckpointCompletion>>,
     result: Option<Result<(), StorageError>>,
 }
@@ -2003,6 +2247,13 @@ pub(crate) enum RedbReadAccess {
 }
 
 impl RedbReadAccess {
+    pub(crate) fn locator_capability(&self) -> &crate::locator_capability::LocatorCapability {
+        match self {
+            Self::Current(root) | Self::Durable(root) => root.locator_capability(),
+            Self::Composite(view) => view.locator_capability(),
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
@@ -5400,11 +5651,79 @@ fn activate_operational_ports(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         drop(state);
+        // Preserve bounded readiness: population work belongs to the admitted
+        // background owner of this exact captured source, never this handoff.
+        let access = shared.begin_composite_operational_read()?;
+        let mut empty = true;
+        for table in [
+            JournalTable::Commits,
+            JournalTable::EventRoutes,
+            JournalTable::Outbox,
+            JournalTable::OutboxStatus,
+        ] {
+            if access
+                .visit_next_locator_row(table, None, |_, _| Ok(()))?
+                .is_some()
+            {
+                empty = false;
+                break;
+            }
+        }
+        if empty {
+            // Four borrowed first-row probes prove exact empty membership.
+            // No operational port has escaped this handoff; an activation lease
+            // may already be held, so do not reacquire the mutation gate here.
+            let indexes = TransientIndexes::try_empty_with_owner(
+                access.locator_capability().construction_owner()?,
+                LocatorAllocationClass::Ordinary,
+            )?;
+            access
+                .locator_capability()
+                .install_generation(indexes.locator_generation()?)?;
+            let mut state = shared
+                .transient_indexes
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if !matches!(*state, TransientIndexState::Dormant) {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            *state = TransientIndexState::Ready(indexes);
+            drop(state);
+        } else {
+            crate::locator_builder::start_locator_builder(access, Some(Arc::clone(&shared)))?;
+        }
         return Ok(RedbOperationalPorts { shared });
     }
-    let transaction = shared.database.begin_read().map_err(transaction_error)?;
-    let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
-    drop(transaction);
+    // Startup control can already own a composite suffix. Construct against
+    // that exact source and complete its admitted owner: rebuilding the raw
+    // engine and replacing only its capability would leave the operational
+    // composite owner pending, or attach evidence for a different command set.
+    let access = shared.begin_composite_operational_read()?;
+    let capability = access.locator_capability();
+    let (indexes, commit_rows) = TransientIndexes::rebuild_from_access_with_owner(
+        &access,
+        capability.construction_owner()?,
+        LocatorAllocationClass::Ordinary,
+        || false,
+    )?;
+    let generation = indexes.locator_generation()?;
+    generation.validate_source(&access)?;
+    capability.install_generation(generation)?;
+    // Preserve a complete raw-root capability when this is the captured
+    // physical source. A composite generation cannot authorize a potentially
+    // different checkpoint root. Existing startup exclusion protects both
+    // this installation and the ancillary state handoff; do not reacquire it.
+    if matches!(
+        &access,
+        RedbReadAccess::Current(_) | RedbReadAccess::Durable(_)
+    ) {
+        let epoch = shared.stable_durable_root_version()?;
+        *shared
+            .durable_locator_capability
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+            Some((epoch, capability.clone()));
+    }
     shared.note_transient_index_rebuild(commit_rows);
     let mut state = shared
         .transient_indexes
@@ -5937,7 +6256,7 @@ impl RedbOperationalPorts {
         let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
         let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
             &composite_predecessor,
-        );
+        )?;
         #[cfg(feature = "test-fixtures")]
         if let Some(controller) = &self.shared.test_controller {
             controller
@@ -5994,9 +6313,11 @@ impl RedbOperationalPorts {
         }
         drop(frontier);
         let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
-        let composite_stage = crate::composite_view::RedbCompositeMutationStage::from_published(
-            &composite_predecessor,
-        );
+        let composite_stage =
+            crate::composite_view::RedbCompositeMutationStage::from_published_with_class(
+                &composite_predecessor,
+                LocatorAllocationClass::Maintenance,
+            )?;
         timing.drain_us = elapsed_us(acquired, Instant::now());
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
@@ -6167,29 +6488,32 @@ impl RedbWriteAccess {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    /// The mutation lease fixes this exact private predecessor. Sealed FIFO
+    /// frames belong to its immutable directory; unsealed commands remain in
+    /// this epoch's explicit deltas until their admitted successor is sealed.
+    pub(crate) fn command_locator_generation(&self) -> Result<LocatorGeneration, StorageError> {
+        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
+            return Ok(epoch
+                .composite_predecessor
+                .locator_capability()
+                .require_complete()?
+                .clone());
+        }
+        if let Some(predecessor) = &self.composite_predecessor {
+            return Ok(predecessor.locator_capability().require_complete()?.clone());
+        }
+        Ok(self
+            .shared
+            .capture_checkpoint_root()?
+            .locator_capability()
+            .require_complete()?
+            .clone())
+    }
+
     pub(crate) fn command_segment_tail(
         &self,
     ) -> Result<Option<Option<(CommitSequence, CommandSegmentDigestV1)>>, StorageError> {
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let published = match &*transient {
-            TransientIndexState::Ready(indexes) => indexes
-                .command_segment_tail()
-                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
-            TransientIndexState::Dormant => return Ok(None),
-            TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .command_segment_tail();
+        let earlier = self.command_locator_generation()?.tail();
         let epoch = self
             .ownership
             .as_ref()
@@ -6201,18 +6525,6 @@ impl RedbWriteAccess {
                     .map(|segment| (segment.first_commit_sequence(), segment.segment_digest())),
                 RedbWriteOwnership::Direct { .. } | RedbWriteOwnership::ServiceAudit { .. } => None,
             });
-        drop(transient);
-        let earlier = match (published, unpublished) {
-            (Some(published), Some(unpublished)) => {
-                if unpublished.0 <= published.0 {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-                Some(unpublished)
-            }
-            (Some(published), None) => Some(published),
-            (None, Some(unpublished)) => Some(unpublished),
-            (None, None) => None,
-        };
         if let (Some(earlier), Some(epoch)) = (earlier, epoch)
             && epoch.0 <= earlier.0
         {
@@ -6607,6 +6919,29 @@ impl RedbWriteAccess {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(operation)?;
         }
+        let locator_class = if matches!(&delta, Some(TransientIndexDelta::HistoryPruned { .. })) {
+            LocatorAllocationClass::Maintenance
+        } else {
+            LocatorAllocationClass::Ordinary
+        };
+        let generation = {
+            let state = self
+                .shared
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            let TransientIndexState::Ready(indexes) = &*state else {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            };
+            match &delta {
+                Some(delta) => indexes.prepare_locator_delta(delta, locator_class)?,
+                None => indexes.locator_generation()?,
+            }
+        };
+        let capability = crate::locator_capability::LocatorCapability::try_complete(
+            generation.clone(),
+            locator_class,
+        )?;
         let transaction = self
             .transaction
             .take()
@@ -6616,7 +6951,7 @@ impl RedbWriteAccess {
             // No transient delta has been applied; keep the valid published
             // indexes and let Drop restore the original journal source.
         })?;
-        if let Err(error) = prepared.commit(&self.shared) {
+        if let Err(error) = prepared.commit_with_locator(&self.shared, capability) {
             self.invalidate_transient_indexes();
             // `commit_durable` fences writes on any commit error, and a fenced
             // handle can no longer pass `ensure_writable`, so no checkpoint is
@@ -6639,11 +6974,16 @@ impl RedbWriteAccess {
         for _ in 0..execution_failure_rows {
             self.shared.note_terminal_execution_failure_row();
         }
-        if let Some(delta) = delta
-            && let Ok(mut state) = self.shared.transient_indexes.write()
-        {
-            state.apply_delta(delta);
+        let mut state = self
+            .shared
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        state.install_locator_generation(generation)?;
+        if let Some(delta) = delta {
+            state.apply_disposable_delta(delta)?;
         }
+        drop(state);
         if let Some(controller) = &self.shared.test_controller
             && let Err(error) = controller.after_commit(operation)
         {
@@ -6951,6 +7291,19 @@ impl RedbDurabilityEpoch {
                     .shared
                     .rebuild_composite_stage_for_frame(&self.composite_predecessor, &frame)?;
             }
+            // Admit the exact immutable successor before submitting any bytes.
+            // The captured private predecessor includes every earlier FIFO frame,
+            // even when its public durability fence has not completed yet.
+            let mut locator_generation = self
+                .composite_predecessor
+                .locator_capability()
+                .require_complete()?
+                .clone();
+            for delta in &self.transient_deltas {
+                locator_generation =
+                    locator_generation.prepare_delta(delta, LocatorAllocationClass::Ordinary)?;
+            }
+            composite_stage.set_locator_generation(locator_generation)?;
             let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let audit_count = usize::from(frame.audit_count());
@@ -7118,18 +7471,6 @@ impl RedbDurabilityEpoch {
             self.shared.fence_writes();
             return Err(error);
         }
-        {
-            let mut unpublished = self
-                .shared
-                .unpublished_command_indexes
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            for delta in &self.transient_deltas {
-                if let Some(segment) = delta.command_segment() {
-                    unpublished.insert_segment(Arc::clone(segment))?;
-                }
-            }
-        }
         let successor = self.composite_predecessor.checkpoint_root_shared();
         let publication_ticket = if journaled {
             let journal_receipt = receipt
@@ -7215,6 +7556,22 @@ impl SharedRedb {
         let Some(runtime) = self.take_published_journal_suffix_locked(true)? else {
             return Ok(());
         };
+        // This barrier owns a quiescent, fully published suffix. Materializing
+        // those same frames changes their location, never their membership.
+        let locator_capability = match (|| {
+            let covered = self.capture_or_initialize_composite_view()?;
+            crate::locator_capability::LocatorCapability::try_complete_from_source(
+                covered.locator_capability().require_complete()?.clone(),
+                covered.locator_capability(),
+                LocatorAllocationClass::Maintenance,
+            )
+        })() {
+            Ok(capability) => capability,
+            Err(error) => {
+                self.restore_journal_runtime(runtime)?;
+                return Err(error);
+            }
+        };
         let mut transaction = match self.database.begin_write() {
             Ok(transaction) => transaction,
             Err(error) => {
@@ -7245,7 +7602,7 @@ impl SharedRedb {
         }
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-staged");
-        self.commit_with_source_footprint(transaction, footprint)?;
+        self.commit_with_source_footprint_and_locator(transaction, footprint, locator_capability)?;
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         if online_source {
@@ -7517,15 +7874,14 @@ impl SharedRedb {
             .transient_indexes
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        let mut unpublished = self
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let prepared_generation = publication
+            .composite_successor
+            .locator_capability()
+            .require_complete()?
+            .clone();
+        transient.install_locator_generation(prepared_generation)?;
         for delta in publication.transient_deltas.drain(..) {
-            if let Some(segment) = delta.command_segment() {
-                unpublished.remove_segment(segment)?;
-            }
-            transient.apply_delta(delta);
+            transient.apply_disposable_delta(delta)?;
         }
         if let Err(error) = self.publish_composite_successor(
             &publication.composite_predecessor,
@@ -7551,7 +7907,6 @@ impl SharedRedb {
         }
         *frontier = Some(Arc::clone(&publication.successor));
         drop(frontier);
-        drop(unpublished);
         drop(transient);
 
         let predecessor_application;
@@ -7624,16 +7979,24 @@ impl SharedRedb {
             RedbTestOperation::ServiceAudit
         };
         self.after_test_commit(operation)?;
+        let prepared_generation = publication
+            .composite_successor
+            .locator_capability()
+            .require_complete()?
+            .clone();
+        let mut transient = self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        transient.install_locator_generation(prepared_generation)?;
         if let Some(prune) = publication.prune {
             self.publish_retention_watermark(prune.through.get());
-            self.transient_indexes
-                .write()
-                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
-                .apply_delta(TransientIndexDelta::HistoryPruned {
-                    through: prune.through,
-                    segments: prune.segments,
-                });
+            transient.apply_disposable_delta(TransientIndexDelta::HistoryPruned {
+                through: prune.through,
+                segments: prune.segments,
+            })?;
         }
+        drop(transient);
         if publication.source_reclamation {
             changelog_source_control::crash_edge("reclamation-before-publication");
         }
@@ -7846,8 +8209,16 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        let class = if decoded.kind() == crate::journal::JournalFrameKind::Command {
+            LocatorAllocationClass::Ordinary
+        } else {
+            LocatorAllocationClass::Maintenance
+        };
         let mut stage =
-            crate::composite_view::RedbCompositeMutationStage::from_published(predecessor);
+            crate::composite_view::RedbCompositeMutationStage::from_published_with_class(
+                predecessor,
+                class,
+            )?;
         for mutation in decoded.mutations() {
             if decoded.kind() == crate::journal::JournalFrameKind::RetentionPrune {
                 stage.apply_prune(mutation)?;
@@ -8086,6 +8457,10 @@ impl SharedRedb {
         }
         let batch = state.batch.clone();
         let covered_view = Arc::clone(&state.covered_view);
+        let descriptor = state
+            .locator_descriptor
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let mut publication_began = false;
         let rebase_result = (|| -> Result<(), StorageError> {
             let current = self
@@ -8110,7 +8485,8 @@ impl SharedRedb {
                 self.fence_writes();
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
-            let successor = Arc::new(current.rebase_after(&covered_view, root, batch.last_hash)?);
+            let successor =
+                Arc::new(current.rebase_after(&covered_view, root, batch.last_hash, descriptor)?);
             let mut private = self
                 .private_composite_frontier
                 .lock()
@@ -8624,11 +9000,12 @@ impl RedbSubmittedCommandFence {
             .transient_indexes
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        let mut unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        transient.install_locator_generation(
+            self.successor
+                .locator_capability()
+                .require_complete()?
+                .clone(),
+        )?;
         let mut frontier = self
             .shared
             .durable_read_frontier
@@ -8641,10 +9018,7 @@ impl RedbSubmittedCommandFence {
         *frontier = Some(Arc::clone(&self.successor));
         drop(frontier);
         for delta in self.transient_deltas.drain(..) {
-            if let Some(segment) = delta.command_segment() {
-                unpublished.remove_segment(segment)?;
-            }
-            transient.apply_delta(delta);
+            transient.apply_disposable_delta(delta)?;
         }
         Ok(())
     }
@@ -8813,34 +9187,10 @@ impl RedbWriteAccess {
             }
             sequences.insert(request_id, found);
         }
-        // One continuous transient guard spans both probes so a concurrent
-        // publication cannot move a segment between them and drop its sequences.
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*transient {
-            TransientIndexState::Ready(indexes) => {
-                let derived = indexes
-                    .command_audit_sequences_for(request_ids)
-                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))??;
-                merge_audit_sequences(&mut sequences, derived)?;
-            }
-            TransientIndexState::Dormant
-                if !self.shared.bounded_clean_startup.load(Ordering::Acquire) => {}
-            TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        }
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+        let derived = self
+            .command_locator_generation()?
             .command_audit_sequences_for(request_ids)?;
-        drop(transient);
-        merge_audit_sequences(&mut sequences, unpublished)?;
+        merge_audit_sequences(&mut sequences, derived)?;
         if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
             let mut derived = std::collections::BTreeMap::new();
             for delta in &epoch.transient_deltas {
@@ -8893,90 +9243,57 @@ impl SharedRedb {
     pub(crate) fn ensure_command_derived_indexes_ready(
         self: &Arc<Self>,
     ) -> Result<(), StorageError> {
-        {
-            let state = self
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(_) => return Ok(()),
-                TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
-                TransientIndexState::Dormant
-                    if !self.bounded_clean_startup.load(Ordering::Acquire) =>
-                {
-                    return Ok(());
-                }
-                TransientIndexState::Dormant => {}
-            }
+        let access = self.begin_composite_operational_read()?;
+        if access.locator_capability().is_pending() {
+            crate::locator_builder::start_locator_builder(access, Some(Arc::clone(self)))?;
+            return Err(storage_error(StorageErrorKind::Unavailable));
         }
-        let _lease = self.mutation_gate.acquire()?;
-        self.ensure_command_derived_indexes_ready_under_mutation_lease()
+        access.locator_capability().require_complete().map(|_| ())
     }
 
     pub(crate) fn ensure_command_derived_indexes_ready_under_mutation_lease(
         self: &Arc<Self>,
     ) -> Result<(), StorageError> {
-        {
-            let state = self
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(_) => return Ok(()),
-                TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
-                TransientIndexState::Dormant
-                    if !self.bounded_clean_startup.load(Ordering::Acquire) =>
-                {
-                    return Ok(());
-                }
-                TransientIndexState::Dormant => {}
-            }
-        }
-        self.checkpoint_published_journal_suffix_for_barrier()?;
-        let transaction = self.database.begin_read().map_err(transaction_error)?;
-        let indexes = if TransientIndexes::is_trivially_empty(&transaction)? {
-            drop(transaction);
-            TransientIndexes::default()
-        } else {
-            let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
-            drop(transaction);
-            self.note_transient_index_rebuild(commit_rows);
-            indexes
-        };
-        let mut state = self
-            .transient_indexes
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if !matches!(*state, TransientIndexState::Dormant) {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        *state = TransientIndexState::Ready(indexes);
-        Ok(())
+        self.ensure_command_derived_indexes_ready()
     }
 
-    pub(crate) fn command_derived_locator(
+    pub(crate) fn complete_locator_indexes(
         self: &Arc<Self>,
-        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
-        exact_key: &[u8],
-    ) -> Result<Option<crate::transient::CommandDerivedLocator>, StorageError> {
-        self.ensure_command_derived_indexes_ready()?;
-        let state = self
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        match &*state {
-            TransientIndexState::Ready(indexes) => indexes.command_derived_locator(kind, exact_key),
-            TransientIndexState::Dormant if !self.bounded_clean_startup.load(Ordering::Acquire) => {
-                Ok(None)
+        access: &RedbReadAccess,
+        indexes: TransientIndexes,
+    ) -> Result<(), StorageError> {
+        let generation = indexes.locator_generation()?;
+        generation.validate_source(access)?;
+        let _lease = self.mutation_gate.acquire()?;
+        access.locator_capability().install_generation(generation)?;
+        let current = self.begin_composite_operational_read()?;
+        let same_source = match (access, &current) {
+            (
+                RedbReadAccess::Current(old) | RedbReadAccess::Durable(old),
+                RedbReadAccess::Current(new) | RedbReadAccess::Durable(new),
+            ) => Arc::ptr_eq(old, new),
+            (RedbReadAccess::Composite(old), RedbReadAccess::Composite(new)) => {
+                Arc::ptr_eq(old, new)
             }
-            TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                Err(storage_error(StorageErrorKind::Unavailable))
+            _ => false,
+        };
+        if same_source {
+            let mut state = self
+                .transient_indexes
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if matches!(*state, TransientIndexState::Dormant) {
+                *state = TransientIndexState::Ready(indexes);
             }
+            return Ok(());
         }
+        // Completion remains valid for its original protected source. It must
+        // not attach ancillary status derived from that source to a newer one.
+        drop(_lease);
+        if current.locator_capability().is_pending() {
+            crate::locator_builder::start_locator_builder(current, Some(Arc::clone(self)))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn ensure_transient_indexes_ready(self: &Arc<Self>) -> Result<(), StorageError> {
@@ -8993,34 +9310,14 @@ impl SharedRedb {
                 TransientIndexState::Dormant => {}
             }
         }
-        let _lease = self.mutation_gate.acquire()?;
-        {
-            let state = self
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(_) => return Ok(()),
-                TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
-                TransientIndexState::Dormant => {}
-            }
+        // Ancillary membership is derived from the same captured source by
+        // the admitted startup worker. An indexed operation cannot turn its
+        // first access into a population scan or publish an incomplete index.
+        let access = self.begin_composite_operational_read()?;
+        if access.locator_capability().is_pending() {
+            crate::locator_builder::start_locator_builder(access, Some(Arc::clone(self)))?;
         }
-        self.checkpoint_published_journal_suffix_for_barrier()?;
-        let transaction = self.database.begin_read().map_err(transaction_error)?;
-        let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
-        drop(transaction);
-        self.note_transient_index_rebuild(commit_rows);
-        let mut state = self
-            .transient_indexes
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        if !matches!(*state, TransientIndexState::Dormant) {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        *state = TransientIndexState::Ready(indexes);
-        Ok(())
+        Err(storage_error(StorageErrorKind::Unavailable))
     }
 
     fn pending_outbox_page(
@@ -9079,10 +9376,23 @@ fn exclusive_byte_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 impl TransientIndexState {
-    fn apply_delta(&mut self, delta: TransientIndexDelta) {
-        if let Self::Ready(indexes) = self {
-            indexes.apply(delta);
-        }
+    fn install_locator_generation(
+        &mut self,
+        generation: LocatorGeneration,
+    ) -> Result<(), StorageError> {
+        let Self::Ready(indexes) = self else {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        };
+        indexes.install_locator_generation(generation);
+        Ok(())
+    }
+
+    fn apply_disposable_delta(&mut self, delta: TransientIndexDelta) -> Result<(), StorageError> {
+        let Self::Ready(indexes) = self else {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        };
+        indexes.apply_disposable_delta(delta);
+        Ok(())
     }
 }
 
@@ -9548,6 +9858,9 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod locator_publication_tests;
 
 #[cfg(test)]
 #[path = "store_follower_tests.rs"]

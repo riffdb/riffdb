@@ -1,0 +1,740 @@
+//! Admitted native locator ownership and bounded, allocation-free final release.
+//!
+//! Queue descriptors are reserved before constructing an allocation. Its final
+//! reference only moves a precreated task into that descriptor. A task may drop
+//! other locator handles: their destructors enqueue, rather than recurse.
+
+use std::borrow::Borrow;
+use std::cmp::Ordering;
+use std::fmt;
+use std::ops::Deref;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+
+use riffdb_storage_api::{StorageError, StorageErrorKind};
+
+pub(crate) const LOCATOR_TOTAL_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const LOCATOR_ORDINARY_BYTES: usize = 448 * 1024 * 1024;
+pub(crate) const LOCATOR_MAX_OWNERS: usize = 1024;
+pub(crate) const LOCATOR_RETIRE_QUOTA: usize = 256;
+const SLOT_CHUNK: usize = 256;
+const MAX_CHUNKS: usize = 8192;
+const ALLOCATION_OVERHEAD: usize = 64;
+const WORKER_STACK_BYTES: usize = 256 * 1024;
+const WORKER_CONTROL_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LocatorAllocationClass {
+    Ordinary,
+    Maintenance,
+}
+
+fn unavailable() -> StorageError {
+    StorageError::new(StorageErrorKind::Unavailable, None)
+}
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Reclamation cannot abandon admitted ownership after another thread panics.
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[derive(Debug, Default)]
+struct BudgetState {
+    admission_enabled: bool,
+    total: usize,
+    ordinary: usize,
+    owners: usize,
+    ordinary_owners: usize,
+}
+#[derive(Debug)]
+struct Budget {
+    state: Mutex<BudgetState>,
+    total_limit: usize,
+    ordinary_limit: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocatorCharge {
+    budget: Arc<Budget>,
+    bytes: usize,
+    class: LocatorAllocationClass,
+}
+impl LocatorCharge {
+    pub(crate) const fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+impl Drop for LocatorCharge {
+    fn drop(&mut self) {
+        let mut state = lock(&self.budget.state);
+        state.total -= self.bytes;
+        if self.class == LocatorAllocationClass::Ordinary {
+            state.ordinary -= self.bytes;
+        }
+    }
+}
+
+pub(crate) trait LocatorRetireContents: Send + Sync + 'static {
+    /// Destroy at most one bounded ownership item. Return true only when no
+    /// population-sized destruction remains in this value's ordinary Drop.
+    fn retire_one(&mut self) -> bool;
+    /// Move population ownership without allocation, leaving a bounded empty value.
+    fn take_for_retirement(&mut self) -> Self;
+    fn is_retirement_barrier(&self) -> bool {
+        false
+    }
+}
+trait RetirementTask: Send {
+    fn retire_one(&mut self) -> bool;
+    fn is_retirement_barrier(&self) -> bool;
+}
+#[derive(Default)]
+struct Slot {
+    task: Option<Box<dyn RetirementTask>>,
+    next: Option<usize>,
+    barrier: bool,
+}
+struct SlotChunk {
+    slots: Box<[Slot; SLOT_CHUNK]>,
+    _charge: LocatorCharge,
+}
+struct RetirementState {
+    chunks: Vec<SlotChunk>,
+    free: Option<usize>,
+    queued: Option<usize>,
+    queued_tail: Option<usize>,
+    queued_count: usize,
+    non_barrier_count: usize,
+    // Both queue storage and its admission have process lifetime.
+    _directory_charge: LocatorCharge,
+}
+impl RetirementState {
+    fn slot(&mut self, index: usize) -> &mut Slot {
+        &mut self.chunks[index / SLOT_CHUNK].slots[index % SLOT_CHUNK]
+    }
+}
+
+struct RetirementQueue {
+    state: Mutex<RetirementState>,
+    ready: Condvar,
+}
+
+pub(crate) struct NativeLocatorPool {
+    budget: Arc<Budget>,
+    retirement: &'static RetirementQueue,
+    // Serializes workers, not readers or the lifetime of a captured snapshot.
+    worker: Mutex<()>,
+}
+impl fmt::Debug for NativeLocatorPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = lock(&self.budget.state);
+        f.debug_struct("NativeLocatorPool")
+            .field("charged_bytes", &state.total)
+            .field("generation_owners", &state.owners)
+            .finish_non_exhaustive()
+    }
+}
+impl NativeLocatorPool {
+    pub(crate) fn global() -> Arc<Self> {
+        static POOL: OnceLock<Arc<NativeLocatorPool>> = OnceLock::new();
+        Arc::clone(POOL.get_or_init(|| {
+            let pool = Self::new(LOCATOR_TOTAL_BYTES, LOCATOR_ORDINARY_BYTES);
+            if Self::start_worker(&pool).is_err() {
+                lock(&pool.budget.state).admission_enabled = false;
+            }
+            pool
+        }))
+    }
+
+    fn new(total_limit: usize, ordinary_limit: usize) -> Arc<Self> {
+        // Fixed directory capacity bounds every subsequent descriptor admission.
+        // Charge its complete capacity before allocating it; it never grows.
+        let directory_bytes = MAX_CHUNKS * std::mem::size_of::<SlotChunk>()
+            + std::mem::size_of::<Self>()
+            + std::mem::size_of::<Budget>()
+            + std::mem::size_of::<RetirementQueue>()
+            + 5 * ALLOCATION_OVERHEAD;
+        let budget = Arc::new(Budget {
+            state: Mutex::new(BudgetState {
+                admission_enabled: true,
+                total: directory_bytes,
+                ..BudgetState::default()
+            }),
+            total_limit,
+            ordinary_limit,
+        });
+        let directory_charge = LocatorCharge {
+            budget: Arc::clone(&budget),
+            bytes: directory_bytes,
+            class: LocatorAllocationClass::Maintenance,
+        };
+        // Production has one global pool. Isolated tests use the same explicit
+        // process-lifetime queue, so final release never needs a fallback drain.
+        let retirement = Box::leak(Box::new(RetirementQueue {
+            state: Mutex::new(RetirementState {
+                chunks: Vec::with_capacity(MAX_CHUNKS),
+                free: None,
+                queued: None,
+                queued_tail: None,
+                queued_count: 0,
+                non_barrier_count: 0,
+                _directory_charge: directory_charge,
+            }),
+            ready: Condvar::new(),
+        }));
+        Arc::new(Self {
+            budget,
+            retirement,
+            worker: Mutex::new(()),
+        })
+    }
+
+    fn start_worker(pool: &Arc<Self>) -> Result<(), StorageError> {
+        // Charge the fixed stack and conservative OS/thread-control reservation
+        // before asking the OS to allocate either resource.
+        let charge = pool.admit(
+            WORKER_STACK_BYTES + WORKER_CONTROL_BYTES,
+            LocatorAllocationClass::Maintenance,
+        )?;
+        let worker_pool = Arc::clone(pool);
+        let handle = std::thread::Builder::new()
+            .name("riffdb-locator-reaper".into())
+            .stack_size(WORKER_STACK_BYTES)
+            .spawn(move || {
+                let _admission_guard = WorkerAdmissionGuard(Arc::clone(&worker_pool));
+                let _charge = charge;
+                loop {
+                    let mut state = lock(&worker_pool.retirement.state);
+                    while state.queued.is_none() {
+                        state = worker_pool
+                            .retirement
+                            .ready
+                            .wait(state)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    drop(state);
+                    loop {
+                        let more = worker_pool.drain_retired_step();
+                        std::thread::yield_now();
+                        if !more {
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|_| unavailable())?;
+        // The process-global worker deliberately lives until process exit.
+        drop(handle);
+        Ok(())
+    }
+
+    pub(crate) fn admit(
+        &self,
+        bytes: usize,
+        class: LocatorAllocationClass,
+    ) -> Result<LocatorCharge, StorageError> {
+        let mut state = self.budget.state.lock().map_err(|_| unavailable())?;
+        if !state.admission_enabled {
+            return Err(unavailable());
+        }
+        let total = state.total.checked_add(bytes).ok_or_else(unavailable)?;
+        let ordinary = if class == LocatorAllocationClass::Ordinary {
+            state.ordinary.checked_add(bytes).ok_or_else(unavailable)?
+        } else {
+            state.ordinary
+        };
+        if total > self.budget.total_limit || ordinary > self.budget.ordinary_limit {
+            return Err(unavailable());
+        }
+        state.total = total;
+        state.ordinary = ordinary;
+        Ok(LocatorCharge {
+            budget: Arc::clone(&self.budget),
+            bytes,
+            class,
+        })
+    }
+
+    fn reserve_slot(
+        self: &Arc<Self>,
+        class: LocatorAllocationClass,
+    ) -> Result<RetirementSlot, StorageError> {
+        let mut state = self.retirement.state.lock().map_err(|_| unavailable())?;
+        if state.free.is_none() {
+            if state.chunks.len() == MAX_CHUNKS {
+                return Err(unavailable());
+            }
+            let charge = self.admit(
+                std::mem::size_of::<[Slot; SLOT_CHUNK]>() + ALLOCATION_OVERHEAD,
+                class,
+            )?;
+            let start = state.chunks.len() * SLOT_CHUNK;
+            let slots = Box::new(std::array::from_fn(|offset| Slot {
+                task: None,
+                barrier: false,
+                next: if offset + 1 < SLOT_CHUNK {
+                    Some(start + offset + 1)
+                } else {
+                    None
+                },
+            }));
+            state.chunks.push(SlotChunk {
+                slots,
+                _charge: charge,
+            });
+            state.free = Some(start);
+        }
+        let index = state.free.ok_or_else(unavailable)?;
+        state.free = state.slot(index).next.take();
+        Ok(RetirementSlot {
+            retirement: self.retirement,
+            index,
+            armed: true,
+        })
+    }
+
+    /// Execute no more than 256 charged destruction items. Callers schedule
+    /// another step after yielding when this returns true.
+    pub(crate) fn drain_retired_step(&self) -> bool {
+        let _worker = lock(&self.worker);
+        for _ in 0..LOCATOR_RETIRE_QUOTA {
+            let next = {
+                let mut state = lock(&self.retirement.state);
+                let Some(index) = state.queued else {
+                    return false;
+                };
+                state.queued = state.slot(index).next.take();
+                if state.queued.is_none() {
+                    state.queued_tail = None;
+                }
+                state.queued_count -= 1;
+                let barrier = state.slot(index).barrier;
+                if !barrier {
+                    state.non_barrier_count -= 1;
+                }
+                state
+                    .slot(index)
+                    .task
+                    .take()
+                    .map(|task| (index, task, barrier))
+            };
+            let Some((index, mut task, barrier)) = next else {
+                continue;
+            };
+            let complete = task.retire_one();
+            let mut state = lock(&self.retirement.state);
+            if complete {
+                // Drop task before descriptor reuse. Its children only enqueue.
+                drop(state);
+                drop(task);
+                state = lock(&self.retirement.state);
+                let free = state.free;
+                state.slot(index).next = free;
+                state.free = Some(index);
+            } else {
+                state.slot(index).task = Some(task);
+                state.slot(index).next = None;
+                if let Some(tail) = state.queued_tail {
+                    state.slot(tail).next = Some(index);
+                } else {
+                    state.queued = Some(index);
+                }
+                state.queued_tail = Some(index);
+                state.queued_count += 1;
+                if !barrier {
+                    state.non_barrier_count += 1;
+                }
+            }
+        }
+        lock(&self.retirement.state).queued.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn isolated_for_tests() -> Arc<Self> {
+        Self::new(LOCATOR_TOTAL_BYTES, LOCATOR_ORDINARY_BYTES)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_ordinary_for_tests(&self) -> LocatorCharge {
+        let remaining = self.budget.ordinary_limit - lock(&self.budget.state).ordinary;
+        self.admit(remaining, LocatorAllocationClass::Ordinary)
+            .expect("remaining ordinary capacity")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn charged_bytes(&self) -> usize {
+        lock(&self.budget.state).total
+    }
+}
+
+struct WorkerAdmissionGuard(Arc<NativeLocatorPool>);
+impl Drop for WorkerAdmissionGuard {
+    fn drop(&mut self) {
+        // An unexpected worker exit must not leave ordinary construction
+        // admitting ownership that can no longer make reclamation progress.
+        lock(&self.0.budget.state).admission_enabled = false;
+    }
+}
+
+struct RetirementSlot {
+    retirement: &'static RetirementQueue,
+    index: usize,
+    armed: bool,
+}
+impl RetirementSlot {
+    fn enqueue(mut self, task: Box<dyn RetirementTask>) {
+        self.armed = false;
+        let mut state = lock(&self.retirement.state);
+        let barrier = task.is_retirement_barrier();
+        let slot = state.slot(self.index);
+        slot.task = Some(task);
+        slot.next = None;
+        slot.barrier = barrier;
+        if let Some(tail) = state.queued_tail {
+            state.slot(tail).next = Some(self.index);
+        } else {
+            state.queued = Some(self.index);
+        }
+        state.queued_tail = Some(self.index);
+        state.queued_count += 1;
+        if !barrier {
+            state.non_barrier_count += 1;
+        }
+        self.retirement.ready.notify_one();
+    }
+}
+impl Drop for RetirementSlot {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = lock(&self.retirement.state);
+        let free = state.free;
+        state.slot(self.index).next = free;
+        state.free = Some(self.index);
+    }
+}
+
+struct AllocationTask<T: LocatorRetireContents> {
+    value: Option<T>,
+    _charge: LocatorCharge,
+}
+impl<T: LocatorRetireContents> RetirementTask for AllocationTask<T> {
+    fn retire_one(&mut self) -> bool {
+        self.value
+            .as_mut()
+            .is_none_or(LocatorRetireContents::retire_one)
+    }
+    fn is_retirement_barrier(&self) -> bool {
+        self.value
+            .as_ref()
+            .is_some_and(LocatorRetireContents::is_retirement_barrier)
+    }
+}
+struct AllocationOwner<T: LocatorRetireContents> {
+    value: T,
+    task: Option<Box<AllocationTask<T>>>,
+    slot: Option<RetirementSlot>,
+}
+impl<T: LocatorRetireContents> Drop for AllocationOwner<T> {
+    fn drop(&mut self) {
+        if let (Some(slot), Some(mut task)) = (self.slot.take(), self.task.take()) {
+            task.value = Some(self.value.take_for_retirement());
+            slot.enqueue(task);
+        }
+    }
+}
+pub(crate) struct ChargedLocatorAllocation<T: LocatorRetireContents>(Arc<AllocationOwner<T>>);
+impl<T: LocatorRetireContents> Clone for ChargedLocatorAllocation<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+impl<T: LocatorRetireContents + fmt::Debug> fmt::Debug for ChargedLocatorAllocation<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.deref().fmt(f)
+    }
+}
+impl<T: LocatorRetireContents> Deref for ChargedLocatorAllocation<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0.value
+    }
+}
+impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
+    pub(crate) fn allocation_charge_bound(content_bytes: usize) -> Option<usize> {
+        content_bytes
+            .checked_add(std::mem::size_of::<AllocationOwner<T>>())
+            .and_then(|n| n.checked_add(std::mem::size_of::<AllocationTask<T>>()))
+            .and_then(|n| n.checked_add(3 * ALLOCATION_OVERHEAD))
+    }
+
+    /// Conservative attribution of one reserved queue descriptor, independent
+    /// of process-global backing which a reader does not itself keep alive.
+    pub(crate) const fn retirement_descriptor_bound() -> usize {
+        std::mem::size_of::<Slot>() + ALLOCATION_OVERHEAD
+    }
+
+    pub(crate) fn retained_charge_bound(&self) -> usize {
+        // An accessible Arc owner has not begun final Drop, so its precreated
+        // task is still present. A violated invariant refuses all admission.
+        self.0
+            .task
+            .as_ref()
+            .map_or(usize::MAX, |task| task._charge.bytes)
+            .saturating_add(Self::retirement_descriptor_bound())
+    }
+
+    pub(crate) fn ptr_eq(left: &Self, right: &Self) -> bool {
+        Arc::ptr_eq(&left.0, &right.0)
+    }
+
+    pub(crate) fn try_new(
+        pool: &Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+        content_bytes: usize,
+        construct: impl FnOnce() -> Result<T, StorageError>,
+    ) -> Result<Self, StorageError> {
+        let bytes = Self::allocation_charge_bound(content_bytes).ok_or_else(unavailable)?;
+        let charge = pool.admit(bytes, class)?;
+        let slot = pool.reserve_slot(class)?;
+        let value = construct()?;
+        Ok(Self(Arc::new(AllocationOwner {
+            value,
+            task: Some(Box::new(AllocationTask {
+                value: None,
+                _charge: charge,
+            })),
+            slot: Some(slot),
+        })))
+    }
+}
+
+#[derive(Debug)]
+struct KeyAllocation {
+    bytes: Box<[u8]>,
+}
+impl LocatorRetireContents for KeyAllocation {
+    fn retire_one(&mut self) -> bool {
+        // This separately charged physical allocation consumes its own step.
+        drop(std::mem::take(&mut self.bytes));
+        true
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            bytes: std::mem::take(&mut self.bytes),
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub(crate) struct ChargedLocatorKey(ChargedLocatorAllocation<KeyAllocation>);
+impl ChargedLocatorKey {
+    pub(crate) fn retained_charge_bound(&self) -> usize {
+        self.0.retained_charge_bound()
+    }
+
+    pub(crate) fn try_new(
+        pool: &Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+        bytes: &[u8],
+    ) -> Result<Self, StorageError> {
+        // Both the byte buffer and final-release descriptor are admitted before
+        // copying a key. Final release only queues its precreated task.
+        ChargedLocatorAllocation::try_new(pool, class, bytes.len(), || {
+            Ok(KeyAllocation {
+                bytes: bytes.into(),
+            })
+        })
+        .map(Self)
+    }
+}
+impl AsRef<[u8]> for ChargedLocatorKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.0.bytes
+    }
+}
+impl Borrow<[u8]> for ChargedLocatorKey {
+    fn borrow(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+impl PartialEq for ChargedLocatorKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+impl Eq for ChargedLocatorKey {}
+impl PartialOrd for ChargedLocatorKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ChargedLocatorKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+
+struct OwnerContents {
+    budget: Arc<Budget>,
+    class: LocatorAllocationClass,
+    released: bool,
+    retirement: &'static RetirementQueue,
+    provider_charge: Mutex<Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>>,
+    provider_control_charge:
+        Mutex<Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>>,
+}
+impl LocatorRetireContents for OwnerContents {
+    fn retire_one(&mut self) -> bool {
+        let provider_attached = self.is_retirement_barrier();
+        if provider_attached && lock(&self.retirement.state).non_barrier_count != 0 {
+            return false;
+        }
+        lock(&self.provider_charge).take();
+        lock(&self.provider_control_charge).take();
+        if !self.released {
+            let mut state = lock(&self.budget.state);
+            state.owners -= 1;
+            if self.class == LocatorAllocationClass::Ordinary {
+                state.ordinary_owners -= 1;
+            }
+            self.released = true;
+        }
+        true
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        let result = Self {
+            budget: Arc::clone(&self.budget),
+            class: self.class,
+            released: self.released,
+            retirement: self.retirement,
+            provider_charge: Mutex::new(lock(&self.provider_charge).take()),
+            provider_control_charge: Mutex::new(lock(&self.provider_control_charge).take()),
+        };
+        self.released = true;
+        result
+    }
+    fn is_retirement_barrier(&self) -> bool {
+        lock(&self.provider_charge).is_some() || lock(&self.provider_control_charge).is_some()
+    }
+}
+pub(crate) struct LocatorOwner(ChargedLocatorAllocation<OwnerContents>);
+impl Clone for LocatorOwner {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl fmt::Debug for LocatorOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LocatorOwner")
+    }
+}
+impl LocatorOwner {
+    /// The pending-provider graph marker has its own fixed slot: it must not
+    /// conflict with the later complete generation's distinct numerical charge.
+    pub(crate) fn attach_provider_control_charge(
+        &self,
+        candidate: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    ) -> Result<(), StorageError> {
+        let mut charge = self
+            .0
+            .provider_control_charge
+            .lock()
+            .map_err(|_| unavailable())?;
+        if let Some(existing) = &*charge {
+            if !Arc::ptr_eq(existing, &candidate) {
+                return Err(unavailable());
+            }
+        } else {
+            *charge = Some(candidate);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn attach_provider_charge(
+        &self,
+        candidate: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
+    ) -> Result<(), StorageError> {
+        let mut charge = self.0.provider_charge.lock().map_err(|_| unavailable())?;
+        if let Some(existing) = &*charge {
+            if !Arc::ptr_eq(existing, &candidate) {
+                return Err(unavailable());
+            }
+        } else {
+            *charge = Some(candidate);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retained_charge_bound(&self) -> usize {
+        self.0.retained_charge_bound()
+    }
+
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        ChargedLocatorAllocation::ptr_eq(&self.0, &other.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_new(
+        pool: &Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        Self::try_new_with_bytes(pool, class, 0)
+    }
+
+    /// Charge the separately owned generation descriptor before its caller allocates it.
+    pub(crate) fn try_new_with_bytes(
+        pool: &Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+        descriptor_bytes: usize,
+    ) -> Result<Self, StorageError> {
+        // Admit the optional marker's actual Arc allocation before any provider
+        // can attach it. Its reservation follows this same owner/task through
+        // final queued retirement, even after Completion has been destroyed.
+        let content_bytes = descriptor_bytes
+            .checked_add(
+                std::mem::size_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()
+                    + ALLOCATION_OVERHEAD,
+            )
+            .ok_or_else(unavailable)?;
+        {
+            let mut state = pool.budget.state.lock().map_err(|_| unavailable())?;
+            if !state.admission_enabled
+                || state.owners >= LOCATOR_MAX_OWNERS
+                || (class == LocatorAllocationClass::Ordinary
+                    && state.ordinary_owners >= LOCATOR_MAX_OWNERS - 1)
+            {
+                return Err(unavailable());
+            }
+            state.owners += 1;
+            if class == LocatorAllocationClass::Ordinary {
+                state.ordinary_owners += 1;
+            }
+        }
+        let result = ChargedLocatorAllocation::try_new(pool, class, content_bytes, || {
+            Ok(OwnerContents {
+                budget: Arc::clone(&pool.budget),
+                class,
+                released: false,
+                retirement: pool.retirement,
+                provider_charge: Mutex::new(None),
+                provider_control_charge: Mutex::new(None),
+            })
+        });
+        match result {
+            Ok(owner) => Ok(Self(owner)),
+            Err(error) => {
+                let mut state = lock(&pool.budget.state);
+                state.owners -= 1;
+                if class == LocatorAllocationClass::Ordinary {
+                    state.ordinary_owners -= 1;
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "locator_memory_tests.rs"]
+mod tests;

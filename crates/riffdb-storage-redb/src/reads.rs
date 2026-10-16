@@ -1059,9 +1059,12 @@ mod tests {
         store
             .initialize_database(database_id())
             .expect("initialize store");
-        let ports = RedbOperationalPorts {
-            shared: Arc::clone(&store.shared),
-        };
+        // Use the existing checked activation path: directly assembling ports
+        // would bypass the captured locator capability's Pending -> Complete
+        // transition and make the first fixture write legitimately unavailable.
+        let ports = store
+            .into_contract_migration_ports()
+            .expect("activate empty source");
         (path, ports)
     }
 
@@ -1088,6 +1091,7 @@ mod tests {
             .insert(target.key().as_bytes(), first_bytes.as_bytes())
             .unwrap();
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let pinned = ports.open_owned_snapshot().unwrap();
         let request = riffdb_storage_api::AuthoritativeEntityPartitionScanRequest::new(
             target.entity_type_id(),
@@ -1144,6 +1148,7 @@ mod tests {
             .insert(target.key().as_bytes(), second_bytes.as_bytes())
             .unwrap();
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let budget = ProviderBudget::new();
         let bytes = pinned
             .read_provider_entity_bytes_v1(&target, &budget)
@@ -1226,6 +1231,7 @@ mod tests {
             }
         }
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let pinned = ports.open_owned_snapshot().unwrap();
         let request = riffdb_storage_api::AuthoritativeEntityPartitionScanRequest::new(
             first_target.entity_type_id(),
@@ -1289,6 +1295,7 @@ mod tests {
             .insert(physical.key().as_bytes(), encoded.as_bytes())
             .unwrap();
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let pinned = ports.open_owned_snapshot().unwrap();
         let budget = ProviderBudget::new();
         assert!(
@@ -1591,6 +1598,10 @@ mod tests {
             );
         }
         access.commit().expect("commit event-route seed");
+        ports
+            .shared
+            .rebuild_test_source_indexes()
+            .expect("publish event-route fixture membership");
     }
 
     #[test]
@@ -1936,6 +1947,7 @@ mod tests {
             }
         }
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let pinned = ports.open_owned_snapshot().unwrap();
         let budget = ProviderBudget::new();
         let lower = filtered_index_key(1).as_bytes().to_vec();
@@ -1998,6 +2010,7 @@ mod tests {
             .insert(bad_physical.as_bytes(), encoded.as_bytes())
             .unwrap();
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let request = SnapshotIndexRangeRequestV1::new(
             lower,
             true,
@@ -2058,6 +2071,7 @@ mod tests {
                 .unwrap();
         }
         write.commit().unwrap();
+        ports.shared.rebuild_test_source_indexes().unwrap();
         let pinned = ports.open_owned_snapshot().unwrap();
         let budget = ProviderBudget::new();
         let mut after = None;

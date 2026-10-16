@@ -260,6 +260,11 @@ fn genuine_engine_42_commands_preserve_exact_outcomes_through_current_open_scrub
         };
         let (_, _, _, dormant) = opened.into_parts();
         let ports = dormant.into_operational_after_catalog_validation().unwrap();
+        let captured = ports.begin_composite_read().unwrap();
+        captured
+            .locator_capability()
+            .wait_for_builder_for_test()
+            .unwrap();
         for (outcome, bytes) in &expected {
             let actual = ports
                 .read_stored_outcome(outcome.identity())

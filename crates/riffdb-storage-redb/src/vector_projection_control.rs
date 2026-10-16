@@ -169,7 +169,10 @@ mod tests {
                 .insert(key.as_slice(), encoded.as_bytes())
                 .expect("insert fixture");
         }
-        transaction.commit().expect("commit fixture");
+        ports
+            .shared
+            .commit_durable(transaction)
+            .expect("publish fixture");
         assert_eq!(
             ports
                 .read_vector_projection_control(ready.source())

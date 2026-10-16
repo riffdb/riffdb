@@ -393,7 +393,12 @@ fn unfinished_extent_publication_yields_before_spending_or_waiting_for_a_root_pi
         matches!(readiness, Ok(Readiness::CheckpointPublication)),
         "known unfinished publication must yield before attempting a root capture"
     );
-    assert_eq!(ports.shared.extent_roots.lock().unwrap().len(), roots.len());
+    assert_eq!(
+        ports.shared.extent_roots.lock().unwrap().len(),
+        1,
+        "repeated captures share the one charged physical root for this engine identity"
+    );
+    assert!(roots.windows(2).all(|pair| Arc::ptr_eq(&pair[0], &pair[1])));
     assert!(!ports.shared.mutation_gate.is_held());
 }
 

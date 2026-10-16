@@ -72,6 +72,30 @@ type MetaTable = ReadOnlyTable<&'static str, &'static [u8]>;
 /// type differs, so it has its own field.
 const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 
+/// The actual backend owner must outlive every escaped read transaction: redb
+/// closes its backend when either owning database type is dropped, even while
+/// a read transaction still retains transactional memory.
+pub(crate) enum CheckpointEngineCustody {
+    Writable {
+        _owner: std::sync::Arc<redb::Database>,
+    },
+    ReadOnly {
+        _owner: std::sync::Arc<redb::ReadOnlyDatabase>,
+    },
+}
+
+impl From<std::sync::Arc<redb::Database>> for CheckpointEngineCustody {
+    fn from(owner: std::sync::Arc<redb::Database>) -> Self {
+        Self::Writable { _owner: owner }
+    }
+}
+
+impl From<std::sync::Arc<redb::ReadOnlyDatabase>> for CheckpointEngineCustody {
+    fn from(owner: std::sync::Arc<redb::ReadOnlyDatabase>) -> Self {
+        Self::ReadOnly { _owner: owner }
+    }
+}
+
 /// One captured redb snapshot and the table handles already resolved from it.
 ///
 /// The handles are declared before the snapshot so they drop first. Each holds
@@ -80,24 +104,84 @@ const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 /// the snapshot it was resolved from.
 pub(crate) struct CheckpointRoot {
     identity: u64,
+    locator_capability: crate::locator_capability::LocatorCapability,
     meta: OnceLock<MetaTable>,
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
     snapshot_head: OnceLock<Option<CommitSequence>>,
     transaction: ReadTransaction,
+    // Original retained extents remain resolvable after the live ports close.
+    // A resolver holds no shared engine or later locator generations.
+    history_resolver: Option<crate::history_stub::SnapshotHistoryResolverRef>,
+    engine: Option<CheckpointEngineCustody>,
 }
 
 impl CheckpointRoot {
     /// Wraps one captured snapshot with an empty handle cache.
-    pub(crate) fn new(transaction: ReadTransaction, identity: u64) -> Self {
-        Self {
+    pub(crate) fn new(
+        transaction: ReadTransaction,
+        identity: u64,
+    ) -> Result<Self, riffdb_storage_api::StorageError> {
+        let capability = crate::locator_capability::LocatorCapability::try_pending(
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )?;
+        Self::new_with_locator_capability(transaction, identity, capability)
+    }
+
+    pub(crate) fn new_with_locator_capability(
+        transaction: ReadTransaction,
+        identity: u64,
+        locator_capability: crate::locator_capability::LocatorCapability,
+    ) -> Result<Self, riffdb_storage_api::StorageError> {
+        bind_locator_source(&transaction, &locator_capability)?;
+        Ok(Self {
             identity,
+            locator_capability,
             meta: OnceLock::new(),
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
             transaction,
+            history_resolver: None,
+            engine: None,
+        })
+    }
+
+    pub(crate) fn retain_engine_and_history(
+        mut self,
+        engine: impl Into<CheckpointEngineCustody>,
+        resolver: Option<crate::history_stub::SnapshotHistoryResolverRef>,
+    ) -> Self {
+        self.engine = Some(engine.into());
+        self.history_resolver = resolver;
+        self
+    }
+
+    pub(crate) fn resolve_command_segment_value<'a>(
+        &self,
+        bytes: &'a [u8],
+    ) -> Result<std::borrow::Cow<'a, [u8]>, riffdb_storage_api::StorageError> {
+        match &self.history_resolver {
+            Some(resolver) => resolver.resolve_commits_value(bytes),
+            None => {
+                if crate::history_stub::HistoryStub::decode(bytes)?.is_some() {
+                    return Err(crate::error::storage_error(
+                        riffdb_storage_api::StorageErrorKind::Unavailable,
+                    ));
+                }
+                Ok(std::borrow::Cow::Borrowed(bytes))
+            }
         }
+    }
+
+    pub(crate) fn retained_history_custody_bound(&self) -> usize {
+        self.history_resolver
+            .as_ref()
+            .map_or(0, |resolver| resolver.retained_charge_bound())
+    }
+
+    pub(crate) fn locator_capability(&self) -> &crate::locator_capability::LocatorCapability {
+        &self.locator_capability
     }
 
     pub(crate) const fn identity(&self) -> u64 {
@@ -232,6 +316,36 @@ impl CheckpointRoot {
     }
 }
 
+pub(crate) fn bind_locator_source(
+    transaction: &ReadTransaction,
+    capability: &crate::locator_capability::LocatorCapability,
+) -> Result<(), riffdb_storage_api::StorageError> {
+    use crate::codec::{
+        decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_digest,
+    };
+    use crate::error::{precommit_storage_error, storage_error, table_error};
+    use crate::layout::{META_DATABASE_ID, META_HISTORY_INCARNATION, META_RECORD_REGISTRY};
+    let metadata = transaction.open_table(META).map_err(table_error)?;
+    let missing = || storage_error(riffdb_storage_api::StorageErrorKind::CorruptData);
+    let database = metadata
+        .get(META_DATABASE_ID)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(missing)?;
+    let history = metadata
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(missing)?;
+    let registry = metadata
+        .get(META_RECORD_REGISTRY)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(missing)?;
+    capability.bind_source(
+        *decode_database_identity_v1(database.value())?.value(),
+        *decode_history_incarnation_v1(history.value())?.value(),
+        *decode_record_registry_digest(registry.value())?.value(),
+    )
+}
+
 impl Deref for CheckpointRoot {
     type Target = ReadTransaction;
 
@@ -301,6 +415,79 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redb::ReadableDatabase;
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn readonly_checkpoint_root_retains_backend_until_its_final_clone_releases() {
+        let directory = crate::test_path::ScopedDirectory::new("readonly-root-custody");
+        let path = directory.join("source.redb");
+        let database = redb::Database::create(&path).unwrap();
+        let identity =
+            riffdb_types::DatabaseId::from_unix_milliseconds_and_random(1, [11; 10]).unwrap();
+        let encoded_identity = crate::codec::encode_database_identity_v1(identity).unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut metadata = write.open_table(META).unwrap();
+            metadata
+                .insert(crate::layout::META_DATABASE_ID, encoded_identity.as_bytes())
+                .unwrap();
+            let incarnation = crate::codec::encode_history_incarnation_v1(1).unwrap();
+            metadata
+                .insert(
+                    crate::layout::META_HISTORY_INCARNATION,
+                    incarnation.as_bytes(),
+                )
+                .unwrap();
+            let registry = crate::codec::encode_record_registry_v2(
+                riffdb_types::SchemaHash::from_bytes([3; 32]),
+            )
+            .unwrap();
+            metadata
+                .insert(crate::layout::META_RECORD_REGISTRY, registry.as_bytes())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        drop(database);
+
+        let readonly = std::sync::Arc::new(redb::ReadOnlyDatabase::open(&path).unwrap());
+        let root = std::sync::Arc::new(
+            CheckpointRoot::new(readonly.begin_read().unwrap(), 1)
+                .unwrap()
+                .retain_engine_and_history(std::sync::Arc::clone(&readonly), None),
+        );
+        let last = std::sync::Arc::clone(&root);
+        drop(readonly);
+        assert!(
+            redb::Database::open(&path).is_err(),
+            "a retained source excludes a writer"
+        );
+        assert_eq!(
+            root.meta_table()
+                .unwrap()
+                .get(crate::layout::META_DATABASE_ID)
+                .unwrap()
+                .unwrap()
+                .value(),
+            encoded_identity.as_bytes()
+        );
+        drop(root);
+        assert!(
+            redb::Database::open(&path).is_err(),
+            "the final source clone still owns the backend"
+        );
+        assert_eq!(
+            last.meta_table()
+                .unwrap()
+                .get(crate::layout::META_DATABASE_ID)
+                .unwrap()
+                .unwrap()
+                .value(),
+            encoded_identity.as_bytes()
+        );
+        drop(last);
+        drop(redb::Database::open(&path).unwrap());
+    }
 
     /// `RedbReadAccess::Current` allocates one of these per read access, so its
     /// size is a per-read cost rather than a one-off. The bound is loose enough

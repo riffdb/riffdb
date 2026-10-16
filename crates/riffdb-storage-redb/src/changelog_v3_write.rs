@@ -37,6 +37,29 @@ use crate::{
 pub(crate) struct PreparedImmediateReceipt {
     transaction: WriteTransaction,
     footprint: crate::source_continuation::SourceContinuationFootprint,
+    locator_predecessor: Option<(LocatorSourceOrigin, ChangelogHistoryStateV3)>,
+}
+
+#[derive(Clone, Copy)]
+enum LocatorSourceOrigin {
+    Physical,
+    Drained,
+}
+
+fn preserves_locator_membership(mutations: &[AuthoritativeMutationV3]) -> bool {
+    mutations.iter().all(|mutation| {
+        !matches!(
+            mutation.namespace(),
+            N::Commits
+                | N::FormatVersion
+                | N::DatabaseIdentity
+                | N::RecordRegistry
+                | N::HistoryIncarnation
+                | N::NextApplicationSequence
+                | N::AuthoritativeStateCatalog
+                | N::LeadershipEpoch
+        )
+    })
 }
 
 impl PreparedImmediateReceipt {
@@ -82,12 +105,69 @@ impl PreparedImmediateReceipt {
         Ok(Self {
             transaction,
             footprint,
+            locator_predecessor: preserves_locator_membership(receipt.mutations())
+                .then_some((LocatorSourceOrigin::Physical, history)),
         })
     }
 
     /// Commits through the existing durable-root publication/fault owner.
     pub(crate) fn commit(self, shared: &SharedRedb) -> Result<(), StorageError> {
-        shared.commit_with_source_footprint(self.transaction, self.footprint)?;
+        let class = crate::locator_memory::LocatorAllocationClass::Maintenance;
+        let capability = if let Some((origin, expected)) = self.locator_predecessor {
+            // A fresh physical transaction cannot inherit an unmaterialized
+            // composite suffix. A checked drained transaction instead begins
+            // from that exact logical predecessor, whose published frames the
+            // operation owner already materialized before mutation capture.
+            let source = match origin {
+                LocatorSourceOrigin::Physical => {
+                    crate::store::RedbReadAccess::Durable(shared.capture_checkpoint_root()?)
+                }
+                LocatorSourceOrigin::Drained => shared.begin_composite_operational_read()?,
+            };
+            let predecessor = source.locator_capability();
+            if predecessor.is_pending()
+                || crate::changelog_v3_cursor::history(&source).map_err(|error| match error {
+                    riffdb_storage_api::ChangelogCursorErrorV3::Storage(error) => error,
+                    _ => storage_error(StorageErrorKind::CorruptData),
+                })? != expected
+            {
+                crate::locator_capability::LocatorCapability::try_pending(class)?
+            } else {
+                let generation = predecessor.require_complete()?.clone();
+                generation.validate_source(&source)?;
+                crate::locator_capability::LocatorCapability::try_complete_from_source(
+                    generation,
+                    predecessor,
+                    class,
+                )?
+            }
+        } else {
+            // Legacy/unclassified capture and any command or decoder-identity
+            // change require a separately constructed exact successor.
+            crate::locator_capability::LocatorCapability::try_pending(class)?
+        };
+        shared.commit_with_source_footprint_and_locator(
+            self.transaction,
+            self.footprint,
+            capability,
+        )?;
+        #[cfg(test)]
+        crash_edge("committed");
+        Ok(())
+    }
+
+    /// Publishes a directory admitted from this operation's exact predecessor
+    /// and complete command-membership delta under the engine's root fence.
+    pub(crate) fn commit_with_locator(
+        self,
+        shared: &SharedRedb,
+        capability: crate::locator_capability::LocatorCapability,
+    ) -> Result<(), StorageError> {
+        shared.commit_with_source_footprint_and_locator(
+            self.transaction,
+            self.footprint,
+            capability,
+        )?;
         #[cfg(test)]
         crash_edge("committed");
         Ok(())
@@ -138,6 +218,7 @@ pub(crate) struct CapturedImmediateWrite {
     tables: BTreeSet<&'static str>,
     source: ChangelogAttributionV3,
     footprint: crate::source_continuation::SourceContinuationFootprint,
+    locator_origin: LocatorSourceOrigin,
 }
 
 impl CapturedImmediateWrite {
@@ -152,10 +233,11 @@ impl CapturedImmediateWrite {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let captured = Self::from_checked_drain(
+        let captured = Self::from_captured_source(
             transaction,
             source,
             crate::source_continuation::SourceContinuationFootprint::fresh(),
+            LocatorSourceOrigin::Physical,
         )?;
         if captured.history.is_none() {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
@@ -182,6 +264,15 @@ impl CapturedImmediateWrite {
         transaction: WriteTransaction,
         source: ChangelogAttributionV3,
         footprint: crate::source_continuation::SourceContinuationFootprint,
+    ) -> Result<Self, StorageError> {
+        Self::from_captured_source(transaction, source, footprint, LocatorSourceOrigin::Drained)
+    }
+
+    fn from_captured_source(
+        transaction: WriteTransaction,
+        source: ChangelogAttributionV3,
+        footprint: crate::source_continuation::SourceContinuationFootprint,
+        locator_origin: LocatorSourceOrigin,
     ) -> Result<Self, StorageError> {
         require_direct_attribution(source)?;
         // Transitional routing matches the existing journal owner. Any V3
@@ -213,6 +304,7 @@ impl CapturedImmediateWrite {
             tables,
             source,
             footprint,
+            locator_origin,
         })
     }
 
@@ -233,6 +325,10 @@ impl CapturedImmediateWrite {
 
     pub(crate) fn finish(self) -> Result<PreparedImmediateReceipt, StorageError> {
         let mutations = self.capture.finish()?;
+        let locator_predecessor = self
+            .history
+            .filter(|_| preserves_locator_membership(&mutations))
+            .map(|history| (self.locator_origin, history));
         let mut footprint = self.footprint;
         footprint.combine(self.history.map_or(
             crate::source_continuation::SourceContinuationFootprint::unknown(),
@@ -290,6 +386,7 @@ impl CapturedImmediateWrite {
         Ok(PreparedImmediateReceipt {
             transaction: self.transaction,
             footprint,
+            locator_predecessor,
         })
     }
 

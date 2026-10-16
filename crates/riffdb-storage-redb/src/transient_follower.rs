@@ -18,43 +18,34 @@ impl TransientIndexes {
         write: &WriteTransaction,
         mutations: &[AuthoritativeMutationV3],
     ) -> Result<(), StorageError> {
-        // The checked frame bounds mutations. At most two Arc references per
-        // changed commit key are retained, regardless of the history size.
-        let mut affected = Vec::new();
-        let indexes = self.command_derived.as_mut().ok_or_else(corrupt)?;
-        // Remove all old manifests first: a retained segment may be split or
-        // replaced at another key in the same authoritative transaction.
+        let previous = self.locator_generation()?;
+        let next =
+            previous.prepare_follower_receipt(mutations, LocatorAllocationClass::Maintenance)?;
+        self.install_locator_generation(next);
+        self.apply_follower_disposable_receipt(write, mutations, &previous)
+    }
+
+    pub(crate) fn apply_follower_disposable_receipt(
+        &mut self,
+        write: &WriteTransaction,
+        mutations: &[AuthoritativeMutationV3],
+        previous: &LocatorGeneration,
+    ) -> Result<(), StorageError> {
+        // The checked frame bounds changed keys. Borrow each old/new metadata
+        // entry without allocating a collection of all affected ownership.
+        let current = self.locator_generation()?;
         for mutation in mutations.iter().filter(|m| m.namespace() == N::Commits) {
             let key = decode_application_sequence_key(mutation.key()).map_err(|_| corrupt())?;
-            if let Some(segment) = indexes.remove_segment(key)? {
-                affected.push(segment);
-            }
-        }
-        for mutation in mutations.iter().filter(|m| m.namespace() == N::Commits) {
-            let Some(value) = mutation.value() else {
-                continue;
-            };
-            match riffdb_storage_api::decode_command_segment_v1(value) {
-                Ok(decoded) => {
-                    let segment = Arc::new(decoded.into_parts().0);
-                    if crate::keys::encode_application_sequence_key(segment.first_commit_sequence())
-                        != mutation.key()
-                    {
-                        return Err(corrupt());
+            for generation in [previous, &current] {
+                if let Some(segment) = generation.segments.get(&key) {
+                    for (id, (partition, _)) in &segment.events {
+                        self.refresh_route(write, &encode_event_route_key(*partition, *id))?;
+                        self.refresh_outbox(write, *id)?;
                     }
-                    indexes.apply_segment_arc(Arc::clone(&segment))?;
-                    affected.push(Arc::new(SegmentMetadata::new(&segment)?));
                 }
-                Err(error)
-                    if error.kind()
-                        == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType => {}
-                Err(_) => return Err(corrupt()),
             }
-        }
-        for segment in affected {
-            for (id, (partition, _)) in &segment.events {
-                self.refresh_route(write, &encode_event_route_key(*partition, *id))?;
-                self.refresh_outbox(write, *id)?;
+            if let Some(indexes) = self.command_derived.as_mut() {
+                indexes.payloads.remove(key)?;
             }
         }
         // All physical mutations were applied before this call. Union lookups
@@ -155,48 +146,46 @@ impl TransientIndexes {
     }
 }
 
-impl CommandDerivedIndexes {
-    // Match startup rebuild's source of truth: the immutable command events,
-    // not the presence of a locator entry in the segment manifest. Sequence and
-    // ordinal identify one bounded member without walking any retained history.
-    fn event_at(&self, id: EventId) -> Option<&(PartitionKeyHash, StoredEventRouteV1)> {
-        let (_, metadata) = self.segments.range(..=id.commit_sequence()).next_back()?;
-        metadata.events.get(&id)
-    }
-
-    fn remove_segment(
-        &mut self,
-        first: CommitSequence,
-    ) -> Result<Option<Arc<SegmentMetadata>>, StorageError> {
-        let Some(segment) = self.segments.remove(&first) else {
-            return Ok(None);
-        };
-        self.payloads.remove(first)?;
-        for entry in segment.manifest.entries() {
-            let expected = CommandDerivedLocator {
-                segment_first: entry.segment_first_commit_sequence(),
-                command_ordinal: entry.command_ordinal(),
-                member_ordinal: entry.member_ordinal(),
-                member: entry.member(),
+impl LocatorGeneration {
+    pub(crate) fn prepare_follower_receipt(
+        &self,
+        mutations: &[AuthoritativeMutationV3],
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        let mut next = self.successor(class)?;
+        // Remove all old manifests first: retention may split a segment and
+        // replace its suffix at a different key in one authoritative receipt.
+        for mutation in mutations.iter().filter(|m| m.namespace() == N::Commits) {
+            let key = decode_application_sequence_key(mutation.key()).map_err(|_| corrupt())?;
+            next.remove_segment(key)?;
+        }
+        for mutation in mutations.iter().filter(|m| m.namespace() == N::Commits) {
+            let Some(value) = mutation.value() else {
+                continue;
             };
-            if self.index_mut(entry.kind()).remove(entry.exact_key()) != Some(expected) {
-                return Err(corrupt());
+            // Live follower apply has its existing frame limits, rather than
+            // startup's recovery window. Its additional directory decode is
+            // nevertheless admitted in the aggregate native construction pool.
+            if let Some(segment) =
+                decode_native_locator_construction_segment(value, None, class, None)?
+            {
+                if crate::keys::encode_application_sequence_key(segment.first_commit_sequence())
+                    != mutation.key()
+                {
+                    return Err(corrupt());
+                }
+                next.insert_segment(&segment)?;
             }
         }
-        Ok(Some(segment))
+        Ok(next)
     }
+}
 
-    pub(super) fn index_mut(
-        &mut self,
-        kind: CommandDerivedIndexKindV1,
-    ) -> &mut BTreeMap<Vec<u8>, CommandDerivedLocator> {
-        match kind {
-            CommandDerivedIndexKindV1::Idempotency => &mut self.idempotency,
-            CommandDerivedIndexKindV1::Provenance => &mut self.provenance,
-            CommandDerivedIndexKindV1::AuditSequence => &mut self.audit_sequence,
-            CommandDerivedIndexKindV1::AuditRequest => &mut self.audit_request,
-            CommandDerivedIndexKindV1::EventRoute => &mut self.event_route,
-            CommandDerivedIndexKindV1::PendingOutbox => &mut self.pending_outbox,
-        }
+impl CommandDerivedIndexes {
+    // Immutable event metadata remains complete even if a manifest intentionally
+    // omits a standalone locator during the pre-alpha representation transition.
+    fn event_at(&self, id: EventId) -> Option<&(PartitionKeyHash, StoredEventRouteV1)> {
+        let (_, metadata) = self.segments.predecessor(&id.commit_sequence())?;
+        metadata.events.get(&id)
     }
 }

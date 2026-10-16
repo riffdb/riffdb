@@ -42,7 +42,7 @@ use riffdb_storage_api::{
     FreshColumnarProjectionControlV1, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
     OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
     OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PartitionEventRouteReader, PendingOutboxScanV1, ProjectionApplyRequestV1,
+    OwnedSnapshotReader, PartitionEventRouteReader, PendingOutboxScanV1, ProjectionApplyRequestV1,
     ProjectionApplyResult, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
     ProjectionApplySnapshotRequest, ProjectionControlOperation, ProjectionControlResult,
     ProjectionControlScanV1, ProjectionMutationRepository, ProjectionQueryReader,
@@ -77,6 +77,8 @@ use riffdb_types::{
 #[cfg(test)]
 thread_local! {
     static COLUMNAR_CONTROL_RECOVERY_READS: Cell<u64> = const { Cell::new(0) };
+    static QUERY_MODULE_COLD_READ_BEFORE_PUBLICATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -1572,19 +1574,43 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         {
             return Ok(cached);
         }
-        // Cold path once: load from storage and publish into the process view.
-        let active = QueryModuleRepository::read_active_query_module(
-            &self.shared,
-            lineage,
-            contract_version,
-            contract_bundle_hash,
-        )?;
+        // ADR-0073 keeps complete administration validation off the request
+        // path. Check the selected pointer, activation audit and module body
+        // against one immutable composite root, including concurrent pruning.
+        let (active, module) = {
+            let snapshot = self.shared.open_owned_snapshot()?;
+            let active = QueryModuleRepository::read_active_query_module(
+                &snapshot,
+                lineage,
+                contract_version,
+                contract_bundle_hash,
+            )?;
+            let module = active
+                .as_ref()
+                .map(|pointer| {
+                    QueryModuleRepository::read_query_module(&snapshot, pointer.module_hash())?
+                        .ok_or_else(poisoned_storage_bridge)
+                })
+                .transpose()?;
+            (active, module)
+        };
+        #[cfg(test)]
+        {
+            let hook =
+                QUERY_MODULE_COLD_READ_BEFORE_PUBLICATION.with(|slot| slot.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         let mut view = self.query_modules.write()?;
+        // Activation owns this guard through its durable write and publication.
+        // A publication that won while the cold read ran supersedes this fill.
+        if let Some(current) = view.active(lineage, contract_version, contract_bundle_hash) {
+            return Ok(current);
+        }
         match active.as_ref() {
             Some(pointer) => {
-                let module =
-                    QueryModuleRepository::read_query_module(&self.shared, pointer.module_hash())?
-                        .ok_or_else(poisoned_storage_bridge)?;
+                let module = module.ok_or_else(poisoned_storage_bridge)?;
                 view.install_rebuilt(pointer.clone(), module)?;
             }
             None => view.note_absent(lineage, contract_version, contract_bundle_hash),
@@ -1592,6 +1618,10 @@ impl QueryModuleRepository for SharedRedbOperationalPorts {
         Ok(active)
     }
 }
+
+#[cfg(test)]
+#[path = "storage_query_module_publication_tests.rs"]
+mod query_module_publication_tests;
 
 impl CapabilityAdministrationTransactionPort for SharedRedbOperationalPorts {
     type CreateCandidate = SharedCapabilityCreateCandidate;

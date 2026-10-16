@@ -1,12 +1,30 @@
 //! Snapshot-bound access to disposable decoded command payloads.
 use super::*;
-use crate::transient::{CommandDerivedLocator, TransientIndexes};
+#[cfg(test)]
+use crate::transient::TransientIndexes;
+use crate::transient::{CommandDerivedLocator, LocatorGeneration};
 use riffdb_storage_api::{
     CommandDerivedIndexKindV1, StoredCommandCapsuleV2, StoredCommandSegmentV1,
     StoredServiceAuditRecordV1,
 };
 
 impl RedbOperationalPorts {
+    fn captured_command_generation<'a>(
+        &self,
+        access: &'a RedbReadAccess,
+    ) -> Result<&'a LocatorGeneration, StorageError> {
+        if access.locator_capability().is_pending() {
+            // A metadata/control publication can replace the source after its
+            // predecessor's startup job was admitted. Request construction of
+            // this captured owner; never scan here or borrow a newer directory.
+            crate::locator_builder::start_locator_builder(
+                access.clone(),
+                Some(Arc::clone(&self.shared)),
+            )?;
+        }
+        access.locator_capability().require_complete()
+    }
+
     pub(crate) fn pending_outbox_delivery_count(&self) -> Result<u64, StorageError> {
         let _lease = self.acquire_indexed_read_lease()?;
         let indexes = self
@@ -26,77 +44,29 @@ impl RedbOperationalPorts {
 
     fn with_command_indexes<T, S>(
         &self,
-        required: bool,
-        present: impl FnOnce(&TransientIndexes) -> Result<bool, StorageError>,
-        capture: impl Fn(
-            &TransientIndexes,
-        )
-            -> Result<Option<(crate::transient::CapturedCommandPayload, S)>, StorageError>,
+        _required: bool,
+        present: impl FnOnce(&LocatorGeneration) -> Result<bool, StorageError>,
+        capture: impl FnOnce(
+            &LocatorGeneration,
+        ) -> Result<
+            Option<(crate::transient::CapturedCommandPayload, S)>,
+            StorageError,
+        >,
         read: impl FnOnce(&Arc<StoredCommandSegmentV1>, S) -> Result<T, StorageError>,
     ) -> Result<Option<T>, StorageError> {
-        // Complete exact metadata still linearizes a negative under publication.
-        {
-            let state = self
-                .shared
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(indexes) => {
-                    if indexes.command_segment_coverage().is_none() {
-                        return Err(storage_error(StorageErrorKind::Unavailable));
-                    }
-                    if !present(indexes)? {
-                        return Ok(None);
-                    }
-                }
-                TransientIndexState::Dormant
-                    if !required || !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
-                {
-                    return Ok(None);
-                }
-                TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
-            }
+        // Pin authority and its exact directory together. A process-current
+        // negative cannot answer for an older retained source, and pending
+        // construction is unavailable rather than evidence of absence.
+        #[cfg(test)]
+        PAYLOAD_PIN_CAPTURES.with(|count| count.set(count.get() + 1));
+        let access = self.begin_composite_read()?;
+        let generation = self.captured_command_generation(&access)?;
+        if !present(generation)? {
+            return Ok(None);
         }
-        // Capture the authoritative view outside the publication guard. Under
-        // that guard select only one immutable metadata entry and cache candidate.
-        for _ in 0..8 {
-            #[cfg(test)]
-            PAYLOAD_PIN_CAPTURES.with(|count| count.set(count.get() + 1));
-            let access = self.begin_composite_read()?;
-            let frontier = access.application_frontier()?;
-            let state = self
-                .shared
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            let selected = match &*state {
-                TransientIndexState::Ready(indexes) => {
-                    let coverage = indexes
-                        .command_segment_coverage()
-                        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
-                    if coverage > frontier {
-                        continue;
-                    }
-                    capture(indexes)?
-                }
-                TransientIndexState::Dormant
-                    if !required || !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
-                {
-                    return Ok(None);
-                }
-                TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
-            };
-            drop(state);
-            return selected
-                .map(|selected| self.resolve_captured_payload(selected, &access, read))
-                .transpose();
-        }
-        Err(storage_error(StorageErrorKind::Unavailable))
+        capture(generation)?
+            .map(|selected| self.resolve_captured_payload(selected, &access, read))
+            .transpose()
     }
 
     fn resolve_captured_payload<T, S>(
@@ -105,12 +75,22 @@ impl RedbOperationalPorts {
         access: &RedbReadAccess,
         read: impl FnOnce(&Arc<StoredCommandSegmentV1>, S) -> Result<T, StorageError>,
     ) -> Result<T, StorageError> {
-        let mut resolved = payload.resolve(|first| {
-            access.read_value(
-                JournalTable::Commits,
-                &crate::keys::encode_application_sequence_key(first),
-            )
-        })?;
+        // The current disposable cache may supply a positive candidate only.
+        // The selected generation and captured source still validate its bytes.
+        let payload = {
+            let state = self
+                .shared
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(indexes) => {
+                    indexes.capture_payload_candidate(payload)?
+                }
+                TransientIndexState::Dormant | TransientIndexState::Invalid => payload,
+            }
+        };
+        let mut resolved = payload.resolve_at_access(access)?;
         // Resolution and conservative ownership charging have finished. Only
         // reinsert if exactly this metadata entry still belongs to the index.
         let state = self
@@ -205,29 +185,14 @@ impl RedbOperationalPorts {
         access: &RedbReadAccess,
         sequence: AdministrationSequence,
     ) -> Result<Option<StoredServiceAuditRecordV1>, StorageError> {
-        let frontier = access.application_frontier()?;
-        self.ensure_command_audit_index()?;
-        let state = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let captured = match &*state {
-            TransientIndexState::Ready(indexes) => indexes.capture_command_member(
-                CommandDerivedIndexKindV1::AuditSequence,
-                &crate::keys::encode_audit_key(sequence),
-            )?,
-            TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        drop(state);
+        let generation = self.captured_command_generation(access)?;
+        let captured = generation.capture_command_member(
+            CommandDerivedIndexKindV1::AuditSequence,
+            &crate::keys::encode_audit_key(sequence),
+        )?;
         let Some((payload, locator)) = captured else {
             return Ok(None);
         };
-        if frontier.is_none_or(|frontier| payload.last_sequence() > frontier) {
-            return Ok(None);
-        }
         self.resolve_captured_payload((payload, locator), access, |segment, locator| {
             crate::transient::command_audit_from_locator(segment, locator, sequence)
                 .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
@@ -241,50 +206,38 @@ impl RedbWriteAccess {
         &self,
         kind: riffdb_storage_api::CommandDerivedIndexKindV1,
         exact_key: &[u8],
-    ) -> Result<
-        Option<(
-            Arc<riffdb_storage_api::StoredCommandSegmentV1>,
-            crate::transient::CommandDerivedLocator,
-        )>,
-        StorageError,
-    > {
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let published = match &*transient {
-            TransientIndexState::Ready(indexes) => {
-                indexes.command_derived_member(kind, exact_key, |first| {
+    ) -> Result<Option<(Arc<StoredCommandSegmentV1>, CommandDerivedLocator)>, StorageError> {
+        let generation = self.command_locator_generation()?;
+        let mut found = generation
+            .capture_command_member(kind, exact_key)?
+            .map(|(payload, locator)| {
+                let resolved = payload.resolve(|first| {
                     self.read_command_value(
                         crate::journal::JournalTable::Commits,
                         &crate::keys::encode_application_sequence_key(first),
                     )
-                })?
-            }
-            TransientIndexState::Dormant
-                if !self.shared.bounded_clean_startup.load(Ordering::Acquire) =>
-            {
-                None
-            }
-            TransientIndexState::Dormant | TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .command_derived_member(kind, exact_key);
-        drop(transient);
-        if published.is_some() && unpublished.is_some() {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        if let Some(found) = published.or(unpublished) {
-            return Ok(Some(found));
-        }
-        let mut found = None;
+                })?;
+                let command = resolved
+                    .segment
+                    .commands()
+                    .get(usize::from(locator.command_ordinal))
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+                if crate::transient::expected_manifest_key(
+                    command,
+                    kind,
+                    locator.member,
+                    locator.member_ordinal,
+                )?
+                .as_slice()
+                    != exact_key
+                {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                Ok((resolved.segment, locator))
+            })
+            .transpose()?;
+        // Already sealed private predecessors belong to the captured immutable
+        // generation. Only this access's unsealed subgroup needs delta lookup.
         if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
             for delta in &epoch.transient_deltas {
                 if let Some(member) = delta.command_derived_member(kind, exact_key)
@@ -301,57 +254,24 @@ impl RedbWriteAccess {
         &self,
         sequence: riffdb_types::AdministrationSequence,
     ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
-        // Publication moves a segment out of the unpublished index and into the
-        // published one while holding both locks. Both probes must run under one
-        // continuous transient guard, exactly as the sibling lookups do: a guard
-        // released between them lets a concurrent publication land in the gap and
-        // hide a record that never left the store.
-        let transient = self
-            .shared
-            .transient_indexes
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut found = match &*transient {
-            TransientIndexState::Ready(indexes) => {
-                indexes.command_audit_record(sequence, |first| {
+        let generation = self.command_locator_generation()?;
+        let mut found = generation
+            .capture_command_member(
+                CommandDerivedIndexKindV1::AuditSequence,
+                &crate::keys::encode_audit_key(sequence),
+            )?
+            .map(|(payload, locator)| {
+                let resolved = payload.resolve(|first| {
                     self.read_command_value(
                         crate::journal::JournalTable::Commits,
                         &crate::keys::encode_application_sequence_key(first),
                     )
-                })?
-            }
-            TransientIndexState::Dormant => None,
-            TransientIndexState::Invalid => {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            }
-        };
-        let unpublished = self
-            .shared
-            .unpublished_command_indexes
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .command_audit_record(sequence);
-        drop(transient);
-        if found.is_some() && unpublished.is_some() {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        found = found.or(unpublished);
+                })?;
+                crate::transient::command_audit_from_locator(&resolved.segment, locator, sequence)
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
+            })
+            .transpose()?;
         if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
-            if let Some(record) = epoch
-                .transient_deltas
-                .last()
-                .and_then(TransientIndexDelta::command_audit_tail)
-                .filter(|record| record.administration_sequence() == sequence)
-                .cloned()
-            {
-                if found.is_some() {
-                    return Err(storage_error(StorageErrorKind::CorruptData));
-                }
-                return Ok(Some(record));
-            }
-            // A non-tail member may still belong to the newest segment.
-            // The fast tail probe must not consume that segment before the
-            // exact-member search, which also preserves duplicate detection.
             for delta in epoch.transient_deltas.iter().rev() {
                 if let Some(record) = delta.command_audit_record(sequence)
                     && found.replace(record).is_some()
@@ -403,8 +323,12 @@ impl RedbOperationalPorts {
             indexes.command_segment_coverage().is_some(),
             "fixture metadata must be complete"
         );
+        let generation = indexes.locator_generation().unwrap();
         *self.shared.transient_indexes.write().unwrap() =
             crate::transient::TransientIndexState::Ready(indexes);
+        self.shared
+            .bind_test_locator_generation(generation)
+            .unwrap();
     }
 
     fn check_payload_publication_released<T>(&self, read: impl FnOnce() -> T) -> T {
@@ -588,6 +512,17 @@ impl RedbOperationalPorts {
                         .insert(key.as_slice(), b"corrupt successor".as_slice())
                         .unwrap();
                     shared.commit_durable(write).unwrap();
+                    let generation = {
+                        let state = shared.transient_indexes.read().unwrap();
+                        let TransientIndexState::Ready(indexes) = &*state else {
+                            panic!("fixture metadata ready");
+                        };
+                        indexes.locator_generation().unwrap()
+                    };
+                    // Deliberately retain the expected directory while making
+                    // its newly captured authority corrupt. The point decoder
+                    // must reject the row even with a valid old cache entry.
+                    shared.bind_test_locator_generation(generation).unwrap();
                 }
             }));
         });
@@ -672,50 +607,60 @@ mod tests {
         ));
     }
 
-    // req: REP-002, OUT-001
+    // req: REP-002, OUT-001, TXN-042, STO-032
     #[test]
-    fn exact_negative_lookup_does_not_capture_a_payload_read_view() {
-        let directory = crate::test_path::ScopedDirectory::new("review-negative");
-        let path = directory.join("db.redb");
-        let store = RedbStore::open(&path).unwrap();
-        let ports = RedbOperationalPorts {
-            shared: store.shared,
-        };
-        {
-            let mut state = ports.shared.transient_indexes.write().unwrap();
-            *state = TransientIndexState::Ready(TransientIndexes::default());
-        }
+    fn exact_negative_lookup_requires_captured_complete_directory_without_payload_decode() {
+        let (_path, ports) = crate::derived::operational("review-negative");
         PAYLOAD_PIN_CAPTURES.with(|count| count.set(0));
+        crate::transient::PAYLOAD_COLD_DECODES.with(|count| count.set(0));
         let result = ports.with_command_indexes::<(), ()>(
             false,
-            |indexes| indexes.has_command_at(CommitSequence::first()),
-            |indexes| {
-                indexes
+            |generation| generation.has_command_at(CommitSequence::first()),
+            |generation| {
+                generation
                     .capture_command_at(CommitSequence::first())
                     .map(|payload| payload.map(|payload| (payload, ())))
             },
             |_, _| panic!("negative lookup must not resolve a payload"),
         );
         assert_eq!(result.unwrap(), None);
-        assert_eq!(PAYLOAD_PIN_CAPTURES.with(std::cell::Cell::get), 0);
-        // A positive forces a capture, which refuses this deliberately
-        // uninitialized fixture rather than treating it as payload absence.
+        assert_eq!(
+            PAYLOAD_PIN_CAPTURES.with(std::cell::Cell::get),
+            1,
+            "even absence must bind its directory to one captured source"
+        );
+        assert_eq!(
+            crate::transient::PAYLOAD_COLD_DECODES.with(std::cell::Cell::get),
+            0
+        );
+        // Disposable process-current state is never negative authority for the
+        // still-complete captured owner.
+        *ports.shared.transient_indexes.write().unwrap() = TransientIndexState::Invalid;
+        assert_eq!(
+            ports.indexed_command_at(CommitSequence::first()).unwrap(),
+            None
+        );
+    }
+
+    // req: TXN-042, STO-032, REC-001
+    #[test]
+    fn pending_locator_source_never_returns_a_false_negative() {
+        let directory = crate::test_path::ScopedDirectory::new("review-pending-negative");
+        let store = RedbStore::open(directory.join("db.redb")).unwrap();
+        let ports = RedbOperationalPorts {
+            shared: store.shared,
+        };
+        // Neither a dormant process cache nor a pending source capability may
+        // turn a request for unknown command membership into a successful None.
         assert!(
             ports
-                .with_command_indexes(
+                .with_command_indexes::<(), ()>(
                     false,
-                    |_| Ok(true),
-                    |indexes| indexes
-                        .capture_command_at(CommitSequence::first())
-                        .map(|payload| payload.map(|payload| (payload, ()))),
-                    |_, _| Ok(())
+                    |_| Ok(false),
+                    |_| Ok(None),
+                    |_, _| panic!("pending source cannot resolve a payload"),
                 )
                 .is_err()
         );
-        assert_eq!(PAYLOAD_PIN_CAPTURES.with(std::cell::Cell::get), 1);
-        *ports.shared.transient_indexes.write().unwrap() = TransientIndexState::Invalid;
-        assert!(ports.indexed_command_at(CommitSequence::first()).is_err());
-        assert_eq!(PAYLOAD_PIN_CAPTURES.with(std::cell::Cell::get), 1);
-        drop(ports);
     }
 }

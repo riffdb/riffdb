@@ -76,6 +76,8 @@ pub(crate) struct ChangelogSuffix {
     head: Option<Arc<SourceNode>>,
     frames: usize,
     bytes: usize,
+    // Cached retained source ownership; point/provider capture never walks it.
+    ownership_bytes: usize,
 }
 
 impl ChangelogSuffix {
@@ -85,6 +87,10 @@ impl ChangelogSuffix {
     pub(crate) fn has_sources(&self) -> bool {
         self.head.is_some()
     }
+    pub(crate) fn retained_ownership_bound(&self) -> usize {
+        self.ownership_bytes
+    }
+
     pub(crate) fn from_checkpoint(root: &CheckpointRoot) -> Result<Self, StorageError> {
         // Transitional routing only. A V3 cursor never serves an inactive view;
         // full startup owns receipted activation and the exact registry decision.
@@ -99,6 +105,7 @@ impl ChangelogSuffix {
             head: None,
             frames: 0,
             bytes: 0,
+            ownership_bytes: 0,
         })
     }
 
@@ -161,6 +168,26 @@ impl ChangelogSuffix {
         {
             return Err(limit());
         }
+        let source_bytes = source.mutations.iter().try_fold(
+            std::mem::size_of::<SourceNode>()
+                + std::mem::size_of::<Source>()
+                + 17 * std::mem::size_of::<Weak<SourceNode>>()
+                + 256,
+            |bytes, mutation| {
+                bytes
+                    .checked_add(std::mem::size_of::<CompositeMutationV1>())
+                    .and_then(|bytes| bytes.checked_add(mutation.key().len()))
+                    .and_then(|bytes| bytes.checked_add(64))
+                    .and_then(|bytes| {
+                        bytes.checked_add(mutation.value().map_or(0, |value| value.len() + 64))
+                    })
+                    .ok_or_else(limit)
+            },
+        )?;
+        let ownership_bytes = self
+            .ownership_bytes
+            .checked_add(source_bytes)
+            .ok_or_else(limit)?;
         self.history = Some(source.history);
         let mut ancestors = Vec::with_capacity(17);
         if let Some(predecessor) = self.head.as_ref() {
@@ -180,6 +207,7 @@ impl ChangelogSuffix {
         }));
         self.frames = frames;
         self.bytes = bytes;
+        self.ownership_bytes = ownership_bytes;
         Ok(())
     }
 

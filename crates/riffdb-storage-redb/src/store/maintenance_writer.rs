@@ -281,6 +281,20 @@ impl RedbWriteAccess {
                     .shared
                     .rebuild_composite_stage_for_frame(&composite_predecessor, &frame)?;
             }
+            // Pruning changes exact command membership. Admit and attach its
+            // successor directory before the journal lane can make it durable.
+            let mut locator_generation = composite_predecessor
+                .locator_capability()
+                .require_complete()?
+                .clone();
+            if let Some(prune) = &prune {
+                locator_generation = locator_generation
+                    .prepare_history_prune(&prune.segments, LocatorAllocationClass::Maintenance)?;
+            }
+            composite_stage.set_locator_generation_with_class(
+                locator_generation,
+                LocatorAllocationClass::Maintenance,
+            )?;
             let physical_bytes = crate::journal::extent_frame_bytes(encoded_bytes)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             let next_transitions = runtime
@@ -566,7 +580,10 @@ impl SharedRedb {
         }
         // The source owner supplied its ordinarily granted FIFO lease and exact
         // acknowledged pin. No checkpoint polling, headroom drain or lane creation.
-        let stage = crate::composite_view::RedbCompositeMutationStage::from_published(&predecessor);
+        let stage = crate::composite_view::RedbCompositeMutationStage::from_published_with_class(
+            &predecessor,
+            LocatorAllocationClass::Maintenance,
+        )?;
         Ok(RedbWriteAccess {
             shared: Arc::clone(self),
             transaction: None,

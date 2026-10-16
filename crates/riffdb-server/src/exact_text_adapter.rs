@@ -69,7 +69,7 @@ fn read_application_head(
     let _work = budget
         .reserve(32 * 1024)
         .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
-    let snapshot = storage.pin()?;
+    let snapshot = storage.pin_admitted_v1(budget)?;
     Ok(snapshot.application_frontier()?.map_or(
         FrontierPosition::BeforeFirst,
         FrontierPosition::AppliedThrough,
@@ -2751,7 +2751,7 @@ fn rebuild_long_pattern_partition(
         .map_err(|_| RebuildFailure::Transient)?;
     let snapshot = runtime
         .storage
-        .pin()
+        .pin_admitted_v1(&runtime.ownership_graph.budget)
         .map_err(|_| RebuildFailure::Transient)?;
     if snapshot
         .application_frontier()
@@ -2780,7 +2780,7 @@ fn rebuild_long_pattern_partition(
         )
         .map_err(|_| RebuildFailure::Integrity)?;
         let page = storage
-            .pin()
+            .pin_admitted_v1(&runtime.ownership_graph.budget)
             .map_err(|_| RebuildFailure::Transient)?
             .read_provider_entity_partition_records_v1(&request, &runtime.ownership_graph.budget)
             .map_err(|_| RebuildFailure::Transient)?;
@@ -2805,7 +2805,9 @@ fn rebuild_long_pattern_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         let candidates = records.keys().cloned().collect::<Vec<_>>();
         let candidate_set = records.keys().cloned().collect::<BTreeSet<_>>();
-        let policy_snapshot = storage.pin().map_err(|_| RebuildFailure::Transient)?;
+        let policy_snapshot = storage
+            .pin_admitted_v1(&runtime.ownership_graph.budget)
+            .map_err(|_| RebuildFailure::Transient)?;
         let admission = authorize_provider_projected_candidates(
             &policy_snapshot,
             work,
@@ -3654,7 +3656,7 @@ fn read_complete_tokenized_partition(
         .collect::<BTreeSet<_>>();
     let snapshot = runtime
         .storage
-        .pin()
+        .pin_admitted_v1(&runtime.ownership_graph.budget)
         .map_err(|_| RebuildFailure::Transient)?;
     let catalog = snapshot
         .read_active_catalog()
@@ -5566,7 +5568,9 @@ query SearchDocuments($org_id: Document.org_id, $query: Document.title,
             .expect("next rebuild")
             .0;
         let compact = rebuild.split_whitespace().collect::<String>();
-        assert!(compact.contains("runtime.storage.pin()"));
+        assert!(
+            compact.contains("runtime.storage.pin_admitted_v1(&runtime.ownership_graph.budget)")
+        );
         assert!(rebuild.contains("read_provider_entity_partition_records_v1(&request"));
     }
 

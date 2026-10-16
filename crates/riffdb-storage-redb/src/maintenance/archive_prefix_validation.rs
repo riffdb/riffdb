@@ -259,14 +259,17 @@ impl RedbValidatedPrivateArchiveRestore {
         {
             return Ok(snapshot);
         }
-        let database = read_only_database(&self.candidate.file)?;
+        let database = Arc::new(read_only_database(&self.candidate.file)?);
         let read = database.begin_read().map_err(unavailable)?;
         self.candidate.binding.validate(&read)?;
         if sha256_file(self.staged_database_file())? != self.checksum {
             return Err(corrupt());
         }
         self.candidate.verify_private()?;
-        let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+        let root = Arc::new(
+            crate::checkpoint_root::CheckpointRoot::new(read, 0)?
+                .retain_engine_and_history(Arc::clone(&database), None),
+        );
         Ok(crate::RedbOwnedSnapshot::from_read_access(
             crate::store::RedbReadAccess::Durable(root),
         ))

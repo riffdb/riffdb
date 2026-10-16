@@ -10,12 +10,71 @@ The evidence checker is preparatory acceptance code.
 
 ## Current status (2026-10-15 UTC)
 
-WP-825 remains open. Neither the eight-hour rehearsal nor the 24-hour campaign
-has started. Native recovery and the scaffold test correction are committed as
-`4ae2070f`. Merge `f176342b` adds seven main commits through `13342b206`, including
-money/decimal, authoring, scaffold and MCP fixes. Merge `6f2a60b7` also brings in
-main's ADR-0305 implementation through `a2939370`. New shipping binaries and
-complete CI for that latest combined source remain pending.
+WP-825 remains open. The actual eight-hour rehearsal at `5be13d11` failed at
+the 60-minute additive deployment, before the scheduled 90-minute restore.
+Twelve complete windows delivered **360,000 commands and 1,440,000 reads** with
+zero retries. The final window recorded p95 **2.617 ms** and p99 **6.129 ms**.
+The successor deployment returned `RDB-STORAGE-0101` for `GetQueryModule` on
+contract version two. The outer `resource_roster_exit` records that failed
+child; it does not establish memory exhaustion. Original media and receipts
+are preserved, and the offline finalizer correctly refuses the failed run.
+
+That frozen revision had passed full CI (**7,141 tests**, 25 existing skips),
+the native recovery matrix, all ten original offline crash cases, and the saved
+primary-loss component in **47.805308 seconds**. Those prerequisites do not
+qualify the failed live campaign. The actual scheduled restore remains untested;
+the 24-hour campaign remains unstarted.
+
+Investigation reproduced a native consistency defect with a genuine command
+fixture and online retention: the cold module getter combines checkpoint audit
+rows with a newer transient command index and falsely reports `CorruptData`.
+The test verifies that every original audit, outcome and provenance survives
+retention. A separate real-storage test reproduces an obsolete cold cache fill
+replacing a newly activated module pointer. These failures take 0.39 and 0.12
+seconds respectively, without replaying an hour of load.
+
+Reopening a copy masks the live failure but exposes an additional cost: the
+first absent-module lookup scans the administration history for **9.181683
+seconds**. The server correction uses the existing immutable snapshot's exact
+pointer, activation-audit and module-body checks, then rechecks the current view
+under its publication guard. ADR-0073 already keeps complete history validation
+off request paths, and ADR-0182 requires touched-row validation on access.
+The explicit full storage-port validator remains unchanged. Module-absence and
+activation-audit controls, two server publication schedules and scoped Clippy
+pass. The resumed public deployment on a copy of the failed population finishes
+in **2.318469 seconds** after its ordinary startup scrub completes, without
+preceding module reads or application writes. That copy already contains the V2
+contract activation from the failed run, so fresh V1-to-V2 timing remains a
+separate gate. Two immediate post-open measurements overlap scrub and take
+**5.330028** and **5.225479 seconds**; these timing failures remain evidence.
+
+Expanded tests independently reproduce a deeper native snapshot defect: both
+outcome and provenance reads return false absence after current-index pruning.
+The [locator ownership repair design](WP-825-SNAPSHOT-LOCATOR-REPAIR.md)
+requires immutable exact directories published and retained with their source
+roots. The maintainer accepted ADR-0313 and its WP-825 registration, including the
+new aggregate memory and bounded startup policy. Focused checks pass genuine
+retention, publication and source-lifetime cases, both server cold-publication
+interleavings, full startup, follower reconnect, graceful-close, legacy-engine
+lifetime and builder checks. All nine provider ownership tests and scoped Clippy
+for the four changed crates pass. Broader reclamation/control checks pass 118 of
+124 cases. Follow-up check 1378 passes all six failures and two new membership
+regressions after repairing the generic immediate metadata-only publication path.
+
+The saved retained-population measurement charges a peak of 310.9 MiB to the
+512-MiB native pool. It proves one generation fits, while retained-old-generation
+peak, large legal layouts and workload interference still require measurements.
+Main is integrated through `067a0f7b` at merge checkpoint `f12a2888`.
+The preceding full native library run passes 1,367 cases, with one owned catalog
+migration failure and one existing ignored case. Focused check 1384 repairs the
+internal cached-engine ownership seam and passes the original failure, an escaped
+snapshot negative control, nine migration cases and 34 owned-backup cases.
+Scoped Clippy, handbook and allowed-path checks pass; final complete CI remains open.
+The combined repair has not passed full qualification. No workload or campaign
+deadline changes are proposed. Latest main will be integrated before the
+24-hour campaign.
+
+The following observations describe preceding revisions.
 
 At the preceding integrated revision `aee503eb`, all 7,136 workspace tests and
 workspace Clippy pass. Full CI then stops in operator acceptance: the retained

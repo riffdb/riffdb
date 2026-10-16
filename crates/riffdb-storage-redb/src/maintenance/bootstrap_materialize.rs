@@ -480,7 +480,7 @@ fn verify_authority(
     let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(
         database.begin_read().map_err(unavailable)?,
         0,
-    ));
+    )?);
     let mut input = crate::changelog_v3_cursor::state::open_attached(
         root,
         transfer.manifest().fence().history(),

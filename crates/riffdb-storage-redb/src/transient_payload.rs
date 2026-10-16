@@ -1,6 +1,5 @@
 //! Disposable payload retention, separate from complete exact index metadata.
 use super::*;
-use riffdb_storage_api::CommandSegmentManifestV1;
 use riffdb_types::DatabaseId;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -87,57 +86,232 @@ fn decoded_charge(segment: &StoredCommandSegmentV1, wire_bytes: usize) -> Option
         })
 }
 
+pub(super) type SegmentMetadataRef = ChargedLocatorAllocation<SegmentMetadata>;
+
+pub(super) struct MetadataManifestEntry {
+    kind: CommandDerivedIndexKindV1,
+    key: ChargedLocatorKey,
+    locator: CommandDerivedLocator,
+}
+
+impl MetadataManifestEntry {
+    pub(super) fn kind(&self) -> CommandDerivedIndexKindV1 {
+        self.kind
+    }
+    pub(super) fn exact_key(&self) -> &[u8] {
+        self.key.as_ref()
+    }
+    pub(super) fn charged_key(&self) -> ChargedLocatorKey {
+        self.key.clone()
+    }
+    pub(super) fn locator(&self) -> CommandDerivedLocator {
+        self.locator
+    }
+    pub(super) fn segment_first_commit_sequence(&self) -> CommitSequence {
+        self.locator.segment_first
+    }
+    pub(super) fn command_ordinal(&self) -> u16 {
+        self.locator.command_ordinal
+    }
+    pub(super) fn member_ordinal(&self) -> u16 {
+        self.locator.member_ordinal
+    }
+    pub(super) fn member(&self) -> CommandDerivedMemberV1 {
+        self.locator.member
+    }
+}
+
+#[derive(Default)]
+pub(super) struct MetadataManifest {
+    entries: Vec<MetadataManifestEntry>,
+}
+impl MetadataManifest {
+    pub(super) fn entries(&self) -> &[MetadataManifestEntry] {
+        &self.entries
+    }
+}
+
 pub(super) struct SegmentMetadata {
     pub(super) first: CommitSequence,
     pub(super) last: CommitSequence,
     pub(super) digest: CommandSegmentDigestV1,
     database: DatabaseId,
     history: u64,
-    pub(super) manifest: CommandSegmentManifestV1,
+    pub(super) manifest: MetadataManifest,
     pub(super) events: BTreeMap<EventId, (PartitionKeyHash, StoredEventRouteV1)>,
+    pub(super) key_ownership_bytes: usize,
+    construction_error: Option<StorageErrorKind>,
+}
+
+impl LocatorRetireContents for SegmentMetadata {
+    fn retire_one(&mut self) -> bool {
+        if self.manifest.entries.pop().is_some() {
+            return false;
+        }
+        if self.events.pop_first().is_some() {
+            return false;
+        }
+        true
+    }
+
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            first: self.first,
+            last: self.last,
+            digest: self.digest,
+            database: self.database,
+            history: self.history,
+            manifest: std::mem::take(&mut self.manifest),
+            events: std::mem::take(&mut self.events),
+            key_ownership_bytes: self.key_ownership_bytes,
+            construction_error: self.construction_error,
+        }
+    }
 }
 
 impl SegmentMetadata {
-    pub(super) fn new(segment: &StoredCommandSegmentV1) -> Result<Self, StorageError> {
-        let mut events = BTreeMap::new();
-        for command in segment.commands() {
-            for event in command.events() {
-                if events
-                    .insert(
-                        event.event_id(),
-                        (
-                            command.base().commit().partition_hash(),
-                            StoredEventRouteV1::new(
-                                event.event_id(),
-                                event.event_type_id(),
-                                event.event_hash(),
-                            ),
-                        ),
-                    )
-                    .is_some()
-                {
-                    return Err(corrupt());
+    pub(super) fn try_new(
+        pool: &Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+        segment: &StoredCommandSegmentV1,
+    ) -> Result<SegmentMetadataRef, StorageError> {
+        let entry_count = segment.manifest().entries().len();
+        let event_count = segment
+            .commands()
+            .iter()
+            .try_fold(0usize, |count, command| {
+                count
+                    .checked_add(command.events().len())
+                    .ok_or_else(unavailable)
+            })?;
+        // Exact Vec capacity plus conservative B-tree node/header ownership.
+        // The wrapper separately admits its live value and retirement task.
+        let content_bytes = entry_count
+            .checked_mul(std::mem::size_of::<MetadataManifestEntry>())
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| {
+                n.checked_add(event_count.checked_mul(
+                    4 * (std::mem::size_of::<(EventId, (PartitionKeyHash, StoredEventRouteV1))>()
+                        + 64),
+                )?)
+            })
+            .and_then(|n| n.checked_add(128))
+            .ok_or_else(unavailable)?;
+        let metadata = ChargedLocatorAllocation::try_new(pool, class, content_bytes, || {
+            let mut metadata = Self {
+                first: segment.first_commit_sequence(),
+                last: segment.last_commit_sequence(),
+                digest: segment.segment_digest(),
+                database: segment.database_id(),
+                history: segment.history_incarnation(),
+                manifest: MetadataManifest {
+                    entries: Vec::with_capacity(entry_count),
+                },
+                events: BTreeMap::new(),
+                key_ownership_bytes: 0,
+                construction_error: None,
+            };
+            // Idempotency construction holds its canonical identity key and
+            // one expected-key copy simultaneously. Admit both maximum legal
+            // capacities and their allocation headers before encoding either.
+            let built = (|| {
+                let _scratch = pool.admit(
+                    2 * riffdb_storage_api::MAX_IDEMPOTENCY_IDENTITY_KEY_V1_BYTES + 256,
+                    class,
+                )?;
+                for entry in segment.manifest().entries() {
+                    if entry.segment_first_commit_sequence() != metadata.first {
+                        return Err(corrupt());
+                    }
+                    let command = segment
+                        .commands()
+                        .get(usize::from(entry.command_ordinal()))
+                        .ok_or_else(corrupt)?;
+                    let expected = expected_manifest_key(
+                        command,
+                        entry.kind(),
+                        entry.member(),
+                        entry.member_ordinal(),
+                    )?;
+                    let member = match entry.kind() {
+                        CommandDerivedIndexKindV1::Idempotency
+                        | CommandDerivedIndexKindV1::Provenance => CommandDerivedMemberV1::Command,
+                        CommandDerivedIndexKindV1::AuditSequence
+                        | CommandDerivedIndexKindV1::AuditRequest => entry.member(),
+                        CommandDerivedIndexKindV1::EventRoute
+                        | CommandDerivedIndexKindV1::PendingOutbox => CommandDerivedMemberV1::Event,
+                    };
+                    if entry.member() != member || entry.exact_key() != expected {
+                        return Err(corrupt());
+                    }
+                    let key = ChargedLocatorKey::try_new(pool, class, entry.exact_key())?;
+                    metadata.key_ownership_bytes = metadata
+                        .key_ownership_bytes
+                        .checked_add(key.retained_charge_bound())
+                        .ok_or_else(unavailable)?;
+                    metadata.manifest.entries.push(MetadataManifestEntry {
+                        kind: entry.kind(),
+                        key,
+                        locator: CommandDerivedLocator {
+                            segment_first: entry.segment_first_commit_sequence(),
+                            command_ordinal: entry.command_ordinal(),
+                            member_ordinal: entry.member_ordinal(),
+                            member: entry.member(),
+                        },
+                    });
                 }
-            }
+                for command in segment.commands() {
+                    for event in command.events() {
+                        if metadata
+                            .events
+                            .insert(
+                                event.event_id(),
+                                (
+                                    command.base().commit().partition_hash(),
+                                    StoredEventRouteV1::new(
+                                        event.event_id(),
+                                        event.event_type_id(),
+                                        event.event_hash(),
+                                    ),
+                                ),
+                            )
+                            .is_some()
+                        {
+                            return Err(corrupt());
+                        }
+                    }
+                }
+                Ok::<(), StorageError>(())
+            })();
+            metadata.construction_error = built.err().map(|error| error.kind());
+            Ok(metadata)
+        })?;
+        if let Some(kind) = metadata.construction_error {
+            return Err(StorageError::new(kind, None));
         }
-        Ok(Self {
-            first: segment.first_commit_sequence(),
-            last: segment.last_commit_sequence(),
-            digest: segment.segment_digest(),
-            database: segment.database_id(),
-            history: segment.history_incarnation(),
-            manifest: segment.manifest().clone(),
-            events,
-        })
+        Ok(metadata)
     }
 
-    fn validate(&self, segment: &StoredCommandSegmentV1) -> Result<(), StorageError> {
+    pub(super) fn validate(&self, segment: &StoredCommandSegmentV1) -> Result<(), StorageError> {
         if segment.first_commit_sequence() != self.first
             || segment.last_commit_sequence() != self.last
             || segment.segment_digest() != self.digest
             || segment.database_id() != self.database
             || segment.history_incarnation() != self.history
-            || segment.manifest() != &self.manifest
+            || segment.manifest().entries().len() != self.manifest.entries.len()
+            || !segment
+                .manifest()
+                .entries()
+                .iter()
+                .zip(&self.manifest.entries)
+                .all(|(a, b)| {
+                    a.kind() == b.kind()
+                        && a.exact_key() == b.exact_key()
+                        && a.segment_first_commit_sequence() == b.segment_first_commit_sequence()
+                        && a.command_ordinal() == b.command_ordinal()
+                        && a.member_ordinal() == b.member_ordinal()
+                        && a.member() == b.member()
+                })
         {
             return Err(corrupt());
         }
@@ -200,29 +374,54 @@ pub(super) struct PayloadCache {
 /// Exactly one selected metadata entry and at most one disposable cache entry.
 /// The caller retains its independent immutable storage view as the authority.
 pub(crate) struct CapturedCommandPayload {
-    metadata: Arc<SegmentMetadata>,
+    pub(super) metadata: SegmentMetadataRef,
     cached: Option<CachedPayload>,
 }
 
 pub(crate) struct ResolvedCommandPayload {
-    metadata: Arc<SegmentMetadata>,
+    metadata: SegmentMetadataRef,
     pub(crate) segment: Arc<StoredCommandSegmentV1>,
     retained: Option<CachedPayload>,
 }
 
 impl CapturedCommandPayload {
-    pub(crate) fn last_sequence(&self) -> CommitSequence {
-        self.metadata.last
+    pub(super) fn without_cache(metadata: SegmentMetadataRef) -> Self {
+        Self {
+            metadata,
+            cached: None,
+        }
     }
-
     pub(crate) fn resolve(
         self,
         load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
     ) -> Result<ResolvedCommandPayload, StorageError> {
+        self.resolve_with_source(load, None)
+    }
+
+    pub(crate) fn resolve_at_access(
+        self,
+        access: &crate::store::RedbReadAccess,
+    ) -> Result<ResolvedCommandPayload, StorageError> {
+        self.resolve_with_source(
+            |first| {
+                access.read_value(
+                    crate::journal::JournalTable::Commits,
+                    &crate::keys::encode_application_sequence_key(first),
+                )
+            },
+            Some(access),
+        )
+    }
+
+    fn resolve_with_source(
+        self,
+        load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
+        access: Option<&crate::store::RedbReadAccess>,
+    ) -> Result<ResolvedCommandPayload, StorageError> {
         #[cfg(test)]
         super::before_payload_load();
         let bytes = load(self.metadata.first)?.ok_or_else(corrupt)?;
-        let (segment, retained) = decode_payload(&self.metadata, bytes, self.cached)?;
+        let (segment, retained) = decode_payload(&self.metadata, bytes, self.cached, access)?;
         Ok(ResolvedCommandPayload {
             metadata: self.metadata,
             segment,
@@ -235,8 +434,21 @@ fn decode_payload(
     metadata: &SegmentMetadata,
     bytes: Vec<u8>,
     cached: Option<CachedPayload>,
+    access: Option<&crate::store::RedbReadAccess>,
 ) -> Result<(Arc<StoredCommandSegmentV1>, Option<CachedPayload>), StorageError> {
-    let stub = crate::history_stub::segment_summary(&bytes)?;
+    let decoded_stub = crate::history_stub::HistoryStub::decode(&bytes)?;
+    if let Some(stub) = decoded_stub
+        && (stub.kind != crate::history_stub::StubKind::Segment
+            || stub.database_id != metadata.database
+            || stub.summary.first_commit_sequence != Some(metadata.first)
+            || stub.summary.last_commit_sequence != Some(metadata.last)
+            || stub.summary.segment_digest != *metadata.digest.as_bytes()
+            || u64::from(stub.summary.command_count)
+                != metadata.last.get() - metadata.first.get() + 1)
+    {
+        return Err(corrupt());
+    }
+    let stub = decoded_stub.map(|stub| stub.summary);
     if let Some(cached) = cached.filter(|cached| {
         cached_payload_matches(
             &cached.canonical,
@@ -253,14 +465,23 @@ fn decode_payload(
     }
     #[cfg(test)]
     PAYLOAD_COLD_DECODES.with(|count| count.set(count.get() + 1));
+    // Resolve only a cold miss, after checking the stub's complete metadata
+    // binding. The captured source owns the media resolver for this read;
+    // process-current resolver registration cannot authorize older snapshots.
+    let resolved = match access {
+        Some(access) => access.resolve_command_segment_value(&bytes)?,
+        None => crate::history_stub::resolve_commits_value(&bytes)?,
+    };
+    let decoded_wire_bytes = bytes.len().max(resolved.len());
     let segment = Arc::new(
-        crate::history_stub::decode_retained_segment(&bytes)
+        crate::history_stub::decode_retained_segment(&resolved)
             .map_err(|_| corrupt())?
             .into_parts()
             .0,
     );
+    drop(resolved);
     metadata.validate(&segment)?;
-    let charge = decoded_charge(&segment, bytes.len()).ok_or_else(corrupt)?;
+    let charge = decoded_charge(&segment, decoded_wire_bytes).ok_or_else(corrupt)?;
     let retained = (charge <= MAX_PAYLOAD_BYTES).then(|| CachedPayload {
         canonical: Arc::from(bytes),
         decoded: Arc::clone(&segment),
@@ -282,7 +503,7 @@ impl PayloadCache {
 
     pub(super) fn capture(
         &self,
-        metadata: Arc<SegmentMetadata>,
+        metadata: SegmentMetadataRef,
     ) -> Result<CapturedCommandPayload, StorageError> {
         let cached = self.candidate(metadata.first)?;
         Ok(CapturedCommandPayload { metadata, cached })
@@ -290,12 +511,12 @@ impl PayloadCache {
 
     pub(super) fn retain_resolved(
         &self,
-        metadata: &Arc<SegmentMetadata>,
+        metadata: &SegmentMetadataRef,
         resolved: &mut ResolvedCommandPayload,
     ) -> Result<(), StorageError> {
         // Prune or rebuild may have replaced the index while the old pinned
         // read resolved. Such a read never repopulates the new cache.
-        if Arc::ptr_eq(metadata, &resolved.metadata)
+        if SegmentMetadataRef::ptr_eq(metadata, &resolved.metadata)
             && let Some(retained) = resolved.retained.take()
         {
             self.retain_prepared(metadata.first, retained)?;
@@ -307,6 +528,7 @@ impl PayloadCache {
         state.remove(first)
     }
 
+    #[cfg(test)]
     pub(super) fn resolve(
         &self,
         metadata: &SegmentMetadata,
@@ -317,7 +539,8 @@ impl PayloadCache {
         #[cfg(test)]
         super::before_payload_load();
         let bytes = load(metadata.first)?.ok_or_else(corrupt)?;
-        let (segment, retained) = decode_payload(metadata, bytes, self.candidate(metadata.first)?)?;
+        let (segment, retained) =
+            decode_payload(metadata, bytes, self.candidate(metadata.first)?, None)?;
         if let Some(retained) = retained {
             self.retain_prepared(metadata.first, retained)?;
         }
@@ -420,6 +643,61 @@ mod tests {
 #[cfg(test)]
 mod stub_match_tests {
     use super::*;
+
+    // req: REC-005, STO-032
+    #[test]
+    fn cold_stub_cache_charges_resolved_content_and_cached_hits_need_no_extent() {
+        use crate::history_stub::{HistoryResolver, SegmentSummary, StubLocator};
+        let command = crate::derived::follower_indexes::capsule(CommitSequence::first());
+        let (segment, encoded) = crate::derived::follower_indexes::segment(vec![command], None);
+        let metadata = SegmentMetadata::try_new(
+            &NativeLocatorPool::global(),
+            LocatorAllocationClass::Ordinary,
+            &segment,
+        )
+        .unwrap();
+        let resolver = HistoryResolver::register(
+            segment.database_id(),
+            std::path::Path::new("absent/payload-cache.redb"),
+            Arc::new(crate::media::RealJournalMedia),
+        );
+        let hash = [0x9c; 32];
+        let mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> = Arc::from(vec![
+            riffdb_storage_api::CompositeMutationV1::put(
+                riffdb_storage_api::CompositeTableV1::Commits,
+                crate::keys::encode_application_sequence_key(segment.first_commit_sequence())
+                    .to_vec(),
+                encoded.as_bytes().to_vec(),
+            )
+            .unwrap(),
+        ]);
+        resolver.note_pending_frame(hash, &mutations);
+        let stub = StubLocator {
+            database_id: segment.database_id(),
+            generation: 1,
+            placement: crate::journal::FramePlacement {
+                position: 8192,
+                padded_len: 4096,
+                frame_hash: hash,
+            },
+        }
+        .summary_stub(SegmentSummary::of(&segment).unwrap())
+        .unwrap();
+        assert!(encoded.as_bytes().len() > stub.len());
+        let (decoded, retained) = decode_payload(&metadata, stub.clone(), None, None).unwrap();
+        assert_eq!(decoded.as_ref(), &segment);
+        let cached = retained.expect("small fixture fits the disposable cache");
+        assert_eq!(
+            cached.charge,
+            decoded_charge(&segment, encoded.as_bytes().len()).unwrap(),
+            "a short locator must not replace the decoded content's ownership allowance"
+        );
+        drop(mutations);
+        // There is no file and the pending source has gone. A metadata-bound
+        // positive candidate remains usable without another extent allocation.
+        let (hit, _) = decode_payload(&metadata, stub, Some(cached), None).unwrap();
+        assert!(Arc::ptr_eq(&hit, &decoded));
+    }
 
     // req: REC-005
     #[test]

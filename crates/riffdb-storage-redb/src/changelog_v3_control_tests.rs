@@ -109,6 +109,7 @@ fn initialize_store(mut store: RedbStore) -> (RedbOperationalPorts, Vec<Changelo
     for byte in 1..=6 {
         states.push(append(&ports, &[byte]));
     }
+    ports.shared.rebuild_test_source_indexes().unwrap();
     (ports, states)
 }
 
@@ -409,10 +410,8 @@ fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
     for sequence in 7_u64..=270 {
         append(&ports, &sequence.to_be_bytes());
     }
-    let root = Arc::new(CheckpointRoot::new(
-        ports.shared.database.begin_read().unwrap(),
-        1,
-    ));
+    let root =
+        Arc::new(CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 1).unwrap());
     let before = history(&ports);
     let mut cursor = crate::changelog_v3_cursor::open(
         &RedbReadAccess::Durable(Arc::clone(&root)),
@@ -471,7 +470,7 @@ fn v3_reclamation_is_bounded_and_pinned_readers_keep_original_receipts() {
         );
     }
     assert!(cursor.next_receipt().unwrap().is_none());
-    let latest = RedbReadAccess::Durable(Arc::new(CheckpointRoot::new(pin, 2)));
+    let latest = RedbReadAccess::Durable(Arc::new(CheckpointRoot::new(pin, 2).unwrap()));
     assert!(
         matches!(crate::changelog_v3_cursor::open(&latest, before.lineage(), before.minimum_resume()),
         Err(riffdb_storage_api::ChangelogCursorErrorV3::Storage(error)) if error.kind() == riffdb_storage_api::StorageErrorKind::HistoryPruned)
@@ -488,6 +487,7 @@ fn v3_source_control_crash_child() {
     } else {
         RedbStore::open(path).unwrap()
     };
+    store.shared.rebuild_test_source_indexes().unwrap();
     let ports = RedbOperationalPorts {
         shared: store.shared,
     };

@@ -303,6 +303,20 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        // Checkpointing preserves the exact captured command set. Reserve the
+        // rebased source owner before changing journal names or committing it.
+        let locator_capability =
+            crate::locator_capability::LocatorCapability::try_complete_from_source(
+                covered_view
+                    .locator_capability()
+                    .require_complete()?
+                    .clone(),
+                covered_view.locator_capability(),
+                crate::locator_memory::LocatorAllocationClass::Maintenance,
+            )?;
+        let locator_descriptor = crate::composite_view::RedbCompositeReadView::admit_descriptor(
+            crate::locator_memory::LocatorAllocationClass::Maintenance,
+        )?;
         let runtime = runtime_guard
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
@@ -426,6 +440,7 @@ impl SharedRedb {
         *checkpoint_guard = Some(AsyncJournalCheckpoint {
             batch: batch.clone(),
             covered_view,
+            locator_descriptor: Some(locator_descriptor),
             completion: Some(receiver),
             result: None,
         });
@@ -442,7 +457,8 @@ impl SharedRedb {
             .name("riffdb-checkpoint".to_string())
             .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
-                let result = worker_shared.materialize_checkpoint_batch(&worker_batch);
+                let result = worker_shared
+                    .materialize_checkpoint_batch_with_locator(&worker_batch, locator_capability);
                 if result.is_ok() {
                     crate::checkpoint_census::CHECKPOINTS.materialized();
                 } else {

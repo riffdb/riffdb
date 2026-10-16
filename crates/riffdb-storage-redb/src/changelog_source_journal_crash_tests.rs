@@ -10,6 +10,7 @@ fn journaled_source_crash_child() {
         return;
     };
     let store = RedbStore::open(path).unwrap();
+    store.shared.rebuild_test_source_indexes().unwrap();
     let ports = RedbOperationalPorts {
         shared: store.shared,
     };

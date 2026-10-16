@@ -11,6 +11,9 @@ mod provider_index;
 #[path = "owned_snapshot_provider_read.rs"]
 mod provider_read;
 
+#[path = "owned_snapshot_provider_ownership.rs"]
+pub(crate) mod provider_ownership;
+
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -60,27 +63,91 @@ use crate::store::{RedbOperationalPorts, RedbReadAccess};
 pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
     derived: Option<std::sync::Arc<redb::ReadTransaction>>,
+    // redb closes its backend when Database drops, even with live read handles.
+    _derived_engine: Option<std::sync::Arc<redb::Database>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
-    shared: Option<std::sync::Arc<crate::store::SharedRedb>>,
+    shared: Option<std::sync::Weak<crate::store::SharedRedb>>,
     // Field order releases every read before the final retained lease/engine.
     validated_custody: Option<std::sync::Arc<crate::startup::ValidatedReadCustody>>,
+    // Provider admission follows every immutable snapshot alias and source pin.
+    provider_ownership: Option<std::sync::Arc<provider_ownership::ProviderSnapshotOwnership>>,
 }
 
 impl RedbOwnedSnapshot {
+    fn snapshot_command_member(
+        &self,
+        kind: riffdb_storage_api::CommandDerivedIndexKindV1,
+        key: &[u8],
+    ) -> Result<
+        Option<(
+            std::sync::Arc<riffdb_storage_api::StoredCommandSegmentV1>,
+            crate::transient::CommandDerivedLocator,
+        )>,
+        StorageError,
+    > {
+        self.request_locator_construction()?;
+        let directory = self.access.locator_capability().require_complete()?;
+        let Some((payload, locator)) = directory.capture_command_member(kind, key)? else {
+            return Ok(None);
+        };
+        if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
+            || locator.member_ordinal != 0
+        {
+            return Err(corrupt());
+        }
+        // Captured metadata validates original canonical segment membership;
+        // resolution understands both inline segments and retained history stubs.
+        let resolved = payload.resolve_at_access(&self.access)?;
+        let command = resolved
+            .segment
+            .commands()
+            .get(usize::from(locator.command_ordinal))
+            .ok_or_else(corrupt)?;
+        if crate::transient::expected_manifest_key(
+            command,
+            kind,
+            locator.member,
+            locator.member_ordinal,
+        )?
+        .as_slice()
+            != key
+        {
+            return Err(corrupt());
+        }
+        Ok(Some((resolved.segment, locator)))
+    }
+
+    /// Admission is bounded; population work remains on the background worker.
+    /// Metadata-only authorization and restore walks do not request a directory.
+    fn request_locator_construction(&self) -> Result<(), StorageError> {
+        self.verify_snapshot_custody()?;
+        if self.access.locator_capability().is_pending() {
+            crate::locator_builder::start_locator_builder_with_custody(
+                self.access.clone(),
+                self.shared.as_ref().and_then(std::sync::Weak::upgrade),
+                self.validated_custody.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
     fn verify_snapshot_custody(&self) -> Result<(), StorageError> {
         match &self.validated_custody {
             Some(custody) => custody.verify(),
             None => Ok(()),
-        }
+        }?;
+        Ok(())
     }
 
     pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
         Self {
             access,
             derived: None,
+            _derived_engine: None,
             source_pins: None,
             shared: None,
             validated_custody: None,
+            provider_ownership: None,
         }
     }
 
@@ -139,10 +206,12 @@ impl RedbOwnedSnapshot {
             .source_pins
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let ownership = self.admit_provider_ownership_v1(budget)?;
         crate::RedbDerivedSourcePin::capture_admitted_v1(
             self.access.clone(),
             std::sync::Arc::clone(pins),
             budget,
+            ownership,
         )
     }
 }
@@ -154,9 +223,11 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
         Ok(RedbOwnedSnapshot {
             access: self.begin_composite_read()?,
             derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
+            _derived_engine: Some(self.shared.retain_derived_engine()?),
             source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
-            shared: Some(std::sync::Arc::clone(&self.shared)),
+            shared: Some(std::sync::Arc::downgrade(&self.shared)),
             validated_custody: None,
+            provider_ownership: None,
         })
     }
 }
@@ -251,45 +322,18 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
         self.verify_snapshot_custody()?;
         let key = identity.storage_key().map_err(|_| invariant())?;
         let encoded_key = encode_idempotency_key(&key);
-        if let Some(shared) = self.shared.as_ref()
-            && let Some(locator) = shared.command_derived_locator(
-                riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
-                encoded_key,
-            )?
-        {
-            let first_commit_sequence = locator.segment_first;
-            let Some(frontier) = self.access.application_frontier()? else {
-                return Ok(None);
-            };
-            if first_commit_sequence <= frontier {
-                if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
-                    || locator.member_ordinal != 0
-                {
-                    return Err(corrupt());
-                }
-                let raw = self
-                    .access
-                    .read_value(
-                        JournalTable::Commits,
-                        &encode_application_sequence_key(first_commit_sequence),
-                    )?
-                    .ok_or_else(corrupt)?;
-                let segment = riffdb_storage_api::decode_command_segment_v1(&raw)
-                    .map_err(crate::error::codec_error)?
-                    .into_parts()
-                    .0;
-                let command = segment
-                    .commands()
-                    .get(usize::from(locator.command_ordinal))
-                    .ok_or_else(corrupt)?;
-                if command.commit_sequence() > frontier {
-                    return Ok(None);
-                }
-                if command.base().outcome().identity() != identity {
-                    return Err(corrupt());
-                }
-                return Ok(Some(command.base().outcome().clone()));
+        if let Some((segment, locator)) = self.snapshot_command_member(
+            riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
+            encoded_key,
+        )? {
+            let command = segment
+                .commands()
+                .get(usize::from(locator.command_ordinal))
+                .ok_or_else(corrupt)?;
+            if command.base().outcome().identity() != identity {
+                return Err(corrupt());
             }
+            return Ok(Some(command.base().outcome().clone()));
         }
         let Some(encoded) = self
             .access
@@ -340,45 +384,18 @@ impl AuthoritativePointReader for RedbOwnedSnapshot {
     ) -> Result<Option<StoredProvenanceRecordV1>, StorageError> {
         self.verify_snapshot_custody()?;
         let encoded_key = encode_provenance_key(provenance_id);
-        if let Some(shared) = self.shared.as_ref()
-            && let Some(locator) = shared.command_derived_locator(
-                riffdb_storage_api::CommandDerivedIndexKindV1::Provenance,
-                encoded_key.as_slice(),
-            )?
-        {
-            let first_commit_sequence = locator.segment_first;
-            let Some(frontier) = self.access.application_frontier()? else {
-                return Ok(None);
-            };
-            if first_commit_sequence <= frontier {
-                if locator.member != riffdb_storage_api::CommandDerivedMemberV1::Command
-                    || locator.member_ordinal != 0
-                {
-                    return Err(corrupt());
-                }
-                let raw = self
-                    .access
-                    .read_value(
-                        JournalTable::Commits,
-                        &encode_application_sequence_key(first_commit_sequence),
-                    )?
-                    .ok_or_else(corrupt)?;
-                let segment = riffdb_storage_api::decode_command_segment_v1(&raw)
-                    .map_err(crate::error::codec_error)?
-                    .into_parts()
-                    .0;
-                let command = segment
-                    .commands()
-                    .get(usize::from(locator.command_ordinal))
-                    .ok_or_else(corrupt)?;
-                if command.commit_sequence() > frontier {
-                    return Ok(None);
-                }
-                if command.base().provenance().provenance_id() != provenance_id {
-                    return Err(corrupt());
-                }
-                return Ok(Some(command.base().provenance().clone()));
+        if let Some((segment, locator)) = self.snapshot_command_member(
+            riffdb_storage_api::CommandDerivedIndexKindV1::Provenance,
+            encoded_key.as_slice(),
+        )? {
+            let command = segment
+                .commands()
+                .get(usize::from(locator.command_ordinal))
+                .ok_or_else(corrupt)?;
+            if command.base().provenance().provenance_id() != provenance_id {
+                return Err(corrupt());
             }
+            return Ok(Some(command.base().provenance().clone()));
         }
         let Some(encoded) = self
             .access

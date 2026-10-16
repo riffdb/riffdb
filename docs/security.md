@@ -111,6 +111,11 @@ capabilities without exposing bearer tokens or secret verifiers using
 database file (`--database-path <PATH>`) or against the local non-secret
 operator inventory ledger (`--inventory-file <PATH>`).
 
+For database-path inventory, `--limit` bounds examined capability records before
+status or principal filtering. A page can contain no matches and still return a
+`next_after` cursor. Pass that cursor to `--after` with the same filters until
+`next_after` is null; an empty filtered page alone does not mean the scan is done.
+
 For digest-key compromise, stop admission and obtain architecture review before
 rotation. Capability and idempotency keys are distinct typed namespaces and
 must not reuse material. Preserve required readable keys during rotation.

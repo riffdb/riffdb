@@ -3,7 +3,7 @@ use super::engine_compatibility::restore_fixture_bytes;
 use super::*;
 use riffdb_storage_api::AuthoritativePointReader;
 
-fn fixture() -> (
+pub(super) fn fixture() -> (
     crate::test_path::ScopedDirectory,
     crate::RedbOperationalPorts,
 ) {
@@ -132,7 +132,18 @@ fn open_existing_at(
         panic!("genuine predecessor source must validate");
     };
     let (_, _, _, dormant) = opened.into_parts();
-    dormant.into_operational_after_catalog_validation().unwrap()
+    let ports = dormant.into_operational_after_catalog_validation().unwrap();
+    // These source-reclamation fixtures inspect indexed outcomes and outbox
+    // rows immediately. Keep the genuine bounded startup path, then join its
+    // original captured construction through the explicit completion signal.
+    let access = ports.begin_composite_read().unwrap();
+    crate::locator_builder::start_locator_builder(access.clone(), Some(Arc::clone(&ports.shared)))
+        .unwrap();
+    access
+        .locator_capability()
+        .wait_for_builder_for_test()
+        .unwrap();
+    ports
 }
 
 // req: STO-030, STO-031, STO-032, END-008, REC-001, LOG-001
@@ -233,7 +244,7 @@ fn source_capture_preserves_one_real_published_prune_without_draining_or_changin
     }
 }
 
-fn complete_first_event(ports: &mut crate::RedbOperationalPorts) {
+pub(super) fn complete_first_event(ports: &mut crate::RedbOperationalPorts) {
     use riffdb_storage_api::{
         OutboxClaimV1, OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository, OutboxSucceedV1,
         OutboxTransitionResultV1, PendingOutboxScanV1,

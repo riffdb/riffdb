@@ -216,13 +216,19 @@ impl RedbDormantPorts {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let read = self
-            .shared
-            .database
-            .begin_read()
-            .map_err(transaction_error)?;
-        let (indexes, rows) = TransientIndexes::rebuild_counted_cancellable(&read, cancellation)?;
-        drop(read);
+        // The applier consumes this exact source capability. Populating only
+        // the ancillary maps would leave its authoritative reads Pending and
+        // make the first real replay fail before durability.
+        let access = self.shared.begin_composite_operational_read()?;
+        let capability = access.locator_capability();
+        let (indexes, rows) = TransientIndexes::rebuild_from_access_with_owner(
+            &access,
+            capability.construction_owner()?,
+            LocatorAllocationClass::Ordinary,
+            || cancellation.load(Ordering::Acquire),
+        )?;
+        let generation = indexes.locator_generation()?;
+        generation.validate_source(&access)?;
         let mut state = self
             .shared
             .transient_indexes
@@ -233,6 +239,19 @@ impl RedbDormantPorts {
         }
         if cancellation.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        capability.install_generation(generation)?;
+        if matches!(
+            &access,
+            RedbReadAccess::Current(_) | RedbReadAccess::Durable(_)
+        ) {
+            let epoch = self.shared.stable_durable_root_version()?;
+            *self
+                .shared
+                .durable_locator_capability
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))? =
+                Some((epoch, capability.clone()));
         }
         *state = TransientIndexState::Ready(indexes);
         drop(state);
@@ -478,7 +497,27 @@ impl RedbFollowerApplier {
                 return Err(corrupt());
             }
             crash_edge("roots");
-            self.shared.commit_durable(write)?;
+            // The entire received frame and its exact locator successor are
+            // private until this single hardened fence. Metadata-only frames
+            // inherit the exact predecessor membership, never a head hint.
+            let locator_generation = match &indexes {
+                Some(indexes) => indexes.locator_generation()?,
+                None => self
+                    .shared
+                    .capture_checkpoint_root()?
+                    .locator_capability()
+                    .require_complete()?
+                    .clone(),
+            };
+            let locator_capability = crate::locator_capability::LocatorCapability::try_complete(
+                locator_generation,
+                LocatorAllocationClass::Maintenance,
+            )?;
+            self.shared.commit_with_source_footprint_and_locator(
+                write,
+                crate::source_continuation::SourceContinuationFootprint::unknown(),
+                locator_capability,
+            )?;
             crash_edge("committed");
             if let Some(indexes) = indexes {
                 let mut state = self
@@ -595,8 +634,26 @@ impl RedbFollowerApplier {
         )
         .map_err(precommit_storage_error)?;
         drop(meta);
+        // Only the attached acknowledgement changes. Retain the exact command
+        // directory with its successor source rather than making the next frame
+        // depend on an unscheduled population rebuild. Pending still refuses
+        // before this transaction reaches its durability boundary.
+        let generation = self
+            .shared
+            .capture_checkpoint_root()?
+            .locator_capability()
+            .require_complete()?
+            .clone();
+        let capability = crate::locator_capability::LocatorCapability::try_complete(
+            generation,
+            LocatorAllocationClass::Maintenance,
+        )?;
         crash_edge("acknowledgement");
-        self.shared.commit_durable(write)?;
+        self.shared.commit_with_source_footprint_and_locator(
+            write,
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+            capability,
+        )?;
         crash_edge("acknowledgement-committed");
         Ok(applied)
     }

@@ -157,7 +157,9 @@ impl CompleteLogicalValidation {
             v3_activation_required: _,
             terminal_execution_failure_rows: _,
         } = snapshot;
-        let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+        let root = Arc::new(
+            shared.retain_snapshot_root(crate::checkpoint_root::CheckpointRoot::new(read, 0)?)?,
+        );
         let custody = Arc::new(ValidatedReadCustody {
             _lease,
             shared,

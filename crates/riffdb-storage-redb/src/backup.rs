@@ -1101,7 +1101,7 @@ impl OwnedValidatedMaterialization {
         // Archive conversion is bound to the immutable backup's exact history,
         // not a source-compatibility receipt appended to the private copy.
         validate_copied_database_facts(
-            read_database_facts(&shared.database)?,
+            read_database_facts(shared.database.as_ref())?,
             &self.materialization.manifest,
         )?;
         drop(self.logical);
@@ -5274,6 +5274,63 @@ mod tests {
 
     // req: REC-001, REC-006, END-001
     #[test]
+    fn owned_preparation_withdraws_internal_cache_but_refuses_an_escaped_snapshot_engine() {
+        let root = TestRoot::new("owned-preparation-escaped-engine");
+        let (_, backup, _) = create_backup(&root);
+        let (_, mut owned) = RedbOfflineRestore::bind(&backup, root.join("stage"))
+            .restore_owned_staged_backup(
+                &root.join("configured.redb"),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+        let engine = std::sync::Arc::try_unwrap(owned.database.take().unwrap())
+            .ok()
+            .unwrap();
+        let MaterializationDatabase::Owned(engine) = engine else {
+            panic!("native owned engine");
+        };
+        let mut store =
+            RedbStore::from_owned_restore_engine(owned.primary.path(), engine, &owned.manifest)
+                .unwrap();
+        store.prepare_owned_restore_before_validation().unwrap();
+        let captured = store.shared.begin_composite_operational_read().unwrap();
+        let snapshot = crate::RedbOwnedSnapshot::from_read_access(captured);
+        assert_eq!(
+            std::sync::Arc::strong_count(&store.shared),
+            1,
+            "the snapshot retains narrow engine custody, not the mutable store"
+        );
+        assert_eq!(
+            store
+                .prepare_owned_restore_before_validation()
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::Unavailable,
+            "withdrawing an internal cache cannot withdraw an escaped engine pin"
+        );
+        let encoded = snapshot
+            .complete_logical_access_for_test()
+            .read_value(
+                crate::journal::JournalTable::Meta,
+                META_DATABASE_ID.as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *riffdb_storage_api::proto_codec::decode_database_identity_v1(&encoded)
+                .unwrap()
+                .value(),
+            owned.manifest.database_id()
+        );
+        drop(snapshot);
+        store.prepare_owned_restore_before_validation().unwrap();
+        drop(store);
+        drop(owned);
+        assert!(!root.join("configured.redb").exists());
+    }
+
+    // req: REC-001, REC-006, END-001
+    #[test]
     fn owned_materialization_native_proof_refuses_an_untracked_engine_commit() {
         let root = TestRoot::new("owned-native-proof-raw-commit");
         let (_, backup, _) = create_backup(&root);
@@ -6479,7 +6536,7 @@ mod tests {
             .into_authorization()
             .unwrap();
         assert_eq!(
-            certificate(&owner.shared.database),
+            certificate(owner.shared.database.as_ref()),
             clean,
             "normal restore staging preserves exact immutable certificate bytes"
         );

@@ -294,6 +294,7 @@
                 RedbStore::open_with_test_controller(&path.0, controller)
                     .expect("open with graceful-stage failure"),
             );
+            finish_locator_builder_before_uncertified_drop(&ports);
             let checkpoint_before = checkpoint_storage_bytes(&ports);
             let authority_before = allocator_bytes(&ports);
             let receipt = ports.complete_graceful_close();
@@ -519,6 +520,7 @@ fn assert_ineligible_checkpoint_unchanged(
 
 fn assert_dirty_reopen_reaches_exact_ends(path: &TestDatabasePath) {
     let activated = open_cleanly(RedbStore::open(&path.0).expect("consume clean lifecycle"));
+    finish_locator_builder_before_uncertified_drop(&activated);
     drop(activated);
 
     let reopened = RedbStore::open(&path.0).expect("dirty unusable-checkpoint reopen");
@@ -534,6 +536,20 @@ fn assert_dirty_reopen_reaches_exact_ends(path: &TestDatabasePath) {
             .expect("unusable-checkpoint exact ends"),
         StructuralOpenOutcome::Clean(_)
     ));
+}
+
+/// These fixtures deliberately omit graceful certification to exercise DIRTY
+/// fallback. Finish only their original nondurable builder before raw Drop;
+/// this writes no CLEAN record and changes no checkpoint or allocator bytes.
+fn finish_locator_builder_before_uncertified_drop(ports: &crate::RedbOperationalPorts) {
+    let original = ports.begin_composite_read().expect("capture original startup source");
+    if original.locator_capability().is_pending() {
+        crate::locator_builder::start_locator_builder(
+            original.clone(), Some(std::sync::Arc::clone(&ports.shared)),
+        ).expect("request original admitted construction");
+    }
+    original.locator_capability().wait_for_builder_for_test()
+        .expect("release the original builder's source before deliberate uncertified Drop");
 }
 
     fn allocator_bytes(ports: &crate::RedbOperationalPorts) -> (Vec<u8>, Vec<u8>) {

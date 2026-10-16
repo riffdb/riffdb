@@ -51,6 +51,9 @@ pub mod event_route;
 pub mod identity;
 pub mod integrity;
 mod local_outbox_archive;
+mod locator_segment_admission;
+#[doc(hidden)]
+pub use locator_segment_admission::locator_segment_decode_work_bound_v1;
 pub mod migration;
 pub mod outbox;
 mod outbox_claim_group;

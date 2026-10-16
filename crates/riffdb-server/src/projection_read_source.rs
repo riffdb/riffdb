@@ -78,6 +78,13 @@ impl ProjectionReadSource {
         (self.open)()
     }
 
+    pub(crate) fn pin_admitted_v1(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<RedbOwnedSnapshot, StorageError> {
+        self.pin()?.with_provider_ownership_admitted_v1(budget)
+    }
+
     /// Provider workers admit source copies and decoding on the same immutable
     /// snapshot. Ordinary readers retain their existing contracts.
     pub(crate) fn read_provider_entity_v1(
@@ -85,7 +92,8 @@ impl ProjectionReadSource {
         target: &EntityTarget,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<Option<riffdb_storage_api::AdmittedProviderEntityRecordV1>, StorageError> {
-        self.pin()?.read_provider_entity_record_v1(target, budget)
+        self.pin_admitted_v1(budget)?
+            .read_provider_entity_record_v1(target, budget)
     }
 
     /// The provider worker's index page shares its captured root and admission.
@@ -94,7 +102,8 @@ impl ProjectionReadSource {
         request: &AuthoritativeIndexScanRequest,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<riffdb_storage_api::AdmittedProviderIndexPageV1, StorageError> {
-        self.pin()?.read_provider_index_page_v1(request, budget)
+        self.pin_admitted_v1(budget)?
+            .read_provider_index_page_v1(request, budget)
     }
 
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<Self> {

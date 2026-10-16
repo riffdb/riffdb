@@ -140,7 +140,9 @@ pub(crate) fn validate_private_restore_readiness_with_history(
         cancellation: session.cancellation.clone(),
         invalid: AtomicBool::new(false),
     });
-    let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+    let root = Arc::new(
+        owner.retain_snapshot_root(crate::checkpoint_root::CheckpointRoot::new(read, 0)?)?,
+    );
     let reader =
         crate::RedbOwnedSnapshot::from_read_access(crate::store::RedbReadAccess::Durable(root))
             .with_validated_custody(custody);

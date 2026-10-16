@@ -17,12 +17,13 @@ user, or startup integrity validation rejecting incomplete durable evidence.
 Correct configuration or restore from a verified backup; do not delete records
 inside the database.
 
-An orderly stop normally permits bounded validation on the next start. A
-forced kill, incomplete drain, storage repair, restore, migration, or invalid
-clean-close lifecycle record instead selects complete validation automatically.
-This can make one restart materially slower without indicating a startup
-deadline failure. Do not remove or modify private metadata to force either
-path. See [Startup Integrity and Clean Restarts](STARTUP-INTEGRITY.md).
+Startup automatically selects verified clean validation, bounded dirty recovery
+or complete validation from its checked evidence. An abrupt stop can also require
+storage-engine repair proportional to file size. After bounded readiness,
+locator-dependent operations can return typed unavailable while the admitted
+background directory construction finishes; bounded metadata reads remain
+available. Do not remove or modify private metadata to select a different path.
+See [Startup Integrity and Clean Restarts](STARTUP-INTEGRITY.md).
 
 If stderr reports `RDB-FORMAT-0101`, keep the service stopped and inspect the
 same immutable decision explicitly:

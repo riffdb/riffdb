@@ -4,6 +4,10 @@
 mod provider_read;
 pub use provider_read::*;
 
+#[path = "locator_read.rs"]
+mod locator_read;
+pub use locator_read::*;
+
 use std::cell::RefCell;
 use std::time::Instant;
 use std::{error::Error, fmt};
@@ -770,6 +774,22 @@ impl fmt::Display for EnvelopeError {
 }
 
 impl Error for EnvelopeError {}
+
+/// Destroy caller-admitted canonical encoding scratch before its ownership
+/// reservation is released. `false` means a live decoder still owns a borrow;
+/// callers must retain the reservation rather than release live capacity.
+#[doc(hidden)]
+pub fn release_locator_decode_scratch_v1() -> bool {
+    CANONICAL_SCRATCH
+        .try_with(|scratch| {
+            let Ok(mut scratch) = scratch.try_borrow_mut() else {
+                return false;
+            };
+            *scratch = Vec::new();
+            true
+        })
+        .unwrap_or(true)
+}
 
 /// Proves a payload is the canonical encoding of the message decoded from it.
 ///

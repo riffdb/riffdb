@@ -306,11 +306,27 @@ impl RedbStore {
         // Its copied binding cannot authorize operational source machinery.
         let shared = Arc::get_mut(&mut self.shared)
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        // Closed preparation owns this fenced SharedRedb exclusively. A known
+        // migration may have cached its exact predecessor for locator reuse;
+        // withdraw that internal reader before requiring mutable engine
+        // ownership. Escaped roots still retain their actual engine Arc and
+        // continue to make the uniqueness check below refuse preparation.
+        shared
+            .current_read_root
+            .get_mut()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+            .take();
+        shared
+            .current_read_root_live
+            .store(false, Ordering::Release);
         shared
             .restore_integrity
             .as_mut()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .check_integrity(&mut shared.database)?;
+            .check_integrity(
+                Arc::get_mut(&mut shared.database)
+                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+            )?;
         if shared.engine_repaired_at_open {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
@@ -390,7 +406,10 @@ impl RedbStore {
                         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
                     binding.begin_controlled_preparation()?;
                     crate::backup::stamp_retention_watermark_on_database(&shared.database, target)?;
-                    binding.check_integrity(&mut shared.database)?;
+                    binding.check_integrity(
+                        Arc::get_mut(&mut shared.database)
+                            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+                    )?;
                     proof = Some(capture(shared)?);
                 }
             }
@@ -518,15 +537,18 @@ impl RedbStore {
                 },
             )
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+        // Reserve dead-weak allocation headroom and its retirement slot
+        // before the tracking vector or shared store owner is allocated.
+        let extent_roots = RootTracking::try_new()?;
         let store = Self {
             shared: Arc::new(SharedRedb {
-                extent_roots: Mutex::new(Vec::new()),
+                extent_roots,
                 extent_scrubs: std::sync::atomic::AtomicUsize::new(0),
                 extent_cursor: Mutex::new(crate::store::extent_reclamation::Cursor::default()),
                 derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
-                database,
+                database: Arc::new(database),
                 checkpoint_rewrite,
                 restore_integrity,
                 outbox_stage_census: crate::outbox_stage_census::Census::default(),
@@ -548,6 +570,7 @@ impl RedbStore {
                 source_continuation_epoch: AtomicU64::new(0),
                 source_control_owner: Mutex::new(std::sync::Weak::new()),
                 durable_root_publication: AtomicU64::new(0),
+                durable_locator_capability: RwLock::new(None),
                 durable_root_publication_wait: Mutex::new(()),
                 durable_root_publication_changed: Condvar::new(),
                 durable_read_frontier: RwLock::new(None),
@@ -563,10 +586,10 @@ impl RedbStore {
                 journal_spare: Arc::new(Mutex::new(())),
                 journal_sealer: Mutex::new(None),
                 history_resolver: std::sync::OnceLock::new(),
+                snapshot_history_resolver: std::sync::OnceLock::new(),
                 command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
-                unpublished_command_indexes: Mutex::new(UnpublishedCommandIndexes::default()),
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),

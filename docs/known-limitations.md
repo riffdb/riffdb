@@ -25,7 +25,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Optional Codex MCP registration provides no atomic create-if-absent operation and must not run concurrently with another writer to the same user's Codex MCP configuration.
 - Metrics are exposed only over an optional literal-loopback HTTP listener (`GET /metrics` and `GET /v1/metrics`) or periodic local NDJSON flight-recorder files (`riffdb telemetry summarize <PATH>`), with no non-loopback network metrics listener or push exporter.
 - Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
-- Restart after an abrupt stop pays a storage-engine repair proportional to the database file size, and the first write after any restart rebuilds the in-memory command indexes once before admitting writes.
+- Restart after an abrupt stop can require storage-engine repair proportional to file size, while bounded startup builds exact snapshot locators in the background and locator-dependent reads and writes can return typed unavailable until completion.
 - Outbox delivery supports only the explicitly configured POC connector behavior.
 - The optional systemd MCP socket shares one capability among members of its Unix socket group, so operators must spawn one bridge per client when principal identities must differ.
 - Release verification validates systemd unit syntax and hardening directives without starting the units inside the host systemd manager.
@@ -67,12 +67,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 ## Retention
 
 Online retention (see [Configuration](configuration.md#online-retention)) never
-passes a fence, and in this POC two fences and one checkpoint interaction bind
-more than an operator may expect:
+passes a fence, and these POC limits affect both its progress and restart:
 
 - Because this POC composes no production outbox delivery destination, an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward.
 - A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
 - Online retention invalidates the optional validated-prefix startup checkpoint when logical pruning commits and refreshes it off the commit gate once a retention batch drains, while a `Completed` startup registry binding preserves bounded restart even before that refresh finishes; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
+- Native locators have a 512 MiB process budget (448 MiB for ordinary ownership), including protected old generations and queued retirement, and refuse further admission before durability when capacity is unavailable; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
 - Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation; see the [retention design review](architecture/WP-815-DESIGN-REVIEW.md).
 
 ## Storage reclamation

@@ -252,6 +252,63 @@ pub(crate) struct HistoryResolver {
     pending: Mutex<PendingFrames>,
 }
 
+/// Exact read-only extent custody. It is never registered globally and never
+/// receives the live writer's future pending-frame map.
+#[derive(Debug)]
+pub(crate) struct SnapshotHistoryResolver {
+    database_id: DatabaseId,
+    location: ExtentLocation,
+    media: Arc<dyn JournalMedia>,
+}
+pub(crate) type SnapshotHistoryResolverRef =
+    crate::locator_memory::ChargedLocatorAllocation<SnapshotHistoryResolver>;
+impl crate::locator_memory::LocatorRetireContents for SnapshotHistoryResolver {
+    fn retire_one(&mut self) -> bool {
+        drop(std::mem::replace(
+            &mut self.location,
+            ExtentLocation::Database(PathBuf::new()),
+        ));
+        true
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            database_id: self.database_id,
+            location: std::mem::replace(
+                &mut self.location,
+                ExtentLocation::Database(PathBuf::new()),
+            ),
+            media: Arc::clone(&self.media),
+        }
+    }
+}
+impl SnapshotHistoryResolver {
+    pub(crate) fn resolve_commits_value<'a>(
+        &self,
+        bytes: &'a [u8],
+    ) -> Result<Cow<'a, [u8]>, StorageError> {
+        let Some(stub) = HistoryStub::decode(bytes)? else {
+            return Ok(Cow::Borrowed(bytes));
+        };
+        let first = stub
+            .summary
+            .first_commit_sequence
+            .filter(|_| stub.kind == StubKind::Segment && stub.database_id == self.database_id)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let key = crate::keys::encode_application_sequence_key(first);
+        let frame = read_stub_frame_at(&self.location, self.media.as_ref(), &stub)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        frame
+            .mutations()
+            .iter()
+            .find(|mutation| {
+                mutation.table() == JournalTable::Commits && mutation.key() == key.as_slice()
+            })
+            .and_then(|mutation| mutation.value())
+            .map(|value| Cow::Owned(value.to_vec()))
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))
+    }
+}
+
 #[derive(Debug, Default)]
 struct PendingFrames {
     frames: std::collections::HashMap<[u8; 32], Weak<[riffdb_storage_api::CompositeMutationV1]>>,
@@ -270,6 +327,28 @@ enum ExtentLocation {
 static RESOLVERS: Mutex<Vec<Weak<HistoryResolver>>> = Mutex::new(Vec::new());
 
 impl HistoryResolver {
+    pub(crate) fn snapshot_custody(&self) -> Result<SnapshotHistoryResolverRef, StorageError> {
+        let path_bytes = match &self.location {
+            ExtentLocation::Database(path) | ExtentLocation::Backup(path) => path.as_os_str().len(),
+        };
+        let content_bytes = path_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        crate::locator_memory::ChargedLocatorAllocation::try_new(
+            &crate::locator_memory::NativeLocatorPool::global(),
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+            content_bytes,
+            || {
+                Ok(SnapshotHistoryResolver {
+                    database_id: self.database_id,
+                    location: self.location.clone(),
+                    media: Arc::clone(&self.media),
+                })
+            },
+        )
+    }
+
     /// Registers the extents of an open store. Stubs are resolved through
     /// every live registration for their database identity; only a frame whose
     /// hash matches the stub is accepted, so a same-identity copy (a restored
@@ -398,16 +477,24 @@ fn read_stub_frame_from(
     resolver: &HistoryResolver,
     stub: &HistoryStub,
 ) -> Result<JournalFrame, crate::journal::JournalIoError> {
-    match &resolver.location {
+    read_stub_frame_at(&resolver.location, resolver.media.as_ref(), stub)
+}
+
+fn read_stub_frame_at(
+    location: &ExtentLocation,
+    media: &dyn JournalMedia,
+    stub: &HistoryStub,
+) -> Result<JournalFrame, crate::journal::JournalIoError> {
+    match location {
         ExtentLocation::Database(path) => crate::journal::read_retained_frame_with_media(
-            resolver.media.as_ref(),
+            media,
             path,
             stub.database_id,
             stub.placement,
             stub.generation,
         ),
         ExtentLocation::Backup(directory) => crate::journal::read_retained_frame_from_with_media(
-            resolver.media.as_ref(),
+            media,
             &crate::backup::extent_artifacts(directory, stub.generation),
             stub.database_id,
             stub.placement,

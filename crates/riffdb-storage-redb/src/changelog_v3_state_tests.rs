@@ -90,10 +90,9 @@ fn inventory_fixture() -> (
 }
 
 fn published(store: &crate::RedbStore) -> RedbPublishedSnapshot {
-    RedbPublishedSnapshot::new(RedbReadAccess::Durable(Arc::new(CheckpointRoot::new(
-        store.shared.database.begin_read().unwrap(),
-        1,
-    ))))
+    RedbPublishedSnapshot::new(RedbReadAccess::Durable(Arc::new(
+        CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap(),
+    )))
 }
 
 #[test]

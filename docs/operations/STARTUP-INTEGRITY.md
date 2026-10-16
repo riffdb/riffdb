@@ -54,10 +54,13 @@ all of it engine repair; the RiffDB startup stages together took well under a
 second. RiffDB leaves the engine's quick-repair mode off because it would change
 commit behavior. These figures are host-specific observations, not guarantees.
 
-The first write after any restart also rebuilds the process's in-memory command
-indexes once, because steady-state writes depend on them. At the production
-benchmark population that rebuild holds writes for tens of seconds; reads and
-readiness are unaffected, and later writes run at normal speed.
+After a bounded start, an admitted background constructor rebuilds exact command
+locators for its captured source. Readiness does not wait for that population
+walk. Until the directory is complete, operations that require it, including
+command writes and exact outcome or provenance reads, return typed unavailable;
+they do not report an incomplete lookup as absence. Bounded metadata reads remain
+available. The first dependent request cannot trigger a synchronous history walk.
+A full startup completes the directory for its exact source before handoff.
 
 Complete startup validation is still used when those bounded-recovery
 preconditions do not hold: a database with neither a loadable validated-prefix
@@ -285,11 +288,27 @@ Restore](../backup-restore.md), and [Troubleshooting](TROUBLESHOOTING.md).
 
 ## Command payload cache
 
-Command lookup keeps complete exact locator metadata for retained history, while
+Command lookup retains an immutable exact locator generation with each source
+snapshot. Online pruning can remove current membership while an older pin keeps
+its original directory and readable command bytes. A newer directory cannot
+prove either presence or absence for that older snapshot.
+
+Native locator ownership has a process-wide 512-MiB aggregate limit across all
+databases and source constructors. Ordinary work may use 448 MiB; 64 MiB remains
+reserved for maintenance and reclamation. At most 1,024 generation owners exist,
+with one slot reserved for maintenance. Nodes, keys, manifests, descriptors,
+construction scratch and queued retirement remain charged until physical release.
+Cleanup yields after at most 256 ownership items. Capacity refusal happens before
+durable submission and preserves protected pins. These are compiled POC limits,
+with no tuning or bypass setting.
+
+Separately,
 its disposable decoded payload cache is capped at 64 entries and a conservative
-64 MiB ownership charge. This bounds payload retention, not total database
-memory: exact locator, manifest and event metadata still grow with retained
-identities. Startup rebuild streams one bounded segment at a time. The payload
+64 MiB ownership charge. Recovery scratch, the journal overlay and exact providers
+retain their separate 64-MiB, 256-MiB and 1-GiB limits. Provider admission also
+accounts for the native generations and source ownership it retains. These
+limits do not bound total database or process memory. Startup construction
+streams one admitted segment at a time. The payload
 cache fills lazily from validated reads, so publication does not encode or
 decode commands again to populate it.
 

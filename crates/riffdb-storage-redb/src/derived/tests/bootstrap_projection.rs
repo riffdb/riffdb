@@ -89,13 +89,20 @@ mod tests {
             expected = control;
             requests.push(request);
         }
+        let command_directory = ports
+            .begin_composite_read()
+            .unwrap()
+            .locator_capability()
+            .require_complete()
+            .unwrap()
+            .clone();
         crate::changelog_v3_activation::activate_validated(
             ports.shared.database.begin_write().unwrap(),
             ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::initial()).unwrap(),
             riffdb_types::DualFrontier::new(Some(CommitSequence::new(2).unwrap()), None),
         )
         .unwrap();
-        ports.shared.retire_current_read_root();
+        bind_activated_fixture(&ports, command_directory);
         let directory = path.0.parent().unwrap();
         let source = ports
             .prepare_replication_bootstrap_v3(
@@ -209,6 +216,18 @@ mod tests {
             };
             assert_eq!(values(&follower_read), values(&source_read));
         }
+    }
+
+    fn bind_activated_fixture(
+        ports: &RedbOperationalPorts,
+        generation: crate::transient::LocatorGeneration,
+    ) {
+        // This isolated fixture activates V3 with a raw transaction. Refresh
+        // the exact source binding as the production activation owner does.
+        ports
+            .shared
+            .bind_test_locator_generation(generation)
+            .unwrap();
     }
 
     const EVALUATOR_CONTRACT: &str = r#"
@@ -497,13 +516,20 @@ contract ProjectionEvaluation version 1 {
             };
             expected = control;
         }
+        let command_directory = ports
+            .begin_composite_read()
+            .unwrap()
+            .locator_capability()
+            .require_complete()
+            .unwrap()
+            .clone();
         crate::changelog_v3_activation::activate_validated(
             ports.shared.database.begin_write().unwrap(),
             ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::initial()).unwrap(),
             riffdb_types::DualFrontier::new(Some(CommitSequence::new(3).unwrap()), None),
         )
         .unwrap();
-        ports.shared.retire_current_read_root();
+        bind_activated_fixture(&ports, command_directory);
         let directory = path.0.parent().unwrap();
         let source = ports
             .prepare_replication_bootstrap_v3(

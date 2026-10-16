@@ -533,20 +533,54 @@ mod tests {
         );
     }
 
-    // req: STO-032
+    // req: STO-032, TXN-042
     #[test]
     fn extent_reader_tracking_is_bounded_and_releases_dropped_roots() {
-        let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
-        let mut roots = Vec::new();
-        for _ in 0..MAX_EXTENT_READ_ROOTS {
-            roots.push(ports.shared.capture_checkpoint_root().unwrap());
+        let scope = crate::test_path::ScopedDirectory::new("bounded-root-tracking");
+        let mut store = crate::RedbStore::open(scope.join("db.redb")).unwrap();
+        store
+            .initialize_database(
+                riffdb_types::DatabaseId::from_unix_milliseconds_and_random(
+                    1_700_000_000_000,
+                    [0x75; 10],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let shared = &store.shared;
+        let root = shared.capture_checkpoint_root().unwrap();
+        assert!(Arc::ptr_eq(
+            &root,
+            &shared.capture_checkpoint_root().unwrap()
+        ));
+        assert_eq!(shared.extent_roots.lock().unwrap().len(), 1);
+        // Fill the admitted tracking slots without allocating thousands of
+        // duplicate physical roots. A new engine identity must still refuse.
+        {
+            let mut tracking = shared.extent_roots.lock().unwrap();
+            for _ in 1..MAX_EXTENT_READ_ROOTS {
+                tracking.push(Arc::downgrade(&root));
+            }
         }
+        shared
+            .commit_durable(shared.database.begin_write().unwrap())
+            .unwrap();
         assert_eq!(
-            ports.shared.capture_checkpoint_root().err().unwrap().kind(),
+            shared.capture_checkpoint_root().err().unwrap().kind(),
             StorageErrorKind::LimitExceeded
         );
-        roots.clear();
-        assert!(ports.shared.capture_checkpoint_root().is_ok());
-        assert_eq!(ports.shared.extent_roots.lock().unwrap().len(), 1);
+        drop(root);
+        let successor = shared.capture_checkpoint_root().unwrap();
+        assert_eq!(
+            shared.extent_roots.lock().unwrap().len(),
+            MAX_EXTENT_READ_ROOTS - crate::locator_memory::LOCATOR_RETIRE_QUOTA + 1
+        );
+        for _ in 0..MAX_EXTENT_READ_ROOTS / crate::locator_memory::LOCATOR_RETIRE_QUOTA {
+            assert!(Arc::ptr_eq(
+                &successor,
+                &shared.capture_checkpoint_root().unwrap()
+            ));
+        }
+        assert_eq!(shared.extent_roots.lock().unwrap().len(), 1);
     }
 }

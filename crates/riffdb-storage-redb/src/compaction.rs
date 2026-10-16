@@ -190,6 +190,51 @@ mod tests {
     use riffdb_storage_api::{ChangelogLineageV3, LeadershipEpochV1};
     use riffdb_types::DualFrontier;
 
+    // req: STO-001, STO-010, STO-012
+    #[test]
+    fn offline_storage_compact_refuses_retained_primary_and_derived_snapshot_custody() {
+        use riffdb_storage_api::{
+            DatabaseInitializationPort, OwnedSnapshotReader, SnapshotFenceReader,
+        };
+
+        let scope = crate::test_path::ScopedDirectory::new("offline-compact-retained-snapshot");
+        let path = scope.join("db.redb");
+        let derived_path = crate::store::derived_store_path(&path);
+        let id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x92; 10]).unwrap();
+        let mut store = RedbStore::open(&path).unwrap();
+        store.initialize_database(id).unwrap();
+        let ports = store.into_contract_migration_ports().unwrap();
+        // Materialize the actual sidecar rather than the shared empty reader.
+        ports.begin_derived_write().unwrap().abort().unwrap();
+        let snapshot = ports.open_owned_snapshot().unwrap();
+        let final_pin = snapshot.clone();
+        let frontier = snapshot.application_frontier().unwrap();
+        drop(ports);
+
+        let primary_before = std::fs::read(&path).unwrap();
+        let derived_before = std::fs::read(&derived_path).unwrap();
+        let compaction = RedbOfflineCompaction::bind(&path);
+        for pin in [snapshot, final_pin] {
+            assert_eq!(
+                compaction.compact().unwrap_err().kind(),
+                StorageErrorKind::Unavailable
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), primary_before);
+            assert_eq!(std::fs::read(&derived_path).unwrap(), derived_before);
+            assert_eq!(pin.application_frontier().unwrap(), frontier);
+            assert!(pin.derived_transaction().unwrap().list_tables().is_ok());
+            drop(pin);
+        }
+
+        let result = compaction.compact().unwrap();
+        assert_eq!(result.database_id, id);
+        let primary = redb::Database::open(&path).unwrap();
+        let derived = redb::Database::open(&derived_path).unwrap();
+        drop(derived);
+        drop(primary);
+    }
+
     #[test]
     // req: STO-001, STO-010, STO-012, DX-014
     fn offline_storage_compact_reclaims_freed_pages_and_preserves_authoritative_state() {

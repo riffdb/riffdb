@@ -99,6 +99,18 @@ fn frame_with_attribution(
 fn isolated_applier(store: RedbFollowerStore) -> RedbFollowerApplier {
     // Only this module bypasses the separate structural/catalog proof join to
     // test physical transactions over deliberately opaque row values.
+    // These fixtures contain no retained command authority. Prove that fact
+    // against the actual source before supplying its complete empty directory;
+    // dormant capability is never evidence of absence in a production applier.
+    let read = store.0.shared.database.begin_read().unwrap();
+    assert!(read.open_table(COMMITS).unwrap().is_empty().unwrap());
+    drop(read);
+    let generation = LocatorGeneration::try_empty(LocatorAllocationClass::Ordinary).unwrap();
+    store
+        .0
+        .shared
+        .bind_test_locator_generation(generation)
+        .unwrap();
     RedbFollowerApplier::from_validated_shared(store.0.shared).unwrap()
 }
 

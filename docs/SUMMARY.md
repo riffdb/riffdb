@@ -106,6 +106,7 @@
 
 - [System Overview](architecture/OVERVIEW.md)
 - [Sustainable TicketDesk Milestone](architecture/SUSTAINABLE-TICKETDESK.md)
+  - [Snapshot locator ownership repair](architecture/WP-825-SNAPSHOT-LOCATOR-REPAIR.md)
   - [Exact-provider lifecycle implementation](architecture/WP-824-IMPLEMENTATION.md)
   - [Lifecycle native blockers and repair scope](architecture/WP-825-LIVE-OBSERVATIONS.md)
   - [Native source accounting contention](architecture/WP-825-NATIVE-ACCOUNTING-CONTENTION-REVIEW.md)

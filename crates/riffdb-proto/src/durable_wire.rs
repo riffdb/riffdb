@@ -1360,6 +1360,106 @@ fn preflight(
     Ok(())
 }
 
+/// Allocation counts for construction admission, never semantic authority.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct LocatorAllocationShape {
+    pub(crate) messages: u64,
+    pub(crate) buffers: u64,
+    pub(crate) packed_items: u64,
+    pub(crate) capsules: u64,
+    pub(crate) manifest_entries: u64,
+    pub(crate) canonical_heap_bytes: u64,
+    pub(crate) prefix_work_bytes: u64,
+}
+
+pub(crate) fn locator_allocation_shape(
+    record_type: &str,
+    input: &[u8],
+    prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, DurablePreflightError>,
+) -> Result<Option<LocatorAllocationShape>, DurablePreflightError> {
+    let shape = match record_type {
+        "riffdb.storage.v1.StoredCommandSegmentV1" => &COMMAND_SEGMENT_V1,
+        "riffdb.storage.v1.StoredCommandSegmentV2" => &COMMAND_SEGMENT_V2,
+        "riffdb.storage.v1.StoredCommandSegmentV3" => &COMMAND_SEGMENT_V3,
+        "riffdb.storage.v1.StoredCommandSegmentV4" => &COMMAND_SEGMENT_V4,
+        "riffdb.storage.v1.StoredCommandSegmentV5" => &COMMAND_SEGMENT_V5,
+        "riffdb.storage.v1.StoredCommandSegmentV6" => &COMMAND_SEGMENT_V6,
+        _ => return Ok(None),
+    };
+    let mut budget = Budget {
+        visited_fields: 0,
+        packed_items: 0,
+    };
+    preflight(input, shape, 0, &mut budget)?;
+    let mut result = LocatorAllocationShape::default();
+    inspect_locator_allocations(input, shape, 0, &mut result, prefix_work)?;
+    Ok(Some(result))
+}
+
+fn inspect_locator_allocations(
+    input: &[u8],
+    shape: &Shape,
+    depth: usize,
+    result: &mut LocatorAllocationShape,
+    prefix_work: &mut impl FnMut(&[u8]) -> Result<u64, DurablePreflightError>,
+) -> Result<(), DurablePreflightError> {
+    if depth > MAX_PREFLIGHT_DEPTH {
+        return Err(DurablePreflightError::LimitExceeded);
+    }
+    let add = |target: &mut u64, bytes: u64| {
+        *target = target
+            .checked_add(bytes)
+            .ok_or(DurablePreflightError::LimitExceeded)?;
+        Ok::<(), DurablePreflightError>(())
+    };
+    add(&mut result.messages, 1)?;
+    if std::ptr::eq(shape, &COMMAND_CAPSULE_V1) {
+        add(&mut result.capsules, 1)?;
+    }
+    if std::ptr::eq(shape, &COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1) {
+        add(&mut result.manifest_entries, 1)?;
+    }
+    let mut cursor = Cursor::new(input);
+    while let Some(field) = cursor.next()? {
+        let Some((_, rule)) = shape.rule(field.number) else {
+            continue;
+        };
+        match rule.kind {
+            Kind::Message(nested) => {
+                inspect_locator_allocations(field.bytes, nested, depth + 1, result, prefix_work)?
+            }
+            Kind::Opaque { .. } => {
+                add(&mut result.buffers, 1)?;
+                let canonical = (std::ptr::eq(shape, &DECLARED_OUTCOME) && field.number == 2)
+                    || ((std::ptr::eq(shape, &DURABLE_EVENT)
+                        || std::ptr::eq(shape, &DURABLE_EVENT_V2))
+                        && field.number == 3)
+                    || (std::ptr::eq(shape, &COMMAND_CAPSULE_V3) && field.number == 2)
+                    || ((std::ptr::eq(shape, &COMMAND_CAPSULE_V5)
+                        || std::ptr::eq(shape, &COMMAND_CAPSULE_V6)
+                        || std::ptr::eq(shape, &COMMAND_CAPSULE_V7))
+                        && field.number == 4);
+                if canonical {
+                    let bound = riffdb_types::inspect_canonical_decode_capacity_v1(field.bytes)
+                        .map_err(|_| DurablePreflightError::Malformed)?;
+                    add(&mut result.canonical_heap_bytes, bound.owned_heap_bytes())?;
+                }
+                if std::ptr::eq(shape, &COMMAND_CAPSULE_V7) && field.number == 6 {
+                    add(&mut result.prefix_work_bytes, prefix_work(field.bytes)?)?;
+                }
+            }
+            Kind::PackedVarints { .. } => {
+                let mut packed = Cursor::new(field.bytes);
+                while !packed.input_is_empty() {
+                    packed.read_varint()?;
+                    add(&mut result.packed_items, 1)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use prost::Message;

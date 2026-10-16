@@ -183,14 +183,17 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
             .expect("admin");
         }
         write.commit().expect("fixture commit");
-        let root = Arc::new(CheckpointRoot::new(
-            store
-                .shared
-                .database
-                .begin_read()
-                .expect("fixture snapshot"),
-            0,
-        ));
+        let root = Arc::new(
+            CheckpointRoot::new(
+                store
+                    .shared
+                    .database
+                    .begin_read()
+                    .expect("fixture snapshot"),
+                0,
+            )
+            .unwrap(),
+        );
         read_commit_tail(&root).expect("fixture application tail");
         read_administration_tail(&root).expect("fixture administration tail");
         checkpoint_identity(&root, [0; 32]).expect("fixture checkpoint identity");
@@ -201,7 +204,7 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
                 .expect("capture")
                 .freeze(),
         );
-        let mut stage = RedbCompositeMutationStage::from_published(&published);
+        let mut stage = RedbCompositeMutationStage::from_published(&published).unwrap();
         if use_stub {
             let physical_delete =
                 JournalMutation::delete_matching(JournalTable::Commits, key.as_slice(), &stub)
@@ -229,7 +232,7 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
                 .expect("pruned"),
             None
         );
-        let mut recovery = RedbCompositeViewBuilder::from_published(&published);
+        let mut recovery = RedbCompositeViewBuilder::from_published(&published).unwrap();
         recovery
             .apply_frame(&frame)
             .expect("same canonical check on decoded recovery frame");

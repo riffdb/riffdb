@@ -254,9 +254,7 @@ pub(crate) fn contract_migration_stage_ports_fixture(
     store.shared.commit_durable(transaction)?;
     // Fresh production initialization already installed the current V2 receipt
     // substrate. Seeding fixture rows must not re-activate or relabel it as V1.
-    Ok(crate::store::RedbOperationalPorts {
-        shared: store.shared,
-    })
+    store.into_contract_migration_ports()
 }
 
 /// Replaces every canonical V2 secondary-index row in a stopped database with

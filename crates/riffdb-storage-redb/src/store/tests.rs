@@ -40,30 +40,12 @@ fn pin_predecessor_registry(
     );
 }
 
-/// Warming the transient indexes must not block on the caller's own read.
-///
-/// The administration-audit read paths warm the command-derived index on
-/// first use (see `ensure_command_audit_index`), and they do so *while their
-/// caller holds a live read transaction* — `read_active_catalog` opens one,
-/// then walks the whole administration stream through
-/// `validate_administration_stream_readonly`. Warming takes the exclusive
-/// mutation gate and, when a journal runtime exists, its barrier checkpoint
-/// runs a real `begin_write` + `commit_durable`. This arm proves that
-/// nesting is safe: redb admits a writer alongside live readers, so the
-/// commit completes rather than waiting for a reader that is waiting for it.
-///
-/// The durable read frontier is installed deliberately, because it is the
-/// precondition for the journal runtime to exist and therefore for the
-/// barrier to take `begin_write` instead of its early return. Without it
-/// this arm would exercise only the no-write path and prove nothing about
-/// the nesting.
-///
-/// What this arm does NOT license: warming from a path that already holds
-/// the mutation lease. `ExclusiveGate` is a non-reentrant FIFO ticket lock,
-/// so a second acquire on the holding thread blocks forever. Warm-on-demand
-/// belongs only on read paths, which take no ticket.
+/// Admitted background construction completes while its caller retains the
+/// original live read. Pending refuses immediately; an explicit completion
+/// predicate then proves the ancillary handoff does not wait on that reader.
+// req: TXN-042, STO-032
 #[test]
-fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
+fn background_locator_construction_completes_under_the_callers_live_read_transaction() {
     let (sender, receiver) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let scope = crate::test_path::ScopedDirectory::new("warm-under-live-read");
@@ -83,14 +65,17 @@ fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
                 .durable_read_frontier
                 .write()
                 .expect("durable read frontier lock");
-            *frontier = Some(Arc::new(CheckpointRoot::new(
-                store
-                    .shared
-                    .database
-                    .begin_read()
-                    .expect("durable frontier read"),
-                store.shared.durable_commit_epoch.load(Ordering::Acquire),
-            )));
+            *frontier = Some(Arc::new(
+                CheckpointRoot::new(
+                    store
+                        .shared
+                        .database
+                        .begin_read()
+                        .expect("durable frontier read"),
+                    store.shared.durable_commit_epoch.load(Ordering::Acquire),
+                )
+                .unwrap(),
+            ));
         }
         drop(
             store
@@ -125,10 +110,18 @@ fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
             .shared
             .begin_operational_read()
             .expect("caller read access");
+        let pending = store
+            .shared
+            .ensure_transient_indexes_ready()
+            .expect_err("pending construction refuses without a synchronous population walk");
+        assert_eq!(pending.kind(), StorageErrorKind::Unavailable);
+        read.locator_capability()
+            .wait_for_builder_for_test()
+            .expect("background construction completes under a live read transaction");
         store
             .shared
             .ensure_transient_indexes_ready()
-            .expect("warm the indexes under a live read transaction");
+            .expect("complete ancillary handoff");
         assert!(
             matches!(
                 *store
@@ -2102,6 +2095,12 @@ fn install_completed_async_checkpoint(shared: &Arc<SharedRedb>) {
         .expect("checkpoint state lock") = Some(AsyncJournalCheckpoint {
         batch,
         covered_view,
+        locator_descriptor: Some(
+            crate::composite_view::RedbCompositeReadView::admit_descriptor(
+                crate::locator_memory::LocatorAllocationClass::Maintenance,
+            )
+            .unwrap(),
+        ),
         completion: None,
         result: Some(Ok(())),
     });

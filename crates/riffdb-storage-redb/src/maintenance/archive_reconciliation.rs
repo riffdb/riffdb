@@ -155,7 +155,9 @@ impl RedbMaintenanceStorage {
                 );
             }
         }
-        let database = super::super::archive_backup::read_only_database(&staged_files[0])?;
+        let database = std::sync::Arc::new(super::super::archive_backup::read_only_database(
+            &staged_files[0],
+        )?);
         // A raw target pin also works before journal/engine recovery. It never
         // repairs a target merely to decide whether publication occurred.
         let _target_custody = target_files
@@ -242,7 +244,10 @@ impl RedbMaintenanceStorage {
         }
         stage.verify()?;
         self.verify_path_ownership()?;
-        let root = std::sync::Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+        let root = std::sync::Arc::new(
+            crate::checkpoint_root::CheckpointRoot::new(read, 0)?
+                .retain_engine_and_history(std::sync::Arc::clone(&database), None),
+        );
         let access = crate::store::RedbReadAccess::Durable(root);
         crate::changelog_v3_cursor::state::open(&access)
             .map(Some)

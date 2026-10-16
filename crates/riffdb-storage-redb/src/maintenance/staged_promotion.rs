@@ -42,8 +42,8 @@ impl RedbStagedRestore {
             .open_file_read_write(OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?
             .into_std();
         let binding = {
-            let database = super::super::archive_backup::read_only_database(&file)?;
-            crate::backup::validate_readable_database_semantics(&database, &self.manifest)?;
+            let database = Arc::new(super::super::archive_backup::read_only_database(&file)?);
+            crate::backup::validate_readable_database_semantics(database.as_ref(), &self.manifest)?;
             let read = database.begin_read().map_err(transaction_error)?;
             PromotionValidationBinding::for_verified_backup(&read, &self.manifest)?
         };
@@ -88,7 +88,7 @@ impl RedbStagedRestore {
         if &self.promoted_file_checksum(&file)? != expected {
             return Err(corrupt());
         }
-        let database = super::super::archive_backup::read_only_database(&file)?;
+        let database = Arc::new(super::super::archive_backup::read_only_database(&file)?);
         let read = database.begin_read().map_err(transaction_error)?;
         if PromotionValidationBinding::for_verified_backup(&read, &self.manifest)?.is_none()
             || &self.promoted_file_checksum(&file)? != expected
@@ -96,7 +96,10 @@ impl RedbStagedRestore {
             return Err(corrupt());
         }
         self.verify_promoted_file(&file)?;
-        let root = Arc::new(crate::checkpoint_root::CheckpointRoot::new(read, 0));
+        let root = Arc::new(
+            crate::checkpoint_root::CheckpointRoot::new(read, 0)?
+                .retain_engine_and_history(Arc::clone(&database), None),
+        );
         Ok(Some(crate::RedbOwnedSnapshot::from_read_access(
             crate::store::RedbReadAccess::Durable(root),
         )))

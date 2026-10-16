@@ -86,6 +86,8 @@ pub struct RedbDerivedSourcePin {
     history: ChangelogHistoryStateV3,
     position: Arc<Position>,
     pins: Arc<DerivedSourcePins>,
+    provider_ownership:
+        Option<Arc<crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership>>,
 }
 
 impl RedbDerivedSourcePin {
@@ -122,6 +124,7 @@ impl RedbDerivedSourcePin {
             history,
             position,
             pins,
+            provider_ownership: None,
         })
     }
 
@@ -129,7 +132,11 @@ impl RedbDerivedSourcePin {
         access: RedbReadAccess,
         pins: Arc<DerivedSourcePins>,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+        ownership: Arc<crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership>,
     ) -> Result<Self, ChangelogCursorErrorV3> {
+        if !ownership.belongs_to(budget) {
+            return Err(integrity().into());
+        }
         let history = crate::changelog_v3_cursor::history_admitted_v1(&access, budget)?;
         // Attached follower roots may legitimately retain only the exact applied
         // receipt hash and no SourceOnly history rows. `history` has already
@@ -160,6 +167,7 @@ impl RedbDerivedSourcePin {
             history,
             position,
             pins,
+            provider_ownership: Some(ownership),
         })
     }
 
@@ -222,6 +230,7 @@ impl RedbDerivedSourcePin {
             history: self.history,
             position,
             pins: Arc::clone(&self.pins),
+            provider_ownership: self.provider_ownership.clone(),
         })
     }
     #[doc(hidden)]
@@ -230,6 +239,15 @@ impl RedbDerivedSourcePin {
         point: ChangelogHistoryPointV3,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<Self, ChangelogCursorErrorV3> {
+        let ownership = match &self.provider_ownership {
+            Some(ownership) if ownership.belongs_to(budget) => Arc::clone(ownership),
+            Some(_) => return Err(integrity().into()),
+            None => crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership::admit(
+                &self.access,
+                false,
+                budget,
+            )?,
+        };
         drop(crate::changelog_v3_cursor::open_admitted_v1(
             &self.access,
             self.history.lineage(),
@@ -242,6 +260,7 @@ impl RedbDerivedSourcePin {
             history: self.history,
             position,
             pins: Arc::clone(&self.pins),
+            provider_ownership: Some(ownership),
         })
     }
 }

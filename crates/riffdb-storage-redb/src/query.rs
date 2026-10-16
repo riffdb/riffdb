@@ -2263,9 +2263,11 @@ query ProjectMembersInRange(
                     .expect("database ID"),
             )
             .expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let write = ports.begin_write().expect("write");
         {
             let mut table = write
@@ -2382,9 +2384,11 @@ query ProjectMembersInRange(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x11; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let access_write = ports.begin_write().expect("write");
         {
             let encoded = encode_entity_record_v1(&record).expect("encode");
@@ -2586,9 +2590,11 @@ query ProjectMembersInRange(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x12; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let access_write = ports.begin_write().expect("write");
         {
             let mut table = access_write
@@ -2791,9 +2797,11 @@ query ProjectMembersInRange(
                     .expect("database ID"),
             )
             .expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
 
         let _serial = QUERY_TABLE_OPEN_TEST_LOCK
             .lock()
@@ -2849,9 +2857,11 @@ query ProjectMembersInRange(
                     .expect("database ID"),
             )
             .expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
 
         let _serial = QUERY_TABLE_OPEN_TEST_LOCK
             .lock()
@@ -2901,9 +2911,11 @@ query ProjectMembersInRange(
                     .expect("database ID"),
             )
             .expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let write = ports.begin_write().expect("write");
         {
             let mut table = write
@@ -3070,9 +3082,11 @@ query ProjectMembersInRange(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x13; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let access_write = ports.begin_write().expect("write");
         {
             let mut table = access_write
@@ -3259,9 +3273,11 @@ query list_members_exact(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x22; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let access_write = ports.begin_write().expect("write");
         {
             let mut table = access_write
@@ -3330,9 +3346,11 @@ query list_members_exact(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x13; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         // Drop the entities table after init so first touch fails.
         {
             // Corrupt the engine directly: the operational transaction owner
@@ -3462,9 +3480,11 @@ query list_members_exact(
             DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x63; 10])
                 .expect("database ID");
         store.initialize_database(database_id).expect("initialize");
-        let ports = RedbOperationalPorts {
+        let ports = RedbStore {
             shared: Arc::clone(&store.shared),
-        };
+        }
+        .into_contract_migration_ports()
+        .expect("activate query fixture source");
         let write = ports.begin_write().expect("write");
         {
             let mut table = write

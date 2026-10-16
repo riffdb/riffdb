@@ -533,7 +533,7 @@ fn corrupt() -> StorageError {
 
 #[cfg(test)]
 pub(crate) fn assert_full_pinned_oracle(read: redb::ReadTransaction) {
-    let root = Arc::new(CheckpointRoot::new(read, 0));
+    let root = Arc::new(CheckpointRoot::new(read, 0).unwrap());
     let expected = crate::changelog_v3_roots::validate_retained_history(&root)
         .unwrap()
         .unwrap();
@@ -551,10 +551,8 @@ mod tests {
     #[test]
     fn partial_history_pages_never_prove_reclamation_and_exact_end_matches_full_validation() {
         let (_scope, ports, _) = crate::changelog_v3_control_tests::fixture();
-        let root = Arc::new(CheckpointRoot::new(
-            ports.shared.database.begin_read().unwrap(),
-            0,
-        ));
+        let root =
+            Arc::new(CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 0).unwrap());
         let expected = crate::changelog_v3_roots::validate_retained_history(&root)
             .unwrap()
             .unwrap();

@@ -103,7 +103,7 @@ impl RedbBackgroundScrubSession {
         let transaction = self.session.validation_read.take().ok_or_else(invariant)?;
         // The scrub's existing extent pin protects this original read for the
         // complete pass. The local identity is never a publication permit.
-        let root = Arc::new(CheckpointRoot::new(transaction, 0));
+        let root = Arc::new(CheckpointRoot::new(transaction, 0)?);
         if let Some(mut walk) = RetainedHistoryValidation::new(Arc::clone(&root))? {
             loop {
                 self.session.check_cancellation()?;

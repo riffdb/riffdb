@@ -1,0 +1,142 @@
+//! Borrowed native command-directory construction sizing.
+//!
+//! This inspects the same readable schemas without constructing any generated
+//! message. Ordinary checksum, canonicality and semantic decoding remain required.
+// req: TXN-042, STO-032
+
+use super::{EnvelopeError, MAX_STORED_ENVELOPE_BYTES, PayloadValidationError};
+use crate::durable_wire::DurablePreflightError;
+
+/// Structural counts only; callers still admit all semantic ownership.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct LocatorSegmentDecodeShapeV1 {
+    /// Number of generated nested message instances, including the root.
+    pub messages: u64,
+    /// Number of generated opaque string/byte buffer instances.
+    pub buffers: u64,
+    /// Number of packed scalar elements.
+    pub packed_items: u64,
+    /// Number of original semantic command capsules.
+    pub capsules: u64,
+    /// Number of exact manifest entries.
+    pub manifest_entries: u64,
+    /// Structurally inspected semantic canonical heap, before mapper copies.
+    pub canonical_heap_bytes: u64,
+    /// Caller-inspected V7 prefix reconstruction and validation work.
+    pub prefix_work_bytes: u64,
+}
+
+/// Inspect one exact readable envelope before generated or semantic allocation.
+/// The prefix callback supplies separately bounded storage-owned reconstruction.
+#[doc(hidden)]
+pub fn inspect_locator_segment_decode_shape_v1(
+    encoded: &[u8],
+    mut prefix_work: impl FnMut(&[u8]) -> Result<u64, EnvelopeError>,
+) -> Result<Option<LocatorSegmentDecodeShapeV1>, EnvelopeError> {
+    if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
+        return Err(EnvelopeError::EnvelopeTooLarge);
+    }
+    let registry = crate::durable::readable_record_registry();
+    let legacy_schema;
+    let (record_type, payload) = if encoded.starts_with(&super::COMPACT_RECORD_MAGIC_V2) {
+        let record_type = registry
+            .peek_compact_record_type(encoded)
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        let schema = crate::durable::readable_record_schema(record_type)
+            .ok_or(EnvelopeError::UnknownRecordType)?;
+        (
+            record_type,
+            registry.borrowed_current_compact_payload(encoded, schema)?,
+        )
+    } else {
+        let (schema, frame) = registry.borrowed_v1_payload(encoded)?;
+        legacy_schema = schema;
+        (legacy_schema.record_type(), frame.payload)
+    };
+    let result =
+        crate::durable_wire::locator_allocation_shape(record_type, payload, &mut |prefix| {
+            prefix_work(prefix).map_err(|_| DurablePreflightError::Malformed)
+        })
+        .map_err(|error| {
+            EnvelopeError::InvalidPayload(match error {
+                DurablePreflightError::Malformed => PayloadValidationError::Malformed,
+                DurablePreflightError::NonCanonical => PayloadValidationError::NonCanonical,
+                DurablePreflightError::LimitExceeded => PayloadValidationError::LimitExceeded,
+            })
+        })?;
+    Ok(result.map(|shape| LocatorSegmentDecodeShapeV1 {
+        messages: shape.messages,
+        buffers: shape.buffers,
+        packed_items: shape.packed_items,
+        capsules: shape.capsules,
+        manifest_entries: shape.manifest_entries,
+        canonical_heap_bytes: shape.canonical_heap_bytes,
+        prefix_work_bytes: shape.prefix_work_bytes,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn locator_scratch_is_destroyed_before_its_admitted_owner_can_release() {
+        super::super::CANONICAL_SCRATCH.with(|scratch| {
+            *scratch.borrow_mut() = vec![1; 128 * 1024];
+            let borrowed = scratch.borrow();
+            assert!(
+                !super::super::release_locator_decode_scratch_v1(),
+                "live physical scratch cannot be declared released"
+            );
+            assert_eq!(borrowed.len(), 128 * 1024);
+            drop(borrowed);
+        });
+        assert!(super::super::release_locator_decode_scratch_v1());
+        super::super::CANONICAL_SCRATCH.with(|scratch| assert_eq!(scratch.borrow().capacity(), 0));
+    }
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn borrowed_locator_inspection_preserves_frozen_v7_prefix_and_schema_checks() {
+        let fixture = include_str!("../fixtures/durable-command-prefix-v7-wire-vectors.txt");
+        let line = fixture
+            .lines()
+            .find(|line| line.starts_with("riffdb.storage.v1.StoredCommandSegmentV6\t"))
+            .unwrap();
+        let (_, hex) = line.split_once("\t").unwrap();
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let digit = |c: u8| match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    _ => panic!("frozen hex"),
+                };
+                digit(pair[0]) * 16 + digit(pair[1])
+            })
+            .collect();
+        let mut prefixes = 0;
+        let shape = inspect_locator_segment_decode_shape_v1(&bytes, |prefix| {
+            assert!(prefix.len() >= 40);
+            prefixes += 1;
+            Ok(prefix.len() as u64)
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(prefixes, 1);
+        assert_eq!(shape.capsules, 1);
+        assert!(shape.manifest_entries >= 6);
+        assert!(shape.canonical_heap_bytes > 0);
+        crate::durable::decode_readable_message::<crate::storage::v1::StoredCommandSegmentV6>(
+            &bytes,
+        )
+        .unwrap();
+        let mut corrupt = bytes;
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(inspect_locator_segment_decode_shape_v1(&corrupt, |_| Ok(0)).is_err());
+    }
+}

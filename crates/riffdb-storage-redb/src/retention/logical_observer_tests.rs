@@ -67,6 +67,7 @@ fn populate(ports: &crate::store::RedbOperationalPorts, count: u64) -> Vec<usize
         .insert(META_APPLICATION_SEQUENCE, head.as_bytes())
         .unwrap();
     ports.shared.commit_durable(write).unwrap();
+    ports.shared.rebuild_test_source_indexes().unwrap();
     lengths
 }
 

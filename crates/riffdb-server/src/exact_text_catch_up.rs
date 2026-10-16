@@ -64,7 +64,7 @@ impl CapturedSource {
         let _metadata = self.budget.reserve(32 * 1024).map_err(|_| {
             riffdb_storage_api::StorageError::new(StorageErrorKind::Unavailable, None)
         })?;
-        let snapshot = self.storage.pin()?;
+        let snapshot = self.storage.pin_admitted_v1(&self.budget)?;
         super::authorize_provider_projected_candidates(
             &snapshot,
             &self.work,
@@ -111,7 +111,7 @@ impl CapturedSource {
             .map_err(|_| RebuildFailure::Transient)?;
         let snapshot = runtime
             .storage
-            .pin()
+            .pin_admitted_v1(&runtime.ownership_graph.budget)
             .map_err(|_| RebuildFailure::Transient)?;
         if snapshot
             .application_frontier()

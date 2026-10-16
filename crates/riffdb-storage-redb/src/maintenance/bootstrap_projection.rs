@@ -28,7 +28,7 @@ impl RedbBootstrapCandidate {
             crate::checkpoint_root::CheckpointRoot::new(
                 self.database.begin_read().map_err(unavailable)?,
                 0,
-            ),
+            )?,
         )))
     }
     fn rebuild_snapshot(&self) -> Result<crate::owned_snapshot::RedbOwnedSnapshot, StorageError> {

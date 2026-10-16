@@ -42,12 +42,15 @@ use crate::keys::{
     decode_vector_health_observation_key, decode_vector_observation_key,
 };
 use crate::layout::{META_DATABASE_ID, META_HISTORY_INCARNATION, META_RECORD_REGISTRY};
+use crate::locator_memory::{LocatorAllocationClass, LocatorCharge, NativeLocatorPool};
 use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_tail};
 
 /// Unpublished builder that proves one overlay against one frozen redb root.
 pub(crate) struct RedbCompositeViewBuilder {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
+    locator_capability: crate::locator_capability::LocatorCapability,
+    locator_descriptor: LocatorCharge,
     overlay: CompositeOverlayBuilder,
 }
 
@@ -68,6 +71,10 @@ impl RedbCompositeViewBuilder {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
         Ok(Self {
             changelog: crate::changelog_v3_cursor::ChangelogSuffix::from_checkpoint(&root)?,
+            locator_capability: root.locator_capability().clone(),
+            locator_descriptor: RedbCompositeReadView::admit_descriptor(
+                LocatorAllocationClass::Ordinary,
+            )?,
             root,
             overlay: CompositeOverlayBuilder::new(checkpoint),
         })
@@ -77,6 +84,18 @@ impl RedbCompositeViewBuilder {
     /// table bytes and predecessor state against this root plus prior frames.
     pub(crate) fn apply_frame(&mut self, frame: &JournalFrame) -> Result<(), StorageError> {
         let composite = frame.composite().map_err(corrupt_value)?;
+        if frame
+            .mutations()
+            .iter()
+            .any(|mutation| mutation.table() == crate::journal::JournalTable::Commits)
+        {
+            let (database, incarnation, registry) = self.locator_capability.source_binding()?;
+            let successor = crate::locator_capability::LocatorCapability::try_pending(
+                LocatorAllocationClass::Ordinary,
+            )?;
+            successor.bind_source(database, incarnation, registry)?;
+            self.locator_capability = successor;
+        }
         if frame.kind() == crate::journal::JournalFrameKind::RetentionPrune {
             let predecessor = self.overlay.clone().freeze();
             let mut stage = CompositeMutationStage::new(&predecessor);
@@ -97,12 +116,18 @@ impl RedbCompositeViewBuilder {
 
     /// Forks a captured published view into sole-writer private state without
     /// copying its complete suffix map.
-    pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
-        Self {
+    pub(crate) fn from_published(
+        published: &Arc<RedbCompositeReadView>,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
             changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
+            locator_capability: published.locator_capability.clone(),
+            locator_descriptor: RedbCompositeReadView::admit_descriptor(
+                LocatorAllocationClass::Ordinary,
+            )?,
             overlay: CompositeOverlayBuilder::from_published(&published.overlay),
-        }
+        })
     }
 
     fn apply_composite_frame(&mut self, frame: &CompositeFrameV1) -> Result<(), StorageError> {
@@ -116,6 +141,8 @@ impl RedbCompositeViewBuilder {
         RedbCompositeReadView {
             changelog: self.changelog,
             root: self.root,
+            locator_capability: self.locator_capability,
+            locator_descriptor: self.locator_descriptor,
             overlay: self.overlay.freeze(),
             snapshot_head: OnceLock::new(),
         }
@@ -126,6 +153,8 @@ impl RedbCompositeViewBuilder {
 pub(crate) struct RedbCompositeReadView {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
+    locator_capability: crate::locator_capability::LocatorCapability,
+    locator_descriptor: LocatorCharge,
     overlay: FrozenCompositeOverlay,
     /// The snapshot-visible application frontier of THIS view, derived once.
     ///
@@ -138,6 +167,8 @@ pub(crate) struct RedbCompositeReadView {
 pub(crate) struct RedbCompositeMutationStage {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
+    locator_capability: crate::locator_capability::LocatorCapability,
+    locator_descriptor: LocatorCharge,
     stage: CompositeMutationStage,
     /// Staged command segments by mutation index, with the summary their
     /// history stub carries (ADR-0263 Decision 4).
@@ -145,17 +176,76 @@ pub(crate) struct RedbCompositeMutationStage {
 }
 
 impl RedbCompositeMutationStage {
+    pub(crate) fn set_locator_generation(
+        &mut self,
+        generation: crate::transient::LocatorGeneration,
+    ) -> Result<(), StorageError> {
+        self.set_locator_generation_with_class(
+            generation,
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+    }
+
+    pub(crate) fn set_locator_generation_with_class(
+        &mut self,
+        generation: crate::transient::LocatorGeneration,
+        class: crate::locator_memory::LocatorAllocationClass,
+    ) -> Result<(), StorageError> {
+        // Operational journal stages cannot replace database/format identity.
+        // Their captured predecessor has already checked these fixed roots;
+        // retain that exact binding without an unadmitted metadata copy.
+        if self.stage.staged_mutations().iter().any(|mutation| {
+            mutation.table() == CompositeTableV1::Meta
+                && [
+                    META_DATABASE_ID,
+                    META_HISTORY_INCARNATION,
+                    META_RECORD_REGISTRY,
+                ]
+                .iter()
+                .any(|key| mutation.key() == key.as_bytes())
+        }) {
+            return Err(crate::error::storage_error(
+                StorageErrorKind::InvariantViolation,
+            ));
+        }
+        let capability = crate::locator_capability::LocatorCapability::try_complete_from_source(
+            generation,
+            &self.locator_capability,
+            class,
+        )?;
+        self.locator_capability = capability;
+        Ok(())
+    }
+
+    pub(crate) fn set_locator_capability(
+        &mut self,
+        capability: crate::locator_capability::LocatorCapability,
+    ) {
+        self.locator_capability = capability;
+    }
+
     pub(crate) fn staged_mutations(&self) -> &[riffdb_storage_api::CompositeMutationV1] {
         self.stage.staged_mutations()
     }
 
-    pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
-        Self {
+    pub(crate) fn from_published(
+        published: &Arc<RedbCompositeReadView>,
+    ) -> Result<Self, StorageError> {
+        Self::from_published_with_class(published, LocatorAllocationClass::Ordinary)
+    }
+
+    pub(crate) fn from_published_with_class(
+        published: &Arc<RedbCompositeReadView>,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
             changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
+            locator_capability: published.locator_capability.clone(),
+            locator_descriptor: RedbCompositeReadView::admit_descriptor(class)?,
             stage: CompositeMutationStage::new(&published.overlay),
             segments: Vec::new(),
-        }
+        })
     }
 
     /// Records that the mutation just staged inserted the command segment
@@ -281,6 +371,8 @@ impl RedbCompositeMutationStage {
         Ok(RedbCompositeReadView {
             changelog: self.changelog,
             root: self.root,
+            locator_capability: self.locator_capability,
+            locator_descriptor: self.locator_descriptor,
             overlay,
             snapshot_head: OnceLock::new(),
         })
@@ -318,6 +410,8 @@ impl RedbCompositeMutationStage {
         Ok(RedbCompositeReadView {
             changelog: self.changelog,
             root: self.root,
+            locator_capability: self.locator_capability,
+            locator_descriptor: self.locator_descriptor,
             overlay,
             snapshot_head: OnceLock::new(),
         })
@@ -362,6 +456,8 @@ impl RedbCompositeMutationStage {
             RedbCompositeReadView {
                 changelog: self.changelog,
                 root: self.root,
+                locator_capability: self.locator_capability,
+                locator_descriptor: self.locator_descriptor,
                 overlay,
                 snapshot_head: OnceLock::new(),
             },
@@ -536,6 +632,40 @@ impl RedbCompositePublication {
 }
 
 impl RedbCompositeReadView {
+    /// Cached native ownership retained by a provider pin, excluding locator
+    /// generations which have their own shared provider accounting owners.
+    pub(crate) fn retained_provider_nonlocator_bound(&self) -> Result<u64, StorageError> {
+        let bytes = self
+            .locator_capability
+            .descriptor_charge_bound()?
+            .checked_add(self.root.locator_capability().descriptor_charge_bound()?)
+            .and_then(|bytes| bytes.checked_add(self.root.retained_history_custody_bound()))
+            .and_then(|bytes| bytes.checked_add(self.locator_descriptor.bytes()))
+            .and_then(|bytes| bytes.checked_add(self.overlay.charged_bytes()))
+            .and_then(|bytes| bytes.checked_add(self.changelog.retained_ownership_bound()))
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        u64::try_from(bytes).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))
+    }
+
+    pub(crate) fn admit_descriptor(
+        class: LocatorAllocationClass,
+    ) -> Result<LocatorCharge, StorageError> {
+        NativeLocatorPool::global().admit(
+            std::mem::size_of::<Self>() + std::mem::size_of::<RedbCompositeMutationStage>() + 128,
+            class,
+        )
+    }
+    pub(crate) fn locator_capability(&self) -> &crate::locator_capability::LocatorCapability {
+        &self.locator_capability
+    }
+
+    pub(crate) fn install_locator_generation(
+        &self,
+        generation: crate::transient::LocatorGeneration,
+    ) -> Result<(), StorageError> {
+        self.locator_capability.install_generation(generation)
+    }
+
     pub(crate) fn changelog_suffix(&self) -> &crate::changelog_v3_cursor::ChangelogSuffix {
         &self.changelog
     }
@@ -610,6 +740,7 @@ impl RedbCompositeReadView {
         covered: &Self,
         root: Arc<CheckpointRoot>,
         checkpoint_frame_hash: [u8; 32],
+        locator_descriptor: LocatorCharge,
     ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
         let overlay = self
@@ -618,6 +749,8 @@ impl RedbCompositeReadView {
             .map_err(corrupt_value)?;
         Ok(Self {
             changelog: self.changelog.rebase_after(&covered.changelog, &root)?,
+            locator_capability: self.locator_capability.clone(),
+            locator_descriptor,
             root,
             overlay,
             snapshot_head: OnceLock::new(),
@@ -1623,7 +1756,7 @@ mod tests {
         )
         .unwrap();
         let view = Arc::new(view);
-        let mut successor = RedbCompositeViewBuilder::from_published(&view);
+        let mut successor = RedbCompositeViewBuilder::from_published(&view).unwrap();
         successor.apply_composite_frame(&frame).unwrap();
         let successor = successor.freeze();
         let surviving = successor
@@ -1671,7 +1804,7 @@ mod tests {
                 .freeze(),
         );
         let captured = publication.capture().expect("published predecessor");
-        let mut private = RedbCompositeViewBuilder::from_published(&captured);
+        let mut private = RedbCompositeViewBuilder::from_published(&captured).unwrap();
         let frame = CompositeFrameV1::new(
             CompositeFrameKindV1::ServiceAudit,
             database_id(),
@@ -1720,8 +1853,11 @@ mod tests {
             Some(next)
         );
 
-        let stale_successor =
-            Arc::new(RedbCompositeViewBuilder::from_published(&captured).freeze());
+        let stale_successor = Arc::new(
+            RedbCompositeViewBuilder::from_published(&captured)
+                .unwrap()
+                .freeze(),
+        );
         let stale = publication.publish_successor(&captured, stale_successor);
         assert!(matches!(
             stale,

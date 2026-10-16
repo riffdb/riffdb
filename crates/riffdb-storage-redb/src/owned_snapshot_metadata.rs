@@ -210,8 +210,9 @@ impl riffdb_storage_api::QueryModuleRepository for RedbOwnedSnapshot {
         bundle_hash: riffdb_types::ContractBundleHash,
     ) -> Result<Option<riffdb_storage_api::ActiveQueryModulePointerV1>, StorageError> {
         self.verify_snapshot_custody()?;
-        // Complete stream integrity was proved at startup. The pinned read still
-        // checks every exact pointer/audit/module cross-link without a history scan.
+        // ADR-0073 keeps full history validation off the request path. Under
+        // ADR-0182's bounded startup, this immutable read validates every touched
+        // pointer/audit/module envelope and required exact cross-link on access.
         crate::administration::read_active_query_module_at(
             &self.access,
             lineage,

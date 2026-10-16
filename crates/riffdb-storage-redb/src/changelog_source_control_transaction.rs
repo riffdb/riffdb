@@ -565,6 +565,25 @@ impl ControlWrite {
         ),
         StorageError,
     > {
+        // The drained barrier pins the complete predecessor. These closed
+        // owners write source holds, history receipts/retention roots,
+        // administration audit/allocator rows or primary-admission metadata;
+        // none adds, removes or rewrites a command payload or its locator
+        // members. Preserve that exact membership proof in a separately
+        // admitted successor descriptor before crossing the durable fence.
+        // A pending predecessor cannot prove an empty directory.
+        let predecessor = self.barrier.root.locator_capability();
+        let capability = if predecessor.is_pending() {
+            crate::locator_capability::LocatorCapability::try_pending(
+                crate::locator_memory::LocatorAllocationClass::Maintenance,
+            )?
+        } else {
+            crate::locator_capability::LocatorCapability::try_complete_from_source(
+                predecessor.require_complete()?.clone(),
+                predecessor,
+                crate::locator_memory::LocatorAllocationClass::Maintenance,
+            )?
+        };
         if let Some(operation) = operation {
             self.barrier.shared.before_test_commit(operation)?;
         }
@@ -573,7 +592,11 @@ impl ControlWrite {
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let shared = &self.barrier.shared;
-        if let Err(error) = shared.commit_durable(raw) {
+        if let Err(error) = shared.commit_with_source_footprint_and_locator(
+            raw,
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+            capability,
+        ) {
             shared.fence_writes();
             return Err(error);
         }

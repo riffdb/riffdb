@@ -18,9 +18,21 @@ use crate::error::{storage_error, transaction_error};
 mod tests;
 
 impl SharedRedb {
+    #[cfg(test)]
     pub(super) fn materialize_checkpoint_batch(
         &self,
         batch: &JournalCheckpointBatch,
+    ) -> Result<(), StorageError> {
+        let capability = crate::locator_capability::LocatorCapability::try_pending(
+            crate::locator_memory::LocatorAllocationClass::Maintenance,
+        )?;
+        self.materialize_checkpoint_batch_with_locator(batch, capability)
+    }
+
+    pub(super) fn materialize_checkpoint_batch_with_locator(
+        &self,
+        batch: &JournalCheckpointBatch,
+        locator_capability: crate::locator_capability::LocatorCapability,
     ) -> Result<(), StorageError> {
         #[cfg(feature = "test-fixtures")]
         if let Some(controller) = &self.test_controller {
@@ -307,7 +319,7 @@ impl SharedRedb {
             .checkpoint_rewrite
             .enter()
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        self.commit_with_source_footprint(transaction, footprint)?;
+        self.commit_with_source_footprint_and_locator(transaction, footprint, locator_capability)?;
         #[cfg(test)]
         crate::changelog_v3_journal::recovery_crash_edge("checkpoint-committed");
         Ok(())

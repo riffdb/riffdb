@@ -1925,12 +1925,22 @@ impl CapabilityInventoryReader for RedbOperationalPorts {
         let mut records = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
-        for entry in table.iter().map_err(precommit_storage_error)? {
+        let after_key = after.map(encode_capability_key);
+        let lower = after_key
+            .as_ref()
+            .map_or(std::ops::Bound::Unbounded, |key| {
+                std::ops::Bound::Excluded(key.as_slice())
+            });
+        for entry in table
+            .range::<&[u8]>((lower, std::ops::Bound::Unbounded))
+            .map_err(precommit_storage_error)?
+        {
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
-            if after.is_some_and(|after| capability_id <= after) {
-                continue;
+            if records.len() == usize::from(limit.get()) {
+                has_more = true;
+                break;
             }
+            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
             let record = decoded_value(decode_capability_record_v1(value.value())?);
             if record.capability_id() != capability_id {
                 return Err(corrupt());
@@ -1938,7 +1948,7 @@ impl CapabilityInventoryReader for RedbOperationalPorts {
             let next_bytes = bytes
                 .checked_add(record.semantic_bytes().map_err(|_| corrupt())?)
                 .ok_or_else(corrupt)?;
-            if records.len() == usize::from(limit.get()) || next_bytes > MAX_SCAN_PAGE_BYTES {
+            if next_bytes > MAX_SCAN_PAGE_BYTES {
                 has_more = true;
                 break;
             }
@@ -2121,7 +2131,7 @@ pub struct OfflineCapabilityListPageV1 {
     pub capabilities: Vec<OfflineCapabilitySummaryV1>,
     /// Whether additional capabilities remain after this page.
     pub has_more: bool,
-    /// Exclusive lower bound for the next page when `has_more` is true.
+    /// Last examined capability ID when `has_more` is true, even for an empty filtered page.
     pub next_after: Option<CapabilityId>,
 }
 
@@ -2173,7 +2183,8 @@ impl RedbOfflineCapabilityInventory {
         Self::bind(database_path).get(capability_id)
     }
 
-    /// Scans a bounded page of capability records in ascending capability ID order.
+    /// Scans at most `limit` capability records in ascending capability ID order.
+    /// Filters can leave a page empty; resume with `next_after` whenever it is present.
     pub fn list_page(
         &self,
         after: Option<CapabilityId>,
@@ -2198,12 +2209,26 @@ impl RedbOfflineCapabilityInventory {
         let mut capabilities = Vec::new();
         let mut bytes = 0usize;
         let mut has_more = false;
-        for entry in table.iter().map_err(precommit_storage_error)? {
+        let mut last_examined = None;
+        let after_key = after.map(encode_capability_key);
+        let lower = after_key
+            .as_ref()
+            .map_or(std::ops::Bound::Unbounded, |key| {
+                std::ops::Bound::Excluded(key.as_slice())
+            });
+        for (examined, entry) in table
+            .range::<&[u8]>((lower, std::ops::Bound::Unbounded))
+            .map_err(precommit_storage_error)?
+            .enumerate()
+        {
             let (key, value) = entry.map_err(precommit_storage_error)?;
-            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
-            if after.is_some_and(|after| capability_id <= after) {
-                continue;
+            // Look ahead only for existence; never decode another record after
+            // this page has consumed its physical row budget.
+            if examined == usize::from(scan_limit.get()) {
+                has_more = true;
+                break;
             }
+            let capability_id = decode_capability_key(key.value()).map_err(|_| corrupt())?;
             let record = decoded_value(decode_capability_record_v1(value.value())?);
             if record.capability_id() != capability_id || record.database_id() != database_id {
                 return Err(corrupt());
@@ -2219,6 +2244,17 @@ impl RedbOfflineCapabilityInventory {
             if lookup != CapabilityTokenLookupV1::new(capability_id) {
                 return Err(corrupt());
             }
+            // Filtered rows consume the same bounded scan work and bytes as
+            // returned rows. Continuation follows the scanned key, not a match.
+            let next_bytes = bytes
+                .checked_add(record.semantic_bytes().map_err(|_| corrupt())?)
+                .ok_or_else(corrupt)?;
+            if next_bytes > MAX_SCAN_PAGE_BYTES {
+                has_more = true;
+                break;
+            }
+            bytes = next_bytes;
+            last_examined = Some(capability_id);
             let summary = OfflineCapabilitySummaryV1::from_record(
                 &record,
                 bootstrap_capability_id == Some(capability_id),
@@ -2229,21 +2265,9 @@ impl RedbOfflineCapabilityInventory {
             if principal_filter.is_some_and(|expected| summary.principal_id != expected) {
                 continue;
             }
-            let next_bytes = bytes
-                .checked_add(record.semantic_bytes().map_err(|_| corrupt())?)
-                .ok_or_else(corrupt)?;
-            if capabilities.len() == usize::from(scan_limit.get())
-                || next_bytes > MAX_SCAN_PAGE_BYTES
-            {
-                has_more = true;
-                break;
-            }
-            bytes = next_bytes;
             capabilities.push(summary);
         }
-        let next_after = has_more
-            .then(|| capabilities.last().map(|item| item.capability_id))
-            .flatten();
+        let next_after = has_more.then_some(last_examined).flatten();
         Ok(OfflineCapabilityListPageV1 {
             database_id,
             bootstrap_capability_id,
@@ -5857,6 +5881,92 @@ mod tests {
             ServiceAuditAppendResult::Appended(_)
         ));
         assert_eq!(audit_count(&ports), 4);
+    }
+
+    // req: SEC-001, SEC-002, SEC-003
+    #[test]
+    fn offline_capability_filters_preserve_bounded_scan_continuations() {
+        let (path, mut ports) = initialized_ports("offline-capability-bounded-filter");
+        let root = capability_id(4);
+        ports
+            .bootstrap_capability(&bootstrap_intent(30, root, digest(3), 10))
+            .expect("bootstrap root");
+        let authorizer = principal(root);
+        for seed in [5, 6] {
+            let child = capability_id(seed);
+            let requested = requested_record(database_id(), "delegate");
+            let candidate = CapabilityCreateCandidateV1::new(
+                child,
+                request_id(seed),
+                requested.clone(),
+                digest(seed),
+                authorizer.clone(),
+                None,
+            );
+            let (awaiting, _) = ports
+                .begin_capability_create(candidate)
+                .expect("begin create")
+                .read_transaction_current()
+                .expect("read create current state");
+            let intent = CapabilityCreateIntentV1::new(
+                child,
+                request_id(seed),
+                requested,
+                digest(seed),
+                Timestamp::new(20, 0).expect("issued"),
+                Timestamp::new(80, 0).expect("expires"),
+                authorizer.clone(),
+                None,
+            )
+            .expect("create intent");
+            assert!(matches!(
+                awaiting.commit_create(intent).expect("commit create"),
+                CapabilityCreateResult::Created { .. }
+            ));
+        }
+        for (after, expected, more) in [
+            (None, root, true),
+            (Some(root), capability_id(5), true),
+            (Some(capability_id(5)), capability_id(6), false),
+        ] {
+            let page = ports
+                .scan_capabilities(after, StorageScanLimit::new(1).unwrap())
+                .expect("bounded operational capability page");
+            assert_eq!(page.records().len(), 1);
+            assert_eq!(page.records()[0].capability_id(), expected);
+            assert_eq!(page.has_more(), more);
+        }
+        drop(ports);
+
+        let inventory = RedbOfflineCapabilityInventory::bind(&path.0);
+        let first = inventory
+            .list_page(None, 1, Some("active"), Some("delegate"))
+            .expect("bounded filtered first page");
+        assert!(first.capabilities.is_empty());
+        assert!(first.has_more);
+        assert_eq!(first.next_after, Some(root));
+
+        let second = inventory
+            .list_page(first.next_after, 1, Some("active"), Some("delegate"))
+            .expect("bounded filtered second page");
+        assert_eq!(second.capabilities.len(), 1);
+        assert_eq!(second.capabilities[0].capability_id, capability_id(5));
+        assert!(second.has_more);
+        assert_eq!(second.next_after, Some(capability_id(5)));
+
+        let last = inventory
+            .list_page(second.next_after, 1, Some("active"), Some("delegate"))
+            .expect("bounded filtered last page");
+        assert_eq!(last.capabilities.len(), 1);
+        assert_eq!(last.capabilities[0].capability_id, capability_id(6));
+        assert!(!last.has_more);
+        assert_eq!(last.next_after, None);
+        let exhausted = inventory
+            .list_page(Some(capability_id(6)), 1, None, None)
+            .expect("exclusive cursor after the final capability");
+        assert!(exhausted.capabilities.is_empty());
+        assert!(!exhausted.has_more);
+        assert_eq!(exhausted.next_after, None);
     }
 
     // req: OUT-001, OUT-002, TXN-042

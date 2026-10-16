@@ -10,6 +10,16 @@ use riffdb_storage_api::{
 };
 use riffdb_types::ReplicationFollowerAuditTargetV1;
 
+fn reopen_operational(path: &std::path::Path) -> RedbOperationalPorts {
+    let store = crate::RedbStore::open(path).unwrap();
+    crate::store::RedbDormantPorts {
+        pending_v3_activation: None,
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .unwrap()
+}
+
 #[test]
 fn lifecycle_service_result_links_exact_action_and_target_on_new_request_replay() {
     let (_scope, mut ports, selected) = fixture();
@@ -127,6 +137,12 @@ fn fixture() -> (
     )
     .unwrap();
     ports.shared.commit_durable(write).unwrap();
+    // The isolated V3 fixture write creates a new physical source. Give that
+    // source the genuine operational startup handoff before indexed reads or
+    // closed administration writes; manually constructing ports would leave
+    // its admitted command directory pending.
+    drop(ports);
+    let ports = reopen_operational(&path.0);
     let target = ReplicationFollowerAuditTargetV1::new(
         database_id(),
         1,
@@ -150,6 +166,30 @@ fn execute(ports: &RedbOperationalPorts, request: Request) -> ResultV1 {
             Timestamp::new(15, 0).unwrap(),
         ))
         .unwrap()
+}
+
+// req: TXN-042, STO-032, REC-001
+#[test]
+fn control_publication_preserves_complete_locator_for_both_source_views() {
+    let (_scope, ports, target) = fixture();
+    let before = ports.begin_composite_read().unwrap();
+    let predecessor = before.locator_capability();
+    let generation = predecessor.require_complete().unwrap();
+    assert!(!generation.has_command_at(riffdb_types::CommitSequence::first()).unwrap());
+    let previous = crate::changelog_v3_cursor::history(&before).unwrap();
+    let count = audit_count(&ports);
+
+    assert!(matches!(execute(&ports, register(target)), ResultV1::Applied(_)));
+
+    let after = ports.begin_composite_read().unwrap();
+    let successor = after.locator_capability();
+    assert!(!predecessor.same_construction(successor));
+    let current = successor.require_complete().unwrap();
+    assert!(generation.owner_handle().same_owner(&current.owner_handle()));
+    assert!(!current.has_command_at(riffdb_types::CommitSequence::first()).unwrap());
+    assert_eq!(crate::changelog_v3_cursor::history(&before).unwrap(), previous);
+    assert_ne!(crate::changelog_v3_cursor::history(&after).unwrap(), previous);
+    assert_eq!(audit_count(&ports), count + 1);
 }
 
 #[test]
@@ -461,10 +501,7 @@ fn replication_administration_crash_child() {
     let Some(path) = std::env::var_os("RIFFDB_REPLICATION_ADMIN_PATH") else {
         return;
     };
-    let store = crate::RedbStore::open(path).unwrap();
-    let ports = crate::RedbOperationalPorts {
-        shared: store.shared,
-    };
+    let ports = reopen_operational(std::path::Path::new(&path));
     let history = history(&ports);
     let target = ReplicationFollowerAuditTargetV1::new(
         database_id(),
@@ -513,10 +550,7 @@ fn lifecycle_process_crashes_recover_complete_receipt_hold_and_allocator_or_neit
             assert_eq!(status.code(), Some(93), "{edge}, retire={retire}");
             let committed = edge == "administration-committed";
             for _ in 0..2 {
-                let store = crate::RedbStore::open(&scope.0).unwrap();
-                let ports = crate::RedbOperationalPorts {
-                    shared: store.shared,
-                };
+                let ports = reopen_operational(&scope.0);
                 let after = history(&ports);
                 assert_eq!(
                     after.tail().sequence().get(),
@@ -532,10 +566,7 @@ fn lifecycle_process_crashes_recover_complete_receipt_hold_and_allocator_or_neit
                     if retire { !committed } else { committed }
                 );
             }
-            let store = crate::RedbStore::open(&scope.0).unwrap();
-            let ports = crate::RedbOperationalPorts {
-                shared: store.shared,
-            };
+            let ports = reopen_operational(&scope.0);
             let request = original.map_or_else(
                 || register(target),
                 |record| Request::retire(request_id(33), target, record.generation()),

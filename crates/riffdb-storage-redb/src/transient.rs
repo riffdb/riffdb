@@ -4,17 +4,23 @@
 pub(crate) mod follower;
 #[path = "transient_payload.rs"]
 mod payload;
+use crate::locator_memory::{
+    ChargedLocatorAllocation, ChargedLocatorKey, LocatorAllocationClass, LocatorOwner,
+    LocatorRetireContents, NativeLocatorPool,
+};
+use crate::locator_tree::LocatorTree;
 #[cfg(test)]
 pub(crate) use payload::PAYLOAD_COLD_DECODES;
 #[cfg(test)]
 pub(crate) use payload::PAYLOAD_SEED_VERIFY_EVERY;
 pub(crate) use payload::{CapturedCommandPayload, ResolvedCommandPayload};
-use payload::{PayloadCache, SegmentMetadata};
+use payload::{PayloadCache, SegmentMetadata, SegmentMetadataRef};
 
 #[cfg(test)]
 thread_local! {
     pub(crate) static PAYLOAD_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -56,17 +62,6 @@ pub(crate) struct TransientIndexes {
 
 type EventRoutePage = Result<(EventRouteUpperFenceV1, Vec<StoredEventRouteV1>, bool), StorageError>;
 
-/// Exact command identities whose redb roots have been sealed but whose
-/// durability fences have not yet advanced the public read frontier.
-///
-/// Later writers must observe these identities to preserve idempotency across
-/// pipelined epochs. Public readers deliberately never consult this overlay.
-#[derive(Default)]
-pub(crate) struct UnpublishedCommandIndexes {
-    segments: BTreeMap<CommitSequence, Arc<StoredCommandSegmentV1>>,
-    exact: BTreeMap<(CommandDerivedIndexKindV1, Vec<u8>), CommandDerivedLocator>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CommandDerivedLocator {
     pub(crate) segment_first: CommitSequence,
@@ -75,16 +70,538 @@ pub(crate) struct CommandDerivedLocator {
     pub(crate) member: CommandDerivedMemberV1,
 }
 
-#[derive(Default)]
+type ExactLocatorTree = LocatorTree<ChargedLocatorKey, CommandDerivedLocator>;
+
+/// One complete immutable directory for exactly one captured command authority.
+/// Cloning shares admitted ownership; successors admit a distinct owner before
+/// any path copies and never mutate a directory already visible to a reader.
+#[derive(Clone)]
+pub(crate) struct LocatorGeneration(Arc<LocatorGenerationState>);
+
+pub(crate) struct LocatorGenerationState {
+    pool: Arc<NativeLocatorPool>,
+    class: LocatorAllocationClass,
+    database_incarnation: Option<(riffdb_types::DatabaseId, u64)>,
+    metadata_ownership_bytes: usize,
+    segments: LocatorTree<CommitSequence, SegmentMetadataRef>,
+    idempotency: ExactLocatorTree,
+    provenance: ExactLocatorTree,
+    audit_sequence: ExactLocatorTree,
+    audit_request: ExactLocatorTree,
+    event_route: ExactLocatorTree,
+    pending_outbox: ExactLocatorTree,
+    provider_admission: std::sync::Mutex<()>,
+    // Keep the numerical provider charge until every charged data field has
+    // released ownership. Arc clones share this one lifecycle and attachment.
+    provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
+    // Last: node/key release is enqueued before this preadmitted owner barrier.
+    _owner: LocatorOwner,
+}
+
+impl std::ops::Deref for LocatorGeneration {
+    type Target = LocatorGenerationState;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 struct CommandDerivedIndexes {
-    segments: BTreeMap<CommitSequence, Arc<SegmentMetadata>>,
+    generation: LocatorGeneration,
     payloads: PayloadCache,
-    idempotency: BTreeMap<Vec<u8>, CommandDerivedLocator>,
-    provenance: BTreeMap<Vec<u8>, CommandDerivedLocator>,
-    audit_sequence: BTreeMap<Vec<u8>, CommandDerivedLocator>,
-    audit_request: BTreeMap<Vec<u8>, CommandDerivedLocator>,
-    event_route: BTreeMap<Vec<u8>, CommandDerivedLocator>,
-    pending_outbox: BTreeMap<Vec<u8>, CommandDerivedLocator>,
+}
+impl std::ops::Deref for CommandDerivedIndexes {
+    type Target = LocatorGeneration;
+    fn deref(&self) -> &LocatorGeneration {
+        &self.generation
+    }
+}
+
+impl LocatorGeneration {
+    pub(crate) const fn descriptor_bytes() -> usize {
+        std::mem::size_of::<LocatorGenerationState>() + 64 + 256
+    }
+
+    pub(crate) fn owner_handle(&self) -> LocatorOwner {
+        self._owner.clone()
+    }
+
+    pub(crate) fn try_empty(class: LocatorAllocationClass) -> Result<Self, StorageError> {
+        let pool = NativeLocatorPool::global();
+        Self::try_empty_in_pool(pool, class)
+    }
+
+    pub(crate) fn try_empty_in_pool(
+        pool: Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        let owner = LocatorOwner::try_new_with_bytes(&pool, class, Self::descriptor_bytes())?;
+        Ok(Self::empty_with_owner(pool, owner, class))
+    }
+
+    pub(crate) fn try_empty_with_owner(
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        Ok(Self::empty_with_owner(
+            NativeLocatorPool::global(),
+            owner,
+            class,
+        ))
+    }
+
+    fn empty_with_owner(
+        pool: Arc<NativeLocatorPool>,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+    ) -> Self {
+        Self(Arc::new(LocatorGenerationState {
+            _owner: owner,
+            pool: Arc::clone(&pool),
+            class,
+            database_incarnation: None,
+            metadata_ownership_bytes: 0,
+            segments: LocatorTree::empty(Arc::clone(&pool), class),
+            idempotency: LocatorTree::empty(Arc::clone(&pool), class),
+            provenance: LocatorTree::empty(Arc::clone(&pool), class),
+            audit_sequence: LocatorTree::empty(Arc::clone(&pool), class),
+            audit_request: LocatorTree::empty(Arc::clone(&pool), class),
+            event_route: LocatorTree::empty(Arc::clone(&pool), class),
+            pending_outbox: LocatorTree::empty(pool, class),
+            provider_admission: std::sync::Mutex::new(()),
+            provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
+        }))
+    }
+
+    fn successor(&self, class: LocatorAllocationClass) -> Result<Self, StorageError> {
+        let owner = LocatorOwner::try_new_with_bytes(&self.pool, class, Self::descriptor_bytes())?;
+        Ok(Self(Arc::new(LocatorGenerationState {
+            _owner: owner,
+            pool: Arc::clone(&self.pool),
+            class,
+            database_incarnation: self.database_incarnation,
+            metadata_ownership_bytes: self.metadata_ownership_bytes,
+            segments: self.segments.with_allocation_class(class),
+            idempotency: self.idempotency.with_allocation_class(class),
+            provenance: self.provenance.with_allocation_class(class),
+            audit_sequence: self.audit_sequence.with_allocation_class(class),
+            audit_request: self.audit_request.with_allocation_class(class),
+            event_route: self.event_route.with_allocation_class(class),
+            pending_outbox: self.pending_outbox.with_allocation_class(class),
+            provider_admission: std::sync::Mutex::new(()),
+            provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
+        })))
+    }
+
+    pub(crate) fn prepare_delta(
+        &self,
+        delta: &TransientIndexDelta,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        match delta {
+            TransientIndexDelta::CommandSegmentPublished(segment, canonical) => {
+                if let Some(canonical) = canonical
+                    && segment
+                        .first_commit_sequence()
+                        .get()
+                        .is_multiple_of(payload::PAYLOAD_SEED_VERIFY_EVERY)
+                {
+                    let decoded =
+                        decode_native_locator_construction_segment(canonical, None, class, None)?
+                            .ok_or_else(corrupt)?;
+                    if *decoded != **segment {
+                        return Err(corrupt());
+                    }
+                }
+                let mut next = self.successor(class)?;
+                next.insert_segment(segment)?;
+                Ok(next)
+            }
+            TransientIndexDelta::HistoryPruned { segments, .. } => {
+                self.prepare_history_prune(segments, class)
+            }
+            _ => Ok(self.clone()),
+        }
+    }
+
+    pub(crate) fn prepare_history_prune(
+        &self,
+        segments: &[Arc<StoredCommandSegmentV1>],
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        let mut next = self.successor(class)?;
+        for segment in segments {
+            let removed = next
+                .remove_segment(segment.first_commit_sequence())?
+                .ok_or_else(corrupt)?;
+            removed.validate(segment)?;
+        }
+        Ok(next)
+    }
+
+    /// The caller supplies only segments decoded from its one captured source.
+    /// This builder is private until the entire iterator has validated.
+    #[cfg(test)]
+    pub(crate) fn rebuild_from_segments(
+        segments: impl IntoIterator<Item = Result<Arc<StoredCommandSegmentV1>, StorageError>>,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        let mut result = Self::try_empty(class)?;
+        for segment in segments {
+            let segment = segment?;
+            result.insert_segment(segment.as_ref())?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn rebuild_from_access_with_owner(
+        access: &crate::store::RedbReadAccess,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, StorageError> {
+        Self::rebuild_captured_counted(access, owner, class, &mut cancelled)
+            .map(|(generation, _)| generation)
+    }
+
+    fn rebuild_captured_counted(
+        access: &crate::store::RedbReadAccess,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<(Self, u64), StorageError> {
+        let mut generation = Self::try_empty_with_owner(owner, class)?;
+        let mut after = None;
+        let mut rows = 0u64;
+        loop {
+            if cancelled() {
+                return Err(unavailable());
+            }
+            let next = access.visit_next_command_row(after, |physical, bytes| {
+                if cancelled() {
+                    return Err(unavailable());
+                }
+                if let Some(segment) = decode_locator_construction_segment(bytes, Some(access))? {
+                    if segment.first_commit_sequence() != physical {
+                        return Err(corrupt());
+                    }
+                    generation.insert_segment(&segment)?;
+                }
+                rows = rows.checked_add(1).ok_or_else(unavailable)?;
+                Ok(physical)
+            })?;
+            let Some(sequence) = next else {
+                break;
+            };
+            after = Some(sequence);
+        }
+        if cancelled() {
+            return Err(unavailable());
+        }
+        generation.validate_source(access)?;
+        Ok((generation, rows))
+    }
+
+    pub(crate) fn validate_database_incarnation(
+        &self,
+        database: riffdb_types::DatabaseId,
+        incarnation: u64,
+    ) -> Result<(), StorageError> {
+        if self
+            .database_incarnation
+            .is_some_and(|binding| binding.0 != database || binding.1 > incarnation)
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_source(
+        &self,
+        access: &crate::store::RedbReadAccess,
+    ) -> Result<(), StorageError> {
+        let (database, incarnation, _) = access.locator_capability().source_binding()?;
+        self.validate_database_incarnation(database, incarnation)?;
+        let frontier = access.application_frontier()?;
+        if self
+            .coverage()
+            .is_some_and(|last| frontier.is_none_or(|frontier| last > frontier))
+        {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admit_provider_ownership(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
+        // Serialize the first numerical attachment, so concurrent families do
+        // not each transiently reserve the complete shared native generation.
+        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
+        let bound = self.retained_ownership_bound()?;
+        let lifecycle = self.provider_lifecycle.reference();
+        let owner = match lifecycle.attached_owner().map_err(|_| unavailable())? {
+            Some(owner) => owner,
+            None => {
+                let candidate = budget
+                    .reserve(bound)
+                    .map_err(|_| unavailable())?
+                    .commit()
+                    .map_err(|_| unavailable())?;
+                lifecycle.attach(candidate).map_err(|_| unavailable())?
+            }
+        };
+        if !owner.belongs_to(budget) || owner.bytes() < bound {
+            return Err(unavailable());
+        }
+        self._owner.attach_provider_charge(Arc::clone(&owner))?;
+        Ok(owner)
+    }
+
+    pub(crate) fn provider_ownership_needed(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<u64, StorageError> {
+        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
+        let bound = self.retained_ownership_bound()?;
+        match self
+            .provider_lifecycle
+            .reference()
+            .attached_owner()
+            .map_err(|_| unavailable())?
+        {
+            Some(owner) if owner.belongs_to(budget) && owner.bytes() >= bound => Ok(0),
+            Some(_) => Err(unavailable()),
+            None => Ok(bound),
+        }
+    }
+
+    pub(crate) fn admit_provider_ownership_from(
+        &self,
+        reservation: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
+        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
+        let bound = self.retained_ownership_bound()?;
+        let lifecycle = self.provider_lifecycle.reference();
+        let owner = match lifecycle.attached_owner().map_err(|_| unavailable())? {
+            Some(owner) => owner,
+            None => {
+                let candidate = reservation
+                    .split(bound)
+                    .map_err(|_| unavailable())?
+                    .commit()
+                    .map_err(|_| unavailable())?;
+                lifecycle.attach(candidate).map_err(|_| unavailable())?
+            }
+        };
+        if !owner.belongs_to(budget) || owner.bytes() < bound {
+            return Err(unavailable());
+        }
+        self._owner.attach_provider_charge(Arc::clone(&owner))?;
+        Ok(owner)
+    }
+
+    pub(crate) fn retained_ownership_bound(&self) -> Result<u64, StorageError> {
+        let mut bytes = self
+            ._owner
+            .retained_charge_bound()
+            .checked_add(self.metadata_ownership_bytes)
+            .ok_or_else(unavailable)?;
+        for structural in [
+            self.segments.structural_charge_bound(),
+            self.idempotency.structural_charge_bound(),
+            self.provenance.structural_charge_bound(),
+            self.audit_sequence.structural_charge_bound(),
+            self.audit_request.structural_charge_bound(),
+            self.event_route.structural_charge_bound(),
+            self.pending_outbox.structural_charge_bound(),
+        ] {
+            bytes = bytes
+                .checked_add(structural.ok_or_else(unavailable)?)
+                .ok_or_else(unavailable)?;
+        }
+        u64::try_from(bytes).map_err(|_| unavailable())
+    }
+
+    pub(crate) fn coverage(&self) -> Option<CommitSequence> {
+        self.segments.last().map(|(_, m)| m.last)
+    }
+    pub(crate) fn tail(&self) -> Option<(CommitSequence, CommandSegmentDigestV1)> {
+        self.segments.last().map(|(_, m)| (m.first, m.digest))
+    }
+
+    pub(crate) fn capture_command_member(
+        &self,
+        kind: CommandDerivedIndexKindV1,
+        key: &[u8],
+    ) -> Result<Option<(CapturedCommandPayload, CommandDerivedLocator)>, StorageError> {
+        let Some(locator) = self.index(kind).get(key).copied() else {
+            return Ok(None);
+        };
+        let metadata = self
+            .segments
+            .get(&locator.segment_first)
+            .ok_or_else(corrupt)?;
+        Ok(Some((
+            CapturedCommandPayload::without_cache(metadata.clone()),
+            locator,
+        )))
+    }
+
+    pub(crate) fn capture_command_at(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<Option<CapturedCommandPayload>, StorageError> {
+        let Some((_, metadata)) = self.segments.predecessor(&sequence) else {
+            return Ok(None);
+        };
+        Ok((sequence <= metadata.last)
+            .then(|| CapturedCommandPayload::without_cache(metadata.clone())))
+    }
+
+    pub(crate) fn command_audit_sequences_for(
+        &self,
+        request_ids: &BTreeSet<riffdb_types::RequestId>,
+    ) -> Result<
+        BTreeMap<riffdb_types::RequestId, Vec<riffdb_types::AdministrationSequence>>,
+        StorageError,
+    > {
+        let mut output = BTreeMap::new();
+        for &request_id in request_ids {
+            let prefix = encode_audit_by_request_prefix(request_id);
+            for (exact_key, _) in self.audit_request.iter_from(prefix.as_slice()) {
+                if !exact_key.as_ref().starts_with(prefix.as_slice()) {
+                    break;
+                }
+                let (decoded_request, sequence) =
+                    decode_audit_by_request_key(exact_key.as_ref()).map_err(|_| corrupt())?;
+                if decoded_request != request_id {
+                    return Err(corrupt());
+                }
+                let sequences = output.entry(request_id).or_insert_with(Vec::new);
+                // A command owns one Started/Terminal pair. Refuse corrupt
+                // oversized membership before growing a response collection.
+                if sequences.len() >= 2 {
+                    return Err(corrupt());
+                }
+                sequences.push(sequence);
+            }
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn has_command_member(
+        &self,
+        kind: CommandDerivedIndexKindV1,
+        key: &[u8],
+    ) -> Result<bool, StorageError> {
+        Ok(self.index(kind).contains_key(key))
+    }
+
+    pub(crate) fn has_command_at(&self, sequence: CommitSequence) -> Result<bool, StorageError> {
+        Ok(self
+            .segments
+            .predecessor(&sequence)
+            .is_some_and(|(_, metadata)| sequence <= metadata.last))
+    }
+
+    fn index(&self, kind: CommandDerivedIndexKindV1) -> &ExactLocatorTree {
+        match kind {
+            CommandDerivedIndexKindV1::Idempotency => &self.idempotency,
+            CommandDerivedIndexKindV1::Provenance => &self.provenance,
+            CommandDerivedIndexKindV1::AuditSequence => &self.audit_sequence,
+            CommandDerivedIndexKindV1::AuditRequest => &self.audit_request,
+            CommandDerivedIndexKindV1::EventRoute => &self.event_route,
+            CommandDerivedIndexKindV1::PendingOutbox => &self.pending_outbox,
+        }
+    }
+    fn insert_segment(&mut self, segment: &StoredCommandSegmentV1) -> Result<(), StorageError> {
+        let state = Arc::get_mut(&mut self.0).ok_or_else(unavailable)?;
+        let first = segment.first_commit_sequence();
+        let binding = (segment.database_id(), segment.history_incarnation());
+        if state
+            .database_incarnation
+            .is_some_and(|expected| expected.0 != binding.0)
+            || state
+                .segments
+                .predecessor(&first)
+                .is_some_and(|(_, previous)| previous.last >= first)
+            || state
+                .segments
+                .iter_from(&first)
+                .next()
+                .is_some_and(|(next, _)| *next <= segment.last_commit_sequence())
+        {
+            return Err(corrupt());
+        }
+        let metadata = SegmentMetadata::try_new(&state.pool, state.class, segment)?;
+        let metadata_bytes = metadata
+            .retained_charge_bound()
+            .checked_add(metadata.key_ownership_bytes)
+            .ok_or_else(unavailable)?;
+        let ownership_bytes = state
+            .metadata_ownership_bytes
+            .checked_add(metadata_bytes)
+            .ok_or_else(unavailable)?;
+        for entry in metadata.manifest.entries() {
+            let index = state.index_mut(entry.kind());
+            if index.contains_key(entry.exact_key()) {
+                return Err(corrupt());
+            }
+            *index = index.try_insert(entry.charged_key(), entry.locator())?;
+        }
+        state.segments = state.segments.try_insert(first, metadata)?;
+        state.metadata_ownership_bytes = ownership_bytes;
+        state.database_incarnation = Some((
+            binding.0,
+            state
+                .database_incarnation
+                .map_or(binding.1, |previous| previous.1.max(binding.1)),
+        ));
+        Ok(())
+    }
+    fn remove_segment(
+        &mut self,
+        first: CommitSequence,
+    ) -> Result<Option<SegmentMetadataRef>, StorageError> {
+        let state = Arc::get_mut(&mut self.0).ok_or_else(unavailable)?;
+        let Some(segment) = state.segments.get(&first).cloned() else {
+            return Ok(None);
+        };
+        let metadata_bytes = segment
+            .retained_charge_bound()
+            .checked_add(segment.key_ownership_bytes)
+            .ok_or_else(unavailable)?;
+        let ownership_bytes = state
+            .metadata_ownership_bytes
+            .checked_sub(metadata_bytes)
+            .ok_or_else(corrupt)?;
+        for entry in segment.manifest.entries() {
+            let index = state.index_mut(entry.kind());
+            if index.get(entry.exact_key()) != Some(&entry.locator()) {
+                return Err(corrupt());
+            }
+            *index = index.try_remove(entry.exact_key())?;
+        }
+        state.segments = state.segments.try_remove(&first)?;
+        state.metadata_ownership_bytes = ownership_bytes;
+        Ok(Some(segment))
+    }
+}
+
+impl LocatorGenerationState {
+    fn index_mut(&mut self, kind: CommandDerivedIndexKindV1) -> &mut ExactLocatorTree {
+        match kind {
+            CommandDerivedIndexKindV1::Idempotency => &mut self.idempotency,
+            CommandDerivedIndexKindV1::Provenance => &mut self.provenance,
+            CommandDerivedIndexKindV1::AuditSequence => &mut self.audit_sequence,
+            CommandDerivedIndexKindV1::AuditRequest => &mut self.audit_request,
+            CommandDerivedIndexKindV1::EventRoute => &mut self.event_route,
+            CommandDerivedIndexKindV1::PendingOutbox => &mut self.pending_outbox,
+        }
+    }
 }
 
 struct RebuiltOutboxIndexes {
@@ -195,47 +712,173 @@ impl TransientIndexDelta {
     ) -> Option<riffdb_storage_api::StoredServiceAuditRecordV1> {
         command_audit_from_segment(self.command_segment()?, sequence)
     }
-
-    pub(crate) fn command_audit_tail(
-        &self,
-    ) -> Option<&riffdb_storage_api::StoredServiceAuditRecordV1> {
-        self.command_segment()?
-            .commands()
-            .last()
-            .map(|command| command.base().terminal_audit())
-    }
 }
 
 impl TransientIndexes {
-    pub(crate) fn is_trivially_empty(transaction: &ReadTransaction) -> Result<bool, StorageError> {
-        Ok(table_row_count(transaction, COMMITS)? == 0
-            && table_row_count(transaction, EVENT_ROUTES)? == 0
-            && table_row_count(transaction, OUTBOX)? == 0
-            && table_row_count(transaction, OUTBOX_STATUS)? == 0)
+    pub(crate) fn try_empty_with_owner(
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            event_routes: Some(BTreeMap::new()),
+            outbox_intents: Some(BTreeSet::new()),
+            pending_outbox: Some(BTreeSet::new()),
+            undelivered_outbox: Some(BTreeSet::new()),
+            command_derived: Some(CommandDerivedIndexes {
+                generation: LocatorGeneration::try_empty_with_owner(owner, class)?,
+                payloads: PayloadCache::default(),
+            }),
+        })
     }
 
-    /// Rebuilds every transient population index from durable tables.
-    ///
-    /// Walks the whole `COMMITS` table, decoding each command segment and
-    /// re-deriving each manifest key, and retains every decoded segment. Cost
-    /// is linear in retained commands with a large per-command constant, and it
-    /// is the single most expensive operation in an open. Returns the rows
-    /// walked so the caller can count what it paid.
-    pub(crate) fn rebuild_counted(
-        transaction: &ReadTransaction,
-    ) -> Result<(Self, u64), StorageError> {
-        let commit_rows = table_row_count(transaction, COMMITS)?;
-        Ok((Self::rebuild(transaction)?, commit_rows))
+    #[cfg(test)]
+    pub(crate) fn try_empty(class: LocatorAllocationClass) -> Result<Self, StorageError> {
+        Ok(Self {
+            event_routes: Some(BTreeMap::new()),
+            outbox_intents: Some(BTreeSet::new()),
+            pending_outbox: Some(BTreeSet::new()),
+            undelivered_outbox: Some(BTreeSet::new()),
+            command_derived: Some(CommandDerivedIndexes::try_empty(class)?),
+        })
+    }
+    pub(crate) fn locator_generation(&self) -> Result<LocatorGeneration, StorageError> {
+        Ok(self
+            .command_derived
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .generation
+            .clone())
+    }
+    pub(crate) fn prepare_locator_delta(
+        &self,
+        delta: &TransientIndexDelta,
+        class: LocatorAllocationClass,
+    ) -> Result<LocatorGeneration, StorageError> {
+        self.command_derived
+            .as_ref()
+            .ok_or_else(unavailable)?
+            .generation
+            .prepare_delta(delta, class)
+    }
+    pub(crate) fn install_locator_generation(&mut self, generation: LocatorGeneration) {
+        if let Some(indexes) = self.command_derived.as_mut() {
+            indexes.generation = generation;
+        } else {
+            self.command_derived = Some(CommandDerivedIndexes {
+                generation,
+                payloads: PayloadCache::default(),
+            });
+        }
     }
 
-    pub(crate) fn rebuild_counted_cancellable(
-        transaction: &ReadTransaction,
-        cancellation: &std::sync::atomic::AtomicBool,
+    pub(crate) fn rebuild_from_access_with_owner(
+        access: &crate::store::RedbReadAccess,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<(Self, u64), StorageError> {
-        let commit_rows = table_row_count(transaction, COMMITS)?;
+        let (generation, rows) =
+            LocatorGeneration::rebuild_captured_counted(access, owner, class, &mut cancelled)?;
+        let _scratch = NativeLocatorPool::global().admit(16 * 1024, class)?;
+        let mut routes = BTreeMap::new();
+        let mut intents = BTreeSet::new();
+        let mut pending = BTreeSet::new();
+        let mut undelivered = BTreeSet::new();
+        for (_, segment) in generation.segments.iter() {
+            if cancelled() {
+                return Err(unavailable());
+            }
+            for (id, (partition, event)) in &segment.events {
+                if routes
+                    .insert(encode_event_route_key(*partition, *id).to_vec(), *event)
+                    .is_some()
+                    || !intents.insert(*id)
+                    || !pending.insert(*id)
+                    || !undelivered.insert(*id)
+                {
+                    return Err(corrupt());
+                }
+            }
+        }
+        visit_captured_locator_rows(
+            access,
+            crate::journal::JournalTable::EventRoutes,
+            &mut cancelled,
+            |key, bytes| {
+                let (partition, id) =
+                    crate::keys::decode_event_route_key(key).map_err(|_| corrupt())?;
+                let route = decode_event_route_v1(bytes)?.into_parts().0;
+                if route.event_id() != id {
+                    return Err(corrupt());
+                }
+                let encoded = encode_event_route_key(partition, id).to_vec();
+                if routes
+                    .get(&encoded)
+                    .is_some_and(|previous| previous != &route)
+                {
+                    return Err(corrupt());
+                }
+                routes.insert(encoded, route);
+                Ok(())
+            },
+        )?;
+        visit_captured_locator_rows(
+            access,
+            crate::journal::JournalTable::Outbox,
+            &mut cancelled,
+            |key, _bytes| {
+                let id = decode_event_key(key).map_err(|_| corrupt())?;
+                // Membership accepts both supported standalone intent encodings.
+                // Ordinary authority reads and scrub perform their full decode.
+                intents.insert(id);
+                pending.insert(id);
+                undelivered.insert(id);
+                Ok(())
+            },
+        )?;
+        let mut outbox_valid = true;
+        visit_captured_locator_rows(
+            access,
+            crate::journal::JournalTable::OutboxStatus,
+            &mut cancelled,
+            |key, bytes| {
+                let Ok(id) = decode_event_key(key) else {
+                    outbox_valid = false;
+                    return Ok(());
+                };
+                let Ok(status) = decode_outbox_status_v1(bytes) else {
+                    outbox_valid = false;
+                    return Ok(());
+                };
+                let status = status.into_parts().0;
+                if status.event_id() != id || !intents.contains(&id) {
+                    outbox_valid = false;
+                    return Ok(());
+                }
+                if !status.state().is_pending() {
+                    pending.remove(&id);
+                }
+                if matches!(status.state(), OutboxDeliveryStateV1::Delivered { .. }) {
+                    undelivered.remove(&id);
+                }
+                Ok(())
+            },
+        )?;
+        if cancelled() {
+            return Err(unavailable());
+        }
         Ok((
-            Self::rebuild_with_cancellation(transaction, Some(cancellation))?,
-            commit_rows,
+            Self {
+                event_routes: Some(routes),
+                outbox_intents: outbox_valid.then_some(intents),
+                pending_outbox: outbox_valid.then_some(pending),
+                undelivered_outbox: outbox_valid.then_some(undelivered),
+                command_derived: Some(CommandDerivedIndexes {
+                    generation,
+                    payloads: PayloadCache::default(),
+                }),
+            },
+            rows,
         ))
     }
 
@@ -356,49 +999,7 @@ impl TransientIndexes {
         Some(Ok((inclusive_upper, page, has_more)))
     }
 
-    pub(crate) fn command_audit_sequences_for(
-        &self,
-        request_ids: &BTreeSet<riffdb_types::RequestId>,
-    ) -> Option<
-        Result<
-            BTreeMap<riffdb_types::RequestId, Vec<riffdb_types::AdministrationSequence>>,
-            StorageError,
-        >,
-    > {
-        let indexes = self.command_derived.as_ref()?;
-        let mut output = BTreeMap::new();
-        for &request_id in request_ids {
-            let prefix = encode_audit_by_request_prefix(request_id);
-            for (exact_key, _) in indexes.audit_request.range(prefix.to_vec()..) {
-                if !exact_key.starts_with(prefix.as_slice()) {
-                    break;
-                }
-                let (decoded_request, sequence) =
-                    match decode_audit_by_request_key(exact_key).map_err(|_| corrupt()) {
-                        Ok(value) => value,
-                        Err(error) => return Some(Err(error)),
-                    };
-                if decoded_request != request_id {
-                    return Some(Err(corrupt()));
-                }
-                output
-                    .entry(request_id)
-                    .or_insert_with(Vec::new)
-                    .push(sequence);
-            }
-        }
-        Some(Ok(output))
-    }
-
-    pub(crate) fn has_command_member(
-        &self,
-        kind: CommandDerivedIndexKindV1,
-        key: &[u8],
-    ) -> Result<bool, StorageError> {
-        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
-        Ok(indexes.index(kind).contains_key(key))
-    }
-
+    #[cfg(test)]
     pub(crate) fn command_derived_locator(
         &self,
         kind: CommandDerivedIndexKindV1,
@@ -408,46 +1009,29 @@ impl TransientIndexes {
         Ok(indexes.index(kind).get(exact_key).copied())
     }
 
-    pub(crate) fn has_command_at(&self, sequence: CommitSequence) -> Result<bool, StorageError> {
-        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
-        Ok(indexes
-            .segments
-            .range(..=sequence)
-            .next_back()
-            .is_some_and(|(_, metadata)| sequence <= metadata.last))
-    }
-
+    #[cfg(test)]
     pub(crate) fn capture_command_at(
         &self,
         sequence: CommitSequence,
     ) -> Result<Option<CapturedCommandPayload>, StorageError> {
         let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
-        let Some((_, metadata)) = indexes.segments.range(..=sequence).next_back() else {
+        let Some((_, metadata)) = indexes.segments.predecessor(&sequence) else {
             return Ok(None);
         };
         if sequence > metadata.last {
             return Ok(None);
         }
-        indexes.payloads.capture(Arc::clone(metadata)).map(Some)
+        indexes.payloads.capture(metadata.clone()).map(Some)
     }
 
-    pub(crate) fn capture_command_member(
+    pub(crate) fn capture_payload_candidate(
         &self,
-        kind: CommandDerivedIndexKindV1,
-        key: &[u8],
-    ) -> Result<Option<(CapturedCommandPayload, CommandDerivedLocator)>, StorageError> {
-        let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
-        let Some(locator) = indexes.index(kind).get(key).copied() else {
-            return Ok(None);
-        };
-        let metadata = indexes
-            .segments
-            .get(&locator.segment_first)
-            .ok_or_else(corrupt)?;
-        Ok(Some((
-            indexes.payloads.capture(Arc::clone(metadata))?,
-            locator,
-        )))
+        payload: CapturedCommandPayload,
+    ) -> Result<CapturedCommandPayload, StorageError> {
+        match self.command_derived.as_ref() {
+            Some(indexes) => indexes.payloads.capture(payload.metadata),
+            None => Ok(payload),
+        }
     }
 
     pub(crate) fn retain_resolved_payload(
@@ -466,6 +1050,7 @@ impl TransientIndexes {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn command_audit_record(
         &self,
         sequence: riffdb_types::AdministrationSequence,
@@ -478,6 +1063,7 @@ impl TransientIndexes {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn command_audit_record_at_or_before(
         &self,
         sequence: riffdb_types::AdministrationSequence,
@@ -502,6 +1088,7 @@ impl TransientIndexes {
             .ok_or_else(corrupt)
     }
 
+    #[cfg(test)]
     pub(crate) fn command_derived_member(
         &self,
         kind: CommandDerivedIndexKindV1,
@@ -529,6 +1116,7 @@ impl TransientIndexes {
         Ok(Some((segment, locator)))
     }
 
+    #[cfg(test)]
     pub(crate) fn command_segment_tail(
         &self,
     ) -> Option<Option<(CommitSequence, CommandSegmentDigestV1)>> {
@@ -536,7 +1124,7 @@ impl TransientIndexes {
             self.command_derived
                 .as_ref()?
                 .segments
-                .last_key_value()
+                .last()
                 .map(|(_, segment)| (segment.first, segment.digest)),
         )
     }
@@ -546,7 +1134,7 @@ impl TransientIndexes {
             self.command_derived
                 .as_ref()?
                 .segments
-                .last_key_value()
+                .last()
                 .map(|(_, segment)| segment.last),
         )
     }
@@ -558,7 +1146,7 @@ impl TransientIndexes {
         load: impl FnOnce(CommitSequence) -> Result<Option<Vec<u8>>, StorageError>,
     ) -> Result<Option<StoredCommandCapsuleV2>, StorageError> {
         let indexes = self.command_derived.as_ref().ok_or_else(corrupt)?;
-        let Some((_, metadata)) = indexes.segments.range(..=sequence).next_back() else {
+        let Some((_, metadata)) = indexes.segments.predecessor(&sequence) else {
             return Ok(None);
         };
         if sequence > metadata.last {
@@ -585,11 +1173,32 @@ impl TransientIndexes {
         self.command_derived.as_ref().unwrap().payloads.stats()
     }
 
+    /// Compatibility helper for tests. Live publication
+    /// prepares this successor before durability, then installs it atomically
+    /// with the matching source and calls only `apply_disposable_delta`.
+    #[cfg(test)]
     pub(crate) fn apply(&mut self, delta: TransientIndexDelta) {
+        let class = if matches!(&delta, TransientIndexDelta::HistoryPruned { .. }) {
+            LocatorAllocationClass::Maintenance
+        } else {
+            LocatorAllocationClass::Ordinary
+        };
+        match self.prepare_locator_delta(&delta, class) {
+            Ok(generation) => self.install_locator_generation(generation),
+            Err(_) => {
+                self.command_derived = None;
+                self.invalidate_outbox();
+                return;
+            }
+        }
+        self.apply_disposable_delta(delta);
+    }
+
+    pub(crate) fn apply_disposable_delta(&mut self, delta: TransientIndexDelta) {
         match delta {
             TransientIndexDelta::OutboxSucceeded(events) => {
                 for event_id in events {
-                    self.apply(TransientIndexDelta::PendingOutboxMembership {
+                    self.apply_disposable_delta(TransientIndexDelta::PendingOutboxMembership {
                         event_id,
                         was_pending: false,
                         pending: false,
@@ -600,7 +1209,7 @@ impl TransientIndexes {
             }
             TransientIndexDelta::OutboxClaimed(events) => {
                 for event_id in events {
-                    self.apply(TransientIndexDelta::PendingOutboxMembership {
+                    self.apply_disposable_delta(TransientIndexDelta::PendingOutboxMembership {
                         event_id,
                         was_pending: true,
                         pending: false,
@@ -627,17 +1236,10 @@ impl TransientIndexes {
                 let Some(command_derived) = self.command_derived.as_mut() else {
                     return;
                 };
-                if command_derived
-                    .apply_segment_arc(Arc::clone(&segment))
-                    .and_then(|()| match canonical {
-                        Some(canonical) => command_derived.seed_payload(&segment, canonical),
-                        None => Ok(()),
-                    })
-                    .is_err()
-                {
-                    self.command_derived = None;
-                    self.invalidate_outbox();
-                    return;
+                if let Some(canonical) = canonical {
+                    // A cache admission failure never invalidates the complete
+                    // immutable locator directory already published with source.
+                    let _ = command_derived.seed_payload(&segment, canonical);
                 }
                 let Some(routes) = self.event_routes.as_mut() else {
                     return;
@@ -655,7 +1257,6 @@ impl TransientIndexes {
                         );
                         if routes.insert(key.to_vec(), route).is_some() {
                             self.event_routes = None;
-                            self.command_derived = None;
                             self.invalidate_outbox();
                             return;
                         }
@@ -714,12 +1315,12 @@ impl TransientIndexes {
     }
 
     fn prune_history(&mut self, through: CommitSequence, segments: &[Arc<StoredCommandSegmentV1>]) {
-        if let Some(command_derived) = self.command_derived.as_mut()
-            && command_derived.prune_segments(segments).is_err()
-        {
-            self.command_derived = None;
-            self.invalidate_outbox();
-            return;
+        if let Some(command_derived) = self.command_derived.as_mut() {
+            for segment in segments {
+                let _ = command_derived
+                    .payloads
+                    .remove(segment.first_commit_sequence());
+            }
         }
         let Some(after) = through.checked_next() else {
             self.invalidate_outbox();
@@ -742,124 +1343,6 @@ impl TransientIndexes {
         self.outbox_intents = None;
         self.pending_outbox = None;
         self.undelivered_outbox = None;
-    }
-}
-
-impl UnpublishedCommandIndexes {
-    pub(crate) fn command_segment_tail(&self) -> Option<(CommitSequence, CommandSegmentDigestV1)> {
-        self.segments
-            .last_key_value()
-            .map(|(_, segment)| (segment.first_commit_sequence(), segment.segment_digest()))
-    }
-
-    pub(crate) fn insert_segment(
-        &mut self,
-        segment: Arc<StoredCommandSegmentV1>,
-    ) -> Result<(), StorageError> {
-        let first = segment.first_commit_sequence();
-        if self.segments.contains_key(&first) {
-            return Err(corrupt());
-        }
-        let mut inserted = Vec::new();
-        for entry in segment.manifest().entries() {
-            if entry.segment_first_commit_sequence() != first
-                || usize::from(entry.command_ordinal()) >= segment.commands().len()
-            {
-                return Err(corrupt());
-            }
-            let command = &segment.commands()[usize::from(entry.command_ordinal())];
-            let expected = expected_manifest_key(
-                command,
-                entry.kind(),
-                entry.member(),
-                entry.member_ordinal(),
-            )?;
-            if expected.as_slice() != entry.exact_key()
-                || self
-                    .exact
-                    .contains_key(&(entry.kind(), entry.exact_key().to_vec()))
-            {
-                return Err(corrupt());
-            }
-            inserted.push((
-                entry.kind(),
-                entry.exact_key().to_vec(),
-                CommandDerivedLocator {
-                    segment_first: first,
-                    command_ordinal: entry.command_ordinal(),
-                    member_ordinal: entry.member_ordinal(),
-                    member: entry.member(),
-                },
-            ));
-        }
-        self.segments.insert(first, Arc::clone(&segment));
-        for (kind, key, locator) in inserted {
-            if self.exact.insert((kind, key), locator).is_some() {
-                return Err(corrupt());
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove_segment(
-        &mut self,
-        segment: &StoredCommandSegmentV1,
-    ) -> Result<(), StorageError> {
-        let first = segment.first_commit_sequence();
-        let removed = self.segments.remove(&first).ok_or_else(corrupt)?;
-        if removed.segment_digest() != segment.segment_digest() {
-            return Err(corrupt());
-        }
-        for entry in segment.manifest().entries() {
-            let removed = self
-                .exact
-                .remove(&(entry.kind(), entry.exact_key().to_vec()))
-                .ok_or_else(corrupt)?;
-            if removed.segment_first != first
-                || removed.command_ordinal != entry.command_ordinal()
-                || removed.member != entry.member()
-            {
-                return Err(corrupt());
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn command_derived_member(
-        &self,
-        kind: CommandDerivedIndexKindV1,
-        exact_key: &[u8],
-    ) -> Option<(Arc<StoredCommandSegmentV1>, CommandDerivedLocator)> {
-        let locator = self.exact.get(&(kind, exact_key.to_vec())).copied()?;
-        let segment = self.segments.get(&locator.segment_first).cloned()?;
-        Some((segment, locator))
-    }
-
-    pub(crate) fn command_audit_record(
-        &self,
-        sequence: riffdb_types::AdministrationSequence,
-    ) -> Option<riffdb_storage_api::StoredServiceAuditRecordV1> {
-        let exact_key = encode_audit_key(sequence);
-        let (segment, locator) = self.command_derived_member(
-            CommandDerivedIndexKindV1::AuditSequence,
-            exact_key.as_slice(),
-        )?;
-        command_audit_from_locator(&segment, locator, sequence)
-    }
-
-    pub(crate) fn command_audit_sequences_for(
-        &self,
-        request_ids: &BTreeSet<riffdb_types::RequestId>,
-    ) -> Result<
-        BTreeMap<riffdb_types::RequestId, Vec<riffdb_types::AdministrationSequence>>,
-        StorageError,
-    > {
-        let mut output = BTreeMap::new();
-        for segment in self.segments.values() {
-            TransientIndexDelta::CommandSegmentPublished(Arc::clone(segment), None)
-                .command_audit_sequences_for(request_ids, &mut output)?;
-        }
-        Ok(output)
     }
 }
 
@@ -904,7 +1387,8 @@ impl Default for TransientIndexes {
             outbox_intents: Some(BTreeSet::new()),
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),
-            command_derived: Some(CommandDerivedIndexes::default()),
+            command_derived: CommandDerivedIndexes::try_empty(LocatorAllocationClass::Ordinary)
+                .ok(),
         }
     }
 }
@@ -916,7 +1400,7 @@ fn rebuild_event_routes(
 ) -> Result<Option<BTreeMap<Vec<u8>, StoredEventRouteV1>>, StorageError> {
     let mut routes = BTreeMap::new();
     if let Some(command_derived) = command_derived {
-        for segment in command_derived.segments.values() {
+        for segment in command_derived.segments.iter().map(|(_, segment)| segment) {
             check_rebuild_cancellation(cancellation)?;
             for (event_id, (partition, route)) in &segment.events {
                 check_rebuild_cancellation(cancellation)?;
@@ -945,116 +1429,27 @@ fn rebuild_event_routes(
 }
 
 impl CommandDerivedIndexes {
+    fn try_empty(class: LocatorAllocationClass) -> Result<Self, StorageError> {
+        Ok(Self {
+            generation: LocatorGeneration::try_empty(class)?,
+            payloads: PayloadCache::default(),
+        })
+    }
     fn event_ids(&self) -> impl Iterator<Item = EventId> + '_ {
         self.segments
-            .values()
-            .flat_map(|segment| segment.events.keys().copied())
+            .iter()
+            .flat_map(|(_, segment)| segment.events.keys().copied())
     }
-
-    fn index(&self, kind: CommandDerivedIndexKindV1) -> &BTreeMap<Vec<u8>, CommandDerivedLocator> {
-        match kind {
-            CommandDerivedIndexKindV1::Idempotency => &self.idempotency,
-            CommandDerivedIndexKindV1::Provenance => &self.provenance,
-            CommandDerivedIndexKindV1::AuditSequence => &self.audit_sequence,
-            CommandDerivedIndexKindV1::AuditRequest => &self.audit_request,
-            CommandDerivedIndexKindV1::EventRoute => &self.event_route,
-            CommandDerivedIndexKindV1::PendingOutbox => &self.pending_outbox,
-        }
-    }
-
-    /// Removes whole pruned segments and exactly their manifest locators. A
-    /// locator that does not point into the removed segment is refused, so a
-    /// mismatched index is dropped and rebuilt rather than half-trimmed.
-    fn prune_segments(
-        &mut self,
-        segments: &[Arc<StoredCommandSegmentV1>],
-    ) -> Result<(), StorageError> {
-        for segment in segments {
-            let first = segment.first_commit_sequence();
-            if self.segments.remove(&first).is_none() {
-                return Err(corrupt());
-            }
-            self.payloads.remove(first)?;
-            for entry in segment.manifest().entries() {
-                let index = self.index_mut(entry.kind());
-                match index.get(entry.exact_key()) {
-                    Some(locator) if locator.segment_first == first => {
-                        index.remove(entry.exact_key());
-                    }
-                    _ => return Err(corrupt()),
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Seeds the payload cache with the writer's own segment for its exact
-    /// canonical bytes. Every hit still compares the stored row byte for byte
-    /// and validates the segment against its metadata; one seed in
-    /// `PAYLOAD_SEED_VERIFY_EVERY` also decodes the bytes and refuses a
-    /// segment that does not round-trip, which invalidates the index.
     fn seed_payload(
         &mut self,
         segment: &Arc<StoredCommandSegmentV1>,
         canonical: Arc<[u8]>,
     ) -> Result<(), StorageError> {
-        let first = segment.first_commit_sequence();
-        let metadata = self.segments.get(&first).ok_or_else(corrupt)?;
-        self.payloads.seed(metadata, Arc::clone(segment), canonical)
-    }
-
-    fn apply_segment_arc(
-        &mut self,
-        segment: Arc<StoredCommandSegmentV1>,
-    ) -> Result<(), StorageError> {
-        if self
+        let metadata = self
             .segments
-            .insert(
-                segment.first_commit_sequence(),
-                Arc::new(SegmentMetadata::new(&segment)?),
-            )
-            .is_some()
-        {
-            return Err(corrupt());
-        }
-        for entry in segment.manifest().entries() {
-            if entry.segment_first_commit_sequence() != segment.first_commit_sequence()
-                || usize::from(entry.command_ordinal()) >= segment.commands().len()
-            {
-                return Err(corrupt());
-            }
-            let command = &segment.commands()[usize::from(entry.command_ordinal())];
-            let expected_key = expected_manifest_key(
-                command,
-                entry.kind(),
-                entry.member(),
-                entry.member_ordinal(),
-            )?;
-            let expected_member = match entry.kind() {
-                CommandDerivedIndexKindV1::Idempotency | CommandDerivedIndexKindV1::Provenance => {
-                    CommandDerivedMemberV1::Command
-                }
-                CommandDerivedIndexKindV1::AuditSequence
-                | CommandDerivedIndexKindV1::AuditRequest => entry.member(),
-                CommandDerivedIndexKindV1::EventRoute
-                | CommandDerivedIndexKindV1::PendingOutbox => CommandDerivedMemberV1::Event,
-            };
-            if entry.member() != expected_member || entry.exact_key() != expected_key.as_slice() {
-                return Err(corrupt());
-            }
-            let locator = CommandDerivedLocator {
-                segment_first: entry.segment_first_commit_sequence(),
-                command_ordinal: entry.command_ordinal(),
-                member_ordinal: entry.member_ordinal(),
-                member: entry.member(),
-            };
-            let index = self.index_mut(entry.kind());
-            if index.insert(entry.exact_key().to_vec(), locator).is_some() {
-                return Err(corrupt());
-            }
-        }
-
-        Ok(())
+            .get(&segment.first_commit_sequence())
+            .ok_or_else(corrupt)?;
+        self.payloads.seed(metadata, Arc::clone(segment), canonical)
     }
 }
 
@@ -1121,48 +1516,21 @@ pub(crate) fn expected_manifest_key(
     }
 }
 
-/// Row count from redb table metadata (never a walk).
-fn table_row_count(
-    transaction: &ReadTransaction,
-    definition: redb::TableDefinition<'static, &'static [u8], &'static [u8]>,
-) -> Result<u64, StorageError> {
-    use redb::ReadableTableMetadata;
-
-    let table = transaction.open_table(definition).map_err(table_error)?;
-    table.len().map_err(precommit_storage_error)
-}
-
 fn rebuild_command_derived_indexes(
     transaction: &ReadTransaction,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<CommandDerivedIndexes>, StorageError> {
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let mut indexes = CommandDerivedIndexes::default();
+    let mut indexes = CommandDerivedIndexes::try_empty(LocatorAllocationClass::Ordinary)?;
     for entry in commits.iter().map_err(precommit_storage_error)? {
         check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        match crate::history_stub::decode_retained_segment(value.value()) {
-            Ok(segment) => {
-                let segment = segment.into_parts().0;
-                let physical =
-                    decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
-                if physical != segment.first_commit_sequence() {
-                    return Err(corrupt());
-                }
-                // The replay loop owns each decoded segment and does not read it
-                // again, so it moves into the index instead of being deep-cloned
-                // once per segment. This loop dominates restart recovery.
-                indexes.apply_segment_arc(Arc::new(segment))?;
+        if let Some(segment) = decode_locator_construction_segment(value.value(), None)? {
+            let physical = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
+            if physical != segment.first_commit_sequence() {
+                return Err(corrupt());
             }
-            Err(error)
-                if error.kind()
-                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-            {
-                // Historical command rows retain their durable locator tables;
-                // the directory still covers every segment and readers fall
-                // back to those rows only when no segment key matches.
-            }
-            Err(_) => return Err(corrupt()),
+            indexes.generation.insert_segment(&segment)?;
         }
     }
     Ok(Some(indexes))
@@ -1204,7 +1572,13 @@ fn rebuild_outbox_indexes(
     for entry in statuses.iter().map_err(precommit_storage_error)? {
         check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let event_id = decode_event_key(key.value()).map_err(|_| corrupt())?;
+        let Ok(event_id) = decode_event_key(key.value()) else {
+            return Ok(RebuiltOutboxIndexes {
+                intents: None,
+                pending: None,
+                undelivered: None,
+            });
+        };
         if !all_intents.contains(&event_id) {
             return Ok(RebuiltOutboxIndexes {
                 intents: None,
@@ -1295,11 +1669,385 @@ fn check_rebuild_cancellation(
     Ok(())
 }
 
+fn unavailable() -> StorageError {
+    StorageError::new(StorageErrorKind::Unavailable, None)
+}
+
+struct LocatorDecodeScratchOwner(Option<crate::locator_memory::LocatorCharge>);
+
+impl Drop for LocatorDecodeScratchOwner {
+    fn drop(&mut self) {
+        if !riffdb_proto::envelope::release_locator_decode_scratch_v1() {
+            // A still-borrowed buffer cannot outlive its accounting. This is an
+            // internal ownership violation: conservatively retain the charge,
+            // bounded by the global ceiling, rather than grant unsafe capacity.
+            if let Some(charge) = self.0.take() {
+                std::mem::forget(charge);
+            }
+        }
+    }
+}
+
+struct AdmittedLocatorSource<'bytes> {
+    bytes: std::borrow::Cow<'bytes, [u8]>,
+    _work: crate::locator_memory::LocatorCharge,
+}
+
+struct AdmittedLocatorSegment {
+    // Fields drop in declaration order: retain the work charge until every
+    // decoded semantic value has been released after metadata construction.
+    segment: StoredCommandSegmentV1,
+    _work: LocatorDecodeScratchOwner,
+}
+
+impl std::ops::Deref for AdmittedLocatorSegment {
+    type Target = StoredCommandSegmentV1;
+    fn deref(&self) -> &Self::Target {
+        &self.segment
+    }
+}
+
+impl std::fmt::Debug for AdmittedLocatorSegment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmittedLocatorSegment")
+            .finish_non_exhaustive()
+    }
+}
+
+fn decode_locator_construction_segment(
+    bytes: &[u8],
+    access: Option<&crate::store::RedbReadAccess>,
+) -> Result<Option<AdmittedLocatorSegment>, StorageError> {
+    decode_native_locator_construction_segment(
+        bytes,
+        access,
+        LocatorAllocationClass::Ordinary,
+        Some(crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES),
+    )
+}
+
+fn decode_native_locator_construction_segment(
+    bytes: &[u8],
+    access: Option<&crate::store::RedbReadAccess>,
+    class: LocatorAllocationClass,
+    recovery_window: Option<usize>,
+) -> Result<Option<AdmittedLocatorSegment>, StorageError> {
+    let pool = NativeLocatorPool::global();
+    decode_native_locator_construction_segment_in_pool(&pool, bytes, access, class, recovery_window)
+}
+
+fn decode_native_locator_construction_segment_in_pool(
+    pool: &NativeLocatorPool,
+    bytes: &[u8],
+    access: Option<&crate::store::RedbReadAccess>,
+    class: LocatorAllocationClass,
+    recovery_window: Option<usize>,
+) -> Result<Option<AdmittedLocatorSegment>, StorageError> {
+    // Adopt and clear any previous TLS scratch before computing this row's
+    // allowance. Its destructor order is independent of TLS registration order.
+    let mut owner = LocatorDecodeScratchOwner(Some(pool.admit(
+        riffdb_proto::envelope::MAX_STORED_ENVELOPE_BYTES + 256,
+        class,
+    )?));
+    if !riffdb_proto::envelope::release_locator_decode_scratch_v1() {
+        return Err(unavailable());
+    }
+    drop(owner.0.take());
+    // A frame mutation has a 44-byte header. Sixteen times padded length covers
+    // physical/canonical copies, fourfold descriptor capacity, allocation
+    // headers and the resolved segment; the inventory has a fixed extra window.
+    let frame_work = match crate::history_stub::HistoryStub::decode(bytes)? {
+        Some(stub) => {
+            if stub.kind != crate::history_stub::StubKind::Segment {
+                return Err(corrupt());
+            }
+            let needed = stub
+                .placement
+                .padded_len
+                .checked_mul(16)
+                .and_then(|bytes| bytes.checked_add(1024 * 1024))
+                .ok_or_else(unavailable)?;
+            if recovery_window.is_some_and(|window| needed > window) {
+                return Err(unavailable());
+            }
+            Some(pool.admit(needed, class)?)
+        }
+        None => None,
+    };
+    let resolved = match access {
+        Some(access) => access.resolve_command_segment_value(bytes)?,
+        None => crate::history_stub::resolve_commits_value(bytes)?,
+    };
+    // Transfer the surviving copied segment out of frame-phase ownership only
+    // after admitting its capacity. All source frame buffers have now died.
+    let resolved_bytes = match &resolved {
+        std::borrow::Cow::Owned(bytes) => {
+            bytes.capacity().checked_add(64).ok_or_else(unavailable)?
+        }
+        std::borrow::Cow::Borrowed(_) => 0,
+    };
+    let resolved_work = pool.admit(resolved_bytes, class)?;
+    let resolved = AdmittedLocatorSource {
+        bytes: resolved,
+        _work: resolved_work,
+    };
+    drop(frame_work);
+    let work = riffdb_storage_api::locator_segment_decode_work_bound_v1(&resolved.bytes).map_err(
+        |error| {
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::LimitExceeded {
+                unavailable()
+            } else {
+                corrupt()
+            }
+        },
+    )?;
+    let Some(work) = work else {
+        return Ok(None);
+    };
+    let work = usize::try_from(work).map_err(|_| unavailable())?;
+    let peak = work.checked_add(resolved_bytes).ok_or_else(unavailable)?;
+    if recovery_window.is_some_and(|window| peak > window) {
+        return Err(unavailable());
+    }
+    owner.0 = Some(pool.admit(work, class)?);
+    #[cfg(test)]
+    LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+    let decoded = crate::history_stub::decode_retained_segment(&resolved.bytes)
+        .map_err(|_| corrupt())?
+        .into_parts()
+        .0;
+    Ok(Some(AdmittedLocatorSegment {
+        segment: decoded,
+        _work: owner,
+    }))
+}
+
+fn visit_captured_locator_rows(
+    access: &crate::store::RedbReadAccess,
+    table: crate::journal::JournalTable,
+    cancelled: &mut impl FnMut() -> bool,
+    mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        if cancelled() {
+            return Err(unavailable());
+        }
+        let next = access.visit_next_locator_row(table, after.as_deref(), |key, bytes| {
+            if key.len() > riffdb_types::MAX_KEY_BYTES {
+                return Err(corrupt());
+            }
+            visit(key, bytes)?;
+            Ok(key.to_vec())
+        })?;
+        let Some(next) = next else {
+            return Ok(());
+        };
+        after = Some(next);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use riffdb_types::CommitSequence;
 
     use super::*;
+
+    // req: TXN-042, STO-032, REC-001
+    #[test]
+    fn immutable_locator_generation_retirement_preserves_original_exact_membership() {
+        let command = crate::derived::follower_indexes::capsule(CommitSequence::first());
+        let (segment, encoded) =
+            crate::derived::follower_indexes::segment(vec![command.clone()], None);
+        let segment = Arc::new(segment);
+        let original = LocatorGeneration::rebuild_from_segments(
+            [Ok(Arc::clone(&segment))],
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
+        let next = original
+            .prepare_delta(
+                &TransientIndexDelta::HistoryPruned {
+                    through: segment.last_commit_sequence(),
+                    segments: vec![Arc::clone(&segment)],
+                },
+                LocatorAllocationClass::Maintenance,
+            )
+            .unwrap();
+        assert_eq!(next.coverage(), None);
+        let original_bound = original.retained_ownership_bound().unwrap();
+        assert_eq!(
+            original.clone().retained_ownership_bound().unwrap(),
+            original_bound,
+            "sharing a generation shares one immutable descriptor and byte census"
+        );
+        assert!(
+            next.retained_ownership_bound().unwrap() < original_bound,
+            "retirement removes metadata, key and tree ownership from the successor"
+        );
+        for entry in segment.manifest().entries() {
+            assert!(
+                next.capture_command_member(entry.kind(), entry.exact_key())
+                    .unwrap()
+                    .is_none()
+            );
+            let (payload, locator) = original
+                .capture_command_member(entry.kind(), entry.exact_key())
+                .unwrap()
+                .expect("captured generation keeps every original exact member");
+            assert_eq!(locator.command_ordinal, entry.command_ordinal());
+            let resolved = payload
+                .resolve(|first| {
+                    assert_eq!(first, segment.first_commit_sequence());
+                    Ok(Some(encoded.as_bytes().to_vec()))
+                })
+                .unwrap();
+            assert_eq!(resolved.segment.commands(), std::slice::from_ref(&command));
+        }
+        // Cancellation discards a separately prepared successor, never mutates
+        // the original, and leaves no partial directory masquerading as empty.
+        assert!(
+            original
+                .prepare_delta(
+                    &TransientIndexDelta::CommandSegmentPublished(Arc::clone(&segment), None),
+                    LocatorAllocationClass::Ordinary,
+                )
+                .is_err()
+        );
+        assert_eq!(original.coverage(), Some(segment.last_commit_sequence()));
+    }
+
+    // req: TXN-042, STO-032, OQ-040
+    #[test]
+    fn provider_families_share_one_generation_charge_through_native_retirement() {
+        use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+        let pool = NativeLocatorPool::isolated_for_tests();
+        let command = crate::derived::follower_indexes::capsule(CommitSequence::first());
+        let (segment, _) = crate::derived::follower_indexes::segment(vec![command], None);
+        let mut generation = LocatorGeneration::try_empty_in_pool(
+            Arc::clone(&pool),
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
+        generation.insert_segment(&segment).unwrap();
+        let bound = generation.retained_ownership_bound().unwrap();
+        let budget = ProviderBudget::new();
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let joins: Vec<_> = (0..8)
+            .map(|_| {
+                let generation = generation.clone();
+                let budget = budget.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    generation.admit_provider_ownership(&budget).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        let owners: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
+        assert!(owners.iter().all(|owner| Arc::ptr_eq(owner, &owners[0])));
+        assert_eq!(budget.observation().unwrap().owned_bytes, bound);
+        let foreign = ProviderBudget::new();
+        assert_eq!(
+            generation
+                .provider_ownership_needed(&foreign)
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert_eq!(foreign.observation().unwrap().owned_bytes, 0);
+        drop(owners);
+        let protected = generation.clone();
+        drop(generation);
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            bound,
+            "discovery removal cannot release ownership retained by a snapshot"
+        );
+        drop(protected);
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            bound,
+            "queued physical native ownership keeps its provider charge"
+        );
+        while pool.drain_retired_step() {}
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    }
+
+    // req: TXN-042, STO-032, REC-001
+    #[test]
+    fn locator_construction_preflight_counts_dense_canonical_values_before_decoding() {
+        use riffdb_storage_api::{StoredCommandCapsuleV1, StoredCommandCapsuleV2};
+        use riffdb_types::{CanonicalList, CanonicalRecord, CanonicalValue, FieldId};
+        let original = crate::derived::follower_indexes::capsule(CommitSequence::first());
+        let (_, sparse) = crate::derived::follower_indexes::segment(vec![original.clone()], None);
+        let values = CanonicalRecord::new(vec![(
+            FieldId::first(),
+            CanonicalValue::List(CanonicalList::new(vec![CanonicalValue::Null; 4096]).unwrap()),
+        )])
+        .unwrap();
+        let base = original.base();
+        let outcome = base
+            .outcome()
+            .clone()
+            .with_service_values(values.clone())
+            .unwrap();
+        let base = StoredCommandCapsuleV1::new(
+            outcome,
+            base.provenance().clone(),
+            base.commit().clone(),
+            base.started_audit().clone(),
+            base.terminal_audit().clone(),
+        )
+        .unwrap();
+        let dense = StoredCommandCapsuleV2::from_base(base, vec![]).unwrap();
+        let (_, dense) = crate::derived::follower_indexes::segment(vec![dense], None);
+        let sparse_work =
+            riffdb_storage_api::locator_segment_decode_work_bound_v1(sparse.as_bytes())
+                .unwrap()
+                .unwrap();
+        let dense_work = riffdb_storage_api::locator_segment_decode_work_bound_v1(dense.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert!(
+            dense_work - sparse_work >= 4096 * std::mem::size_of::<CanonicalValue>() as u64,
+            "one-byte canonical values require their actual enum/vector ownership"
+        );
+        let decoded = decode_locator_construction_segment(dense.as_bytes(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decoded.commands()[0].base().outcome().service_values(),
+            &values
+        );
+        let mut corrupt = dense.as_bytes().to_vec();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert_eq!(
+            decode_locator_construction_segment(&corrupt, None)
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::CorruptData
+        );
+    }
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn missing_locator_directory_never_proves_an_empty_command_set() {
+        let mut indexes = TransientIndexes::try_empty(LocatorAllocationClass::Ordinary).unwrap();
+        indexes.command_derived = None;
+        assert_eq!(
+            indexes.locator_generation().err().unwrap().kind(),
+            StorageErrorKind::Unavailable
+        );
+        assert!(indexes.capture_command_at(CommitSequence::first()).is_err());
+        assert!(
+            indexes
+                .command_derived_locator(CommandDerivedIndexKindV1::AuditSequence, &[0; 8])
+                .is_err()
+        );
+    }
 
     #[test]
     fn pending_outbox_accelerator_pages_in_event_order_and_tracks_membership() {
@@ -1329,6 +2077,138 @@ mod tests {
         assert_eq!(
             indexes.undelivered_outbox_page(Some(first), 2),
             Some((vec![second, third], false))
+        );
+    }
+    // req: TXN-042, STO-032, REC-001
+    #[test]
+    fn legal_dense_segment_refuses_recovery_window_before_decode_but_fits_native_admission() {
+        use riffdb_storage_api::{StoredCommandCapsuleV1, StoredCommandCapsuleV2};
+        use riffdb_types::{
+            CanonicalList, CanonicalRecord, CanonicalValue, FieldId, MAX_LIST_ENTRIES,
+        };
+        let original = crate::derived::follower_indexes::capsule(CommitSequence::first());
+        let values = CanonicalRecord::new(vec![
+            (
+                FieldId::first(),
+                CanonicalValue::List(
+                    CanonicalList::new(vec![CanonicalValue::Null; MAX_LIST_ENTRIES]).unwrap(),
+                ),
+            ),
+            (
+                FieldId::new(2).unwrap(),
+                CanonicalValue::List(
+                    CanonicalList::new(vec![CanonicalValue::Null; MAX_LIST_ENTRIES]).unwrap(),
+                ),
+            ),
+        ])
+        .unwrap();
+        let base = original.base();
+        let outcome = base
+            .outcome()
+            .clone()
+            .with_service_values(values.clone())
+            .unwrap();
+        let capsule = StoredCommandCapsuleV2::from_base(
+            StoredCommandCapsuleV1::new(
+                outcome,
+                base.provenance().clone(),
+                base.commit().clone(),
+                base.started_audit().clone(),
+                base.terminal_audit().clone(),
+            )
+            .unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let (segment, encoded) = crate::derived::follower_indexes::segment(vec![capsule], None);
+        let canonical = crate::history_stub::decode_retained_segment(encoded.as_bytes())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert_eq!(
+            canonical, segment,
+            "the large layout remains a valid durable segment"
+        );
+        drop(canonical);
+        let work = usize::try_from(
+            riffdb_storage_api::locator_segment_decode_work_bound_v1(encoded.as_bytes())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            work > crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES,
+            "two maximum-cardinality canonical lists exceed the unchanged recovery work allowance"
+        );
+        assert!(
+            work < crate::locator_memory::LOCATOR_ORDINARY_BYTES,
+            "the legal directory construction fits the separate ordinary native allowance"
+        );
+        let pool = NativeLocatorPool::isolated_for_tests();
+        // The process-lifetime retirement directory is real pool-owned
+        // capacity, admitted before the first reconstruction allocation.
+        let baseline = pool.charged_bytes();
+        let before = LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS.with(std::cell::Cell::get);
+        let refused = decode_native_locator_construction_segment_in_pool(
+            &pool,
+            encoded.as_bytes(),
+            None,
+            LocatorAllocationClass::Ordinary,
+            Some(crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES),
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind(), StorageErrorKind::Unavailable);
+        assert_eq!(
+            LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS.with(std::cell::Cell::get),
+            before
+        );
+        assert_eq!(pool.charged_bytes(), baseline);
+        let pressure = pool.exhaust_ordinary_for_tests();
+        let refused = decode_native_locator_construction_segment_in_pool(
+            &pool,
+            encoded.as_bytes(),
+            None,
+            LocatorAllocationClass::Ordinary,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(refused.kind(), StorageErrorKind::Unavailable);
+        assert_eq!(
+            LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS.with(std::cell::Cell::get),
+            before
+        );
+        drop(pressure);
+        let decoded = decode_native_locator_construction_segment_in_pool(
+            &pool,
+            encoded.as_bytes(),
+            None,
+            LocatorAllocationClass::Ordinary,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            LOCATOR_CONSTRUCTION_DECODE_ATTEMPTS.with(std::cell::Cell::get),
+            before + 1
+        );
+        assert_eq!(
+            decoded.commands()[0].base().outcome().service_values(),
+            &values
+        );
+        assert!(
+            pool.charged_bytes() >= baseline + work,
+            "the semantic graph remains owned by its admitted scratch guard"
+        );
+        drop(decoded);
+        assert_eq!(
+            pool.charged_bytes(),
+            baseline,
+            "decoded graph and TLS scratch die before numerical release, while the physical retirement directory stays charged"
+        );
+        println!(
+            "locator-legal-dense-segment-v1 lists=2 entries_per_list={MAX_LIST_ENTRIES} wire_bytes={} admitted_work={work} recovery_window={}",
+            encoded.as_bytes().len(),
+            crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES
         );
     }
 }

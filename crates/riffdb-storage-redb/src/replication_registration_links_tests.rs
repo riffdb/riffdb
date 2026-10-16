@@ -366,6 +366,7 @@ pub(crate) fn store_record(ports: &crate::RedbOperationalPorts, record: &Record,
     prepared.stage(&write).unwrap();
     crate::changelog_v3_roots::validate_retained_history_for_write(&write).unwrap();
     ports.shared.commit_durable(write).unwrap();
+    ports.shared.rebuild_test_source_indexes().unwrap();
 }
 
 #[test]
@@ -596,10 +597,10 @@ fn advisory_progress_refuses_a_retired_policy_stored_under_a_foreign_key() {
         .insert(foreign_key.as_slice(), bytes.as_bytes())
         .unwrap();
     ports.shared.commit_durable(write).unwrap();
-    let root = std::sync::Arc::new(crate::checkpoint_root::CheckpointRoot::new(
-        ports.shared.database.begin_read().unwrap(),
-        1,
-    ));
+    let root = std::sync::Arc::new(
+        crate::checkpoint_root::CheckpointRoot::new(ports.shared.database.begin_read().unwrap(), 1)
+            .unwrap(),
+    );
     let access = crate::store::RedbReadAccess::Current(root);
     assert!(crate::changelog_v3_cursor::progress::observe(&access).is_err());
 }

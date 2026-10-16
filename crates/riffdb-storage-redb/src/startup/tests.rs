@@ -571,6 +571,74 @@ fn initialized_empty_store_reaches_both_exact_ends_and_reopens() {
     );
 }
 
+// req: TXN-042, STO-032, REC-001
+#[test]
+fn fresh_full_startup_completes_its_captured_locator_owner_before_writes() {
+    let path = TestDatabasePath::new("fresh-startup-captured-locators");
+    let mut store = RedbStore::open(&path.0).expect("open fresh store");
+    store
+        .initialize_database(database_id(0x32))
+        .expect("initialize current source");
+    let mut session = store
+        .begin_structural_evidence(inputs())
+        .expect("begin full startup");
+    assert!(!session.clean_close_fast);
+    assert_eq!(
+        session.clean_close_declined_reason(),
+        Some("engine_initialized_at_open")
+    );
+    let structural = finish_structural(&mut session);
+    let historical = finish_historical(&mut session);
+    let StructuralOpenOutcome::Clean(opened) = session
+        .finish(structural, historical)
+        .expect("complete genuine startup evidence")
+    else {
+        panic!("a fresh current source must complete structural startup");
+    };
+    let (_, _, _, dormant) = opened.into_parts();
+    // Capture only the source for this test before operational handoff. Its
+    // admitted owner must complete rather than being replaced by a newly
+    // allocated proof that leaves this original protected owner pending.
+    let capture = crate::store::RedbOperationalPorts {
+        shared: Arc::clone(&dormant.shared),
+    };
+    let original = capture
+        .begin_composite_read()
+        .expect("capture startup source");
+    assert!(original.locator_capability().is_pending());
+    drop(capture);
+    let ports = dormant
+        .into_operational_after_catalog_validation()
+        .expect("activate full startup");
+    let current = ports
+        .begin_composite_read()
+        .expect("capture activated source");
+    assert!(
+        original
+            .locator_capability()
+            .same_construction(current.locator_capability())
+    );
+    original
+        .locator_capability()
+        .require_complete()
+        .expect("original source completed");
+    current
+        .locator_capability()
+        .require_complete()
+        .expect("operational source completed");
+    assert_eq!(
+        ports
+            .pending_outbox_delivery_count()
+            .expect("ancillary membership complete"),
+        0
+    );
+    ports
+        .begin_write()
+        .expect("first locator-dependent write admitted")
+        .abort()
+        .unwrap();
+}
+
 // req: STO-023, PERF-019
 #[test]
 fn graceful_clean_close_selects_bounded_startup_and_is_consumed_before_activation() {
@@ -772,6 +840,9 @@ mod native_source_continuation;
 
 #[path = "native_source_admission_tests.rs"]
 mod native_source_admission;
+
+#[path = "query_module_retention_tests.rs"]
+mod query_module_retention;
 
 fn complete_authority_snapshot(path: &Path) -> CompleteAuthoritySnapshot {
     let database = redb::ReadOnlyDatabase::open(path).expect("open complete authority snapshot");
@@ -1065,28 +1136,12 @@ fn activate_without_certifying(store: RedbStore) {
     );
 }
 
-/// Bounded startup leaves the population caches cold, and the first
-/// derived read warms them at full cost.
-///
-/// ADR-0156 buys its readiness saving by skipping the transient
-/// population-index rebuild at activation — a walk of the whole `COMMITS`
-/// table that decodes every command segment, re-derives every manifest key,
-/// and retains every segment. `ensure_transient_indexes_ready` then
-/// performs exactly that walk on the first derived read.
-///
-/// That is correct in itself: a derived read must have an index. What makes
-/// it worth pinning is WHEN the first derived read happens. In `riffdbd` it
-/// is `recover_outbox` during graph construction, i.e. before readiness, so
-/// a start that reports the bounded path pays the rebuild anyway and the
-/// saving is returned in full. Measured on this workstation, that rebuild
-/// is 96% of a bounded start's wall clock at 115,690 retained commands and
-/// scales linearly.
-///
-/// Whoever changes where that first derived read happens should keep this
-/// test: it is the difference between "cold caches" as an ADR-0156 claim
-/// and as an observed fact.
+/// ADR-0311 permits four borrowed first-row probes to prove an empty directory
+/// during bounded activation. Derived reads then use that complete proof; they
+/// cannot trigger a hidden synchronous population walk.
+// req: TXN-042, STO-032, PERF-019
 #[test]
-fn bounded_startup_defers_the_population_rebuild_to_the_first_derived_read() {
+fn bounded_empty_startup_proves_membership_without_a_population_rebuild() {
     use riffdb_storage_api::{
         OutboxPageLimit, OutboxRepository, UndeliveredOutboxStatusScanRequestV1,
     };
@@ -1113,13 +1168,17 @@ fn bounded_startup_defers_the_population_rebuild_to_the_first_derived_read() {
         .into_operational_after_catalog_validation()
         .expect("activate bounded ports");
 
-    // Activation skipped the rebuild: this is the ADR-0156 saving.
+    // Activation proved empty membership without a population rebuild.
     assert!(ports.clean_close_fast_startup());
     assert_eq!(ports.transient_index_rebuilds(), 0);
     assert_eq!(ports.transient_index_commit_rows(), 0);
 
-    // One derived read — the same call `recover_outbox` makes first — warms
-    // the caches, and the rebuild is charged to whoever made that read.
+    ports
+        .begin_composite_read()
+        .expect("capture empty source")
+        .locator_capability()
+        .require_complete()
+        .expect("bounded empty proof is complete");
     let limit = OutboxPageLimit::new(std::num::NonZeroU16::new(8).expect("nonzero"))
         .expect("bounded outbox page limit");
     let _ = OutboxRepository::scan_undelivered_outbox_statuses(
@@ -1129,17 +1188,17 @@ fn bounded_startup_defers_the_population_rebuild_to_the_first_derived_read() {
     .expect("derived read over a bounded-start database");
     assert_eq!(
         ports.transient_index_rebuilds(),
-        1,
-        "the first derived read must be what pays for the deferred rebuild"
+        0,
+        "a derived read must not turn the bounded empty proof into a population walk"
     );
 
-    // Idempotent: the rebuild happens once per handle, not per read.
+    // Repeated reads retain the same complete empty proof.
     let _ = OutboxRepository::scan_undelivered_outbox_statuses(
         &ports,
         UndeliveredOutboxStatusScanRequestV1::initial(None, limit),
     )
     .expect("second derived read");
-    assert_eq!(ports.transient_index_rebuilds(), 1);
+    assert_eq!(ports.transient_index_rebuilds(), 0);
 }
 
 /// A positively observed in-flight `Delivering` entry contradicts a clean
