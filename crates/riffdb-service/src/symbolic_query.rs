@@ -102,6 +102,21 @@ async fn resolve_admission_head_floor(
     if consistency.is_none() {
         return Ok(explicit);
     }
+    if let Some(head) = service
+        .providers
+        .authoritative
+        .try_cached_application_head(context.control())
+    {
+        let captured = match head {
+            FrontierPosition::BeforeFirst => None,
+            FrontierPosition::AppliedThrough(sequence) => Some(sequence.get()),
+        };
+        return Ok(match (explicit, captured) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        });
+    }
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
@@ -1329,14 +1344,115 @@ impl ExecuteSymbolicQueryRequest {
     }
 }
 
+/// Shared or owned field map of one symbolic result record.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SymbolicResultFields(Arc<BTreeMap<Arc<str>, CanonicalValue>>);
+
+impl std::ops::Deref for SymbolicResultFields {
+    type Target = BTreeMap<Arc<str>, CanonicalValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Consuming iterator over [`SymbolicResultFields`].
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum SymbolicResultFieldsIntoIter {
+    /// Owned iterator when the underlying map was uniquely referenced.
+    Owned(std::collections::btree_map::IntoIter<Arc<str>, CanonicalValue>),
+    /// Inline iterator for small shared maps (up to 12 fields) without heap allocation.
+    SharedSmall {
+        /// Inline storage of cloned key-value pairs.
+        items: [Option<(Arc<str>, CanonicalValue)>; 12],
+        /// Next index to yield.
+        idx: u8,
+        /// Number of populated items.
+        len: u8,
+    },
+    /// Shared iterator yielding cloned entries without cloning B-tree nodes.
+    Shared(std::vec::IntoIter<(Arc<str>, CanonicalValue)>),
+}
+
+impl Iterator for SymbolicResultFieldsIntoIter {
+    type Item = (Arc<str>, CanonicalValue);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Owned(iter) => iter.next(),
+            Self::SharedSmall { items, idx, len } => {
+                if *idx < *len {
+                    let pos = usize::from(*idx);
+                    *idx += 1;
+                    items[pos].take()
+                } else {
+                    None
+                }
+            }
+            Self::Shared(iter) => iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Owned(iter) => iter.size_hint(),
+            Self::SharedSmall { idx, len, .. } => {
+                let remaining = usize::from(len.saturating_sub(*idx));
+                (remaining, Some(remaining))
+            }
+            Self::Shared(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for SymbolicResultFieldsIntoIter {}
+
+impl IntoIterator for SymbolicResultFields {
+    type Item = (Arc<str>, CanonicalValue);
+    type IntoIter = SymbolicResultFieldsIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match Arc::try_unwrap(self.0) {
+            Ok(map) => SymbolicResultFieldsIntoIter::Owned(map.into_iter()),
+            Err(shared) => {
+                if shared.len() <= 12 {
+                    let mut items: [Option<(Arc<str>, CanonicalValue)>; 12] = [const { None }; 12];
+                    let mut len = 0u8;
+                    for (k, v) in shared.iter() {
+                        items[usize::from(len)] = Some((Arc::clone(k), v.clone()));
+                        len += 1;
+                    }
+                    SymbolicResultFieldsIntoIter::SharedSmall { items, idx: 0, len }
+                } else {
+                    let mut entries = Vec::with_capacity(shared.len());
+                    for (k, v) in shared.iter() {
+                        entries.push((Arc::clone(k), v.clone()));
+                    }
+                    SymbolicResultFieldsIntoIter::Shared(entries.into_iter())
+                }
+            }
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a SymbolicResultFields {
+    type Item = (&'a Arc<str>, &'a CanonicalValue);
+    type IntoIter = std::collections::btree_map::Iter<'a, Arc<str>, CanonicalValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 /// One name-addressed result record.
 ///
 /// Entity and field **names** are shared `Arc<str>` handles from the query plan;
-/// field **values** are moved from the executor snapshot (no third clone).
+/// field **values** are shared from the executor snapshot (no BTreeMap deep-clone).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolicResultRecord {
     entity: Arc<str>,
-    fields: BTreeMap<Arc<str>, CanonicalValue>,
+    fields: Arc<BTreeMap<Arc<str>, CanonicalValue>>,
     nested: BTreeMap<Arc<str>, Vec<SymbolicResultRecord>>,
     exact_decimals: BTreeMap<Arc<str>, ExactDecimalResult>,
     exact_means: BTreeMap<Arc<str>, ExactMeanResult>,
@@ -1345,7 +1461,7 @@ pub struct SymbolicResultRecord {
 /// Move-only components of one symbolic result record.
 pub type SymbolicResultRecordParts = (
     Arc<str>,
-    BTreeMap<Arc<str>, CanonicalValue>,
+    SymbolicResultFields,
     BTreeMap<Arc<str>, Vec<SymbolicResultRecord>>,
     BTreeMap<Arc<str>, ExactDecimalResult>,
     BTreeMap<Arc<str>, ExactMeanResult>,
@@ -1402,25 +1518,68 @@ impl ExactMeanResult {
 
 impl SymbolicResultRecord {
     fn from_row(row: QueryRow) -> Self {
-        let (entity, fields, nested) = row.into_parts();
+        let (entity, fields, nested, nested_aggregates) = row.into_shared_parts_with_aggregates();
+        let mut nested: BTreeMap<Arc<str>, Vec<Self>> = nested
+            .into_iter()
+            .map(|(name, rows)| (name, rows.into_iter().map(Self::from_row).collect()))
+            .collect();
+        for (name, rows) in nested_aggregates {
+            nested.insert(name, rows.into_iter().map(Self::from_aggregate).collect());
+        }
         Self {
             entity,
             fields,
-            nested: nested
-                .into_iter()
-                .map(|(name, rows)| (name, rows.into_iter().map(Self::from_row).collect()))
-                .collect(),
+            nested,
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         }
     }
 
     fn from_aggregate(row: QueryAggregateRow) -> Self {
-        let (entity, cells) = row.into_parts();
+        let (entity, cells, split_cells) = row.into_shared_parts();
+        if let Some(split) = split_cells {
+            let fields = Arc::clone(&split.canonical_fields);
+            let exact_decimals = if split.exact_decimals.is_empty() {
+                BTreeMap::new()
+            } else {
+                split
+                    .exact_decimals
+                    .iter()
+                    .map(|(name, &(coefficient, scale))| {
+                        (Arc::clone(name), ExactDecimalResult { coefficient, scale })
+                    })
+                    .collect()
+            };
+            let exact_means = if split.exact_means.is_empty() {
+                BTreeMap::new()
+            } else {
+                split
+                    .exact_means
+                    .iter()
+                    .map(|(name, &(coefficient, scale, count))| {
+                        (
+                            Arc::clone(name),
+                            ExactMeanResult {
+                                coefficient,
+                                scale,
+                                count,
+                            },
+                        )
+                    })
+                    .collect()
+            };
+            return Self {
+                entity,
+                fields,
+                nested: BTreeMap::new(),
+                exact_decimals,
+                exact_means,
+            };
+        }
         let mut fields = BTreeMap::new();
         let mut exact_decimals = BTreeMap::new();
         let mut exact_means = BTreeMap::new();
-        for (name, cell) in cells {
+        for (name, cell) in Arc::unwrap_or_clone(cells) {
             match cell {
                 QueryAggregateCell::Canonical(value) => {
                     fields.insert(name, value);
@@ -1446,7 +1605,7 @@ impl SymbolicResultRecord {
         }
         Self {
             entity,
-            fields,
+            fields: Arc::new(fields),
             nested: BTreeMap::new(),
             exact_decimals,
             exact_means,
@@ -1462,7 +1621,7 @@ impl SymbolicResultRecord {
     ) -> Self {
         Self {
             entity,
-            fields,
+            fields: Arc::new(fields),
             nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
@@ -1479,7 +1638,7 @@ impl SymbolicResultRecord {
     ) -> Self {
         Self {
             entity,
-            fields,
+            fields: Arc::new(fields),
             nested,
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
@@ -1496,7 +1655,7 @@ impl SymbolicResultRecord {
     ) -> Self {
         Self {
             entity,
-            fields,
+            fields: Arc::new(fields),
             nested: BTreeMap::new(),
             exact_decimals: exact_decimals
                 .into_iter()
@@ -1520,7 +1679,7 @@ impl SymbolicResultRecord {
     ) -> Self {
         Self {
             entity,
-            fields: BTreeMap::new(),
+            fields: Arc::new(BTreeMap::new()),
             nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::from([(
@@ -1542,7 +1701,7 @@ impl SymbolicResultRecord {
 
     /// Fields in canonical name order (shared name handles).
     #[must_use]
-    pub const fn fields(&self) -> &BTreeMap<Arc<str>, CanonicalValue> {
+    pub fn fields(&self) -> &BTreeMap<Arc<str>, CanonicalValue> {
         &self.fields
     }
 
@@ -1569,7 +1728,7 @@ impl SymbolicResultRecord {
     pub fn into_parts(self) -> SymbolicResultRecordParts {
         (
             self.entity,
-            self.fields,
+            SymbolicResultFields(self.fields),
             self.nested,
             self.exact_decimals,
             self.exact_means,
@@ -1595,16 +1754,115 @@ pub enum SymbolicResultField {
 pub type SharedEnumVariantNames = riffdb_catalog::ContractEnumVariantNames;
 
 /// Complete one-snapshot execution result.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ExecuteSymbolicQueryResult {
     identity: SymbolicQueryIdentity,
     outcome: String,
     application_head: u64,
-    fields: BTreeMap<String, SymbolicResultField>,
+    fields: Arc<BTreeMap<String, SymbolicResultField>>,
     compact_result: Option<CoveredQueryResultV1>,
     packed_result: bool,
     enum_variant_names: SharedEnumVariantNames,
     next_cursor: Option<CursorToken>,
+    cache_pinned: bool,
+}
+
+impl PartialEq for ExecuteSymbolicQueryResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.outcome == other.outcome
+            && self.application_head == other.application_head
+            && self.fields == other.fields
+            && self.compact_result == other.compact_result
+            && self.packed_result == other.packed_result
+            && self.enum_variant_names == other.enum_variant_names
+            && self.next_cursor == other.next_cursor
+    }
+}
+
+impl Eq for ExecuteSymbolicQueryResult {}
+
+#[derive(Clone)]
+struct CachedSymbolicQueryResult {
+    _raw_fields_pin: Arc<BTreeMap<String, QueryResultValue>>,
+    _enum_names_pin: SharedEnumVariantNames,
+    raw_fields_ptr: usize,
+    plan_hash: QueryPlanHash,
+    enum_names_ptr: usize,
+    retain_compact: bool,
+    retain_packed: bool,
+    outcome: String,
+    application_head: u64,
+    fields: Arc<BTreeMap<String, SymbolicResultField>>,
+    compact_result: Option<CoveredQueryResultV1>,
+    packed_result: bool,
+}
+
+const LOCAL_SYMBOLIC_RESULT_CACHE_CAP: usize = 64;
+const SHARED_SYMBOLIC_RESULT_CACHE_SHARDS: usize = 64;
+
+#[derive(Default)]
+struct LocalSymbolicResultCache {
+    entries: Vec<CachedSymbolicQueryResult>,
+    next_slot: usize,
+}
+
+impl LocalSymbolicResultCache {
+    fn insert(&mut self, entry: CachedSymbolicQueryResult) {
+        if self.entries.len() < LOCAL_SYMBOLIC_RESULT_CACHE_CAP {
+            self.entries.push(entry);
+        } else {
+            self.entries[self.next_slot] = entry;
+            self.next_slot = (self.next_slot + 1) % LOCAL_SYMBOLIC_RESULT_CACHE_CAP;
+        }
+    }
+}
+
+static SHARED_SYMBOLIC_RESULT_CACHE: std::sync::OnceLock<
+    [std::sync::Mutex<LocalSymbolicResultCache>; SHARED_SYMBOLIC_RESULT_CACHE_SHARDS],
+> = std::sync::OnceLock::new();
+
+fn shared_symbolic_result_cache()
+-> &'static [std::sync::Mutex<LocalSymbolicResultCache>; SHARED_SYMBOLIC_RESULT_CACHE_SHARDS] {
+    SHARED_SYMBOLIC_RESULT_CACHE.get_or_init(|| {
+        std::array::from_fn(|_| std::sync::Mutex::new(LocalSymbolicResultCache::default()))
+    })
+}
+
+fn lookup_shared_symbolic_result_cache(
+    raw_fields_ptr: usize,
+    plan_hash: QueryPlanHash,
+    enum_names_ptr: usize,
+    retain_compact: bool,
+    retain_packed: bool,
+) -> Option<CachedSymbolicQueryResult> {
+    let shard =
+        ((raw_fields_ptr >> 4) ^ (enum_names_ptr >> 4)) & (SHARED_SYMBOLIC_RESULT_CACHE_SHARDS - 1);
+    let guard = shared_symbolic_result_cache()[shard].lock().ok()?;
+    guard
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.raw_fields_ptr == raw_fields_ptr
+                && entry.plan_hash == plan_hash
+                && entry.enum_names_ptr == enum_names_ptr
+                && entry.retain_compact == retain_compact
+                && entry.retain_packed == retain_packed
+        })
+        .cloned()
+}
+
+fn insert_shared_symbolic_result_cache(entry: CachedSymbolicQueryResult) {
+    let shard = ((entry.raw_fields_ptr >> 4) ^ (entry.enum_names_ptr >> 4))
+        & (SHARED_SYMBOLIC_RESULT_CACHE_SHARDS - 1);
+    if let Ok(mut guard) = shared_symbolic_result_cache()[shard].lock() {
+        guard.insert(entry);
+    }
+}
+
+std::thread_local! {
+    static LOCAL_SYMBOLIC_RESULT_CACHE: std::cell::RefCell<LocalSymbolicResultCache> =
+        std::cell::RefCell::new(LocalSymbolicResultCache::default());
 }
 
 /// Owned symbolic-query response components in transport assembly order.
@@ -1641,11 +1899,12 @@ impl ExecuteSymbolicQueryResult {
             },
             outcome: "Ok".to_owned(),
             application_head: 0,
-            fields: BTreeMap::new(),
+            fields: Arc::new(BTreeMap::new()),
             compact_result: None,
             packed_result: false,
             enum_variant_names: Arc::new(BTreeMap::new().into()),
             next_cursor: None,
+            cache_pinned: false,
         }
     }
 
@@ -1656,6 +1915,84 @@ impl ExecuteSymbolicQueryResult {
         retain_compact: bool,
         retain_packed: bool,
     ) -> Self {
+        let cache_probe = if snapshot.is_cache_pinned() && snapshot.continuation().is_none() {
+            let raw_fields_ptr = Arc::as_ptr(snapshot.shared_fields()) as usize;
+            let plan_hash = program.identity().hash();
+            let enum_names_ptr = Arc::as_ptr(&enum_variant_names) as usize;
+            if let Some((outcome, application_head, fields, compact_result, packed_result)) =
+                LOCAL_SYMBOLIC_RESULT_CACHE.with(|cell| {
+                    let guard = cell.try_borrow().ok()?;
+                    guard
+                        .entries
+                        .iter()
+                        .find(|entry| {
+                            entry.raw_fields_ptr == raw_fields_ptr
+                                && entry.plan_hash == plan_hash
+                                && entry.enum_names_ptr == enum_names_ptr
+                                && entry.retain_compact == retain_compact
+                                && entry.retain_packed == retain_packed
+                        })
+                        .map(|entry| {
+                            (
+                                entry.outcome.clone(),
+                                entry.application_head,
+                                Arc::clone(&entry.fields),
+                                entry.compact_result.clone(),
+                                entry.packed_result,
+                            )
+                        })
+                })
+            {
+                return Self {
+                    identity: SymbolicQueryIdentity::from_program(program),
+                    outcome,
+                    application_head,
+                    fields,
+                    compact_result,
+                    packed_result,
+                    enum_variant_names,
+                    next_cursor: None,
+                    cache_pinned: true,
+                };
+            }
+            if let Some(shared_entry) = lookup_shared_symbolic_result_cache(
+                raw_fields_ptr,
+                plan_hash,
+                enum_names_ptr,
+                retain_compact,
+                retain_packed,
+            ) {
+                let outcome = shared_entry.outcome.clone();
+                let application_head = shared_entry.application_head;
+                let fields = Arc::clone(&shared_entry.fields);
+                let compact_result = shared_entry.compact_result.clone();
+                let packed_result = shared_entry.packed_result;
+                LOCAL_SYMBOLIC_RESULT_CACHE.with(|cell| {
+                    if let Ok(mut guard) = cell.try_borrow_mut() {
+                        guard.insert(shared_entry);
+                    }
+                });
+                return Self {
+                    identity: SymbolicQueryIdentity::from_program(program),
+                    outcome,
+                    application_head,
+                    fields,
+                    compact_result,
+                    packed_result,
+                    enum_variant_names,
+                    next_cursor: None,
+                    cache_pinned: true,
+                };
+            }
+            Some((
+                Arc::clone(snapshot.shared_fields()),
+                raw_fields_ptr,
+                plan_hash,
+                enum_names_ptr,
+            ))
+        } else {
+            None
+        };
         let application_head = snapshot.application_head();
         let outcome = snapshot.outcome().to_owned();
         let (mut fields, covered_result) = snapshot.into_result_parts();
@@ -1670,34 +2007,59 @@ impl ExecuteSymbolicQueryResult {
             }
             None
         };
-        let fields = fields
-            .into_iter()
-            .map(|(name, value)| {
-                let value = match value {
-                    QueryResultValue::One(row) => {
-                        SymbolicResultField::One(SymbolicResultRecord::from_row(row))
-                    }
-                    QueryResultValue::Maybe(row) => {
-                        SymbolicResultField::Maybe(row.map(SymbolicResultRecord::from_row))
-                    }
-                    QueryResultValue::Many(rows) => SymbolicResultField::Many(
-                        rows.into_iter()
-                            .map(SymbolicResultRecord::from_row)
-                            .collect(),
-                    ),
-                    QueryResultValue::AggregateOne(row) => {
-                        SymbolicResultField::One(SymbolicResultRecord::from_aggregate(row))
-                    }
-                    QueryResultValue::AggregateMany(rows) => SymbolicResultField::Many(
-                        rows.into_iter()
-                            .map(SymbolicResultRecord::from_aggregate)
-                            .collect(),
-                    ),
-                };
-                (name, value)
-            })
-            .collect();
+        let fields = Arc::new(
+            fields
+                .into_iter()
+                .map(|(name, value)| {
+                    let value = match value {
+                        QueryResultValue::One(row) => {
+                            SymbolicResultField::One(SymbolicResultRecord::from_row(row))
+                        }
+                        QueryResultValue::Maybe(row) => {
+                            SymbolicResultField::Maybe(row.map(SymbolicResultRecord::from_row))
+                        }
+                        QueryResultValue::Many(rows) => SymbolicResultField::Many(
+                            rows.into_iter()
+                                .map(SymbolicResultRecord::from_row)
+                                .collect(),
+                        ),
+                        QueryResultValue::AggregateOne(row) => {
+                            SymbolicResultField::One(SymbolicResultRecord::from_aggregate(row))
+                        }
+                        QueryResultValue::AggregateMany(rows) => SymbolicResultField::Many(
+                            rows.into_iter()
+                                .map(SymbolicResultRecord::from_aggregate)
+                                .collect(),
+                        ),
+                    };
+                    (name, value)
+                })
+                .collect::<BTreeMap<_, _>>(),
+        );
         let packed_result = retain_packed && compact_result.is_some();
+        let cache_pinned = cache_probe.is_some();
+        if let Some((raw_fields_pin, raw_fields_ptr, plan_hash, enum_names_ptr)) = cache_probe {
+            let entry = CachedSymbolicQueryResult {
+                _raw_fields_pin: raw_fields_pin,
+                _enum_names_pin: Arc::clone(&enum_variant_names),
+                raw_fields_ptr,
+                plan_hash,
+                enum_names_ptr,
+                retain_compact,
+                retain_packed,
+                outcome: outcome.clone(),
+                application_head,
+                fields: Arc::clone(&fields),
+                compact_result: compact_result.clone(),
+                packed_result,
+            };
+            insert_shared_symbolic_result_cache(entry.clone());
+            LOCAL_SYMBOLIC_RESULT_CACHE.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    guard.insert(entry);
+                }
+            });
+        }
         Self {
             identity: SymbolicQueryIdentity::from_program(program),
             outcome,
@@ -1707,6 +2069,7 @@ impl ExecuteSymbolicQueryResult {
             packed_result,
             enum_variant_names,
             next_cursor: None,
+            cache_pinned,
         }
     }
 
@@ -1741,8 +2104,29 @@ impl ExecuteSymbolicQueryResult {
 
     /// Name-addressed result fields.
     #[must_use]
-    pub const fn fields(&self) -> &BTreeMap<String, SymbolicResultField> {
+    pub fn fields(&self) -> &BTreeMap<String, SymbolicResultField> {
         &self.fields
+    }
+
+    /// Shared handle to name-addressed result fields.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn shared_fields(&self) -> &Arc<BTreeMap<String, SymbolicResultField>> {
+        &self.fields
+    }
+
+    /// Whether this result's `fields` allocation is pinned in the local symbolic result cache.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn is_cache_pinned(&self) -> bool {
+        self.cache_pinned
+    }
+
+    /// Whether packed result encoding was selected.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn is_packed_result(&self) -> bool {
+        self.packed_result
     }
 
     /// Positional named result selected by representation negotiation.
@@ -1758,7 +2142,7 @@ impl ExecuteSymbolicQueryResult {
             self.identity,
             self.outcome,
             self.application_head,
-            self.fields,
+            Arc::unwrap_or_clone(self.fields),
             self.compact_result,
             self.packed_result,
             self.enum_variant_names,
@@ -1780,11 +2164,12 @@ impl ExecuteSymbolicQueryResult {
             identity,
             outcome,
             application_head,
-            fields,
+            fields: Arc::new(fields),
             compact_result: None,
             packed_result: false,
             enum_variant_names,
             next_cursor: None,
+            cache_pinned: false,
         }
     }
 
@@ -1798,6 +2183,13 @@ impl ExecuteSymbolicQueryResult {
 
     pub(crate) fn shared_enum_variant_names(&self) -> SharedEnumVariantNames {
         Arc::clone(&self.enum_variant_names)
+    }
+
+    /// Shared handle to canonical enum variant names.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn shared_enum_variant_names_ref(&self) -> &SharedEnumVariantNames {
+        &self.enum_variant_names
     }
 
     /// Opaque continuation token, when this page is not final.
@@ -1936,7 +2328,7 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
+        self.spawn_query_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
             execute_query(service, context, request).await
         })
     }
@@ -1998,7 +2390,7 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
+        self.spawn_query_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
             execute_named_query(service, context, request).await
         })
     }
@@ -2813,7 +3205,7 @@ async fn execute_named_query(
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     let plan_lookup_started = Instant::now();
-    let query_name = QueryOperationName::new(request.query_name.clone())
+    let query_name = QueryOperationName::new(request.query_name)
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
     let fast_resolution = match (
         service.providers.query_modules.as_ref(),
@@ -2821,15 +3213,13 @@ async fn execute_named_query(
         request.module_hash,
     ) {
         (Some(modules), Some((lineage, version, contract_hash)), Some(module_hash)) => {
-            match modules.prepare_exact_named_query(
+            match modules.prepare_exact_named_query_borrowed(
                 context.control(),
-                crate::ExactNamedQueryRequest::new(
-                    lineage.clone(),
-                    version,
-                    contract_hash,
-                    module_hash,
-                    query_name.clone(),
-                ),
+                lineage,
+                version,
+                contract_hash,
+                module_hash,
+                &query_name,
             ) {
                 Ok(resolution) => resolution,
                 Err(crate::QueryModuleReadError::Unavailable) => {
@@ -2868,7 +3258,7 @@ async fn execute_named_query(
         let query_index = module
             .module()
             .queries()
-            .binary_search_by(|query| query.name().cmp(request.query_name.as_str()))
+            .binary_search_by(|query| query.name().cmp(query_name.as_str()))
             .map_err(|_| {
                 application_validation_failure(
                     ValidationCode::InvalidValue,
@@ -3018,7 +3408,7 @@ async fn execute_named_query(
             ApplicationErrorCode::ProjectedSourceRequired,
         ));
     }
-    let aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]> = query
+    let family_aggregates = query
         .operational_family()
         .map(riffdb_query_ir::OperationalQueryFamilyV1::aggregates)
         .or_else(|| {
@@ -3026,7 +3416,16 @@ async fn execute_named_query(
                 .order_family()
                 .map(riffdb_query_ir::OrderQueryFamilyV1::aggregates)
         })
-        .map_or_else(|| Arc::from([]), Arc::from);
+        .unwrap_or(&[]);
+    let aggregates = if family_aggregates.is_empty() {
+        CompiledQueryAggregates::Empty
+    } else if !program.surface().aggregates().is_empty()
+        && program.surface().aggregates().len() == family_aggregates.len()
+    {
+        CompiledQueryAggregates::ProgramSurface
+    } else {
+        CompiledQueryAggregates::Explicit(Arc::from(family_aggregates))
+    };
     execute_compiled_query(
         service,
         context,
@@ -3540,7 +3939,7 @@ fn vector_projection_response(
             }
             (fields.len() == names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
-                fields,
+                fields: Arc::new(fields),
                 nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
@@ -3554,11 +3953,15 @@ fn vector_projection_response(
         identity: SymbolicQueryIdentity::from_named_plan(program, module_hash, plan_hash),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
-        fields: BTreeMap::from([(result_name, SymbolicResultField::Many(rows))]),
+        fields: Arc::new(BTreeMap::from([(
+            result_name,
+            SymbolicResultField::Many(rows),
+        )])),
         compact_result: None,
         packed_result: false,
         enum_variant_names,
         next_cursor: None,
+        cache_pinned: false,
     })
 }
 
@@ -4850,7 +5253,7 @@ fn tokenized_result_response(
                 .collect::<Option<BTreeMap<_, _>>>()?;
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
-                fields,
+                fields: Arc::new(fields),
                 nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
@@ -4870,11 +5273,12 @@ fn tokenized_result_response(
         ),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
-        fields,
+        fields: Arc::new(fields),
         compact_result: None,
         packed_result: false,
         enum_variant_names,
         next_cursor: None,
+        cache_pinned: false,
     })
 }
 
@@ -4913,7 +5317,7 @@ fn exact_result_response(
                 .collect::<Option<BTreeMap<_, _>>>()?;
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
-                fields,
+                fields: Arc::new(fields),
                 nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
@@ -4944,10 +5348,10 @@ fn exact_result_response(
         aggregate_result_name,
         SymbolicResultField::One(SymbolicResultRecord {
             entity: Arc::from(aggregate.name.value.as_str()),
-            fields: BTreeMap::from([(
+            fields: Arc::new(BTreeMap::from([(
                 Arc::from(measure.alias.value.as_str()),
                 CanonicalValue::U64(exact_total),
-            )]),
+            )])),
             nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
@@ -4957,11 +5361,12 @@ fn exact_result_response(
         identity: SymbolicQueryIdentity::from_named_plan(program, module_hash, exact.identity()),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
-        fields,
+        fields: Arc::new(fields),
         compact_result: None,
         packed_result: false,
         enum_variant_names,
         next_cursor: None,
+        cache_pinned: false,
     })
 }
 
@@ -5000,7 +5405,7 @@ fn exact_predicate_result_response(
                 .collect::<Option<BTreeMap<_, _>>>()?;
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
-                fields,
+                fields: Arc::new(fields),
                 nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
@@ -5030,10 +5435,10 @@ fn exact_predicate_result_response(
         aggregate_result_name,
         SymbolicResultField::One(SymbolicResultRecord {
             entity: Arc::from(aggregate.name.value.as_str()),
-            fields: BTreeMap::from([(
+            fields: Arc::new(BTreeMap::from([(
                 Arc::from(measure.alias.value.as_str()),
                 CanonicalValue::U64(exact_total),
-            )]),
+            )])),
             nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
@@ -5047,11 +5452,12 @@ fn exact_predicate_result_response(
         ),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
-        fields,
+        fields: Arc::new(fields),
         compact_result: None,
         packed_result: false,
         enum_variant_names,
         next_cursor: None,
+        cache_pinned: false,
     })
 }
 
@@ -5364,7 +5770,7 @@ async fn execute_query(
         context,
         bundle,
         Arc::new(compiled.program),
-        Arc::from([]),
+        CompiledQueryAggregates::Empty,
         Arc::new(compiled.document),
         None,
         None,
@@ -5378,6 +5784,12 @@ async fn execute_query(
         false,
     )
     .await
+}
+
+enum CompiledQueryAggregates {
+    Empty,
+    ProgramSurface,
+    Explicit(Arc<[riffdb_query_ir::OperationalAggregateV1]>),
 }
 
 enum QueryAuthority {
@@ -5795,7 +6207,7 @@ async fn execute_compiled_query(
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
     program: Arc<QueryAccessProgramV1>,
-    aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]>,
+    aggregates: CompiledQueryAggregates,
     document: Arc<Document>,
     module_hash: Option<QueryModuleHash>,
     named_response_plan_hash: Option<QueryPlanHash>,
@@ -5818,10 +6230,14 @@ async fn execute_compiled_query(
     let consistency =
         effective_query_consistency(!program.surface().candidates().is_empty(), consistency);
     let param_materialize_started = Instant::now();
-    let parameters =
-        materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
-    let cursor_parameter_hash = query_cursor_parameter_hash(&program, &parameters)
-        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let parameters = materialize_query_parameters_for_plan(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        program.identity().hash(),
+        &document,
+        &submitted,
+    )?;
     let target =
         application_query_target(bundle.bundle(), &program, &parameters, context.ingress())
             .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
@@ -5838,18 +6254,27 @@ async fn execute_compiled_query(
         )
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?,
     };
-    let cursor_lookup = QueryCursorLookup::new(
-        CursorContractIdentity::new(
-            program.contract().lineage().clone(),
-            program.contract().version(),
-            program.contract().bundle_hash(),
-        ),
-        module_hash,
-        named_cursor_plan_hash.unwrap_or_else(|| program.identity().hash()),
-        cursor_parameter_hash,
-        context.principal().capability_id(),
-        context.principal().capability_revision(),
-    );
+    let cursor_plan_hash = named_cursor_plan_hash.unwrap_or_else(|| program.identity().hash());
+    let build_cursor_lookup = || -> Result<QueryCursorLookup, ServiceFailure> {
+        let cursor_parameter_hash = query_cursor_parameter_hash(&program, &parameters)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+        Ok(QueryCursorLookup::new(
+            CursorContractIdentity::new(
+                program.contract().lineage().clone(),
+                program.contract().version(),
+                program.contract().bundle_hash(),
+            ),
+            module_hash,
+            cursor_plan_hash,
+            cursor_parameter_hash,
+            context.principal().capability_id(),
+            context.principal().capability_revision(),
+        ))
+    };
+    let cached_cursor_lookup = std::sync::OnceLock::new();
+    if cursor.is_some() {
+        let _ = cached_cursor_lookup.set(build_cursor_lookup()?);
+    }
     service
         .providers
         .telemetry
@@ -5867,27 +6292,32 @@ async fn execute_compiled_query(
             elapsed: authorize_begin_started.elapsed(),
         });
     let prior = match cursor {
-        Some(token) => match service.cursors.resolve_query(
-            token,
-            context.principal().principal_id(),
-            &cursor_lookup,
-        ) {
-            Ok(state) => Some(state),
-            Err(CursorAccessError::InvalidCursor) => {
-                let failure = application_validation_failure(
-                    ValidationCode::InvalidValue,
-                    ApplicationErrorCode::CursorInvalid,
-                );
-                return Err(finish_failure(&service, &context, &begun, failure).await);
+        Some(token) => {
+            let cursor_lookup = cached_cursor_lookup
+                .get()
+                .expect("cursor lookup constructed when cursor is present");
+            match service.cursors.resolve_query(
+                token,
+                context.principal().principal_id(),
+                cursor_lookup,
+            ) {
+                Ok(state) => Some(state),
+                Err(CursorAccessError::InvalidCursor) => {
+                    let failure = application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::CursorInvalid,
+                    );
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+                Err(CursorAccessError::Unavailable) => {
+                    // Cursor resolve unavailability is retryable only when it arises
+                    // from transient registry/clock state; resolve before the retry
+                    // loop so a stale/invalid token is never re-run.
+                    let failure = PublicError::storage_unavailable().into();
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
             }
-            Err(CursorAccessError::Unavailable) => {
-                // Cursor resolve unavailability is retryable only when it arises
-                // from transient registry/clock state; resolve before the retry
-                // loop so a stale/invalid token is never re-run.
-                let failure = PublicError::storage_unavailable().into();
-                return Err(finish_failure(&service, &context, &begun, failure).await);
-            }
-        },
+        }
         None => None,
     };
     let Some(executor) = service.providers.query_executor.as_ref() else {
@@ -5966,6 +6396,12 @@ async fn execute_compiled_query(
             elapsed: authorize_pre_started.elapsed(),
         });
 
+    let aggregates_slice: &[riffdb_query_ir::OperationalAggregateV1] = match &aggregates {
+        CompiledQueryAggregates::Empty => &[],
+        CompiledQueryAggregates::ProgramSurface => program.surface().aggregates(),
+        CompiledQueryAggregates::Explicit(explicit) => explicit.as_ref(),
+    };
+
     // Query execution and continuation registration retry together; audit
     // begin/finish stay outside the loop.
     let (snapshot, cursor_guard) = match crate::read_retry::with_read_retry(
@@ -5977,12 +6413,12 @@ async fn execute_compiled_query(
             let execution_authorization = &execution_authorization;
             let row_policy = &row_policy;
             let program = &program;
-            let aggregates = &aggregates;
+            let aggregates = aggregates_slice;
             let parameters = &parameters;
             let prior_state = prior.as_deref();
             let prior_cont = prior_state.map(QueryCursorState::continuation);
-            let cursor_lookup = cursor_lookup.clone();
-            let principal = context.principal().principal_id().clone();
+            let cached_cursor_lookup = &cached_cursor_lookup;
+            let build_cursor_lookup = &build_cursor_lookup;
             let executor = executor.as_ref();
             let cursors = &service.cursors;
             let service = &service;
@@ -6105,8 +6541,15 @@ async fn execute_compiled_query(
                 };
                 let cursor_guard = match continuation {
                     Some(continuation) => {
+                        let cursor_lookup = if let Some(existing) = cached_cursor_lookup.get() {
+                            existing.clone()
+                        } else {
+                            let built = build_cursor_lookup().map_err(Err)?;
+                            let _ = cached_cursor_lookup.set(built.clone());
+                            built
+                        };
                         match cursors.register_query_unpublished(
-                            &principal,
+                            context.principal().principal_id(),
                             cursor_lookup,
                             QueryCursorState::new(
                                 continuation,
@@ -6158,11 +6601,9 @@ async fn execute_compiled_query(
         retain_packed_result && module_hash.is_some(),
     );
     if let Some(module_hash) = module_hash {
-        result.identity = SymbolicQueryIdentity::from_named_plan(
-            &program,
-            module_hash,
-            named_response_plan_hash.unwrap_or_else(|| program.identity().hash()),
-        );
+        result.identity.module_hash = Some(module_hash);
+        result.identity.plan_hash =
+            named_response_plan_hash.unwrap_or_else(|| program.identity().hash());
     }
     service
         .providers
@@ -6314,6 +6755,77 @@ mod admission_head_cursor_tests {
     }
 }
 
+struct CachedQueryParameterSpec {
+    unique_names: bool,
+    resolved_types: Vec<Option<ValueType>>,
+}
+
+type QueryParameterSpecCacheKey = (riffdb_types::ContractBundleHash, QueryPlanHash);
+
+std::thread_local! {
+    static QUERY_PARAMETER_SPEC_CACHE: std::cell::RefCell<
+        BTreeMap<QueryParameterSpecCacheKey, Arc<CachedQueryParameterSpec>>,
+    > = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+fn cached_query_parameter_spec(
+    bundle: &riffdb_contract_ir::ContractBundle,
+    plan_hash: QueryPlanHash,
+    document: &Document,
+) -> Arc<CachedQueryParameterSpec> {
+    let key = (bundle.bundle_hash(), plan_hash);
+    if let Some(found) = QUERY_PARAMETER_SPEC_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+    {
+        return found;
+    }
+    let mut unique_names = true;
+    for (idx, param) in document.parameters.iter().enumerate() {
+        if document.parameters[..idx]
+            .iter()
+            .any(|prior| prior.name.value.as_str() == param.name.value.as_str())
+        {
+            unique_names = false;
+            break;
+        }
+    }
+    let resolved_types = document
+        .parameters
+        .iter()
+        .map(|parameter| match &parameter.ty.value {
+            TypeReference::Cursor | TypeReference::Limit | TypeReference::BoundedLimit(_) => None,
+            TypeReference::Optional(inner) if matches!(inner.value, TypeReference::Cursor) => None,
+            TypeReference::Optional(inner) | TypeReference::Set(inner) => {
+                query_value_type(bundle, &inner.value)
+            }
+            TypeReference::BoundedSet { element, .. } => query_value_type(bundle, &element.value),
+            ty => query_value_type(bundle, ty),
+        })
+        .collect::<Vec<_>>();
+    let built = Arc::new(CachedQueryParameterSpec {
+        unique_names,
+        resolved_types,
+    });
+    QUERY_PARAMETER_SPEC_CACHE.with(|cache| {
+        let mut guard = cache.borrow_mut();
+        if guard.len() < 4096 {
+            guard.insert(key, Arc::clone(&built));
+        }
+    });
+    built
+}
+
+fn has_unknown_submitted_parameter(
+    document: &Document,
+    submitted: &SymbolicQueryParameters,
+) -> bool {
+    submitted.iter().any(|(name, _)| {
+        !document
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name.value.as_str() == name)
+    })
+}
+
 fn materialize_query_parameters(
     service: &RiffDbServiceInner,
     operation: ServiceOperationV1,
@@ -6321,18 +6833,60 @@ fn materialize_query_parameters(
     document: &Document,
     submitted: &SymbolicQueryParameters,
 ) -> ServiceResult<QueryParameters> {
-    if submitted.iter().any(|(name, _)| {
-        !document
-            .parameters
-            .iter()
-            .any(|parameter| parameter.name.value.as_str() == name)
-    }) {
+    materialize_query_parameters_inner(service, operation, bundle, None, document, submitted)
+}
+
+fn materialize_query_parameters_for_plan(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    bundle: &riffdb_contract_ir::ContractBundle,
+    plan_hash: QueryPlanHash,
+    document: &Document,
+    submitted: &SymbolicQueryParameters,
+) -> ServiceResult<QueryParameters> {
+    let spec = cached_query_parameter_spec(bundle, plan_hash, document);
+    materialize_query_parameters_inner(
+        service,
+        operation,
+        bundle,
+        Some(spec.as_ref()),
+        document,
+        submitted,
+    )
+}
+
+fn materialize_query_parameters_inner(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    bundle: &riffdb_contract_ir::ContractBundle,
+    cached_spec: Option<&CachedQueryParameterSpec>,
+    document: &Document,
+    submitted: &SymbolicQueryParameters,
+) -> ServiceResult<QueryParameters> {
+    let defer_unknown_check = cached_spec.is_some_and(|spec| {
+        spec.unique_names && spec.resolved_types.len() == document.parameters.len()
+    });
+    if !defer_unknown_check && has_unknown_submitted_parameter(document, submitted) {
         return Err(validation_failure(ValidationCode::InvalidValue));
     }
+    let fail = |error: ServiceFailure| -> ServiceFailure {
+        if defer_unknown_check && has_unknown_submitted_parameter(document, submitted) {
+            validation_failure(ValidationCode::InvalidValue)
+        } else {
+            error
+        }
+    };
     let mut canonical = BTreeMap::new();
-    for parameter in &document.parameters {
+    let mut matched_submitted = 0usize;
+    for (param_idx, parameter) in document.parameters.iter().enumerate() {
         let name = parameter.name.value.as_str();
         let value = submitted.get(name);
+        if value.is_some() {
+            matched_submitted += 1;
+        }
+        let cached_vt = cached_spec
+            .and_then(|spec| spec.resolved_types.get(param_idx))
+            .and_then(Option::as_ref);
         match (&parameter.ty.value, value) {
             (TypeReference::Cursor, None) => continue,
             (TypeReference::Cursor, Some(_)) => {
@@ -6355,16 +6909,19 @@ fn materialize_query_parameters(
             }
             (TypeReference::Optional(_), None | Some(SubmittedValue::Null)) => continue,
             (TypeReference::Optional(inner), Some(value)) => {
-                let value_type = query_value_type(bundle, &inner.value).ok_or_else(|| {
-                    service.internal_failure(operation, InternalDefect::ProofMismatch)
-                })?;
-                let value = materialize_natural_query_value(
-                    bundle,
-                    &value_type,
-                    value,
-                    service,
-                    operation,
-                )?;
+                let fallback_vt;
+                let value_type = match cached_vt {
+                    Some(vt) => vt,
+                    None => {
+                        fallback_vt = query_value_type(bundle, &inner.value).ok_or_else(|| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        &fallback_vt
+                    }
+                };
+                let value =
+                    materialize_natural_query_value(bundle, value_type, value, service, operation)
+                        .map_err(&fail)?;
                 canonical.insert(name.to_owned(), value);
             }
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,
@@ -6376,7 +6933,7 @@ fn materialize_query_parameters(
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
             }
             (TypeReference::Limit, Some(_)) => {
-                return Err(validation_failure(ValidationCode::TypeMismatch));
+                return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
             (TypeReference::BoundedLimit(maximum), Some(SubmittedValue::U64(value)))
                 if *value >= 1
@@ -6386,56 +6943,68 @@ fn materialize_query_parameters(
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
             }
             (TypeReference::BoundedLimit(_), Some(_)) => {
-                return Err(validation_failure(ValidationCode::TypeMismatch));
+                return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
             (TypeReference::Set(inner), Some(SubmittedValue::List(values))) => {
-                let value_type = query_value_type(bundle, &inner.value).ok_or_else(|| {
-                    service.internal_failure(operation, InternalDefect::ProofMismatch)
-                })?;
+                let fallback_vt;
+                let value_type = match cached_vt {
+                    Some(vt) => vt,
+                    None => {
+                        fallback_vt = query_value_type(bundle, &inner.value).ok_or_else(|| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        &fallback_vt
+                    }
+                };
                 let values = values
                     .values()
                     .iter()
                     .map(|value| {
                         materialize_natural_query_value(
-                            bundle,
-                            &value_type,
-                            value,
-                            service,
-                            operation,
+                            bundle, value_type, value, service, operation,
                         )
                     })
-                    .collect::<ServiceResult<Vec<_>>>()?;
+                    .collect::<ServiceResult<Vec<_>>>()
+                    .map_err(&fail)?;
                 let value = CanonicalValue::list(values)
                     .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
                 canonical.insert(name.to_owned(), value);
             }
             (TypeReference::Set(_), Some(_)) => {
-                return Err(validation_failure(ValidationCode::TypeMismatch));
+                return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
             (
                 TypeReference::BoundedSet { element, maximum },
                 Some(SubmittedValue::List(values)),
             ) if values.values().len() <= usize::from(*maximum) => {
-                let value_type = query_value_type(bundle, &element.value).ok_or_else(|| {
-                    service.internal_failure(operation, InternalDefect::ProofMismatch)
-                })?;
+                let fallback_vt;
+                let value_type = match cached_vt {
+                    Some(vt) => vt,
+                    None => {
+                        fallback_vt =
+                            query_value_type(bundle, &element.value).ok_or_else(|| {
+                                fail(
+                                    service
+                                        .internal_failure(operation, InternalDefect::ProofMismatch),
+                                )
+                            })?;
+                        &fallback_vt
+                    }
+                };
                 let mut values = values
                     .values()
                     .iter()
                     .map(|value| {
                         materialize_natural_query_value(
-                            bundle,
-                            &value_type,
-                            value,
-                            service,
-                            operation,
+                            bundle, value_type, value, service, operation,
                         )
                     })
-                    .collect::<ServiceResult<Vec<_>>>()?
+                    .collect::<ServiceResult<Vec<_>>>()
+                    .map_err(&fail)?
                     .into_iter()
                     .map(|value| {
                         let encoded = encode_canonical_value(&value).map_err(|_| {
-                            service.internal_failure(operation, InternalDefect::ProofMismatch)
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
                         })?;
                         Ok((encoded, value))
                     })
@@ -6451,22 +7020,28 @@ fn materialize_query_parameters(
                 canonical.insert(name.to_owned(), value);
             }
             (TypeReference::BoundedSet { .. }, Some(_)) => {
-                return Err(validation_failure(ValidationCode::TypeMismatch));
+                return Err(fail(validation_failure(ValidationCode::TypeMismatch)));
             }
             (ty, Some(value)) => {
-                let value_type = query_value_type(bundle, ty).ok_or_else(|| {
-                    service.internal_failure(operation, InternalDefect::ProofMismatch)
-                })?;
-                let value = materialize_natural_query_value(
-                    bundle,
-                    &value_type,
-                    value,
-                    service,
-                    operation,
-                )?;
+                let fallback_vt;
+                let value_type = match cached_vt {
+                    Some(vt) => vt,
+                    None => {
+                        fallback_vt = query_value_type(bundle, ty).ok_or_else(|| {
+                            fail(service.internal_failure(operation, InternalDefect::ProofMismatch))
+                        })?;
+                        &fallback_vt
+                    }
+                };
+                let value =
+                    materialize_natural_query_value(bundle, value_type, value, service, operation)
+                        .map_err(&fail)?;
                 canonical.insert(name.to_owned(), value);
             }
         }
+    }
+    if defer_unknown_check && matched_submitted != submitted.0.len() {
+        return Err(validation_failure(ValidationCode::InvalidValue));
     }
     QueryParameters::checked(canonical)
         .ok_or_else(|| service.internal_failure(operation, InternalDefect::ProofMismatch))
@@ -6484,13 +7059,13 @@ fn materialize_natural_query_value(
         .map_err(|error| materialization_failure(service, operation, error))
 }
 
-fn coerce_natural_query_value(
+fn coerce_natural_query_value<'a>(
     value_type: &ValueType,
-    submitted: &SubmittedValue,
-) -> Result<SubmittedValue, ValidationCode> {
+    submitted: &'a SubmittedValue,
+) -> Result<std::borrow::Cow<'a, SubmittedValue>, ValidationCode> {
     if let Some(inner) = value_type.optional_inner() {
         if matches!(submitted, SubmittedValue::Null) {
-            return Ok(SubmittedValue::Null);
+            return Ok(std::borrow::Cow::Borrowed(submitted));
         }
         return coerce_natural_query_value(inner, submitted);
     }
@@ -6498,20 +7073,25 @@ fn coerce_natural_query_value(
         (ValueTypeTag::Enum, SubmittedValue::String(value)) => {
             let name = SourceName::new(value.as_str().to_owned())
                 .map_err(|_| ValidationCode::InvalidValue)?;
-            Ok(SubmittedValue::Enum(SubmittedEnum::name_only(name)))
+            Ok(std::borrow::Cow::Owned(SubmittedValue::Enum(
+                SubmittedEnum::name_only(name),
+            )))
         }
         (ValueTypeTag::Uuid, SubmittedValue::String(value)) => {
             { crate::command_operations::parse_natural_uuid(value.as_str()) }
                 .map(SubmittedValue::Uuid)
+                .map(std::borrow::Cow::Owned)
                 .ok_or(ValidationCode::InvalidValue)
         }
         (ValueTypeTag::I64, SubmittedValue::U64(value)) => i64::try_from(*value)
             .map(SubmittedValue::I64)
+            .map(std::borrow::Cow::Owned)
             .map_err(|_| ValidationCode::InvalidValue),
         (ValueTypeTag::U64, SubmittedValue::I64(value)) => u64::try_from(*value)
             .map(SubmittedValue::U64)
+            .map(std::borrow::Cow::Owned)
             .map_err(|_| ValidationCode::InvalidValue),
-        _ => Ok(submitted.clone()),
+        _ => Ok(std::borrow::Cow::Borrowed(submitted)),
     }
 }
 
@@ -6632,31 +7212,39 @@ pub(crate) fn application_query_target(
     )
 }
 
-fn application_query_target_with_identity(
+struct CachedQueryTargetTemplate {
+    partition_schemas: Vec<riffdb_contract_ir::KeySchema>,
+    accesses: Vec<ApplicationQueryAccessRequirement>,
+}
+
+type QueryTargetTemplateCacheKey = (
+    riffdb_types::ContractBundleHash,
+    QueryPlanHash,
+    Option<NonZeroU16>,
+);
+
+std::thread_local! {
+    static QUERY_TARGET_TEMPLATE_CACHE: std::cell::RefCell<
+        BTreeMap<QueryTargetTemplateCacheKey, Arc<CachedQueryTargetTemplate>>,
+    > = const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+fn cached_query_target_template(
     bundle: &riffdb_contract_ir::ContractBundle,
     program: &QueryAccessProgramV1,
-    parameters: &QueryParameters,
-    ingress: riffdb_types::ServiceIngressKindV1,
-    plan_hash: QueryPlanHash,
-    cost: riffdb_types::QueryCostVectorV1,
     maximum_access_rows_override: Option<NonZeroU16>,
-) -> Option<ApplicationQueryTarget> {
-    let partition_value = parameters.get(program.partition_parameter())?;
-    let partition_values = match program.partition_route() {
-        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
-            std::slice::from_ref(partition_value)
-        }
-        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
-            let CanonicalValue::List(values) = partition_value else {
-                return None;
-            };
-            if values.values().len() > usize::from(*maximum) {
-                return None;
-            }
-            values.values()
-        }
-    };
-    let mut routed_partitions = None;
+) -> Option<Arc<CachedQueryTargetTemplate>> {
+    let key = (
+        bundle.bundle_hash(),
+        program.identity().hash(),
+        maximum_access_rows_override,
+    );
+    if let Some(found) = QUERY_TARGET_TEMPLATE_CACHE.with(|cache| cache.borrow().get(&key).cloned())
+    {
+        return Some(found);
+    }
+    let mut partition_schemas = Vec::new();
+    let mut last_aggregate_id = None;
     let mut accesses = Vec::with_capacity(program.steps().len());
     for step in program.steps() {
         let entity = program
@@ -6672,28 +7260,12 @@ fn application_query_target_with_identity(
             .collect::<Vec<_>>();
         non_key_fields.sort_unstable();
         non_key_fields.dedup();
-        let partitions = {
-            let aggregate = bundle
-                .schema()
-                .aggregate_for_entity(step.internal_entity_id())?;
-            partition_values
-                .iter()
-                .map(|partition_value| {
-                    aggregate
-                        .keys()
-                        .partition_schema()
-                        .encode_partition(std::slice::from_ref(partition_value))
-                        .ok()
-                })
-                .collect::<Option<Vec<_>>>()?
-        };
-        // PartitionKey retains the aggregate owner as a namespace. A
-        // compiler-proved composite query may cross aggregate owners while
-        // every step is still routed by this exact canonical parameter. Keep
-        // the first key as the authorization route anchor; successful encoding
-        // through every aggregate schema proves the shared typed route value.
-        if routed_partitions.is_none() {
-            routed_partitions = Some(partitions);
+        let aggregate = bundle
+            .schema()
+            .aggregate_for_entity(step.internal_entity_id())?;
+        if last_aggregate_id != Some(aggregate.id()) {
+            partition_schemas.push(aggregate.keys().partition_schema().clone());
+            last_aggregate_id = Some(aggregate.id());
         }
         // Exact provider execution performs no authoritative entity/index
         // scan on the request path. Its access requirement names the entity,
@@ -6780,19 +7352,149 @@ fn application_query_target_with_identity(
                 .ok()?,
         );
     }
+    let built = Arc::new(CachedQueryTargetTemplate {
+        partition_schemas,
+        accesses,
+    });
+    QUERY_TARGET_TEMPLATE_CACHE.with(|cache| {
+        let mut guard = cache.borrow_mut();
+        if guard.len() < 4096 {
+            guard.insert(key, Arc::clone(&built));
+        }
+    });
+    Some(built)
+}
+
+struct CachedApplicationQueryTarget {
+    bundle_hash: riffdb_types::ContractBundleHash,
+    program_hash: QueryPlanHash,
+    plan_hash: QueryPlanHash,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    cost: riffdb_types::QueryCostVectorV1,
+    maximum_access_rows_override: Option<NonZeroU16>,
+    partition_value: CanonicalValue,
+    target: ApplicationQueryTarget,
+}
+
+const MAX_LOCAL_QUERY_TARGET_CACHE_ENTRIES: usize = 64;
+
+struct LocalQueryTargetCache {
+    entries: Vec<CachedApplicationQueryTarget>,
+    next_slot: usize,
+}
+
+impl Default for LocalQueryTargetCache {
+    fn default() -> Self {
+        Self {
+            entries: Vec::with_capacity(MAX_LOCAL_QUERY_TARGET_CACHE_ENTRIES),
+            next_slot: 0,
+        }
+    }
+}
+
+impl LocalQueryTargetCache {
+    fn insert(&mut self, entry: CachedApplicationQueryTarget) {
+        if self.entries.len() < MAX_LOCAL_QUERY_TARGET_CACHE_ENTRIES {
+            self.entries.push(entry);
+        } else {
+            let slot = self.next_slot % MAX_LOCAL_QUERY_TARGET_CACHE_ENTRIES;
+            self.entries[slot] = entry;
+            self.next_slot = self.next_slot.wrapping_add(1);
+        }
+    }
+}
+
+std::thread_local! {
+    static APPLICATION_QUERY_TARGET_CACHE: std::cell::RefCell<LocalQueryTargetCache> =
+        std::cell::RefCell::new(LocalQueryTargetCache::default());
+}
+
+fn application_query_target_with_identity(
+    bundle: &riffdb_contract_ir::ContractBundle,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    plan_hash: QueryPlanHash,
+    cost: riffdb_types::QueryCostVectorV1,
+    maximum_access_rows_override: Option<NonZeroU16>,
+) -> Option<ApplicationQueryTarget> {
+    let partition_value = parameters.get(program.partition_parameter())?;
+    let bundle_hash = bundle.bundle_hash();
+    let program_hash = program.identity().hash();
+    if let Some(hit) = APPLICATION_QUERY_TARGET_CACHE.with(|cache| {
+        let guard = cache.try_borrow().ok()?;
+        guard
+            .entries
+            .iter()
+            .rev()
+            .find(|cached| {
+                cached.bundle_hash == bundle_hash
+                    && cached.program_hash == program_hash
+                    && cached.plan_hash == plan_hash
+                    && cached.ingress == ingress
+                    && cached.cost == cost
+                    && cached.maximum_access_rows_override == maximum_access_rows_override
+                    && &cached.partition_value == partition_value
+                    && cached.target.lineage() == program.contract().lineage()
+                    && cached.target.version() == program.contract().version()
+                    && cached.target.bundle_hash() == program.contract().bundle_hash()
+                    && cached.target.accesses().len() == program.steps().len()
+            })
+            .map(|cached| cached.target.clone())
+    }) {
+        return Some(hit);
+    }
+    let template = cached_query_target_template(bundle, program, maximum_access_rows_override)?;
+    let accesses = template.accesses.clone();
     let target = match program.partition_route() {
-        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => ApplicationQueryTarget::new(
-            program.contract().lineage().clone(),
-            program.contract().version(),
-            program.contract().bundle_hash(),
-            plan_hash,
-            ingress,
-            OperationTenantScope::global_only(),
-            routed_partitions?.into_iter().next()?,
-            accesses,
-            cost,
-        ),
-        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { .. } => {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+            let mut routed_partition = None;
+            let slice = std::slice::from_ref(partition_value);
+            for partition_schema in &template.partition_schemas {
+                let encoded = partition_schema.encode_partition(slice).ok()?;
+                if routed_partition.is_none() {
+                    routed_partition = Some(encoded);
+                }
+            }
+            ApplicationQueryTarget::new(
+                program.contract().lineage().clone(),
+                program.contract().version(),
+                program.contract().bundle_hash(),
+                plan_hash,
+                ingress,
+                OperationTenantScope::global_only(),
+                routed_partition?,
+                accesses,
+                cost,
+            )
+        }
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+            let CanonicalValue::List(values) = partition_value else {
+                return None;
+            };
+            if values.values().len() > usize::from(*maximum) {
+                return None;
+            }
+            let partition_values = values.values();
+            let mut routed_partitions = None;
+            for partition_schema in &template.partition_schemas {
+                let partitions = partition_values
+                    .iter()
+                    .map(|partition_value| {
+                        partition_schema
+                            .encode_partition(std::slice::from_ref(partition_value))
+                            .ok()
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                // PartitionKey retains the aggregate owner as a namespace. A
+                // compiler-proved composite query may cross aggregate owners while
+                // every step is still routed by this exact canonical parameter. Keep
+                // the first key as the authorization route anchor; successful encoding
+                // through every aggregate schema proves the shared typed route value.
+                if routed_partitions.is_none() {
+                    routed_partitions = Some(partitions);
+                }
+            }
             ApplicationQueryTarget::new_partition_set(
                 program.contract().lineage().clone(),
                 program.contract().version(),
@@ -6807,11 +7509,26 @@ fn application_query_target_with_identity(
         }
     }
     .ok()?;
-    Some(if program.surface().candidates().is_empty() {
+    let result = if program.surface().candidates().is_empty() {
         target
     } else {
         target.with_bounded_candidate_sources()
-    })
+    };
+    APPLICATION_QUERY_TARGET_CACHE.with(|cache| {
+        if let Ok(mut guard) = cache.try_borrow_mut() {
+            guard.insert(CachedApplicationQueryTarget {
+                bundle_hash,
+                program_hash,
+                plan_hash,
+                ingress,
+                cost,
+                maximum_access_rows_override,
+                partition_value: partition_value.clone(),
+                target: result.clone(),
+            });
+        }
+    });
+    Some(result)
 }
 
 pub(crate) fn execute_authorized_query_page(
@@ -6840,7 +7557,7 @@ pub(crate) fn execute_authorized_query_page(
         && target.accesses().len() == program.steps().len()
         && obligations.output_classification()
             == OutputClassification::PolicyFilteredApplicationData
-        && obligations.partition_constraint() == Some(&query_partition_constraint(target));
+        && obligations.partition_constraint() == query_partition_constraint(target);
     if !exact_target {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -6857,10 +7574,31 @@ pub(crate) fn execute_authorized_query_page(
     }
 }
 
-fn query_partition_constraint(target: &ApplicationQueryTarget) -> PartitionConstraint {
+enum TargetPartitionConstraintRef<'a> {
+    Exact(&'a riffdb_types::ScopedPartitionV1),
+    Explicit(&'a [riffdb_types::ScopedPartitionV1]),
+}
+
+impl PartialEq<TargetPartitionConstraintRef<'_>> for Option<&PartitionConstraint> {
+    fn eq(&self, other: &TargetPartitionConstraintRef<'_>) -> bool {
+        match (self, other) {
+            (
+                Some(PartitionConstraint::Exact(expected)),
+                TargetPartitionConstraintRef::Exact(actual),
+            ) => expected == *actual,
+            (
+                Some(PartitionConstraint::Explicit(expected)),
+                TargetPartitionConstraintRef::Explicit(actual),
+            ) => expected.as_slice() == *actual,
+            _ => false,
+        }
+    }
+}
+
+fn query_partition_constraint(target: &ApplicationQueryTarget) -> TargetPartitionConstraintRef<'_> {
     match target.partitions() {
-        [partition] => PartitionConstraint::Exact(partition.clone()),
-        partitions => PartitionConstraint::Explicit(partitions.to_vec()),
+        [partition] => TargetPartitionConstraintRef::Exact(partition),
+        partitions => TargetPartitionConstraintRef::Explicit(partitions),
     }
 }
 
@@ -6887,7 +7625,7 @@ fn execute_authorized_provider_query_page(
         && target.accesses().len() == program.steps().len()
         && obligations.output_classification()
             == OutputClassification::PolicyFilteredApplicationData
-        && obligations.partition_constraint() == Some(&query_partition_constraint(target));
+        && obligations.partition_constraint() == query_partition_constraint(target);
     if !exact_target || !aggregates.is_empty() {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -7890,13 +8628,13 @@ mod reimport_observation_tests {
     fn result(head: u64, title: &str) -> ExecuteSymbolicQueryResult {
         let record = SymbolicResultRecord {
             entity: Arc::from("Ticket"),
-            fields: BTreeMap::from([
+            fields: Arc::new(BTreeMap::from([
                 (Arc::from("ticket_id"), CanonicalValue::Uuid([0x11; 16])),
                 (
                     Arc::from("title"),
                     CanonicalValue::string(title).expect("title"),
                 ),
-            ]),
+            ])),
             nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
@@ -7912,11 +8650,15 @@ mod reimport_observation_tests {
             },
             outcome: "Found".to_owned(),
             application_head: head,
-            fields: BTreeMap::from([("ticket".to_owned(), SymbolicResultField::One(record))]),
+            fields: Arc::new(BTreeMap::from([(
+                "ticket".to_owned(),
+                SymbolicResultField::One(record),
+            )])),
             compact_result: None,
             packed_result: false,
             enum_variant_names: Arc::new(BTreeMap::new().into()),
             next_cursor: None,
+            cache_pinned: false,
         }
     }
 
@@ -7935,15 +8677,17 @@ mod reimport_observation_tests {
     fn empty_reconciliation_shapes_match_portability_fixture_digests() {
         let mut missing = result(1, "unused");
         missing.outcome = "Missing".to_owned();
-        missing.fields.clear();
+        Arc::make_mut(&mut missing.fields).clear();
         assert_eq!(
             hash_reimport_query_result(&missing).expect("missing hash"),
             expected_hash("cc9fc643cfeb58b06e79e478e37d05aebfde348589c64d94a991daf878cbea9d")
         );
 
         let mut collection = result(1, "unused");
-        collection.fields =
-            BTreeMap::from([("tuples".to_owned(), SymbolicResultField::Many(Vec::new()))]);
+        collection.fields = Arc::new(BTreeMap::from([(
+            "tuples".to_owned(),
+            SymbolicResultField::Many(Vec::new()),
+        )]));
         assert_eq!(
             hash_reimport_query_result(&collection).expect("collection hash"),
             expected_hash("a9b45a1bfe185d2cd91261ef6544a53eaf9fc020c7c2edc096159db5ea09969a")

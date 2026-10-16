@@ -23,6 +23,7 @@ impl StoredEntityRecordV1 {
     #[doc(hidden)]
     pub fn from_admitted_provider_original_v1(original: Arc<ProviderAllocation<Self>>) -> Self {
         let mut record = (*original).clone();
+        record.projections = Arc::default();
         record.provider_fields = ProviderEntityFieldCaptureV1 {
             _data: Some(original),
         };

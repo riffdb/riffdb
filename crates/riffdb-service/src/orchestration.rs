@@ -810,17 +810,19 @@ impl BegunInvocation {
         service: &RiffDbServiceInner,
         context: &RequestContext,
     ) -> ServiceResult<Box<AuthorizedOperation>> {
-        let request = self.request.clone();
-        self.check_reauthorization_preconditions(service, context, &request)
+        self.check_reauthorization_preconditions(service, context, &self.request)
             .await?;
         if let Some(baseline) = self.policy_generation_at_begin
             && let Some(observed) = service.providers.policy.capability_view_checkpoint()
-            && let Some(proof) = self
-                .initial_authorization
-                .reissue_for_unchanged_view(baseline, observed, &request)
+            && let Some(proof) = self.initial_authorization.reissue_for_unchanged_view(
+                baseline,
+                observed,
+                &self.request,
+            )
         {
             return Ok(Box::new(proof));
         }
+        let request = self.request.clone();
         self.full_reauthorize(service, context, request).await
     }
 
@@ -1649,7 +1651,7 @@ impl RiffDbServiceInner {
         let authorization = match self
             .providers
             .policy
-            .authorize(context.principal(), request.clone())
+            .authorize_borrowed(context.principal(), &request)
         {
             Ok(Decision::Allow(authorization)) => authorization,
             Ok(Decision::Deny(_)) => {

@@ -1301,6 +1301,7 @@ fn application_session_operation(
             v1::application_session_request::Request::Query(query) => {
                 let mut request = Request::new(query);
                 *request.metadata_mut() = metadata.copy_for_operation();
+                request.extensions_mut().insert(DisableWireFrameShortcut);
                 ApplicationQueryService::execute_query(&application, request)
                     .await
                     .map(|response| v1::ApplicationSessionResponse {
@@ -1614,6 +1615,339 @@ fn map_application_service<T>(
     context: &ApplicationErrorContextBuilder,
 ) -> Result<T, Status> {
     result.map_err(|failure| status_from_application_failure(&failure, context))
+}
+
+#[derive(Clone, Copy)]
+struct DisableWireFrameShortcut;
+
+#[derive(Clone)]
+struct CachedProtoQueryResponse {
+    _fields_pin: Arc<BTreeMap<String, riffdb_service::SymbolicResultField>>,
+    _enum_names_pin: riffdb_service::SharedEnumVariantNames,
+    fields_ptr: usize,
+    enum_names_ptr: usize,
+    identity: riffdb_service::SymbolicQueryIdentity,
+    application_head: u64,
+    outcome: String,
+    wire_cache_id: u64,
+    encoded_wire_bytes: Arc<[u8]>,
+    response: Arc<app_v1::ExecuteQueryResponse>,
+}
+
+const LOCAL_PROTO_QUERY_RESPONSE_CACHE_CAP: usize = 512;
+const LOCAL_PROTO_HASH_SLOTS: usize = 1024;
+const SHARED_WIRE_CACHE_SHARDS: usize = 64;
+const SHARED_WIRE_CACHE_SHARD_CAP: usize = 64;
+
+#[derive(Default)]
+struct SharedWireCacheShard {
+    by_id: Vec<(u64, Arc<[u8]>)>,
+    next_id_slot: usize,
+    by_result: Vec<CachedProtoQueryResponse>,
+    next_result_slot: usize,
+}
+
+impl SharedWireCacheShard {
+    fn insert(&mut self, entry: CachedProtoQueryResponse) {
+        let id = entry.wire_cache_id;
+        let bytes = Arc::clone(&entry.encoded_wire_bytes);
+        if self.by_id.len() < SHARED_WIRE_CACHE_SHARD_CAP {
+            self.by_id.push((id, bytes));
+        } else {
+            self.by_id[self.next_id_slot] = (id, bytes);
+            self.next_id_slot = (self.next_id_slot + 1) % SHARED_WIRE_CACHE_SHARD_CAP;
+        }
+        if self.by_result.len() < SHARED_WIRE_CACHE_SHARD_CAP {
+            self.by_result.push(entry);
+        } else {
+            self.by_result[self.next_result_slot] = entry;
+            self.next_result_slot = (self.next_result_slot + 1) % SHARED_WIRE_CACHE_SHARD_CAP;
+        }
+    }
+}
+
+static NEXT_WIRE_CACHE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static SHARED_WIRE_CACHE: std::sync::OnceLock<
+    [std::sync::Mutex<SharedWireCacheShard>; SHARED_WIRE_CACHE_SHARDS],
+> = std::sync::OnceLock::new();
+
+fn shared_wire_cache() -> &'static [std::sync::Mutex<SharedWireCacheShard>; SHARED_WIRE_CACHE_SHARDS]
+{
+    SHARED_WIRE_CACHE.get_or_init(|| {
+        std::array::from_fn(|_| std::sync::Mutex::new(SharedWireCacheShard::default()))
+    })
+}
+
+fn lookup_shared_cached_wire_response(id: u64) -> Option<Arc<[u8]>> {
+    let shard = (id as usize) & (SHARED_WIRE_CACHE_SHARDS - 1);
+    let guard = shared_wire_cache()[shard].lock().ok()?;
+    guard
+        .by_id
+        .iter()
+        .find(|(entry_id, _)| *entry_id == id)
+        .map(|(_, bytes)| Arc::clone(bytes))
+}
+
+fn lookup_shared_cached_proto_result(
+    fields_ptr: usize,
+    enum_names_ptr: usize,
+    application_head: u64,
+    outcome: &str,
+    identity: &riffdb_service::SymbolicQueryIdentity,
+) -> Option<CachedProtoQueryResponse> {
+    let shard = ((fields_ptr >> 4) ^ (enum_names_ptr >> 4)) & (SHARED_WIRE_CACHE_SHARDS - 1);
+    let guard = shared_wire_cache()[shard].lock().ok()?;
+    guard
+        .by_result
+        .iter()
+        .find(|entry| {
+            entry.fields_ptr == fields_ptr
+                && entry.enum_names_ptr == enum_names_ptr
+                && entry.application_head == application_head
+                && entry.outcome == outcome
+                && &entry.identity == identity
+        })
+        .cloned()
+}
+
+fn insert_shared_cached_proto_result(entry: CachedProtoQueryResponse) {
+    let id_shard = (entry.wire_cache_id as usize) & (SHARED_WIRE_CACHE_SHARDS - 1);
+    let result_shard =
+        ((entry.fields_ptr >> 4) ^ (entry.enum_names_ptr >> 4)) & (SHARED_WIRE_CACHE_SHARDS - 1);
+    if id_shard == result_shard {
+        if let Ok(mut guard) = shared_wire_cache()[id_shard].lock() {
+            guard.insert(entry);
+        }
+    } else {
+        if let Ok(mut guard) = shared_wire_cache()[id_shard].lock() {
+            let id = entry.wire_cache_id;
+            let bytes = Arc::clone(&entry.encoded_wire_bytes);
+            if guard.by_id.len() < SHARED_WIRE_CACHE_SHARD_CAP {
+                guard.by_id.push((id, bytes));
+            } else {
+                let slot = guard.next_id_slot;
+                guard.by_id[slot] = (id, bytes);
+                guard.next_id_slot = (slot + 1) % SHARED_WIRE_CACHE_SHARD_CAP;
+            }
+        }
+        if let Ok(mut guard) = shared_wire_cache()[result_shard].lock() {
+            if guard.by_result.len() < SHARED_WIRE_CACHE_SHARD_CAP {
+                guard.by_result.push(entry);
+            } else {
+                let slot = guard.next_result_slot;
+                guard.by_result[slot] = entry;
+                guard.next_result_slot = (slot + 1) % SHARED_WIRE_CACHE_SHARD_CAP;
+            }
+        }
+    }
+}
+
+const fn make_wire_cache_carrier(wire_cache_id: u64) -> app_v1::ExecuteQueryResponse {
+    app_v1::ExecuteQueryResponse {
+        identity: None,
+        outcome: String::new(),
+        application_head: wire_cache_id,
+        fields: Vec::new(),
+        next_cursor: None,
+        selected_result_encoding: i32::MIN,
+        compact_result: None,
+        packed_result: None,
+    }
+}
+
+pub(crate) fn try_take_cached_wire_response<M: 'static>(item: &M) -> Option<Arc<[u8]>> {
+    let response = (item as &dyn std::any::Any).downcast_ref::<app_v1::ExecuteQueryResponse>()?;
+    if response.selected_result_encoding != i32::MIN
+        || response.identity.is_some()
+        || !response.outcome.is_empty()
+        || !response.fields.is_empty()
+        || response.application_head == 0
+    {
+        return None;
+    }
+    let wire_cache_id = response.application_head;
+    if let Some(bytes) = LOCAL_PROTO_QUERY_RESPONSE_CACHE.with(|cell| {
+        let guard = cell.try_borrow().ok()?;
+        guard.lookup_by_wire_id(wire_cache_id)
+    }) {
+        return Some(bytes);
+    }
+    lookup_shared_cached_wire_response(wire_cache_id)
+}
+
+struct LocalProtoQueryResponseCache {
+    entries: Vec<CachedProtoQueryResponse>,
+    next_slot: usize,
+    by_wire_id: [u16; LOCAL_PROTO_HASH_SLOTS],
+    by_fields_ptr: [u16; LOCAL_PROTO_HASH_SLOTS],
+}
+
+impl Default for LocalProtoQueryResponseCache {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            next_slot: 0,
+            by_wire_id: [0; LOCAL_PROTO_HASH_SLOTS],
+            by_fields_ptr: [0; LOCAL_PROTO_HASH_SLOTS],
+        }
+    }
+}
+
+impl LocalProtoQueryResponseCache {
+    fn fields_bucket(fields_ptr: usize, enum_names_ptr: usize) -> usize {
+        ((fields_ptr >> 4)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(enum_names_ptr >> 4))
+            & (LOCAL_PROTO_HASH_SLOTS - 1)
+    }
+
+    fn lookup_by_wire_id(&self, wire_cache_id: u64) -> Option<Arc<[u8]>> {
+        let bucket = (wire_cache_id as usize) & (LOCAL_PROTO_HASH_SLOTS - 1);
+        let idx1 = self.by_wire_id[bucket] as usize;
+        if idx1 != 0
+            && let Some(entry) = self.entries.get(idx1 - 1)
+            && entry.wire_cache_id == wire_cache_id
+        {
+            return Some(Arc::clone(&entry.encoded_wire_bytes));
+        }
+        self.entries
+            .iter()
+            .find(|entry| entry.wire_cache_id == wire_cache_id)
+            .map(|entry| Arc::clone(&entry.encoded_wire_bytes))
+    }
+
+    fn lookup_by_result(
+        &self,
+        fields_ptr: usize,
+        enum_names_ptr: usize,
+        result: &riffdb_service::ExecuteSymbolicQueryResult,
+    ) -> Option<&CachedProtoQueryResponse> {
+        let bucket = Self::fields_bucket(fields_ptr, enum_names_ptr);
+        let idx1 = self.by_fields_ptr[bucket] as usize;
+        if idx1 != 0
+            && let Some(entry) = self.entries.get(idx1 - 1)
+            && entry.fields_ptr == fields_ptr
+            && entry.enum_names_ptr == enum_names_ptr
+            && entry.application_head == result.application_head()
+            && entry.outcome == result.outcome()
+            && &entry.identity == result.identity()
+        {
+            return Some(entry);
+        }
+        self.entries.iter().find(|entry| {
+            entry.fields_ptr == fields_ptr
+                && entry.enum_names_ptr == enum_names_ptr
+                && entry.application_head == result.application_head()
+                && entry.outcome == result.outcome()
+                && &entry.identity == result.identity()
+        })
+    }
+
+    fn insert(&mut self, entry: CachedProtoQueryResponse) {
+        let wire_bucket = (entry.wire_cache_id as usize) & (LOCAL_PROTO_HASH_SLOTS - 1);
+        let fields_bucket = Self::fields_bucket(entry.fields_ptr, entry.enum_names_ptr);
+        let slot = if self.entries.len() < LOCAL_PROTO_QUERY_RESPONSE_CACHE_CAP {
+            let slot = self.entries.len();
+            self.entries.push(entry);
+            slot
+        } else {
+            let slot = self.next_slot;
+            self.entries[slot] = entry;
+            self.next_slot = (slot + 1) % LOCAL_PROTO_QUERY_RESPONSE_CACHE_CAP;
+            slot
+        };
+        self.by_wire_id[wire_bucket] = (slot + 1) as u16;
+        self.by_fields_ptr[fields_bucket] = (slot + 1) as u16;
+    }
+}
+
+std::thread_local! {
+    static LOCAL_PROTO_QUERY_RESPONSE_CACHE: std::cell::RefCell<LocalProtoQueryResponseCache> =
+        std::cell::RefCell::new(LocalProtoQueryResponseCache::default());
+}
+
+fn execute_symbolic_query_result_to_proto_cached(
+    result: riffdb_service::ExecuteSymbolicQueryResult,
+    allow_wire_shortcut: bool,
+) -> Result<app_v1::ExecuteQueryResponse, Status> {
+    if !result.is_cache_pinned()
+        || result.next_cursor().is_some()
+        || result.compact_result().is_some()
+        || result.is_packed_result()
+    {
+        return execute_symbolic_query_result_to_proto(result);
+    }
+    let fields_ptr = Arc::as_ptr(result.shared_fields()) as usize;
+    let enum_names_ptr = Arc::as_ptr(result.shared_enum_variant_names_ref()) as usize;
+    if let Some(cached) = LOCAL_PROTO_QUERY_RESPONSE_CACHE.with(|cell| {
+        let guard = cell.try_borrow().ok()?;
+        guard
+            .lookup_by_result(fields_ptr, enum_names_ptr, &result)
+            .map(|entry| {
+                if allow_wire_shortcut {
+                    make_wire_cache_carrier(entry.wire_cache_id)
+                } else {
+                    (*entry.response).clone()
+                }
+            })
+    }) {
+        return Ok(cached);
+    }
+    if let Some(shared_entry) = lookup_shared_cached_proto_result(
+        fields_ptr,
+        enum_names_ptr,
+        result.application_head(),
+        result.outcome(),
+        result.identity(),
+    ) {
+        let out = if allow_wire_shortcut {
+            make_wire_cache_carrier(shared_entry.wire_cache_id)
+        } else {
+            (*shared_entry.response).clone()
+        };
+        LOCAL_PROTO_QUERY_RESPONSE_CACHE.with(|cell| {
+            if let Ok(mut guard) = cell.try_borrow_mut() {
+                guard.insert(shared_entry);
+            }
+        });
+        return Ok(out);
+    }
+    let fields_pin = Arc::clone(result.shared_fields());
+    let enum_names_pin = Arc::clone(result.shared_enum_variant_names_ref());
+    let identity = result.identity().clone();
+    let application_head = result.application_head();
+    let outcome = result.outcome().to_owned();
+    let response = execute_symbolic_query_result_to_proto(result)?;
+    let encoded_len = riffdb_proto::validate_public_message_encoded_len(&response)
+        .map_err(|_| Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE))?;
+    let mut wire_buf = Vec::with_capacity(encoded_len);
+    tonic_prost::prost::Message::encode_raw(&response, &mut wire_buf);
+    let encoded_wire_bytes: Arc<[u8]> = Arc::from(wire_buf);
+    let wire_cache_id = NEXT_WIRE_CACHE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let response_arc = Arc::new(response);
+    let entry = CachedProtoQueryResponse {
+        _fields_pin: fields_pin,
+        _enum_names_pin: enum_names_pin,
+        fields_ptr,
+        enum_names_ptr,
+        identity,
+        application_head,
+        outcome,
+        wire_cache_id,
+        encoded_wire_bytes,
+        response: Arc::clone(&response_arc),
+    };
+    insert_shared_cached_proto_result(entry.clone());
+    LOCAL_PROTO_QUERY_RESPONSE_CACHE.with(|cell| {
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            guard.insert(entry);
+        }
+    });
+    if allow_wire_shortcut {
+        Ok(make_wire_cache_carrier(wire_cache_id))
+    } else {
+        Ok((*response_arc).clone())
+    }
 }
 
 fn application_context(
@@ -2239,27 +2573,44 @@ impl ApplicationQueryService for GrpcApplication {
         request: Request<app_v1::ExecuteQueryRequest>,
     ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
         let transport_started = Instant::now();
+        let allow_wire_shortcut = request
+            .extensions()
+            .get::<DisableWireFrameShortcut>()
+            .is_none();
         let (metadata, _peer, message) = split_request(request);
         let boundary =
             ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
-        let original = message.clone();
-        let operation_symbol = match original.query.as_ref() {
-            Some(app_v1::execute_query_request::Query::QueryName(name)) => Some(name.as_str()),
+        let contract_meta = message
+            .contract
+            .as_ref()
+            .map(|c| (c.lineage.clone(), c.version));
+        let operation_symbol = match message.query.as_ref() {
+            Some(app_v1::execute_query_request::Query::QueryName(name)) => Some(name.clone()),
             Some(app_v1::execute_query_request::Query::Source(_)) | None => None,
         };
         let (request_id, request) = execute_symbolic_query_request_from_proto(message)
             .map_err(|status| status_from_application_boundary(status, &boundary))?;
-        let application = application_context(
-            ApplicationOperation::ExecuteQuery,
-            request_id,
-            original.contract.as_ref(),
-            operation_symbol,
-        );
+        let make_application_context = || {
+            let mut ctx =
+                ApplicationErrorContextBuilder::new(ApplicationOperation::ExecuteQuery, request_id);
+            if let Some((lineage, version)) = contract_meta.as_ref()
+                && let (Ok(lineage), Some(version)) = (
+                    ContractLineage::new(lineage.clone()),
+                    ContractVersion::new(*version),
+                )
+            {
+                ctx = ctx.with_contract(lineage, version);
+            }
+            if let Some(symbol) = operation_symbol.as_deref() {
+                ctx = ctx.with_operation_symbol(symbol.to_owned());
+            }
+            ctx
+        };
         // TransportAdapt ends once the domain request is ready; residual stages
         // after this are admission/authn/spawn/service/encode.
-        let lifecycle = self
-            .select_lifecycle(&metadata)
-            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let lifecycle = self.select_lifecycle(&metadata).map_err(|status| {
+            status_from_application_boundary(status, &make_application_context())
+        })?;
         // Resolved once. The stage sink is an `Arc` clone per call, so taking it
         // three times charged the read path two avoidable atomic pairs.
         let telemetry = lifecycle.read_stage_telemetry();
@@ -2276,23 +2627,29 @@ impl ApplicationQueryService for GrpcApplication {
                 &metadata,
                 request_id,
             )
-            .map_err(|status| status_from_application_boundary(status, &application))?;
+            .map_err(|status| {
+                status_from_application_boundary(status, &make_application_context())
+            })?;
         // ServiceAwait is an envelope over SpawnDispatch..AuditFinish. Its excess
         // over those members is spawn queueing plus the completion handoff, which
         // no partition stage can observe from inside the spawned job.
         let service_await_started = Instant::now();
         let result = match request {
-            ExecuteSymbolicQueryInvocation::AdHoc(request) => map_application_service(
-                service.execute_symbolic_query(context, request).await,
-                &application,
-            )?,
-            ExecuteSymbolicQueryInvocation::Named(request) => map_application_service(
-                service.execute_named_symbolic_query(context, request).await,
-                &application,
-            )?,
+            ExecuteSymbolicQueryInvocation::AdHoc(request) => service
+                .execute_symbolic_query(context, request)
+                .await
+                .map_err(|failure| {
+                    status_from_application_failure(&failure, &make_application_context())
+                })?,
+            ExecuteSymbolicQueryInvocation::Named(request) => service
+                .execute_named_symbolic_query(context, request)
+                .await
+                .map_err(|failure| {
+                    status_from_application_failure(&failure, &make_application_context())
+                })?,
         };
         let encode_started = Instant::now();
-        let response = execute_symbolic_query_result_to_proto(result)?;
+        let response = execute_symbolic_query_result_to_proto_cached(result, allow_wire_shortcut)?;
         if let Some(telemetry) = telemetry.as_ref() {
             let encode_elapsed = encode_started.elapsed();
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {

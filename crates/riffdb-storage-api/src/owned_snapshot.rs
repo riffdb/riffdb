@@ -106,12 +106,58 @@ impl SnapshotIndexRangeRequestV1 {
     }
 }
 
+/// Shared canonical field map for one covered projection entry.
+pub type CoveredProjectionFieldMapV1 =
+    std::sync::Arc<std::collections::BTreeMap<std::sync::Arc<str>, riffdb_types::CanonicalValue>>;
+
+/// Cached covered projection for one entry in a [`SnapshotIndexRangePageV1`].
+pub type CachedCoveredProjectionV1 = (
+    std::sync::Arc<[riffdb_types::FieldId]>,
+    std::sync::Arc<[std::sync::Arc<str>]>,
+    std::sync::Arc<[riffdb_types::CanonicalValue]>,
+    CoveredProjectionFieldMapV1,
+    u64,
+    Option<(CoveredProjectionFieldMapV1, u64)>,
+);
+
+/// Borrowed view of a cached covered projection on [`SnapshotIndexRangePageV1`].
+pub type CoveredProjectionBorrowV1<'a> = (
+    &'a std::sync::Arc<[riffdb_types::CanonicalValue]>,
+    &'a CoveredProjectionFieldMapV1,
+    u64,
+    &'a Option<(CoveredProjectionFieldMapV1, u64)>,
+);
+
 /// One bounded semantic page from an immutable index range.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct SnapshotIndexRangePageV1 {
-    entries: Vec<EncodedPageItem<StoredIndexEntryV2>>,
+    entries: std::sync::Arc<[EncodedPageItem<StoredIndexEntryV2>]>,
+    resolved_entities: std::sync::Arc<[std::sync::OnceLock<crate::StoredEntityRecordV1>]>,
+    covered_projections: std::sync::Arc<
+        [(
+            std::sync::OnceLock<CachedCoveredProjectionV1>,
+            std::sync::OnceLock<CachedCoveredProjectionV1>,
+        )],
+    >,
     next_after: Option<IndexEntryKey>,
 }
+
+impl std::fmt::Debug for SnapshotIndexRangePageV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotIndexRangePageV1")
+            .field("entries", &self.entries)
+            .field("next_after", &self.next_after)
+            .finish()
+    }
+}
+
+impl PartialEq for SnapshotIndexRangePageV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries && self.next_after == other.next_after
+    }
+}
+
+impl Eq for SnapshotIndexRangePageV1 {}
 
 impl SnapshotIndexRangePageV1 {
     /// Checks bounds, encoded charge, physical range, order, and continuation.
@@ -152,10 +198,53 @@ impl SnapshotIndexRangePageV1 {
         } else {
             None
         };
+        let entry_len = entries.len();
+        let resolved_entities: std::sync::Arc<[std::sync::OnceLock<crate::StoredEntityRecordV1>]> =
+            (0..entry_len)
+                .map(|_| std::sync::OnceLock::new())
+                .collect::<Vec<_>>()
+                .into();
+        let covered_projections: std::sync::Arc<
+            [(
+                std::sync::OnceLock<CachedCoveredProjectionV1>,
+                std::sync::OnceLock<CachedCoveredProjectionV1>,
+            )],
+        > = (0..entry_len)
+            .map(|_| (std::sync::OnceLock::new(), std::sync::OnceLock::new()))
+            .collect::<Vec<_>>()
+            .into();
         Ok(Self {
-            entries,
+            entries: std::sync::Arc::from(entries),
+            resolved_entities,
+            covered_projections,
             next_after,
         })
+    }
+
+    /// Creates a copy of this page with a detached entries slice and fresh, unshared cache slots.
+    #[must_use]
+    pub fn thread_local_detach(&self) -> Self {
+        let entry_len = self.entries.len();
+        let resolved_entities: std::sync::Arc<[std::sync::OnceLock<crate::StoredEntityRecordV1>]> =
+            (0..entry_len)
+                .map(|_| std::sync::OnceLock::new())
+                .collect::<Vec<_>>()
+                .into();
+        let covered_projections: std::sync::Arc<
+            [(
+                std::sync::OnceLock<CachedCoveredProjectionV1>,
+                std::sync::OnceLock<CachedCoveredProjectionV1>,
+            )],
+        > = (0..entry_len)
+            .map(|_| (std::sync::OnceLock::new(), std::sync::OnceLock::new()))
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            entries: std::sync::Arc::from(self.entries.as_ref()),
+            resolved_entities,
+            covered_projections,
+            next_after: self.next_after.clone(),
+        }
     }
 
     /// Complete semantic current-index rows in selected physical order.
@@ -163,6 +252,74 @@ impl SnapshotIndexRangePageV1 {
     pub fn entries(&self) -> &[EncodedPageItem<StoredIndexEntryV2>] {
         &self.entries
     }
+
+    /// Returns a cached resolved entity record at `index`, if already hydrated on this snapshot page.
+    #[must_use]
+    pub fn resolved_entity(&self, index: usize) -> Option<&crate::StoredEntityRecordV1> {
+        self.resolved_entities.get(index)?.get()
+    }
+
+    /// Caches a resolved entity record at `index` on this snapshot page and returns a reference to it.
+    pub fn cache_resolved_entity(
+        &self,
+        index: usize,
+        record: crate::StoredEntityRecordV1,
+    ) -> &crate::StoredEntityRecordV1 {
+        let slot = &self.resolved_entities[index];
+        let _ = slot.set(record);
+        #[expect(clippy::expect_used, reason = "OnceLock slot was just populated")]
+        slot.get().expect("OnceLock slot populated")
+    }
+
+    /// Returns a cached covered projection at `index` if `cover_ids` and `field_names` match.
+    #[must_use]
+    pub fn covered_projection(
+        &self,
+        index: usize,
+        cover_ids: &std::sync::Arc<[riffdb_types::FieldId]>,
+        field_names: &std::sync::Arc<[std::sync::Arc<str>]>,
+    ) -> Option<CoveredProjectionBorrowV1<'_>> {
+        let (primary, secondary) = self.covered_projections.get(index)?;
+        if let Some((cached_ids, cached_names, values, fields, fields_bytes, projected)) =
+            primary.get()
+            && std::sync::Arc::ptr_eq(cached_ids, cover_ids)
+            && std::sync::Arc::ptr_eq(cached_names, field_names)
+        {
+            return Some((values, fields, *fields_bytes, projected));
+        }
+        if let Some((cached_ids, cached_names, values, fields, fields_bytes, projected)) =
+            secondary.get()
+            && std::sync::Arc::ptr_eq(cached_ids, cover_ids)
+            && std::sync::Arc::ptr_eq(cached_names, field_names)
+        {
+            return Some((values, fields, *fields_bytes, projected));
+        }
+        if let Some((cached_ids, cached_names, values, fields, fields_bytes, projected)) =
+            primary.get()
+            && cached_ids.as_ref() == cover_ids.as_ref()
+            && cached_names.as_ref() == field_names.as_ref()
+        {
+            return Some((values, fields, *fields_bytes, projected));
+        }
+        if let Some((cached_ids, cached_names, values, fields, fields_bytes, projected)) =
+            secondary.get()
+            && cached_ids.as_ref() == cover_ids.as_ref()
+            && cached_names.as_ref() == field_names.as_ref()
+        {
+            return Some((values, fields, *fields_bytes, projected));
+        }
+        None
+    }
+
+    /// Caches a decoded covered projection at `index` on this snapshot page.
+    pub fn cache_covered_projection(&self, index: usize, projection: CachedCoveredProjectionV1) {
+        if let Some((primary, secondary)) = self.covered_projections.get(index)
+            && let Err(projection) = primary.set(projection)
+        {
+            let _ = secondary.set(projection);
+        }
+    }
+
     /// Exclusive continuation when more rows remain in this exact range.
     #[must_use]
     pub const fn next_after(&self) -> Option<&IndexEntryKey> {

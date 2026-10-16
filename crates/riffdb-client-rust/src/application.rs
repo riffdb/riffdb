@@ -676,8 +676,21 @@ impl StableApplicationClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<NamedQueryResult, ApplicationClientError> {
-        let response = self.execute_named_query_wire(query, metadata).await?;
-        raise_query_result(response)
+        let shared = self.execute_named_query_shared(query, metadata).await?;
+        Ok(Arc::unwrap_or_clone(shared))
+    }
+
+    /// Executes one exact named module query and returns a shared reference-counted
+    /// result without deep-cloning cached result maps.
+    #[doc(hidden)]
+    pub async fn execute_named_query_shared(
+        &mut self,
+        query: NamedQuery,
+        metadata: &CallMetadata,
+    ) -> Result<Arc<NamedQueryResult>, ApplicationClientError> {
+        let response =
+            with_client_wire_carrier(self.execute_named_query_wire(query, metadata)).await?;
+        raise_query_result_shared_from_client_wire(response)
     }
 
     /// Executes one named query while retaining its validated negotiated wire
@@ -689,6 +702,12 @@ impl StableApplicationClient {
         metadata: &CallMetadata,
     ) -> Result<app_v1::ExecuteQueryResponse, ApplicationClientError> {
         self.sync_active_from_topology();
+        if self.topology.is_none() {
+            let mut active = self.peer_client();
+            return active
+                .execute_named_application_query_wire(query, metadata)
+                .await;
+        }
         if !query.admission_head_consistency
             && let Some(topology) = &self.topology
             && !topology.read_replicas.is_empty()
@@ -2325,10 +2344,10 @@ impl RiffDbClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<NamedQueryResult, ApplicationClientError> {
-        let response = self
-            .execute_named_application_query_wire(query, metadata)
-            .await?;
-        raise_query_result(response)
+        let response =
+            with_client_wire_carrier(self.execute_named_application_query_wire(query, metadata))
+                .await?;
+        raise_query_result_from_client_wire(response)
     }
 
     async fn execute_named_application_query_wire(
@@ -2746,6 +2765,186 @@ pub(crate) fn lower_value(value: ApplicationValue) -> Result<v1::Value, Applicat
         }),
     };
     Ok(v1::Value { kind: Some(kind) })
+}
+
+const LOCAL_RAISED_QUERY_CACHE_CAP: usize = 256;
+const LOCAL_RAISED_QUERY_HASH_SLOTS: usize = 512;
+const SHARED_RAISED_QUERY_SHARDS: usize = 16;
+const SHARED_RAISED_QUERY_SHARD_CAP: usize = 64;
+
+#[derive(Clone)]
+struct CachedRaisedQueryResult {
+    wire_cache_id: u32,
+    result: Arc<NamedQueryResult>,
+}
+
+struct LocalRaisedQueryCache {
+    entries: Vec<CachedRaisedQueryResult>,
+    next_slot: usize,
+    by_wire_id: [u16; LOCAL_RAISED_QUERY_HASH_SLOTS],
+}
+
+impl Default for LocalRaisedQueryCache {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            next_slot: 0,
+            by_wire_id: [0; LOCAL_RAISED_QUERY_HASH_SLOTS],
+        }
+    }
+}
+
+impl LocalRaisedQueryCache {
+    fn bucket(wire_cache_id: u32) -> usize {
+        (wire_cache_id as usize) & (LOCAL_RAISED_QUERY_HASH_SLOTS - 1)
+    }
+
+    fn lookup(&self, wire_cache_id: u32) -> Option<&Arc<NamedQueryResult>> {
+        let bucket = Self::bucket(wire_cache_id);
+        let idx1 = self.by_wire_id[bucket] as usize;
+        if idx1 != 0
+            && let Some(entry) = self.entries.get(idx1 - 1)
+            && entry.wire_cache_id == wire_cache_id
+        {
+            return Some(&entry.result);
+        }
+        self.entries
+            .iter()
+            .find(|entry| entry.wire_cache_id == wire_cache_id)
+            .map(|entry| &entry.result)
+    }
+
+    fn insert(&mut self, wire_cache_id: u32, result: Arc<NamedQueryResult>) {
+        let bucket = Self::bucket(wire_cache_id);
+        let entry = CachedRaisedQueryResult {
+            wire_cache_id,
+            result,
+        };
+        let slot = if self.entries.len() < LOCAL_RAISED_QUERY_CACHE_CAP {
+            let slot = self.entries.len();
+            self.entries.push(entry);
+            slot
+        } else {
+            let slot = self.next_slot;
+            self.entries[slot] = entry;
+            self.next_slot = (slot + 1) % LOCAL_RAISED_QUERY_CACHE_CAP;
+            slot
+        };
+        self.by_wire_id[bucket] = (slot + 1) as u16;
+    }
+}
+
+#[derive(Default)]
+struct SharedRaisedQueryShard {
+    entries: Vec<CachedRaisedQueryResult>,
+    next_slot: usize,
+}
+
+static SHARED_RAISED_QUERY_CACHE: OnceLock<
+    [std::sync::RwLock<SharedRaisedQueryShard>; SHARED_RAISED_QUERY_SHARDS],
+> = OnceLock::new();
+
+fn shared_raised_query_cache()
+-> &'static [std::sync::RwLock<SharedRaisedQueryShard>; SHARED_RAISED_QUERY_SHARDS] {
+    SHARED_RAISED_QUERY_CACHE.get_or_init(|| {
+        std::array::from_fn(|_| std::sync::RwLock::new(SharedRaisedQueryShard::default()))
+    })
+}
+
+std::thread_local! {
+    static LOCAL_RAISED_QUERY_CACHE: std::cell::RefCell<LocalRaisedQueryCache> =
+        std::cell::RefCell::new(LocalRaisedQueryCache::default());
+}
+
+fn lookup_shared_raised_query_result(wire_cache_id: u32) -> Option<Arc<NamedQueryResult>> {
+    let shard_idx = (wire_cache_id as usize) & (SHARED_RAISED_QUERY_SHARDS - 1);
+    let guard = shared_raised_query_cache()[shard_idx].read().ok()?;
+    guard
+        .entries
+        .iter()
+        .find(|entry| entry.wire_cache_id == wire_cache_id)
+        .map(|entry| Arc::clone(&entry.result))
+}
+
+fn insert_shared_raised_query_result(wire_cache_id: u32, result: Arc<NamedQueryResult>) {
+    let shard_idx = (wire_cache_id as usize) & (SHARED_RAISED_QUERY_SHARDS - 1);
+    let Ok(mut guard) = shared_raised_query_cache()[shard_idx].write() else {
+        return;
+    };
+    if guard
+        .entries
+        .iter()
+        .any(|entry| entry.wire_cache_id == wire_cache_id)
+    {
+        return;
+    }
+    let entry = CachedRaisedQueryResult {
+        wire_cache_id,
+        result,
+    };
+    if guard.entries.len() < SHARED_RAISED_QUERY_SHARD_CAP {
+        guard.entries.push(entry);
+    } else {
+        let slot = guard.next_slot;
+        guard.entries[slot] = entry;
+        guard.next_slot = (slot + 1) % SHARED_RAISED_QUERY_SHARD_CAP;
+    }
+}
+
+async fn with_client_wire_carrier<F: std::future::Future>(future: F) -> F::Output {
+    let mut pinned = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let _guard = riffdb_proto::enter_client_query_wire_carrier_scope();
+        pinned.as_mut().poll(cx)
+    })
+    .await
+}
+
+fn raise_query_result_from_client_wire(
+    response: app_v1::ExecuteQueryResponse,
+) -> Result<NamedQueryResult, ApplicationClientError> {
+    raise_query_result_shared_from_client_wire(response).map(Arc::unwrap_or_clone)
+}
+
+fn raise_query_result_shared_from_client_wire(
+    response: app_v1::ExecuteQueryResponse,
+) -> Result<Arc<NamedQueryResult>, ApplicationClientError> {
+    if response.selected_result_encoding < 0
+        && response.fields.is_empty()
+        && response.compact_result.is_none()
+        && response.packed_result.is_none()
+    {
+        let wire_cache_id = response.selected_result_encoding.unsigned_abs();
+        if wire_cache_id >= riffdb_proto::CLIENT_WIRE_CARRIER_ID_BASE {
+            if let Some(cached) = LOCAL_RAISED_QUERY_CACHE.with(|cell| {
+                let guard = cell.try_borrow().ok()?;
+                guard.lookup(wire_cache_id).cloned()
+            }) {
+                return Ok(cached);
+            }
+            if let Some(shared) = lookup_shared_raised_query_result(wire_cache_id) {
+                LOCAL_RAISED_QUERY_CACHE.with(|cell| {
+                    if let Ok(mut guard) = cell.try_borrow_mut() {
+                        guard.insert(wire_cache_id, Arc::clone(&shared));
+                    }
+                });
+                return Ok(shared);
+            }
+            if let Some(full_response) =
+                riffdb_proto::lookup_client_query_wire_response(wire_cache_id)
+            {
+                let raised = Arc::new(raise_query_result((*full_response).clone())?);
+                insert_shared_raised_query_result(wire_cache_id, Arc::clone(&raised));
+                LOCAL_RAISED_QUERY_CACHE.with(|cell| {
+                    if let Ok(mut guard) = cell.try_borrow_mut() {
+                        guard.insert(wire_cache_id, Arc::clone(&raised));
+                    }
+                });
+                return Ok(raised);
+            }
+        }
+    }
+    raise_query_result(response).map(Arc::new)
 }
 
 #[doc(hidden)]

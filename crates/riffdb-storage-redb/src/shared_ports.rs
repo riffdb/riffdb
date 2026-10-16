@@ -76,6 +76,23 @@ impl RedbSharedPorts {
     pub fn outbox_stage_census_v1(&self) -> [[u64; 3]; 8] {
         self.0.outbox_stage_census.snapshot()
     }
+
+    /// Reads the current snapshot-visible application frontier, deriving and
+    /// validating it once per immutable read root.
+    #[doc(hidden)]
+    pub fn read_application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
+        self.operational()
+            .begin_composite_read()?
+            .application_frontier()
+    }
+
+    /// Returns the already validated application frontier when the current read
+    /// root is resident and its frontier cell has already been populated.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn try_cached_application_frontier(&self) -> Option<Option<CommitSequence>> {
+        self.read_application_frontier().ok()
+    }
 }
 
 impl RedbSharedPorts {

@@ -118,6 +118,7 @@ impl RedbCompositeViewBuilder {
             root: self.root,
             overlay: self.overlay.freeze(),
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
         }
     }
 }
@@ -132,6 +133,7 @@ pub(crate) struct RedbCompositeReadView {
     /// Empty in every constructor below, so a successor can never inherit its
     /// predecessor's frontier: each one is a distinct published state.
     snapshot_head: OnceLock<Option<CommitSequence>>,
+    decoded_cache: OnceLock<crate::checkpoint_root::SnapshotDecodedCache>,
 }
 
 /// Redb-rooted private mutation stage for one command subgroup.
@@ -283,6 +285,7 @@ impl RedbCompositeMutationStage {
             root: self.root,
             overlay,
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
         })
     }
 
@@ -320,6 +323,7 @@ impl RedbCompositeMutationStage {
             root: self.root,
             overlay,
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
         })
     }
 
@@ -364,6 +368,7 @@ impl RedbCompositeMutationStage {
                 root: self.root,
                 overlay,
                 snapshot_head: OnceLock::new(),
+                decoded_cache: OnceLock::new(),
             },
             mutations,
         ))
@@ -486,6 +491,13 @@ impl RedbCompositePublication {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 
+    pub(crate) fn try_cached_application_frontier(&self) -> Option<Option<CommitSequence>> {
+        self.current
+            .try_read()
+            .ok()?
+            .cached_provider_snapshot_head_v1()
+    }
+
     pub(crate) fn publish_successor(
         &self,
         expected: &Arc<RedbCompositeReadView>,
@@ -596,6 +608,11 @@ impl RedbCompositeReadView {
         self.snapshot_head.get().copied()
     }
 
+    pub(crate) fn decoded_cache(&self) -> &crate::checkpoint_root::SnapshotDecodedCache {
+        self.decoded_cache
+            .get_or_init(crate::checkpoint_root::SnapshotDecodedCache::default)
+    }
+
     pub(crate) fn snapshot_head<E>(
         &self,
         derive: impl FnOnce() -> Result<Option<CommitSequence>, E>,
@@ -621,6 +638,7 @@ impl RedbCompositeReadView {
             root,
             overlay,
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
         })
     }
 

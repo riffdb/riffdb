@@ -26,7 +26,7 @@ use riffdb_service::{
     ServiceTelemetryEvent,
 };
 use tokio::runtime::Handle;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// Maximum trusted internal sources retained before diagnostics fail readiness.
@@ -159,13 +159,14 @@ impl fmt::Debug for RuntimeRoutingState {
 }
 
 struct ServiceJobRegistry {
-    handles: BTreeMap<u64, Option<JoinHandle<()>>>,
+    handles: BTreeMap<u64, JoinHandle<()>>,
 }
 
 struct ServiceJobSupervisionInner {
     runtime: Handle,
     routing: RuntimeRoutingState,
     next_job_id: AtomicU64,
+    active_jobs: std::sync::atomic::AtomicUsize,
     registry: Mutex<ServiceJobRegistry>,
     active_count: watch::Sender<usize>,
 }
@@ -182,56 +183,20 @@ impl ServiceJobSupervisionInner {
         }
     }
 
-    fn reserve_job(&self) -> u64 {
-        let mut registry = self.lock_registry();
-        let job_id =
-            match self
-                .next_job_id
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    current.checked_add(1)
-                }) {
-                Ok(job_id) => job_id,
-                Err(_) => {
-                    drop(registry);
-                    self.routing
-                        .stop(RuntimeStopReason::SupervisionStateCorrupted);
-                    panic!("service-job supervision identity exhausted");
-                }
-            };
-
-        let replaced = registry.handles.insert(job_id, None);
-        debug_assert!(replaced.is_none());
-        let active = registry.handles.len();
-        drop(registry);
-        self.active_count.send_replace(active);
-        job_id
-    }
-
-    fn install_handle(&self, job_id: u64, handle: JoinHandle<()>) -> bool {
-        let mut registry = self.lock_registry();
-        let Some(slot) = registry.handles.get_mut(&job_id) else {
-            return false;
-        };
-        if slot.is_some() {
-            self.routing
-                .stop(RuntimeStopReason::SupervisionStateCorrupted);
-            return false;
-        }
-        *slot = Some(handle);
-        true
-    }
-
     fn finish_job(&self, job_id: u64) -> bool {
         let mut registry = self.lock_registry();
         let removed = registry.handles.remove(&job_id).is_some();
         let active = registry.handles.len();
+        self.active_jobs.store(active, Ordering::Release);
         drop(registry);
-        self.active_count.send_replace(active);
+        if active == 0 {
+            self.active_count.send_replace(0);
+        }
         removed
     }
 
     fn active_jobs(&self) -> usize {
-        self.lock_registry().handles.len()
+        self.active_jobs.load(Ordering::Acquire)
     }
 }
 
@@ -315,6 +280,7 @@ impl SupervisedServiceJobSpawner {
                 runtime,
                 routing,
                 next_job_id: AtomicU64::new(1),
+                active_jobs: std::sync::atomic::AtomicUsize::new(0),
                 registry: Mutex::new(ServiceJobRegistry {
                     handles: BTreeMap::new(),
                 }),
@@ -365,7 +331,7 @@ impl SupervisedServiceJobSpawner {
             .lock_registry()
             .handles
             .values()
-            .filter_map(|handle| handle.as_ref().map(JoinHandle::abort_handle))
+            .map(JoinHandle::abort_handle)
             .collect();
         for handle in handles {
             handle.abort();
@@ -375,30 +341,33 @@ impl SupervisedServiceJobSpawner {
 
 impl ServiceJobSpawner for SupervisedServiceJobSpawner {
     fn spawn(&self, job: ServiceJob) {
-        let job_id = self.inner.reserve_job();
-        let (start, started) = oneshot::channel();
+        let mut registry = self.inner.lock_registry();
+        let job_id = match self.inner.next_job_id.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| current.checked_add(1),
+        ) {
+            Ok(job_id) => job_id,
+            Err(_) => {
+                drop(registry);
+                self.inner
+                    .routing
+                    .stop(RuntimeStopReason::SupervisionStateCorrupted);
+                panic!("service-job supervision identity exhausted");
+            }
+        };
+        self.inner.active_jobs.fetch_add(1, Ordering::AcqRel);
         let active = ActiveServiceJob::new(Arc::clone(&self.inner), job_id);
         let supervised = async move {
-            if started.await.is_err() {
-                return;
-            }
             match (CatchServiceJobPanic { job }).await {
                 Ok(()) => active.complete(),
                 Err(()) => active.panicked(),
             }
         };
         let handle = self.inner.runtime.spawn(supervised);
-        if !self.inner.install_handle(job_id, handle) {
-            self.inner
-                .routing
-                .stop(RuntimeStopReason::AcceptedServiceJobDisappeared);
-            return;
-        }
-        if start.send(()).is_err() {
-            self.inner
-                .routing
-                .stop(RuntimeStopReason::AcceptedServiceJobDisappeared);
-        }
+        let replaced = registry.handles.insert(job_id, handle);
+        debug_assert!(replaced.is_none());
+        drop(registry);
     }
 }
 
@@ -577,7 +546,7 @@ mod tests {
         ServiceHealthHooks, ServiceJobSpawner, ServiceTelemetry, ServiceTerminalClass,
     };
     use riffdb_types::{ServiceIngressKindV1, ServiceOperationV1};
-    use tokio::sync::Barrier;
+    use tokio::sync::{Barrier, oneshot};
 
     use super::*;
 

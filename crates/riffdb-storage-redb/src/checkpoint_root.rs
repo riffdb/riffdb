@@ -51,15 +51,264 @@
 //! handle, provided every input it reads is fixed by the snapshot. The
 //! snapshot-visible application frontier is the one such value cached here.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
+use riffdb_storage_api::{
+    EntityTarget, PartitionIndexTarget, SnapshotIndexDirectionV1, SnapshotIndexRangePageV1,
+    SnapshotIndexRangeRequestV1, StorageError, StoredEntityRecordV1,
+};
 use riffdb_types::CommitSequence;
 
 use crate::journal::{JournalIoError, JournalTable};
 use crate::layout::{CAPABILITIES, META};
+
+const MAX_CACHED_ENTITIES_PER_SNAPSHOT: usize = 16_384;
+const MAX_CACHED_INDEX_PAGES_PER_SNAPSHOT: usize = 8_192;
+const MAX_CACHED_INDEX_EPOCHS_PER_SNAPSHOT: usize = 1_024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IndexRangeCacheKey(SnapshotIndexRangeRequestV1);
+
+impl Ord for IndexRangeCacheKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let a = &self.0;
+        let b = &other.0;
+        a.lower()
+            .cmp(b.lower())
+            .then_with(|| a.lower_inclusive().cmp(&b.lower_inclusive()))
+            .then_with(|| a.upper().cmp(b.upper()))
+            .then_with(|| a.upper_inclusive().cmp(&b.upper_inclusive()))
+            .then_with(|| {
+                matches!(a.direction(), SnapshotIndexDirectionV1::Reverse)
+                    .cmp(&matches!(b.direction(), SnapshotIndexDirectionV1::Reverse))
+            })
+            .then_with(|| a.after().cmp(&b.after()))
+            .then_with(|| a.limit().get().cmp(&b.limit().get()))
+    }
+}
+
+impl PartialOrd for IndexRangeCacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+static NEXT_SNAPSHOT_CACHE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+struct LocalSnapshotDecodedCache {
+    cache_id: u64,
+    entities: BTreeMap<EntityTarget, Option<StoredEntityRecordV1>>,
+    index_pages: BTreeMap<IndexRangeCacheKey, SnapshotIndexRangePageV1>,
+    index_epochs: BTreeMap<PartitionIndexTarget, u64>,
+}
+
+impl LocalSnapshotDecodedCache {
+    const fn new() -> Self {
+        Self {
+            cache_id: 0,
+            entities: BTreeMap::new(),
+            index_pages: BTreeMap::new(),
+            index_epochs: BTreeMap::new(),
+        }
+    }
+
+    fn reset_if_needed(&mut self, cache_id: u64) {
+        if self.cache_id != cache_id {
+            self.cache_id = cache_id;
+            self.entities.clear();
+            self.index_pages.clear();
+            self.index_epochs.clear();
+        }
+    }
+}
+
+std::thread_local! {
+    static LOCAL_SNAPSHOT_DECODED_CACHE: std::cell::RefCell<LocalSnapshotDecodedCache> =
+        const { std::cell::RefCell::new(LocalSnapshotDecodedCache::new()) };
+}
+
+/// Bounded cache of verified decoded values derived from one immutable snapshot.
+///
+/// Every entry is a pure function of the snapshot and its lookup key. Errors are
+/// never stored, and the cache is dropped with the snapshot it was derived from.
+pub(crate) struct SnapshotDecodedCache {
+    cache_id: u64,
+    entities: RwLock<BTreeMap<EntityTarget, Option<StoredEntityRecordV1>>>,
+    index_pages: RwLock<BTreeMap<IndexRangeCacheKey, SnapshotIndexRangePageV1>>,
+    index_epochs: RwLock<BTreeMap<PartitionIndexTarget, u64>>,
+}
+
+impl Default for SnapshotDecodedCache {
+    fn default() -> Self {
+        Self {
+            cache_id: NEXT_SNAPSHOT_CACHE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            entities: RwLock::new(BTreeMap::new()),
+            index_pages: RwLock::new(BTreeMap::new()),
+            index_epochs: RwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl SnapshotDecodedCache {
+    pub(crate) fn read_entity(
+        &self,
+        target: &EntityTarget,
+        derive: impl FnOnce() -> Result<Option<StoredEntityRecordV1>, StorageError>,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        if crate::query_diagnostics::query_execute_diagnostics_enabled() {
+            return derive();
+        }
+        let cache_id = self.cache_id;
+        if let Some(cached) = LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            let mut local = cell.try_borrow_mut().ok()?;
+            local.reset_if_needed(cache_id);
+            local.entities.get(target).cloned()
+        }) {
+            return Ok(cached);
+        }
+        let mut can_insert_shared = false;
+        if let Ok(guard) = self.entities.read() {
+            if let Some(cached) = guard.get(target) {
+                let shared = cached.clone();
+                drop(guard);
+                LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+                    if let Ok(mut local) = cell.try_borrow_mut() {
+                        local.reset_if_needed(cache_id);
+                        if local.entities.len() < MAX_CACHED_ENTITIES_PER_SNAPSHOT {
+                            local.entities.insert(target.clone(), shared.clone());
+                        }
+                    }
+                });
+                return Ok(shared);
+            }
+            can_insert_shared = guard.len() < MAX_CACHED_ENTITIES_PER_SNAPSHOT;
+        }
+        let derived = derive()?;
+        if can_insert_shared
+            && let Ok(mut guard) = self.entities.write()
+            && guard.len() < MAX_CACHED_ENTITIES_PER_SNAPSHOT
+        {
+            guard.insert(target.clone(), derived.clone());
+        }
+        LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            if let Ok(mut local) = cell.try_borrow_mut() {
+                local.reset_if_needed(cache_id);
+                if local.entities.len() < MAX_CACHED_ENTITIES_PER_SNAPSHOT {
+                    local.entities.insert(target.clone(), derived.clone());
+                }
+            }
+        });
+        Ok(derived)
+    }
+
+    pub(crate) fn index_epoch(
+        &self,
+        target: &PartitionIndexTarget,
+        derive: impl FnOnce() -> Result<u64, StorageError>,
+    ) -> Result<u64, StorageError> {
+        if crate::query_diagnostics::query_execute_diagnostics_enabled() {
+            return derive();
+        }
+        let cache_id = self.cache_id;
+        if let Some(cached) = LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            let mut local = cell.try_borrow_mut().ok()?;
+            local.reset_if_needed(cache_id);
+            local.index_epochs.get(target).copied()
+        }) {
+            return Ok(cached);
+        }
+        let mut can_insert_shared = false;
+        if let Ok(guard) = self.index_epochs.read() {
+            if let Some(&cached) = guard.get(target) {
+                drop(guard);
+                LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+                    if let Ok(mut local) = cell.try_borrow_mut() {
+                        local.reset_if_needed(cache_id);
+                        if local.index_epochs.len() < MAX_CACHED_INDEX_EPOCHS_PER_SNAPSHOT {
+                            local.index_epochs.insert(target.clone(), cached);
+                        }
+                    }
+                });
+                return Ok(cached);
+            }
+            can_insert_shared = guard.len() < MAX_CACHED_INDEX_EPOCHS_PER_SNAPSHOT;
+        }
+        let derived = derive()?;
+        if can_insert_shared
+            && let Ok(mut guard) = self.index_epochs.write()
+            && guard.len() < MAX_CACHED_INDEX_EPOCHS_PER_SNAPSHOT
+        {
+            guard.insert(target.clone(), derived);
+        }
+        LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            if let Ok(mut local) = cell.try_borrow_mut() {
+                local.reset_if_needed(cache_id);
+                if local.index_epochs.len() < MAX_CACHED_INDEX_EPOCHS_PER_SNAPSHOT {
+                    local.index_epochs.insert(target.clone(), derived);
+                }
+            }
+        });
+        Ok(derived)
+    }
+
+    pub(crate) fn scan_index_range(
+        &self,
+        request: SnapshotIndexRangeRequestV1,
+        derive: impl FnOnce(
+            &SnapshotIndexRangeRequestV1,
+        ) -> Result<SnapshotIndexRangePageV1, StorageError>,
+    ) -> Result<SnapshotIndexRangePageV1, StorageError> {
+        if crate::query_diagnostics::query_execute_diagnostics_enabled() {
+            return derive(&request);
+        }
+        let cache_id = self.cache_id;
+        let key = IndexRangeCacheKey(request);
+        if let Some(cached) = LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            let mut local = cell.try_borrow_mut().ok()?;
+            local.reset_if_needed(cache_id);
+            local.index_pages.get(&key).cloned()
+        }) {
+            return Ok(cached);
+        }
+        let mut can_insert_shared = false;
+        if let Ok(guard) = self.index_pages.read() {
+            if let Some(cached) = guard.get(&key) {
+                let shared = cached.clone();
+                drop(guard);
+                LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+                    if let Ok(mut local) = cell.try_borrow_mut() {
+                        local.reset_if_needed(cache_id);
+                        if local.index_pages.len() < MAX_CACHED_INDEX_PAGES_PER_SNAPSHOT {
+                            local.index_pages.insert(key, shared.clone());
+                        }
+                    }
+                });
+                return Ok(shared);
+            }
+            can_insert_shared = guard.len() < MAX_CACHED_INDEX_PAGES_PER_SNAPSHOT;
+        }
+        let derived = derive(&key.0)?;
+        if can_insert_shared
+            && let Ok(mut guard) = self.index_pages.write()
+            && guard.len() < MAX_CACHED_INDEX_PAGES_PER_SNAPSHOT
+        {
+            guard.insert(key.clone(), derived.clone());
+        }
+        LOCAL_SNAPSHOT_DECODED_CACHE.with(|cell| {
+            if let Ok(mut local) = cell.try_borrow_mut() {
+                local.reset_if_needed(cache_id);
+                if local.index_pages.len() < MAX_CACHED_INDEX_PAGES_PER_SNAPSHOT {
+                    local.index_pages.insert(key, derived.clone());
+                }
+            }
+        });
+        Ok(derived)
+    }
+}
 
 /// Byte-keyed operational table handle.
 type ByteTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
@@ -84,6 +333,7 @@ pub(crate) struct CheckpointRoot {
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
     snapshot_head: OnceLock<Option<CommitSequence>>,
+    decoded_cache: OnceLock<SnapshotDecodedCache>,
     transaction: ReadTransaction,
 }
 
@@ -96,8 +346,14 @@ impl CheckpointRoot {
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
+            decoded_cache: OnceLock::new(),
             transaction,
         }
+    }
+
+    pub(crate) fn decoded_cache(&self) -> &SnapshotDecodedCache {
+        self.decoded_cache
+            .get_or_init(SnapshotDecodedCache::default)
     }
 
     pub(crate) const fn identity(&self) -> u64 {

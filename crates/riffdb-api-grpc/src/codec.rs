@@ -1,4 +1,5 @@
 //! Strict bounded codec used by every generated RiffDB RPC.
+#![cfg_attr(not(feature = "server"), allow(dead_code))]
 
 use std::marker::PhantomData;
 
@@ -57,7 +58,7 @@ pub(crate) struct StrictProstEncoder<MessageType> {
 
 impl<MessageType> Encoder for StrictProstEncoder<MessageType>
 where
-    MessageType: PublicMessage,
+    MessageType: PublicMessage + 'static,
 {
     type Item = MessageType;
     type Error = Status;
@@ -67,6 +68,14 @@ where
         item: Self::Item,
         destination: &mut EncodeBuf<'_>,
     ) -> Result<(), Self::Error> {
+        #[cfg(feature = "server")]
+        if let Some(encoded_bytes) = crate::server::try_take_cached_wire_response(&item) {
+            if destination.remaining_mut() < encoded_bytes.len() {
+                return Err(Status::internal(crate::EMERGENCY_INTERNAL_MESSAGE));
+            }
+            destination.put_slice(&encoded_bytes);
+            return Ok(());
+        }
         // Structural validation is the server outbound fail-closed guarantee
         // (including MessageTooLarge classification). Reuse the encoded length
         // so encode does not walk the tree a second time.

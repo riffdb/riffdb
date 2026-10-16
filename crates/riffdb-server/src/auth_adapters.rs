@@ -1,6 +1,14 @@
 //! Owning production adapters for authentication, current policy, and secret custody.
 
-use std::{fmt, sync::Arc};
+use std::{
+    cell::RefCell,
+    fmt,
+    num::NonZeroU64,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, AuthenticationFailure, AuthenticationTelemetry,
@@ -14,17 +22,71 @@ use riffdb_idempotency::{
 use riffdb_policy::{
     ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
     ApplicationReimportAuthorizationRequestV1, ApplicationReimportDecisionV1, AuthorizationClock,
-    AuthorizationError, AuthorizationTelemetry, CapabilityViewCheckpoint,
+    AuthorizationError, AuthorizationTelemetry, AuthorizedOperation, CapabilityViewCheckpoint,
     ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizer, Decision,
     OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
     TrustedAudienceCatalog,
 };
 use riffdb_service::{CapabilityTokenIssueError, CapabilityTokenIssuer, CurrentPolicyPort};
 use riffdb_storage_api::{CapabilityReader, IdempotencyKeyDigest};
-use riffdb_types::{DatabaseId, Environment, IdempotencyKey};
+use riffdb_types::{
+    ActorId, ActorKind, Audience, CapabilityId, DatabaseId, Environment, IdempotencyKey,
+    ServiceOperationV1, TenantScope,
+};
 
 use crate::clocks::{ServerAuthenticationClock, ServerAuthorizationClock};
 use crate::storage::SharedRedbOperationalPorts;
+
+static NEXT_POLICY_PORT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Eq, PartialEq)]
+struct CachedPrincipalKey {
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
+    principal_id: ActorId,
+    actor_kind: ActorKind,
+    audience: Audience,
+    tenant_scope: TenantScope,
+}
+
+impl CachedPrincipalKey {
+    fn matches(&self, principal: &AuthenticatedPrincipal) -> bool {
+        self.capability_id == principal.capability_id()
+            && self.capability_revision == principal.capability_revision()
+            && &self.principal_id == principal.principal_id()
+            && self.actor_kind == principal.actor_kind()
+            && &self.audience == principal.audience()
+            && &self.tenant_scope == principal.tenant_scope()
+    }
+
+    fn from_principal(principal: &AuthenticatedPrincipal) -> Self {
+        Self {
+            capability_id: principal.capability_id(),
+            capability_revision: principal.capability_revision(),
+            principal_id: principal.principal_id().clone(),
+            actor_kind: principal.actor_kind(),
+            audience: principal.audience().clone(),
+            tenant_scope: principal.tenant_scope().clone(),
+        }
+    }
+}
+
+struct CachedPolicyAllowEntry {
+    principal: CachedPrincipalKey,
+    proof: AuthorizedOperation,
+}
+
+#[derive(Default)]
+struct LocalExecuteQueryPolicyCache {
+    key: Option<(u64, u64)>,
+    next_evict: usize,
+    entries: Vec<CachedPolicyAllowEntry>,
+}
+
+thread_local! {
+    static LOCAL_EXECUTE_QUERY_POLICY_CACHE: RefCell<LocalExecuteQueryPolicyCache> =
+        RefCell::new(LocalExecuteQueryPolicyCache::default());
+}
 
 /// Owns the production dependencies borrowed by one fresh capability authenticator.
 pub(crate) struct ServerCredentialAuthenticator<S = SharedRedbOperationalPorts> {
@@ -80,6 +142,7 @@ impl<S> fmt::Debug for ServerCredentialAuthenticator<S> {
 
 /// Owns the trusted boundary needed to rebuild current authorization on every call.
 pub(crate) struct ServerCurrentPolicyPort<S = SharedRedbOperationalPorts> {
+    port_id: u64,
     storage: S,
     clock: ServerAuthorizationClock,
     database_id: DatabaseId,
@@ -102,6 +165,7 @@ impl<S> ServerCurrentPolicyPort<S> {
         telemetry: Arc<dyn AuthorizationTelemetry>,
     ) -> Self {
         Self {
+            port_id: NEXT_POLICY_PORT_ID.fetch_add(1, Ordering::Relaxed),
             storage,
             clock,
             database_id,
@@ -176,11 +240,69 @@ impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolic
         .authorize_replication(principal)
     }
 
+    fn authorize_borrowed(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: &OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        if request.operation() == ServiceOperationV1::ExecuteQuery
+            && let Some(checkpoint) = self.capability_view_checkpoint()
+            && let Some(reissued) = LOCAL_EXECUTE_QUERY_POLICY_CACHE.with(|cell| {
+                let cache = cell.borrow();
+                if cache.key != Some((self.port_id, checkpoint.generation())) {
+                    return None;
+                }
+                cache.entries.iter().find_map(|entry| {
+                    if entry.proof.request() == request && entry.principal.matches(principal) {
+                        entry.proof.reissue_for_unchanged_view(
+                            checkpoint.generation(),
+                            checkpoint,
+                            request,
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
+        {
+            return Ok(Decision::Allow(Box::new(reissued)));
+        }
+        self.authorize(principal, request.clone())
+    }
+
     fn authorize(
         &self,
         principal: &AuthenticatedPrincipal,
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError> {
+        let is_execute_query = request.operation() == ServiceOperationV1::ExecuteQuery;
+        if is_execute_query
+            && let Some(checkpoint) = self.capability_view_checkpoint()
+            && let Some(reissued) = LOCAL_EXECUTE_QUERY_POLICY_CACHE.with(|cell| {
+                let cache = cell.borrow();
+                if cache.key != Some((self.port_id, checkpoint.generation())) {
+                    return None;
+                }
+                cache.entries.iter().find_map(|entry| {
+                    if entry.proof.request() == &request && entry.principal.matches(principal) {
+                        entry.proof.reissue_for_unchanged_view(
+                            checkpoint.generation(),
+                            checkpoint,
+                            &request,
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
+        {
+            return Ok(Decision::Allow(Box::new(reissued)));
+        }
+        let baseline = if is_execute_query {
+            self.capability_view_generation()
+        } else {
+            None
+        };
         let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
         let authorizer = CurrentAuthorizer::new(
             &resolver,
@@ -190,7 +312,43 @@ impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolic
             self.environment.clone(),
         )
         .with_trusted_audience_catalog(&self.trusted_audiences);
-        authorizer.authorize(principal, request)
+        let decision = authorizer.authorize(principal, request);
+        if let (Some(baseline), Ok(Decision::Allow(proof))) = (baseline, &decision)
+            && let Some(checkpoint) = self.capability_view_checkpoint()
+            && checkpoint.generation() == baseline
+            && let Some(cached_proof) =
+                proof.reissue_for_unchanged_view(baseline, checkpoint, proof.request())
+        {
+            LOCAL_EXECUTE_QUERY_POLICY_CACHE.with(|cell| {
+                if let Ok(mut cache) = cell.try_borrow_mut() {
+                    let key = (self.port_id, baseline);
+                    if cache.key != Some(key) {
+                        cache.key = Some(key);
+                        cache.next_evict = 0;
+                        cache.entries.clear();
+                    }
+                    if let Some(existing) = cache.entries.iter_mut().find(|entry| {
+                        entry.proof.request() == cached_proof.request()
+                            && entry.principal.matches(principal)
+                    }) {
+                        existing.proof = cached_proof;
+                        return;
+                    }
+                    let new_entry = CachedPolicyAllowEntry {
+                        principal: CachedPrincipalKey::from_principal(principal),
+                        proof: cached_proof,
+                    };
+                    if cache.entries.len() < 128 {
+                        cache.entries.push(new_entry);
+                    } else {
+                        let slot = cache.next_evict & 127;
+                        cache.entries[slot] = new_entry;
+                        cache.next_evict = (slot + 1) & 127;
+                    }
+                }
+            });
+        }
+        decision
     }
 
     fn authorize_offline_maintenance(

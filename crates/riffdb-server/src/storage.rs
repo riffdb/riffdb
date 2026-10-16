@@ -7,9 +7,10 @@
 
 #[cfg(test)]
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
@@ -228,6 +229,14 @@ impl SharedRedbOperationalPorts {
         self.shared.clone()
     }
 
+    pub(crate) fn read_application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
+        self.shared.read_application_frontier()
+    }
+
+    pub(crate) fn try_cached_application_frontier(&self) -> Option<Option<CommitSequence>> {
+        self.shared.try_cached_application_frontier()
+    }
+
     pub(crate) fn query_executor(&self) -> StorageQueryExecutor<RedbSharedPorts> {
         StorageQueryExecutor::new(self.shared.clone())
     }
@@ -301,6 +310,10 @@ impl SharedRedbOperationalPorts {
             contract_version,
             contract_bundle_hash,
         )
+    }
+
+    pub(crate) fn catalog_view_generation(&self) -> Option<(u64, u64)> {
+        self.catalog.fast_generation()
     }
 
     /// Creates exact read-only migration-preflight authority for the active predecessor.
@@ -479,10 +492,13 @@ fn poisoned_storage_bridge() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
 }
 
+static NEXT_CURRENT_VIEW_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Default)]
 struct CurrentCatalogViewState {
     active: Option<ActiveCatalogPointerV1>,
     active_bundle: Option<StoredContractBundleV1>,
+    generation: Arc<AtomicU64>,
 }
 
 impl CurrentCatalogViewState {
@@ -494,6 +510,7 @@ impl CurrentCatalogViewState {
         if !active.matches_bundle(&bundle) {
             return Err(poisoned_storage_bridge());
         }
+        self.generation.fetch_add(1, Ordering::Release);
         self.active = Some(active);
         self.active_bundle = Some(bundle);
         Ok(())
@@ -520,6 +537,7 @@ impl CurrentCatalogViewState {
         } else if self.active.as_ref() != Some(&active) {
             return Err(poisoned_storage_bridge());
         }
+        self.generation.fetch_add(1, Ordering::Release);
         self.active = Some(active);
         self.active_bundle = Some(bundle);
         Ok(())
@@ -540,7 +558,36 @@ impl CurrentCatalogViewState {
 }
 
 struct CurrentCatalogView {
+    view_id: u64,
+    generation: Arc<AtomicU64>,
+    active_writers: AtomicUsize,
     state: RwLock<CurrentCatalogViewState>,
+}
+
+struct CurrentCatalogViewWriteGuard<'a> {
+    guard: Option<RwLockWriteGuard<'a, CurrentCatalogViewState>>,
+    active_writers: &'a AtomicUsize,
+}
+
+impl std::ops::Deref for CurrentCatalogViewWriteGuard<'_> {
+    type Target = CurrentCatalogViewState;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().expect("write guard present")
+    }
+}
+
+impl std::ops::DerefMut for CurrentCatalogViewWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_mut().expect("write guard present")
+    }
+}
+
+impl Drop for CurrentCatalogViewWriteGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.guard.take();
+        self.active_writers.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl CurrentCatalogView {
@@ -549,7 +596,11 @@ impl CurrentCatalogView {
         if let Some((active, bundle)) = ports.load_clean_startup_active_catalog()? {
             state.install_rebuilt(active, bundle)?;
         }
+        let generation = Arc::clone(&state.generation);
         Ok(Self {
+            view_id: NEXT_CURRENT_VIEW_ID.fetch_add(1, Ordering::Relaxed),
+            generation,
+            active_writers: AtomicUsize::new(0),
             state: RwLock::new(state),
         })
     }
@@ -566,7 +617,11 @@ impl CurrentCatalogView {
             .ok_or_else(poisoned_storage_bridge)?;
             state.install_rebuilt(active, bundle)?;
         }
+        let generation = Arc::clone(&state.generation);
         Ok(Self {
+            view_id: NEXT_CURRENT_VIEW_ID.fetch_add(1, Ordering::Relaxed),
+            generation,
+            active_writers: AtomicUsize::new(0),
             state: RwLock::new(state),
         })
     }
@@ -575,8 +630,30 @@ impl CurrentCatalogView {
         self.state.read().map_err(|_| poisoned_storage_bridge())
     }
 
-    fn write(&self) -> Result<RwLockWriteGuard<'_, CurrentCatalogViewState>, StorageError> {
-        self.state.write().map_err(|_| poisoned_storage_bridge())
+    fn write(&self) -> Result<CurrentCatalogViewWriteGuard<'_>, StorageError> {
+        self.active_writers.fetch_add(1, Ordering::AcqRel);
+        match self.state.write() {
+            Ok(guard) => Ok(CurrentCatalogViewWriteGuard {
+                guard: Some(guard),
+                active_writers: &self.active_writers,
+            }),
+            Err(_) => {
+                self.active_writers.fetch_sub(1, Ordering::Release);
+                Err(poisoned_storage_bridge())
+            }
+        }
+    }
+
+    fn fast_generation(&self) -> Option<(u64, u64)> {
+        if !self.state.is_poisoned() && self.active_writers.load(Ordering::Acquire) == 0 {
+            let generation = self.generation.load(Ordering::Acquire);
+            if !self.state.is_poisoned() && self.active_writers.load(Ordering::Acquire) == 0 {
+                return Some((self.view_id, generation));
+            }
+        }
+        self.read()
+            .ok()
+            .map(|view| (self.view_id, view.generation.load(Ordering::Acquire)))
     }
 }
 
@@ -756,7 +833,7 @@ struct CurrentCapabilityViewState {
     /// generation (full re-evaluation). Generation is bumped inside
     /// [`CurrentCapabilityViewState::publish`] under the view write lock that
     /// also serializes revoke publication, so the window cannot widen.
-    generation: AtomicU64,
+    generation: Arc<AtomicU64>,
 }
 
 impl CurrentCapabilityViewState {
@@ -904,13 +981,47 @@ impl CurrentCapabilityViewState {
 }
 
 struct CurrentCapabilityView {
+    view_id: u64,
+    generation: Arc<AtomicU64>,
+    active_writers: AtomicUsize,
     state: RwLock<CurrentCapabilityViewState>,
+}
+
+struct CurrentCapabilityViewWriteGuard<'a> {
+    guard: Option<RwLockWriteGuard<'a, CurrentCapabilityViewState>>,
+    active_writers: &'a AtomicUsize,
+}
+
+impl std::ops::Deref for CurrentCapabilityViewWriteGuard<'_> {
+    type Target = CurrentCapabilityViewState;
+
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_ref().expect("write guard present")
+    }
+}
+
+impl std::ops::DerefMut for CurrentCapabilityViewWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_mut().expect("write guard present")
+    }
+}
+
+impl Drop for CurrentCapabilityViewWriteGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.guard.take();
+        self.active_writers.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl CurrentCapabilityView {
     fn cold() -> Self {
+        let state = CurrentCapabilityViewState::default();
+        let generation = Arc::clone(&state.generation);
         Self {
-            state: RwLock::new(CurrentCapabilityViewState::default()),
+            view_id: NEXT_CURRENT_VIEW_ID.fetch_add(1, Ordering::Relaxed),
+            generation,
+            active_writers: AtomicUsize::new(0),
+            state: RwLock::new(state),
         }
     }
 
@@ -929,7 +1040,11 @@ impl CurrentCapabilityView {
                 break;
             }
         }
+        let generation = Arc::clone(&state.generation);
         Ok(Self {
+            view_id: NEXT_CURRENT_VIEW_ID.fetch_add(1, Ordering::Relaxed),
+            generation,
+            active_writers: AtomicUsize::new(0),
             state: RwLock::new(state),
         })
     }
@@ -938,8 +1053,28 @@ impl CurrentCapabilityView {
         self.state.read().map_err(|_| poisoned_storage_bridge())
     }
 
-    fn write(&self) -> Result<RwLockWriteGuard<'_, CurrentCapabilityViewState>, StorageError> {
-        self.state.write().map_err(|_| poisoned_storage_bridge())
+    fn write(&self) -> Result<CurrentCapabilityViewWriteGuard<'_>, StorageError> {
+        self.active_writers.fetch_add(1, Ordering::AcqRel);
+        match self.state.write() {
+            Ok(guard) => Ok(CurrentCapabilityViewWriteGuard {
+                guard: Some(guard),
+                active_writers: &self.active_writers,
+            }),
+            Err(_) => {
+                self.active_writers.fetch_sub(1, Ordering::Release);
+                Err(poisoned_storage_bridge())
+            }
+        }
+    }
+
+    fn fast_generation(&self) -> Option<u64> {
+        if !self.state.is_poisoned() && self.active_writers.load(Ordering::Acquire) == 0 {
+            let generation = self.generation.load(Ordering::Acquire);
+            if !self.state.is_poisoned() && self.active_writers.load(Ordering::Acquire) == 0 {
+                return Some(generation);
+            }
+        }
+        self.read().ok().map(|view| view.generation())
     }
 }
 
@@ -1810,9 +1945,138 @@ impl CapabilityBootstrapAdministrationRepository for SharedRedbOperationalPorts 
     }
 }
 
+const LOCAL_CAPABILITY_VIEW_CACHE_CAP: usize = 32;
+
+#[derive(Default)]
+struct LocalCurrentViewCache {
+    catalog_pointer: Option<((u64, u64), Option<ActiveCatalogPointerV1>)>,
+    capability_generation: Option<(u64, u64)>,
+    capability_by_id: Vec<(CapabilityId, StoredCapabilityRecordV1)>,
+    capability_by_id_next: usize,
+    capability_by_digest: Vec<(CapabilityTokenDigest, StoredCapabilityRecordV1)>,
+    capability_by_digest_next: usize,
+}
+
+impl LocalCurrentViewCache {
+    fn sync_capability_generation(&mut self, key: (u64, u64)) {
+        if self.capability_generation != Some(key) {
+            self.capability_generation = Some(key);
+            self.capability_by_id.clear();
+            self.capability_by_id_next = 0;
+            self.capability_by_digest.clear();
+            self.capability_by_digest_next = 0;
+        }
+    }
+
+    fn get_by_id(
+        &self,
+        key: (u64, u64),
+        capability_id: CapabilityId,
+    ) -> Option<StoredCapabilityRecordV1> {
+        if self.capability_generation != Some(key) {
+            return None;
+        }
+        self.capability_by_id
+            .iter()
+            .find(|(id, _)| *id == capability_id)
+            .map(|(_, record)| record.clone())
+    }
+
+    fn insert_by_id(
+        &mut self,
+        key: (u64, u64),
+        capability_id: CapabilityId,
+        record: StoredCapabilityRecordV1,
+    ) {
+        self.sync_capability_generation(key);
+        if let Some((_, existing)) = self
+            .capability_by_id
+            .iter_mut()
+            .find(|(id, _)| *id == capability_id)
+        {
+            *existing = record;
+            return;
+        }
+        if self.capability_by_id.len() < LOCAL_CAPABILITY_VIEW_CACHE_CAP {
+            self.capability_by_id.push((capability_id, record));
+        } else {
+            let slot = self.capability_by_id_next & (LOCAL_CAPABILITY_VIEW_CACHE_CAP - 1);
+            self.capability_by_id[slot] = (capability_id, record);
+            self.capability_by_id_next = (slot + 1) & (LOCAL_CAPABILITY_VIEW_CACHE_CAP - 1);
+        }
+    }
+
+    fn get_by_digest(
+        &self,
+        key: (u64, u64),
+        digest: CapabilityTokenDigest,
+    ) -> Option<StoredCapabilityRecordV1> {
+        if self.capability_generation != Some(key) {
+            return None;
+        }
+        self.capability_by_digest
+            .iter()
+            .find(|(d, _)| *d == digest)
+            .map(|(_, record)| record.clone())
+    }
+
+    fn insert_by_digest(
+        &mut self,
+        key: (u64, u64),
+        digest: CapabilityTokenDigest,
+        record: StoredCapabilityRecordV1,
+    ) {
+        self.sync_capability_generation(key);
+        if let Some((_, existing)) = self
+            .capability_by_digest
+            .iter_mut()
+            .find(|(d, _)| *d == digest)
+        {
+            *existing = record;
+            return;
+        }
+        if self.capability_by_digest.len() < LOCAL_CAPABILITY_VIEW_CACHE_CAP {
+            self.capability_by_digest.push((digest, record));
+        } else {
+            let slot = self.capability_by_digest_next & (LOCAL_CAPABILITY_VIEW_CACHE_CAP - 1);
+            self.capability_by_digest[slot] = (digest, record);
+            self.capability_by_digest_next = (slot + 1) & (LOCAL_CAPABILITY_VIEW_CACHE_CAP - 1);
+        }
+    }
+}
+
+thread_local! {
+    static LOCAL_CURRENT_VIEW_CACHE: RefCell<LocalCurrentViewCache> =
+        RefCell::new(LocalCurrentViewCache::default());
+}
+
 impl CatalogRepository for SharedRedbOperationalPorts {
     fn read_active_catalog(&self) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
-        Ok(self.catalog.read()?.active.clone())
+        if let Some(key) = self.catalog.fast_generation()
+            && let Some(cached) = LOCAL_CURRENT_VIEW_CACHE.with(|cell| {
+                let cache = cell.borrow();
+                cache
+                    .catalog_pointer
+                    .as_ref()
+                    .filter(|(k, _)| *k == key)
+                    .map(|(_, pointer)| pointer.clone())
+            })
+        {
+            return Ok(cached);
+        }
+        let view = self.catalog.read()?;
+        let key = (
+            self.catalog.view_id,
+            view.generation.load(Ordering::Acquire),
+        );
+        let active = view.active.clone();
+        drop(view);
+        LOCAL_CURRENT_VIEW_CACHE.with(|cell| {
+            if let Ok(mut cache) = cell.try_borrow_mut() {
+                cache.catalog_pointer = Some((key, active.clone()));
+            }
+        });
+        Ok(active)
     }
 
     fn read_contract_bundle(
@@ -1843,8 +2107,27 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         &self,
         capability_id: CapabilityId,
     ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
-        if let Some(record) = self.capabilities.read()?.records.get(&capability_id) {
-            return Ok(Some(record.clone()));
+        if let Some(generation) = self.capabilities.fast_generation() {
+            let key = (self.capabilities.view_id, generation);
+            if let Some(cached) =
+                LOCAL_CURRENT_VIEW_CACHE.with(|cell| cell.borrow().get_by_id(key, capability_id))
+            {
+                return Ok(Some(cached));
+            }
+        }
+        {
+            let view = self.capabilities.read()?;
+            if let Some(record) = view.records.get(&capability_id) {
+                let cloned = record.clone();
+                let key = (self.capabilities.view_id, view.generation());
+                drop(view);
+                LOCAL_CURRENT_VIEW_CACHE.with(|cell| {
+                    if let Ok(mut cache) = cell.try_borrow_mut() {
+                        cache.insert_by_id(key, capability_id, cloned.clone());
+                    }
+                });
+                return Ok(Some(cloned));
+            }
         }
         let record = CapabilityReader::read_capability(&self.shared, capability_id)?;
         if let Some(record) = record.as_ref() {
@@ -1864,15 +2147,38 @@ impl CapabilityReader for SharedRedbOperationalPorts {
         // two unreadable observations compare equal and admit a revision-checked
         // reissue over state nobody can read, so this fails closed with `None`
         // and the caller performs a full evaluation.
-        self.capabilities.read().ok().map(|view| view.generation())
+        self.capabilities.fast_generation()
     }
 
     fn resolve_capability_digests(
         &self,
         candidates: &[CapabilityTokenDigest],
     ) -> Result<CapabilityLookupResult, StorageError> {
-        if let Some(cached) = self.capabilities.read()?.resolve(candidates) {
-            return Ok(cached);
+        if let [single] = candidates
+            && let Some(generation) = self.capabilities.fast_generation()
+        {
+            let key = (self.capabilities.view_id, generation);
+            if let Some(cached) =
+                LOCAL_CURRENT_VIEW_CACHE.with(|cell| cell.borrow().get_by_digest(key, *single))
+            {
+                return Ok(CapabilityLookupResult::Found(Box::new(cached)));
+            }
+        }
+        {
+            let view = self.capabilities.read()?;
+            if let Some(cached) = view.resolve(candidates) {
+                if let ([single], CapabilityLookupResult::Found(record)) = (candidates, &cached) {
+                    let key = (self.capabilities.view_id, view.generation());
+                    let cloned = (**record).clone();
+                    drop(view);
+                    LOCAL_CURRENT_VIEW_CACHE.with(|cell| {
+                        if let Ok(mut cache) = cell.try_borrow_mut() {
+                            cache.insert_by_digest(key, *single, cloned);
+                        }
+                    });
+                }
+                return Ok(cached);
+            }
         }
         let result = CapabilityReader::resolve_capability_digests(&self.shared, candidates)?;
         let mut view = self.capabilities.write()?;

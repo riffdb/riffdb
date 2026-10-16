@@ -417,15 +417,20 @@ messages
   riffdb.app.v1.ProjectedAggregate fields=2
     1 field optional string
     2 op optional .riffdb.app.v1.ProjectedAggregateOp
+  riffdb.app.v1.ProjectedAggregateExactMean fields=2
+    1 total optional .riffdb.v1.Decimal
+    2 count optional uint64
   riffdb.app.v1.ProjectedAggregateGroup fields=2
     1 keys repeated .riffdb.v1.Value
     2 values repeated .riffdb.app.v1.ProjectedAggregateValue
   riffdb.app.v1.ProjectedAggregateScalar fields=1
     1 value optional .riffdb.v1.Value proto3-optional oneof=_value
-  riffdb.app.v1.ProjectedAggregateValue fields=3
+  riffdb.app.v1.ProjectedAggregateValue fields=5
     1 count optional uint64 oneof=value
     2 sum optional .riffdb.v1.Decimal oneof=value
     3 scalar optional .riffdb.app.v1.ProjectedAggregateScalar oneof=value
+    4 exact_mean optional .riffdb.app.v1.ProjectedAggregateExactMean oneof=value
+    5 boolean optional bool oneof=value
   riffdb.app.v1.ProjectedOrder fields=2
     1 field optional string
     2 descending optional bool
@@ -3346,12 +3351,18 @@ enums
     1 NAMED_RESULT_ENCODING_LEGACY_RECORDS
     2 NAMED_RESULT_ENCODING_COMPACT_V1
     3 NAMED_RESULT_ENCODING_PACKED_V1
-  riffdb.app.v1.ProjectedAggregateOp values=5
+  riffdb.app.v1.ProjectedAggregateOp values=11
     0 PROJECTED_AGGREGATE_OP_UNSPECIFIED
     1 PROJECTED_AGGREGATE_OP_COUNT
     2 PROJECTED_AGGREGATE_OP_SUM
     3 PROJECTED_AGGREGATE_OP_MIN
     4 PROJECTED_AGGREGATE_OP_MAX
+    5 PROJECTED_AGGREGATE_OP_MEAN
+    6 PROJECTED_AGGREGATE_OP_ANY
+    7 PROJECTED_AGGREGATE_OP_ALL
+    8 PROJECTED_AGGREGATE_OP_COUNT_PRESENT
+    9 PROJECTED_AGGREGATE_OP_COUNT_DISTINCT
+    10 PROJECTED_AGGREGATE_OP_COUNT_DISTINCT_PRESENT
   riffdb.app.v1.ProjectedDegradedReason values=4
     0 PROJECTED_DEGRADED_REASON_UNSPECIFIED
     1 PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO

@@ -1,13 +1,8 @@
-#![expect(
-    clippy::expect_used,
-    reason = "the fixed one-row application-head observation satisfies the bounded page contract"
-)]
-
 //! Production catalog and authoritative-read adapters for the API-neutral service.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
-#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -57,11 +52,10 @@ use riffdb_storage_api::{
     StoredProvenanceRecordV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
     VectorObservationRepository, VectorObservationTargetV1,
 };
-#[cfg(test)]
-use riffdb_types::QueryOperationName;
 use riffdb_types::{
-    CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
-    Environment, FrontierPosition, QueryModuleHash, ReactiveModuleHash,
+    CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, DatabaseId, Environment, FrontierPosition, QueryModuleHash,
+    QueryOperationName, ReactiveModuleHash,
 };
 
 const MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES: u16 = 256;
@@ -122,11 +116,14 @@ fn contract_version_pool_dispatch_count() -> u64 {
     CONTRACT_VERSION_POOL_DISPATCHES.load(Ordering::Relaxed)
 }
 
+static NEXT_CATALOG_READ_PORT_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Default)]
 struct ActiveCatalogView {
     /// Published snapshot is immutable; publication replaces the Arc.
     /// Cache hits hand out `Arc::clone` instead of cloning catalog contents.
     snapshot: Option<Arc<ActiveCatalogSnapshot>>,
+    generation: Arc<AtomicU64>,
 }
 
 impl ActiveCatalogView {
@@ -143,7 +140,16 @@ impl ActiveCatalogView {
         }
     }
 
+    fn matches(&self, pointer: Option<&ActiveCatalogPointerV1>) -> bool {
+        match (pointer, self.snapshot.as_ref()) {
+            (None, None) => true,
+            (Some(pointer), Some(snapshot)) => snapshot.pointer() == pointer,
+            _ => false,
+        }
+    }
+
     fn replace(&mut self, snapshot: Option<Arc<ActiveCatalogSnapshot>>) {
+        self.generation.fetch_add(1, Ordering::Release);
         self.snapshot = snapshot;
     }
 }
@@ -392,6 +398,7 @@ impl ExactNamedQueryView {
 
 fn publish_exact_named_queries(
     view: &RwLock<Arc<ExactNamedQueryView>>,
+    generation: &AtomicU64,
     contract: &ValidatedContractBundle,
     module: &ValidatedQueryModule,
 ) -> Result<(), QueryModuleReadError> {
@@ -401,6 +408,7 @@ fn publish_exact_named_queries(
     }
     let mut successor = ExactNamedQueryView::clone(published.as_ref());
     successor.insert_module(contract, module);
+    generation.fetch_add(1, Ordering::Release);
     *published = Arc::new(successor);
     Ok(())
 }
@@ -415,6 +423,10 @@ pub(crate) trait CatalogReadSource:
         version: ContractVersion,
         hash: riffdb_types::ContractBundleHash,
     ) -> Option<Option<riffdb_storage_api::ActiveQueryModulePointerV1>>;
+
+    fn catalog_view_generation(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 impl CatalogReadSource for SharedRedbOperationalPorts {
     fn cached_active_query_module(
@@ -425,12 +437,30 @@ impl CatalogReadSource for SharedRedbOperationalPorts {
     ) -> Option<Option<riffdb_storage_api::ActiveQueryModulePointerV1>> {
         SharedRedbOperationalPorts::cached_active_query_module(self, lineage, version, hash)
     }
+
+    fn catalog_view_generation(&self) -> Option<(u64, u64)> {
+        SharedRedbOperationalPorts::catalog_view_generation(self)
+    }
+}
+
+#[derive(Default)]
+struct LocalExactNamedQueryCache {
+    key: Option<(u64, u64, u64, u64, u64)>,
+    next_evict: usize,
+    entries: Vec<(ExactNamedQueryRequest, ResolvedNamedQuery)>,
+}
+
+thread_local! {
+    static LOCAL_EXACT_NAMED_QUERY_CACHE: RefCell<LocalExactNamedQueryCache> =
+        RefCell::new(LocalExactNamedQueryCache::default());
 }
 
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort<S = SharedRedbOperationalPorts> {
+    port_id: u64,
     active_storage: S,
     active_cache: Arc<RwLock<ActiveCatalogView>>,
+    active_cache_generation: Arc<AtomicU64>,
     /// Exact immutable bundles already proved by the blocking catalog path.
     /// Shared reads let generated clients reuse their pinned contract identity
     /// without resubmitting every named query to the blocking worker pool.
@@ -456,6 +486,7 @@ pub(crate) struct ServerCatalogReadPort<S = SharedRedbOperationalPorts> {
     module_storage: S,
     module_cache: Arc<RwLock<QueryModulePlanCache>>,
     exact_named_queries: Arc<RwLock<Arc<ExactNamedQueryView>>>,
+    exact_named_queries_generation: Arc<AtomicU64>,
 }
 
 impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
@@ -465,7 +496,9 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(storage: S, driver: &BlockingPortDriver) -> Self {
-        let active_cache = Arc::new(RwLock::new(ActiveCatalogView::default()));
+        let active_view = ActiveCatalogView::default();
+        let active_cache_generation = Arc::clone(&active_view.generation);
+        let active_cache = Arc::new(RwLock::new(active_view));
         let active_storage = storage.clone();
         let reserved_active_storage = storage.clone();
         let reserved_active_cache = Arc::clone(&active_cache);
@@ -515,14 +548,17 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
         let module_storage = storage.clone();
         let module_cache = Arc::new(RwLock::new(QueryModulePlanCache::default()));
         let exact_named_queries = Arc::new(RwLock::new(Arc::new(ExactNamedQueryView::default())));
+        let exact_named_queries_generation = Arc::new(AtomicU64::new(0));
         let pool_module_storage = module_storage.clone();
         let pool_module_cache = Arc::clone(&module_cache);
         let pool_exact_named_queries = Arc::clone(&exact_named_queries);
+        let pool_exact_named_queries_generation = Arc::clone(&exact_named_queries_generation);
         let query_module = driver.executor(move |(contract, selected): QueryModuleReadRequest| {
             resolve_query_module_on_pool(
                 &pool_module_storage,
                 &pool_module_cache,
                 &pool_exact_named_queries,
+                &pool_exact_named_queries_generation,
                 contract,
                 selected,
             )
@@ -542,8 +578,10 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
         );
 
         Self {
+            port_id: NEXT_CATALOG_READ_PORT_ID.fetch_add(1, Ordering::Relaxed),
             active_storage,
             active_cache,
+            active_cache_generation,
             exact_contract_cache: historical,
             executable_plan_cache: plan_cache,
             active,
@@ -555,6 +593,7 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
             module_storage,
             module_cache,
             exact_named_queries,
+            exact_named_queries_generation,
         }
     }
 }
@@ -576,7 +615,7 @@ impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
         self.active_cache
             .try_read()
             .ok()
-            .is_some_and(|cache| cache.get(pointer.as_ref()).is_some())
+            .is_some_and(|cache| cache.matches(pointer.as_ref()))
     }
 }
 #[cfg(test)]
@@ -664,6 +703,61 @@ impl<S: CatalogReadSource> CatalogReadPort for ServerCatalogReadPort<S> {
 }
 
 impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
+    fn prepare_exact_named_query_borrowed(
+        &self,
+        control: &RequestControl,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+        contract_hash: ContractBundleHash,
+        module_hash: QueryModuleHash,
+        query_name: &QueryOperationName,
+    ) -> Result<Option<ResolvedNamedQuery>, QueryModuleReadError> {
+        if self.query_module.precheck(control).is_err() {
+            return Err(QueryModuleReadError::Unavailable);
+        }
+        let cache_key =
+            self.active_storage
+                .catalog_view_generation()
+                .map(|(view_id, catalog_gen)| {
+                    (
+                        self.port_id,
+                        view_id,
+                        catalog_gen,
+                        self.active_cache_generation.load(Ordering::Acquire),
+                        self.exact_named_queries_generation.load(Ordering::Acquire),
+                    )
+                });
+        if let Some(key) = cache_key
+            && let Some(cached) = LOCAL_EXACT_NAMED_QUERY_CACHE.with(|cell| {
+                let cache = cell.borrow();
+                if cache.key == Some(key) {
+                    cache.entries.iter().find_map(|(req, res)| {
+                        (req.query_name() == query_name
+                            && req.version() == version
+                            && req.module_hash() == module_hash
+                            && req.contract_hash() == contract_hash
+                            && req.lineage() == lineage)
+                            .then(|| res.clone())
+                    })
+                } else {
+                    None
+                }
+            })
+        {
+            return Ok(Some(cached));
+        }
+        self.prepare_exact_named_query(
+            control,
+            ExactNamedQueryRequest::new(
+                lineage.clone(),
+                version,
+                contract_hash,
+                module_hash,
+                query_name.clone(),
+            ),
+        )
+    }
+
     fn prepare_exact_named_query(
         &self,
         control: &RequestControl,
@@ -672,14 +766,78 @@ impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
         if self.query_module.precheck(control).is_err() {
             return Err(QueryModuleReadError::Unavailable);
         }
+        let cache_key =
+            self.active_storage
+                .catalog_view_generation()
+                .map(|(view_id, catalog_gen)| {
+                    (
+                        self.port_id,
+                        view_id,
+                        catalog_gen,
+                        self.active_cache_generation.load(Ordering::Acquire),
+                        self.exact_named_queries_generation.load(Ordering::Acquire),
+                    )
+                });
+        if let Some(key) = cache_key
+            && let Some(cached) = LOCAL_EXACT_NAMED_QUERY_CACHE.with(|cell| {
+                let cache = cell.borrow();
+                if cache.key == Some(key) {
+                    cache
+                        .entries
+                        .iter()
+                        .find_map(|(req, res)| (req == &request).then(|| res.clone()))
+                } else {
+                    None
+                }
+            })
+        {
+            return Ok(Some(cached));
+        }
         if !self.active_metadata_is_current() {
             return Ok(None);
         }
-        Ok(self
+        let result = self
             .exact_named_queries
             .try_read()
             .ok()
-            .and_then(|published| published.get(&request)))
+            .and_then(|published| published.get(&request));
+        if let (Some(key), Some(resolved)) = (cache_key, &result) {
+            let after_key =
+                self.active_storage
+                    .catalog_view_generation()
+                    .map(|(view_id, catalog_gen)| {
+                        (
+                            self.port_id,
+                            view_id,
+                            catalog_gen,
+                            self.active_cache_generation.load(Ordering::Acquire),
+                            self.exact_named_queries_generation.load(Ordering::Acquire),
+                        )
+                    });
+            if after_key == Some(key) {
+                LOCAL_EXACT_NAMED_QUERY_CACHE.with(|cell| {
+                    if let Ok(mut cache) = cell.try_borrow_mut() {
+                        if cache.key != Some(key) {
+                            cache.key = Some(key);
+                            cache.next_evict = 0;
+                            cache.entries.clear();
+                        }
+                        if cache.entries.iter().any(|(req, _)| req == &request) {
+                            return;
+                        }
+                        let new_entry = (request, resolved.clone());
+                        if cache.entries.len() < 64 {
+                            cache.entries.push(new_entry);
+                        } else {
+                            let slot = cache.next_evict & 63;
+                            cache.entries[slot] = new_entry;
+                            cache.next_evict = (slot + 1) & 63;
+                        }
+                    }
+                });
+            }
+        }
+        Ok(result)
     }
 
     fn prepare_active_query_module<'a>(
@@ -696,7 +854,12 @@ impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
                 try_cached_query_module(&self.module_storage, &self.module_cache, &contract, None)
         {
             let publication = module.as_ref().map_or(Ok(()), |resolved| {
-                publish_exact_named_queries(&self.exact_named_queries, &contract, resolved)
+                publish_exact_named_queries(
+                    &self.exact_named_queries,
+                    &self.exact_named_queries_generation,
+                    &contract,
+                    resolved,
+                )
             });
             return Box::pin(async move { publication.map(|()| module) });
         }
@@ -719,7 +882,12 @@ impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
             )
         {
             let publication = module.as_ref().map_or(Ok(()), |resolved| {
-                publish_exact_named_queries(&self.exact_named_queries, &contract, resolved)
+                publish_exact_named_queries(
+                    &self.exact_named_queries,
+                    &self.exact_named_queries_generation,
+                    &contract,
+                    resolved,
+                )
             });
             return Box::pin(async move { publication.map(|()| module) });
         }
@@ -785,6 +953,7 @@ fn resolve_query_module_on_pool<S: CatalogReadSource>(
     storage: &S,
     cache: &RwLock<QueryModulePlanCache>,
     exact_named_queries: &RwLock<Arc<ExactNamedQueryView>>,
+    exact_named_queries_generation: &AtomicU64,
     contract: ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
 ) -> Result<Option<ValidatedQueryModule>, QueryModuleReadError> {
@@ -807,7 +976,12 @@ fn resolve_query_module_on_pool<S: CatalogReadSource>(
         .map_err(|_| QueryModuleReadError::Integrity)?
         .get(module_hash, &contract)
     {
-        publish_exact_named_queries(exact_named_queries, &contract, &module)?;
+        publish_exact_named_queries(
+            exact_named_queries,
+            exact_named_queries_generation,
+            &contract,
+            &module,
+        )?;
         return Ok(Some(module));
     }
     let module = QueryModuleRepository::read_query_module(storage, module_hash)
@@ -821,7 +995,12 @@ fn resolve_query_module_on_pool<S: CatalogReadSource>(
             .write()
             .map_err(|_| QueryModuleReadError::Integrity)?
             .insert(module.clone());
-        publish_exact_named_queries(exact_named_queries, &contract, module)?;
+        publish_exact_named_queries(
+            exact_named_queries,
+            exact_named_queries_generation,
+            &contract,
+            module,
+        )?;
     }
     Ok(module)
 }
@@ -1094,19 +1273,31 @@ impl ServerAuthoritativeReadPort {
         let commit =
             driver.executor(move |sequence| read_commit(&commit_storage, &commit_cache, sequence));
 
+        let head_inline_storage = storage.clone();
         let head_storage = storage.clone();
-        let head_cache = Arc::clone(&catalog.executable_plan_cache);
-        let application_head = driver.executor(move |()| {
-            scan_commits(
-                &head_storage,
-                &head_cache,
-                AuthoritativeCommitScanRequest::initial(
-                    riffdb_service::PageLimit::new(1)
-                        .expect("one application-head observation is bounded"),
-                ),
-            )
-            .map(|page| page.inclusive_upper())
-        });
+        let application_head = driver.executor_with_inline_fast_path(
+            move |()| {
+                head_inline_storage
+                    .try_cached_application_frontier()
+                    .map(|head| {
+                        Ok(head.map_or(
+                            FrontierPosition::BeforeFirst,
+                            FrontierPosition::AppliedThrough,
+                        ))
+                    })
+            },
+            move |()| {
+                head_storage
+                    .read_application_frontier()
+                    .map(|head| {
+                        head.map_or(
+                            FrontierPosition::BeforeFirst,
+                            FrontierPosition::AppliedThrough,
+                        )
+                    })
+                    .map_err(map_storage_error)
+            },
+        );
 
         let scan_storage = storage.clone();
         let scan_cache = Arc::clone(&catalog.executable_plan_cache);
@@ -1175,6 +1366,10 @@ impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
         PortAdmissionError,
     > {
         ready_port_reservation(self.vector_evidence.reserve_async(control))
+    }
+
+    fn try_cached_application_head(&self, control: &RequestControl) -> Option<FrontierPosition> {
+        self.application_head.try_inline(control, &())?.ok()
     }
 
     fn reserve_application_head<'a>(

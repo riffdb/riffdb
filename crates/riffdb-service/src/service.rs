@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use riffdb_commit::{
@@ -637,6 +637,40 @@ impl RiffDbService {
         Box::pin(trusted_service_job_completion(receipt))
     }
 
+    pub(crate) fn spawn_query_operation<T, F>(
+        &self,
+        operation: ServiceOperationV1,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        future: F,
+    ) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        if let Err(failure) = self.inner.executors.admit_operation(operation) {
+            return Box::pin(async move { Err(failure) });
+        }
+        let job_inner = Arc::clone(&self.inner);
+        let spawner = Arc::clone(&self.inner.providers.spawner);
+        let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+        let spawn_submitted_at = Instant::now();
+        let observed = Box::pin(async move {
+            observe_operation(
+                job_inner.as_ref(),
+                operation,
+                ingress,
+                future,
+                lifecycle,
+                Some(spawn_submitted_at),
+            )
+            .await
+        });
+        Box::pin(InlineOrSpawnedQueryJob {
+            spawner,
+            observed: Some(observed),
+        })
+    }
+
     pub(crate) fn spawn_maintenance_operation<T, F>(&self, future: F) -> ServiceFuture<'static, T>
     where
         T: ServiceResponseCharge + Send + 'static,
@@ -868,6 +902,42 @@ async fn trusted_service_job_completion<T>(
         Ok(result) => result,
         Err(PortDriverStopped) => {
             panic!("accepted service job stopped without publishing its result")
+        }
+    }
+}
+
+struct InlineOrSpawnedQueryJob<T: Send + 'static> {
+    spawner: Arc<dyn ServiceJobSpawner>,
+    observed: Option<Pin<Box<dyn Future<Output = ServiceResult<T>> + Send + 'static>>>,
+}
+
+impl<T: Send + 'static> Future for InlineOrSpawnedQueryJob<T> {
+    type Output = ServiceResult<T>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        let Some(observed) = this.observed.as_mut() else {
+            panic!("completed query operation polled after completion");
+        };
+        match observed.as_mut().poll(context) {
+            Poll::Ready(result) => {
+                this.observed = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for InlineOrSpawnedQueryJob<T> {
+    fn drop(&mut self) {
+        if let Some(observed) = self.observed.take() {
+            spawn_trusted_service_job(
+                self.spawner.as_ref(),
+                Box::pin(async move {
+                    let _ = observed.await;
+                }),
+            );
         }
     }
 }

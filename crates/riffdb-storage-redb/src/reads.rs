@@ -827,16 +827,18 @@ pub(crate) fn read_entity_record_access(
     access: &RedbReadAccess,
     target: &EntityTarget,
 ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
-    let Some(encoded) =
-        access.read_value(JournalTable::Entities, encode_entity_key(target.key()))?
-    else {
-        return Ok(None);
-    };
-    let record = decode_entity_record_v1(&encoded)?.into_parts().0;
-    if record.target() != target {
-        return Err(corrupt());
-    }
-    Ok(Some(record))
+    access.decoded_cache().read_entity(target, || {
+        let Some(encoded) =
+            access.read_value(JournalTable::Entities, encode_entity_key(target.key()))?
+        else {
+            return Ok(None);
+        };
+        let record = decode_entity_record_v1(&encoded)?.into_parts().0;
+        if record.target() != target {
+            return Err(corrupt());
+        }
+        Ok(Some(record))
+    })
 }
 
 pub(crate) fn read_entity_record(

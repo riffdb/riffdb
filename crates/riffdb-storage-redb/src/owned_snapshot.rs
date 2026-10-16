@@ -59,7 +59,7 @@ use crate::store::{RedbOperationalPorts, RedbReadAccess};
 #[derive(Clone)]
 pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
-    derived: Option<std::sync::Arc<redb::ReadTransaction>>,
+    derived: std::sync::OnceLock<Option<std::sync::Arc<redb::ReadTransaction>>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
     shared: Option<std::sync::Arc<crate::store::SharedRedb>>,
     // Field order releases every read before the final retained lease/engine.
@@ -77,7 +77,7 @@ impl RedbOwnedSnapshot {
     pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
         Self {
             access,
-            derived: None,
+            derived: std::sync::OnceLock::new(),
             source_pins: None,
             shared: None,
             validated_custody: None,
@@ -105,7 +105,16 @@ impl RedbOwnedSnapshot {
     }
 
     pub(crate) fn derived_transaction(&self) -> Option<&redb::ReadTransaction> {
-        self.derived.as_deref()
+        self.derived
+            .get_or_init(|| {
+                let shared = self.shared.as_ref()?;
+                RedbOperationalPorts {
+                    shared: std::sync::Arc::clone(shared),
+                }
+                .open_derived_read_arc()
+                .ok()
+            })
+            .as_deref()
     }
 
     pub(crate) fn with_source_pins(
@@ -125,6 +134,7 @@ impl RedbOwnedSnapshot {
         let pins = self
             .source_pins
             .as_ref()
+            .or_else(|| self.shared.as_ref().map(|s| &s.derived_source_pins))
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         crate::RedbDerivedSourcePin::capture(self.access.clone(), std::sync::Arc::clone(pins))
     }
@@ -138,6 +148,7 @@ impl RedbOwnedSnapshot {
         let pins = self
             .source_pins
             .as_ref()
+            .or_else(|| self.shared.as_ref().map(|s| &s.derived_source_pins))
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         crate::RedbDerivedSourcePin::capture_admitted_v1(
             self.access.clone(),
@@ -147,14 +158,29 @@ impl RedbOwnedSnapshot {
     }
 }
 
+impl RedbReadAccess {
+    pub(crate) fn decoded_cache(&self) -> &crate::checkpoint_root::SnapshotDecodedCache {
+        match self {
+            Self::Current(root) | Self::Durable(root) => root.decoded_cache(),
+            Self::Composite(view) => view.decoded_cache(),
+        }
+    }
+}
+
+impl RedbOperationalPorts {
+    fn open_derived_read_arc(&self) -> Result<std::sync::Arc<redb::ReadTransaction>, StorageError> {
+        self.begin_derived_read().map(std::sync::Arc::new)
+    }
+}
+
 impl OwnedSnapshotReader for RedbOperationalPorts {
     type Snapshot<'a> = RedbOwnedSnapshot;
 
     fn open_owned_snapshot(&self) -> Result<Self::Snapshot<'_>, StorageError> {
         Ok(RedbOwnedSnapshot {
             access: self.begin_composite_read()?,
-            derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
-            source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
+            derived: std::sync::OnceLock::new(),
+            source_pins: None,
             shared: Some(std::sync::Arc::clone(&self.shared)),
             validated_custody: None,
         })
@@ -177,15 +203,17 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
 
     fn index_epoch(&self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
         self.verify_snapshot_custody()?;
-        let key = encode_partition_index_key(target);
-        let Some(encoded) = self.access.read_value(JournalTable::IndexEpochs, &key)? else {
-            return Ok(0);
-        };
-        let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
-        if epoch.target() != target {
-            return Err(corrupt());
-        }
-        Ok(epoch.epoch().get())
+        self.access.decoded_cache().index_epoch(target, || {
+            let key = encode_partition_index_key(target);
+            let Some(encoded) = self.access.read_value(JournalTable::IndexEpochs, &key)? else {
+                return Ok(0);
+            };
+            let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
+            if epoch.target() != target {
+                return Err(corrupt());
+            }
+            Ok(epoch.epoch().get())
+        })
     }
 
     fn scan_snapshot_index_range(
@@ -193,45 +221,49 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
         request: SnapshotIndexRangeRequestV1,
     ) -> Result<SnapshotIndexRangePageV1, StorageError> {
         self.verify_snapshot_custody()?;
-        let wanted = usize::from(request.limit().get());
-        let mut upper = request.upper().to_vec();
-        if request.upper_inclusive() {
-            upper.push(0);
-        }
-        let lower = request.lower();
-        let raw = match request.direction() {
-            SnapshotIndexDirectionV1::Forward => self.access.read_range(
-                JournalTable::SecondaryIndexes,
-                request.after().unwrap_or(lower),
-                &upper,
-                wanted.saturating_add(2),
-            )?,
-            SnapshotIndexDirectionV1::Reverse => self.access.read_range_reverse(
-                JournalTable::SecondaryIndexes,
-                lower,
-                request.after().unwrap_or(upper.as_slice()),
-                wanted.saturating_add(2),
-            )?,
-        };
-        let mut entries = Vec::with_capacity(wanted);
-        let mut has_more = false;
-        for (physical, encoded) in raw {
-            let key = decode_index_entry_key(&physical).map_err(|_| corrupt())?;
-            if request.after().is_some_and(|after| after == key.as_bytes())
-                || (!request.lower_inclusive() && key.as_bytes() == request.lower())
-                || (!request.upper_inclusive() && key.as_bytes() == request.upper())
-            {
-                continue;
-            }
-            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
-            if entries.len() == wanted {
-                has_more = true;
-                break;
-            }
-            let (entry, charge) = decoded.into_parts();
-            entries.push(EncodedPageItem::new(entry, charge));
-        }
-        SnapshotIndexRangePageV1::new(&request, entries, has_more).map_err(value_error)
+        self.access
+            .decoded_cache()
+            .scan_index_range(request, |request| {
+                let wanted = usize::from(request.limit().get());
+                let mut upper = request.upper().to_vec();
+                if request.upper_inclusive() {
+                    upper.push(0);
+                }
+                let lower = request.lower();
+                let raw = match request.direction() {
+                    SnapshotIndexDirectionV1::Forward => self.access.read_range(
+                        JournalTable::SecondaryIndexes,
+                        request.after().unwrap_or(lower),
+                        &upper,
+                        wanted.saturating_add(2),
+                    )?,
+                    SnapshotIndexDirectionV1::Reverse => self.access.read_range_reverse(
+                        JournalTable::SecondaryIndexes,
+                        lower,
+                        request.after().unwrap_or(upper.as_slice()),
+                        wanted.saturating_add(2),
+                    )?,
+                };
+                let mut entries = Vec::with_capacity(wanted);
+                let mut has_more = false;
+                for (physical, encoded) in raw {
+                    let key = decode_index_entry_key(&physical).map_err(|_| corrupt())?;
+                    if request.after().is_some_and(|after| after == key.as_bytes())
+                        || (!request.lower_inclusive() && key.as_bytes() == request.lower())
+                        || (!request.upper_inclusive() && key.as_bytes() == request.upper())
+                    {
+                        continue;
+                    }
+                    let decoded = decode_and_verify_index_entry(&key, &encoded)?;
+                    if entries.len() == wanted {
+                        has_more = true;
+                        break;
+                    }
+                    let (entry, charge) = decoded.into_parts();
+                    entries.push(EncodedPageItem::new(entry, charge));
+                }
+                SnapshotIndexRangePageV1::new(request, entries, has_more).map_err(value_error)
+            })
     }
 }
 

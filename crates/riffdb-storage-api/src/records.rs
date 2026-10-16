@@ -21,8 +21,8 @@ use riffdb_types::{
     ConflictKeyHash, ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId,
     EventTypeId, IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
     MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
-    RequestId, RowPolicyName, decode_canonical_value, encode_canonical_record, hash_entity_record,
-    hash_event, hash_partition_key,
+    RequestId, RowPolicyName, canonical_value_encoded_len, decode_canonical_value,
+    encode_canonical_record, hash_entity_record, hash_event, hash_partition_key,
 };
 
 use crate::{
@@ -91,8 +91,26 @@ pub enum DurabilityMode {
     Memory,
 }
 
+/// Shared projected field map on a [`StoredEntityRecordV1`].
+pub type ProjectedFieldMapV1 = Arc<std::collections::BTreeMap<Arc<str>, CanonicalValue>>;
+
+/// Cached materialized field projection on a [`StoredEntityRecordV1`].
+pub type ProjectedEntityFieldsV1 = (
+    Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ProjectedFieldMapV1,
+    Arc<[CanonicalValue]>,
+    u64,
+);
+
+#[derive(Default)]
+pub(crate) struct EntityProjectionsCacheV1 {
+    primary: std::sync::OnceLock<ProjectedEntityFieldsV1>,
+    secondary: std::sync::OnceLock<ProjectedEntityFieldsV1>,
+    extra: std::sync::RwLock<Vec<ProjectedEntityFieldsV1>>,
+}
+
 /// One authoritative canonical entity row.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct StoredEntityRecordV1 {
     target: EntityTarget,
     entity_version: EntityVersion,
@@ -100,9 +118,24 @@ pub struct StoredEntityRecordV1 {
     schema_binding: DurableKeySchemaBindingV1,
     fields: Arc<CanonicalRecord>,
     fields_encoded: Arc<[u8]>,
+    pub(crate) projections: Arc<EntityProjectionsCacheV1>,
     // Last: field data is destroyed before its provider ownership capture.
     provider_fields: ProviderEntityFieldCaptureV1,
 }
+
+impl PartialEq for StoredEntityRecordV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.entity_version == other.entity_version
+            && self.written_by_contract == other.written_by_contract
+            && self.schema_binding == other.schema_binding
+            && self.fields == other.fields
+            && self.fields_encoded == other.fields_encoded
+            && self.provider_fields == other.provider_fields
+    }
+}
+
+impl Eq for StoredEntityRecordV1 {}
 
 impl StoredEntityRecordV1 {
     /// Constructs a complete bounded entity row.
@@ -128,6 +161,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields: Arc::new(fields),
             fields_encoded: Arc::from(fields_encoded),
+            projections: Arc::default(),
             provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
@@ -161,6 +195,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields: Arc::new(fields),
             fields_encoded: Arc::from(fields_encoded),
+            projections: Arc::default(),
             provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
@@ -189,6 +224,7 @@ impl StoredEntityRecordV1 {
             schema_binding,
             fields,
             fields_encoded,
+            projections: Arc::default(),
             provider_fields: ProviderEntityFieldCaptureV1::default(),
         })
     }
@@ -221,6 +257,137 @@ impl StoredEntityRecordV1 {
     #[must_use]
     pub fn fields(&self) -> &CanonicalRecord {
         &self.fields
+    }
+
+    /// Creates a copy of this record with fresh, unshared projection cache slots and field allocations.
+    #[must_use]
+    pub fn thread_local_detach(&self) -> Self {
+        Self {
+            target: self.target.clone(),
+            entity_version: self.entity_version,
+            written_by_contract: self.written_by_contract,
+            schema_binding: self.schema_binding.clone(),
+            fields: Arc::new((*self.fields).clone()),
+            fields_encoded: Arc::from(self.fields_encoded.as_ref()),
+            projections: Arc::default(),
+            provider_fields: self.provider_fields.clone(),
+        }
+    }
+
+    /// Materializes or reuses a cached field projection and encoded field byte charge for `needed` sorted by `FieldId`.
+    #[must_use]
+    pub fn materialize_projected_fields(
+        &self,
+        needed: &Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ) -> Option<(ProjectedFieldMapV1, u64)> {
+        if let Some((cached_needed, cached_map, _, cached_bytes)) = self.projections.secondary.get()
+            && Arc::ptr_eq(cached_needed, needed)
+        {
+            return Some((Arc::clone(cached_map), *cached_bytes));
+        }
+        if let Some((cached_needed, cached_map, _, cached_bytes)) = self.projections.primary.get()
+            && Arc::ptr_eq(cached_needed, needed)
+        {
+            return Some((Arc::clone(cached_map), *cached_bytes));
+        }
+        self.materialize_projected_fields_with_values(needed)
+            .map(|(map, _, bytes)| (map, bytes))
+    }
+
+    /// Materializes or reuses a cached field projection, positional value slice, and encoded field byte charge for `needed` sorted by `FieldId`.
+    #[must_use]
+    pub fn materialize_projected_fields_with_values(
+        &self,
+        needed: &Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ) -> Option<(ProjectedFieldMapV1, Arc<[CanonicalValue]>, u64)> {
+        let primary = self.projections.primary.get();
+        if let Some((cached_needed, cached_map, cached_vals, cached_bytes)) = primary
+            && Arc::ptr_eq(cached_needed, needed)
+        {
+            return Some((
+                Arc::clone(cached_map),
+                Arc::clone(cached_vals),
+                *cached_bytes,
+            ));
+        }
+        let secondary = self.projections.secondary.get();
+        if let Some((cached_needed, cached_map, cached_vals, cached_bytes)) = secondary
+            && Arc::ptr_eq(cached_needed, needed)
+        {
+            return Some((
+                Arc::clone(cached_map),
+                Arc::clone(cached_vals),
+                *cached_bytes,
+            ));
+        }
+        if let Some((cached_needed, cached_map, cached_vals, cached_bytes)) = primary
+            && cached_needed.as_ref() == needed.as_ref()
+        {
+            return Some((
+                Arc::clone(cached_map),
+                Arc::clone(cached_vals),
+                *cached_bytes,
+            ));
+        }
+        if let Some((cached_needed, cached_map, cached_vals, cached_bytes)) = secondary
+            && cached_needed.as_ref() == needed.as_ref()
+        {
+            return Some((
+                Arc::clone(cached_map),
+                Arc::clone(cached_vals),
+                *cached_bytes,
+            ));
+        }
+        if let Ok(guard) = self.projections.extra.read() {
+            for (cached_needed, cached_map, cached_vals, cached_bytes) in guard.iter() {
+                if Arc::ptr_eq(cached_needed, needed) || cached_needed.as_ref() == needed.as_ref() {
+                    return Some((
+                        Arc::clone(cached_map),
+                        Arc::clone(cached_vals),
+                        *cached_bytes,
+                    ));
+                }
+            }
+        }
+        let record_fields = self.fields.fields();
+        let mut fields = std::collections::BTreeMap::new();
+        let mut fields_bytes = 0u64;
+        let mut cursor = 0usize;
+        for (field_id, name) in needed.iter() {
+            while cursor < record_fields.len() && record_fields[cursor].0.get() < field_id.get() {
+                cursor = cursor.saturating_add(1);
+            }
+            let (actual_id, value) = record_fields.get(cursor)?;
+            if actual_id != field_id {
+                return None;
+            }
+            let encoded_len = canonical_value_encoded_len(value).ok()?;
+            fields_bytes = fields_bytes
+                .checked_add(name.len() as u64)?
+                .checked_add(encoded_len as u64)?
+                .checked_add(160)?;
+            fields.insert(Arc::clone(name), value.clone());
+            cursor = cursor.saturating_add(1);
+        }
+        let values: Arc<[CanonicalValue]> = fields.values().cloned().collect::<Vec<_>>().into();
+        let map = Arc::new(fields);
+        let entry = (
+            Arc::clone(needed),
+            Arc::clone(&map),
+            Arc::clone(&values),
+            fields_bytes,
+        );
+        if self.projections.primary.set(entry.clone()).is_err()
+            && self.projections.secondary.set(entry.clone()).is_err()
+            && let Ok(mut guard) = self.projections.extra.write()
+            && guard.len() < 8
+            && !guard
+                .iter()
+                .any(|(k, _, _, _)| Arc::ptr_eq(k, needed) || k.as_ref() == needed.as_ref())
+        {
+            guard.push(entry);
+        }
+        Some((map, values, fields_bytes))
     }
 
     /// Returns the checked canonical encoding length retained at construction.
