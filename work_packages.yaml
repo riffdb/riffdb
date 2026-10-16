@@ -31636,3 +31636,33 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-868
+  name: Projected group-by canonical ordering, follower ANN graph cache parity, and transactional installer binary swap
+  tier: guarantee
+  depends_on: [WP-867]
+  objective: Implement ADR-0313. Order projected group-by buckets by canonical
+    compare_values order in riffdb-columnar, attach per-view NearestGraphCache
+    HNSW caching to FollowerColumnarRuntime in riffdb-server, make three-binary
+    publication rollback-safe in scripts/release-source-install, and reconcile
+    durable_local outbox retention documentation in docs/known-limitations.md
+    and docs/configuration.md.
+  requirements: [PRJ-002, PRJ-005, OQ-045, VEC-007, VEC-008, VEC-009, EFF-002, STO-010, DX-002, DX-014]
+  required_adrs: [ADR-0313, ADR-0086, ADR-0087, ADR-0091, ADR-0182, ADR-0229, ADR-0312]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-columnar/**, crates/riffdb-server/**, scripts/**, docs/**]
+  deliverables:
+  - Canonical compare_values group ordering in execute_group_by in crates/riffdb-columnar/src/query.rs
+  - Per-LocalView NearestGraphCache in FollowerColumnarRuntime in crates/riffdb-server/src/columnar_follower.rs
+  - Unit verification before binary swap and rollback-safe three-binary publication in scripts/release-source-install
+  - Updated docs/known-limitations.md, docs/configuration.md, docs/installation.md, and docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-868
+  exit_gate: Ad-hoc projected group-by emits groups in canonical value order,
+    follower vector queries warm and reuse NearestGraphCache above ann_threshold,
+    interrupted or failed binary installation rolls back all three binaries, and
+    unit/smoke/handbook checks pass.
+  standing_design_tests:
+    interface_safety: Follower ANN graph caching runs after full scalar predicate and principal-policy admission under ADR-0229 and is scoped to a single immutable LocalView. Binary rollback touches only the three product binaries in the target bin directory.
+    scale: Group sorting is bounded by max_group_cardinality (at most 10,000 groups), and follower ANN caching shares the process-wide 64 MiB ADR-0229 budget.
+  human_review_triggers:
+  - Follower ANN graph caching reuses a graph across different LocalView ordinals, frontiers, or policy bindings.
+  - Binary rollback deletes or overwrites server configuration, digest keys, or database files.
