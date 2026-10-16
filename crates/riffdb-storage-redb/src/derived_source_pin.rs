@@ -244,7 +244,7 @@ impl RedbDerivedSourcePin {
             Some(_) => return Err(integrity().into()),
             None => crate::owned_snapshot::provider_ownership::ProviderSnapshotOwnership::admit(
                 &self.access,
-                false,
+                None,
                 budget,
             )?,
         };

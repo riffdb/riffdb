@@ -74,7 +74,7 @@ impl Probe {
         let reader_held = shared.extent_scrubs.load(Ordering::Acquire) > 1
             || roots
                 .iter()
-                .filter_map(std::sync::Weak::upgrade)
+                .filter_map(crate::checkpoint_root::TrackedRootWeak::upgrade)
                 .any(|captured| captured.identity() < root);
         if shared.durable_root_publication.load(Ordering::Acquire) != root
             || shared.mutation_gate.is_busy()?

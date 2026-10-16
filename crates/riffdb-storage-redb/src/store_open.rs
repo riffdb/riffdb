@@ -548,11 +548,20 @@ impl RedbStore {
                 derived_source_pins: Arc::default(),
                 open_mode: open_mode.clone(),
                 follower_namespace: Mutex::new(None),
-                database: Arc::new(database),
+                database: EngineOwner::try_new(
+                    database,
+                    PRIMARY_REDB_CACHE_SIZE_BYTES,
+                    if open_mode.is_private_validation() {
+                        LocatorAllocationClass::Maintenance
+                    } else {
+                        LocatorAllocationClass::Ordinary
+                    },
+                )?,
                 checkpoint_rewrite,
                 restore_integrity,
                 outbox_stage_census: crate::outbox_stage_census::Census::default(),
                 derived: std::sync::OnceLock::new(),
+                empty_derived: std::sync::OnceLock::new(),
                 derived_open: std::sync::Mutex::new(()),
                 derived_in_memory: false,
                 derived_absent: AtomicBool::new(false),

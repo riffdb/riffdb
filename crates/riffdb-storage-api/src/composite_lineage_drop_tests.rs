@@ -3,9 +3,17 @@ use super::*;
 use std::sync::{Barrier, Weak};
 
 fn lineage() -> (Arc<OverlayLineageNode>, Weak<OverlayLineageNode>) {
+    let family = Arc::new(
+        riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+            OVERLAY_FAMILY_CONTROL_BYTES as u64,
+        ),
+    );
     let first = Arc::new(OverlayLineageNode {
         predecessor: None,
         keys: vec![(CompositeTableV1::Meta, 0_u64.to_be_bytes().into())].into_boxed_slice(),
+        _ownership: family
+            .register_member(lineage_key_charge(&[0; 8]).unwrap() as u64)
+            .unwrap(),
     });
     let oldest = Arc::downgrade(&first);
     let mut head = first;
@@ -14,6 +22,9 @@ fn lineage() -> (Arc<OverlayLineageNode>, Weak<OverlayLineageNode>) {
             predecessor: Some(head),
             keys: vec![(CompositeTableV1::Meta, (index as u64).to_be_bytes().into())]
                 .into_boxed_slice(),
+            _ownership: family
+                .register_member(lineage_key_charge(&[0; 8]).unwrap() as u64)
+                .unwrap(),
         });
     }
     assert!(
@@ -66,9 +77,15 @@ fn supported_lineage_retirement_preserves_shared_pins_without_recursive_stack_gr
     // Distinct successors make both destructors release their last references
     // to the shared predecessor, exercising the into_inner ownership race.
     let owners = [Arc::clone(&head), head].map(|predecessor| {
+        let ownership = predecessor
+            ._ownership
+            .family()
+            .register_member(std::mem::size_of::<OverlayLineageNode>() as u64 + 32)
+            .unwrap();
         Arc::new(OverlayLineageNode {
             predecessor: Some(predecessor),
             keys: Box::new([]),
+            _ownership: ownership,
         })
     });
     let start = Arc::new(Barrier::new(2));

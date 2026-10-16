@@ -16,13 +16,16 @@ use crate::locator_memory::{
     NativeLocatorPool,
 };
 use crate::transient::LocatorGeneration;
-use riffdb_types::exact_provider_budget_v1::{OwnershipCharge, ProviderBudget, Reservation};
+#[cfg(test)]
+use riffdb_types::exact_provider_budget_v1::Reservation;
+use riffdb_types::exact_provider_budget_v1::{OwnershipCharge, ProviderBudget};
 use riffdb_types::{DatabaseId, SchemaHash};
 
 static NATIVE_PROVIDER_ADMISSION: Mutex<()> = Mutex::new(());
 
 /// One bounded numerical plan covers both provider discovery and future
-/// completion. Lock order is global admission, capability, then generation.
+/// completion. Lock order is global admission, stable sharing-family guards,
+/// then capability/engine attachment guards and provider accounting.
 pub(crate) fn native_provider_admission_gate() -> Result<MutexGuard<'static, ()>, StorageError> {
     NATIVE_PROVIDER_ADMISSION
         .lock()
@@ -32,6 +35,24 @@ pub(crate) fn native_provider_admission_gate() -> Result<MutexGuard<'static, ()>
 struct ProviderBinding {
     budget: ProviderBudget,
     marker: Arc<OwnershipCharge>,
+}
+
+/// Holds the captured capability's binding slot while its complete family/
+/// engine plan is prepared. Final assignment is infallible and allocation-free.
+pub(crate) struct PreparedLocatorProviderBinding<'a> {
+    provider: std::sync::MutexGuard<'a, Option<ProviderBinding>>,
+    budget: ProviderBudget,
+}
+impl PreparedLocatorProviderBinding<'_> {
+    /// Marker comes from this plan's same-budget prepared family receipt.
+    pub(crate) fn commit(mut self, marker: Arc<OwnershipCharge>) {
+        if self.provider.is_none() {
+            *self.provider = Some(ProviderBinding {
+                budget: self.budget.clone(),
+                marker,
+            });
+        }
+    }
 }
 
 struct Completion {
@@ -98,12 +119,13 @@ impl LocatorCapability {
         generation: OnceLock<Result<LocatorGeneration, StorageErrorKind>>,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
-        let pool = NativeLocatorPool::global();
+        let pool = owner.family_pool();
         let completion = ChargedLocatorAllocation::try_new(
             &pool,
             class,
             std::mem::size_of::<crate::checkpoint_root::CheckpointRoot>()
                 + std::mem::size_of::<crate::composite_view::RedbCompositeReadView>()
+                + crate::checkpoint_root::ROOT_ALLOCATION_CONTROL_BYTES
                 + 128,
             || {
                 Ok(Completion {
@@ -193,23 +215,26 @@ impl LocatorCapability {
         self.require_complete().map(|_| ())
     }
 
-    pub(crate) fn descriptor_charge_bound(&self) -> Result<usize, StorageError> {
+    /// Both pending control and complete native directories use the original
+    /// construction family. Caller retains the captured access before locking.
+    pub(crate) fn provider_family_pool(&self) -> Result<Arc<NativeLocatorPool>, StorageError> {
         self.completion
             .as_ref()
-            .map(ChargedLocatorAllocation::retained_charge_bound)
+            .map(|state| state._owner.family_pool())
             .ok_or_else(|| StorageError::new(StorageErrorKind::Unavailable, None))
     }
 
-    /// Callers hold native_provider_admission_gate across the whole source plan.
-    /// Pending is physical retained control, never a membership/absence proof.
-    pub(crate) fn provider_ownership_needed(
+    pub(crate) fn prepare_provider_binding(
         &self,
         budget: &ProviderBudget,
-    ) -> Result<u64, StorageError> {
+    ) -> Result<PreparedLocatorProviderBinding<'_>, StorageError> {
         let state = self
             .completion
             .as_ref()
             .ok_or_else(|| StorageError::new(StorageErrorKind::Unavailable, None))?;
+        if let Some(Err(kind)) = state.generation.get() {
+            return Err(StorageError::new(*kind, None));
+        }
         let provider = state
             .provider
             .lock()
@@ -220,62 +245,39 @@ impl LocatorCapability {
         {
             return Err(StorageError::new(StorageErrorKind::Unavailable, None));
         }
-        match state.generation.get() {
-            Some(Ok(generation)) => generation.provider_ownership_needed(budget),
-            Some(Err(kind)) => Err(StorageError::new(*kind, None)),
-            None if provider.is_some() => Ok(0),
-            None => u64::try_from(state._owner.retained_charge_bound())
-                .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None)),
-        }
+        Ok(PreparedLocatorProviderBinding {
+            provider,
+            budget: budget.clone(),
+        })
     }
 
-    /// Every incremental byte has already been reserved by the caller's global
-    /// plan. For pending control, attach a fixed graph marker to the same owner
-    /// barrier; a later completed generation must join this graph before install.
+    /// Compatibility preflight. The global source plan instead holds the family
+    /// guard throughout preflight and private preparation to make its cut exact.
+    #[cfg(test)]
+    pub(crate) fn provider_ownership_needed(
+        &self,
+        budget: &ProviderBudget,
+    ) -> Result<u64, StorageError> {
+        // Never hold a capability binding mutex while acquiring a family guard.
+        drop(self.prepare_provider_binding(budget)?);
+        self.provider_family_pool()?
+            .lock_provider_family()?
+            .provider_ownership_needed(budget)
+    }
+
+    #[cfg(test)]
     pub(crate) fn admit_provider_ownership_from(
         &self,
         reservation: &mut Reservation,
         budget: &ProviderBudget,
     ) -> Result<Option<Arc<OwnershipCharge>>, StorageError> {
-        let state = self
-            .completion
-            .as_ref()
-            .ok_or_else(|| StorageError::new(StorageErrorKind::Unavailable, None))?;
-        let mut provider = state
-            .provider
-            .lock()
-            .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
-        if provider
-            .as_ref()
-            .is_some_and(|binding| !binding.marker.belongs_to(budget))
-        {
-            return Err(StorageError::new(StorageErrorKind::Unavailable, None));
-        }
-        match state.generation.get() {
-            Some(Ok(generation)) => generation
-                .admit_provider_ownership_from(reservation, budget)
-                .map(Some),
-            Some(Err(kind)) => Err(StorageError::new(*kind, None)),
-            None => {
-                if let Some(binding) = provider.as_ref() {
-                    return Ok(Some(Arc::clone(&binding.marker)));
-                }
-                let needed = u64::try_from(state._owner.retained_charge_bound())
-                    .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
-                let marker = reservation
-                    .split(needed)
-                    .and_then(Reservation::commit)
-                    .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
-                state
-                    ._owner
-                    .attach_provider_control_charge(Arc::clone(&marker))?;
-                *provider = Some(ProviderBinding {
-                    budget: budget.clone(),
-                    marker: Arc::clone(&marker),
-                });
-                Ok(Some(marker))
-            }
-        }
+        let pool = self.provider_family_pool()?;
+        let mut family = pool.lock_provider_family()?;
+        let binding = self.prepare_provider_binding(budget)?;
+        let prepared = family.prepare_provider_ownership(reservation, budget)?;
+        let marker = prepared.commit();
+        binding.commit(Arc::clone(&marker));
+        Ok(Some(marker))
     }
 
     pub(crate) fn source_binding(&self) -> Result<(DatabaseId, u64, SchemaHash), StorageError> {
@@ -378,21 +380,22 @@ impl LocatorCapability {
         if let Some((database, incarnation, _)) = state.binding.get() {
             generation.validate_database_incarnation(*database, *incarnation)?;
         }
-        if let Some(binding) = provider.as_ref() {
+        let provider_budget = provider.as_ref().map(|binding| binding.budget.clone());
+        drop(provider);
+        if let Some(budget) = provider_budget {
             // A private built generation is not yet reachable from the pinned
             // source. Refuse before the write-once publication if this existing
             // provider graph cannot retain its complete physical ownership.
-            let needed = generation.provider_ownership_needed(&binding.budget)?;
+            let needed = generation.provider_ownership_needed(&budget)?;
             // Keep a small parent control allowance because split deliberately
             // refuses consuming the complete parent reservation.
             let total = needed
                 .checked_add(128)
                 .ok_or_else(|| StorageError::new(StorageErrorKind::Unavailable, None))?;
-            let mut work = binding
-                .budget
+            let mut work = budget
                 .reserve(total)
                 .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
-            generation.admit_provider_ownership_from(&mut work, &binding.budget)?;
+            generation.admit_provider_ownership_from(&mut work, &budget)?;
         }
         state
             .generation
@@ -437,6 +440,39 @@ mod tests {
             )
             .unwrap();
         pending
+    }
+
+    fn pending_with_canonical_segment() -> (
+        LocatorCapability,
+        Arc<riffdb_storage_api::StoredCommandSegmentV1>,
+    ) {
+        let command =
+            crate::derived::follower_indexes::capsule(riffdb_types::CommitSequence::first());
+        let (segment, _) = crate::derived::follower_indexes::segment(vec![command], None);
+        let pending = LocatorCapability::try_pending(LocatorAllocationClass::Ordinary).unwrap();
+        pending
+            .bind_source(
+                segment.database_id(),
+                segment.history_incarnation(),
+                SchemaHash::from_bytes([8; 32]),
+            )
+            .unwrap();
+        (pending, Arc::new(segment))
+    }
+
+    fn exact_family_owned(capability: &LocatorCapability) -> u64 {
+        let pool = capability.provider_family_pool().unwrap();
+        let family = pool.lock_provider_family().unwrap();
+        family.provider_owned_bytes()
+    }
+
+    fn drop_pending_and_check_final_release(pending: LocatorCapability, budget: &ProviderBudget) {
+        let pool = pending.provider_family_pool().unwrap();
+        drop(pending);
+        while pool.drain_retired_step() {}
+        drop(pool);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
     }
 
     fn attach_provider(
@@ -492,7 +528,7 @@ mod tests {
     // req: OQ-040, TXN-042, STO-032
     #[test]
     fn pending_checkpoint_provider_binding_refuses_foreign_graph_and_charges_future_completion() {
-        let pending = bound_pending();
+        let (pending, segment) = pending_with_canonical_segment();
         let budget = ProviderBudget::new();
         let marker = attach_provider(&pending, &budget);
         assert!(pending.is_pending());
@@ -500,7 +536,9 @@ mod tests {
             pending.require_complete().err().unwrap().kind(),
             StorageErrorKind::Unavailable
         );
-        assert_eq!(budget.observation().unwrap().owned_bytes, marker.bytes());
+        let initially_owned = exact_family_owned(&pending);
+        assert_eq!(budget.observation().unwrap().owned_bytes, initially_owned);
+        assert!(initially_owned > marker.bytes());
         assert_eq!(pending.provider_ownership_needed(&budget).unwrap(), 0);
         let foreign = ProviderBudget::new();
         assert_eq!(
@@ -511,18 +549,34 @@ mod tests {
             StorageErrorKind::Unavailable
         );
         assert_eq!(foreign.observation().unwrap().owned_bytes, 0);
-        let generation = LocatorGeneration::try_empty_with_owner(
+        // The first cut covers only Pending controls. Build genuine canonical
+        // members afterwards with that same original construction owner.
+        let generation = LocatorGeneration::rebuild_test_segments_with_owner(
+            [Arc::clone(&segment)],
             pending.construction_owner().unwrap(),
             LocatorAllocationClass::Ordinary,
         )
         .unwrap();
-        let retained = generation.retained_ownership_bound().unwrap();
+        // Remove only unreferenced construction paths before measuring the
+        // exact live increment; the captured generation itself stays pinned.
+        while generation.provider_family_pool().drain_retired_step() {}
+        let new_physical = generation.provider_ownership_needed(&budget).unwrap();
+        assert!(new_physical > 0);
+        assert_eq!(budget.observation().unwrap().owned_bytes, initially_owned);
         pending.install_generation(generation).unwrap();
-        pending.require_complete().unwrap();
+        let completed = pending.require_complete().unwrap();
+        assert_eq!(completed.coverage(), Some(segment.last_commit_sequence()));
+        assert!(
+            completed
+                .capture_command_at(segment.first_commit_sequence())
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
-            marker.bytes() + retained
+            initially_owned + new_physical
         );
+        assert_eq!(exact_family_owned(&pending), initially_owned + new_physical);
         assert_eq!(
             pending
                 .provider_ownership_needed(&foreign)
@@ -530,21 +584,31 @@ mod tests {
                 .kind(),
             StorageErrorKind::Unavailable
         );
+        drop(marker);
+        drop_pending_and_check_final_release(pending, &budget);
     }
 
     // req: OQ-040, TXN-042, STO-032
     #[test]
     fn pending_checkpoint_completion_refuses_before_provider_growth_and_retries_same_owner() {
         use riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES;
-        let pending = bound_pending();
+        let (pending, segment) = pending_with_canonical_segment();
         let budget = ProviderBudget::new();
         let marker = attach_provider(&pending, &budget);
-        let generation = LocatorGeneration::try_empty_with_owner(
+        let generation = LocatorGeneration::rebuild_test_segments_with_owner(
+            [Arc::clone(&segment)],
             pending.construction_owner().unwrap(),
             LocatorAllocationClass::Ordinary,
         )
         .unwrap();
-        let retained = generation.retained_ownership_bound().unwrap();
+        // Remove only unreferenced construction paths before measuring the
+        // exact live increment; the captured generation itself stays pinned.
+        while generation.provider_family_pool().drain_retired_step() {}
+        let new_physical = generation.provider_ownership_needed(&budget).unwrap();
+        assert!(
+            new_physical > 0,
+            "canonical members were allocated after the initial cut"
+        );
         let before = budget.observation().unwrap();
         let pressure = budget
             .reserve(
@@ -568,17 +632,35 @@ mod tests {
         );
         assert_eq!(
             generation.provider_ownership_needed(&budget).unwrap(),
-            retained,
-            "a failed capacity reservation cannot attach private generation ownership"
+            new_physical,
+            "refused capacity cannot cover the newly allocated physical members"
         );
-        assert_eq!(budget.observation().unwrap().owned_bytes, marker.bytes());
-        drop(pressure);
-        pending.install_generation(generation).unwrap();
-        pending.require_complete().unwrap();
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
-            marker.bytes() + retained
+            before.owned_bytes
         );
+        assert_eq!(exact_family_owned(&pending), before.owned_bytes);
+        drop(pressure);
+        assert_eq!(budget.observation().unwrap(), before);
+        assert!(
+            pending
+                .construction_owner()
+                .unwrap()
+                .same_owner(&generation.owner_handle())
+        );
+        pending.install_generation(generation).unwrap();
+        let completed = pending.require_complete().unwrap();
+        assert_eq!(completed.coverage(), Some(segment.last_commit_sequence()));
+        assert_eq!(
+            budget.observation().unwrap().owned_bytes,
+            before.owned_bytes + new_physical
+        );
+        assert_eq!(
+            exact_family_owned(&pending),
+            before.owned_bytes + new_physical
+        );
+        drop(marker);
+        drop_pending_and_check_final_release(pending, &budget);
     }
 
     // req: OQ-040, TXN-042, STO-032
@@ -625,7 +707,6 @@ mod tests {
                 LocatorAllocationClass::Ordinary,
             )
             .unwrap();
-            let retained = generation.retained_ownership_bound().unwrap();
             let entered = Arc::new(std::sync::Barrier::new(2));
             if admission_first {
                 let admission = native_provider_admission_gate().unwrap();
@@ -652,8 +733,9 @@ mod tests {
                     installer.join().unwrap();
                     assert_eq!(
                         budget.observation().unwrap().owned_bytes,
-                        marker.bytes() + retained
+                        exact_family_owned(&pending)
                     );
+                    assert!(budget.observation().unwrap().owned_bytes > marker.bytes());
                 });
             } else {
                 let published = Arc::new(std::sync::Barrier::new(2));
@@ -674,11 +756,15 @@ mod tests {
                     pending.require_complete().unwrap();
                     published.wait();
                     drop(provider.join().unwrap());
-                    assert_eq!(budget.observation().unwrap().owned_bytes, retained);
+                    assert_eq!(
+                        budget.observation().unwrap().owned_bytes,
+                        exact_family_owned(&pending)
+                    );
                 });
             }
             pending.require_complete().unwrap();
             assert_eq!(pending.provider_ownership_needed(&budget).unwrap(), 0);
+            drop_pending_and_check_final_release(pending, &budget);
         }
     }
 

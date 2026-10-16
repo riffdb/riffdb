@@ -31,6 +31,16 @@ mod lifecycle;
 #[doc(hidden)]
 pub use lifecycle::ProviderOwnerAccounting;
 
+#[path = "exact_provider_physical_ownership.rs"]
+mod physical;
+#[doc(hidden)]
+pub use physical::{
+    PhysicalOwnershipBalance, PhysicalOwnershipFamily, PhysicalOwnershipFamilyGuard,
+    PhysicalOwnershipFamilyObservation, PhysicalOwnershipMember, PreparedPhysicalFamilyAdmission,
+    PreparedPhysicalOwnershipIncrement, PreparedSharedPhysicalOwnership,
+    SharedPhysicalOwnershipCell,
+};
+
 struct Accounting {
     limit: u64,
     counters: BudgetObservation,

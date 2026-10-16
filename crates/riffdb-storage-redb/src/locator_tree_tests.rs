@@ -280,3 +280,41 @@ fn locator_large_tree_retained_roots_share_paths_and_preserve_progress_headroom(
         pool.charged_bytes()
     );
 }
+
+// req: TXN-042, STO-032, REC-001, OQ-040
+#[test]
+fn locator_tree_rejects_foreign_physical_keys_and_children_before_publication() {
+    use crate::locator_memory::ChargedLocatorKey;
+    let infrastructure = NativeLocatorPool::isolated_for_tests();
+    let first = infrastructure
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let second = infrastructure
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let foreign_key =
+        ChargedLocatorKey::try_new(&second, LocatorAllocationClass::Ordinary, b"foreign").unwrap();
+    let original = LocatorTree::empty(Arc::clone(&first), LocatorAllocationClass::Ordinary);
+    assert_eq!(
+        original.try_insert(foreign_key, 1_u64).unwrap_err().kind(),
+        StorageErrorKind::InvariantViolation
+    );
+    assert!(original.is_empty());
+    let foreign = LocatorTree::empty(second, LocatorAllocationClass::Ordinary)
+        .try_insert(1_u64, 1_u64)
+        .unwrap();
+    let local = LocatorTree::empty(first, LocatorAllocationClass::Ordinary);
+    assert_eq!(
+        local
+            .node(2_u64, 2_u64, foreign.root.clone(), None)
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::InvariantViolation
+    );
+    assert_eq!(foreign.get(&1), Some(&1));
+    drop(foreign);
+    drop(local);
+    drop(original);
+    drain(&infrastructure);
+}

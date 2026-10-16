@@ -246,6 +246,9 @@ impl SegmentMetadata {
                         return Err(corrupt());
                     }
                     let key = ChargedLocatorKey::try_new(pool, class, entry.exact_key())?;
+                    // Original manifest keys and the metadata wrapper belong to
+                    // the same immutable sharing family before either publishes.
+                    key.validate_family_pool(pool)?;
                     metadata.key_ownership_bytes = metadata
                         .key_ownership_bytes
                         .checked_add(key.retained_charge_bound())
@@ -663,15 +666,19 @@ mod stub_match_tests {
             Arc::new(crate::media::RealJournalMedia),
         );
         let hash = [0x9c; 32];
-        let mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> = Arc::from(vec![
-            riffdb_storage_api::CompositeMutationV1::put(
-                riffdb_storage_api::CompositeTableV1::Commits,
-                crate::keys::encode_application_sequence_key(segment.first_commit_sequence())
-                    .to_vec(),
-                encoded.as_bytes().to_vec(),
-            )
-            .unwrap(),
-        ]);
+        let mutations = crate::changelog_v3_cursor::SourceMutations::try_new(
+            vec![
+                riffdb_storage_api::CompositeMutationV1::put(
+                    riffdb_storage_api::CompositeTableV1::Commits,
+                    crate::keys::encode_application_sequence_key(segment.first_commit_sequence())
+                        .to_vec(),
+                    encoded.as_bytes().to_vec(),
+                )
+                .unwrap(),
+            ],
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
         resolver.note_pending_frame(hash, &mutations);
         let stub = StubLocator {
             database_id: segment.database_id(),

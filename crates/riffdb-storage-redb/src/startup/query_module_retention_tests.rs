@@ -447,3 +447,143 @@ fn native_snapshot_keeps_primary_and_derived_engines_locked_after_ports_close() 
     drop(derived);
     drop(reopened);
 }
+
+// req: TXN-042, STO-032, REC-004, OQ-040, OUT-001
+#[test]
+fn published_retention_preserves_thirty_two_provider_source_pins() {
+    use riffdb_types::exact_provider_budget_v1::{EXACT_PROVIDER_BUDGET_BYTES, ProviderBudget};
+
+    const RETAINED_SOURCES: usize = 32;
+    let (_scope, ports, _) = successor_fixture();
+    let budget = ProviderBudget::new();
+    let original = ports.begin_composite_read().unwrap();
+    let one = CommitSequence::first();
+    let command_key = keys::encode_application_sequence_key(one);
+    let original_bytes = original
+        .read_value(crate::journal::JournalTable::Commits, &command_key)
+        .unwrap()
+        .expect("the acknowledged original command is present");
+    let command = crate::command_authority::command_member_at_access(&original, one)
+        .unwrap()
+        .unwrap();
+    let outcome = command.base().outcome().clone();
+    let provenance = command.base().provenance().clone();
+    let outcome_bytes = codec::encode_stored_outcome_v1(&outcome).unwrap();
+    let provenance_bytes = codec::encode_provenance_record_v1(&provenance).unwrap();
+    let identity_key = outcome.identity().storage_key().unwrap();
+    let identity = keys::encode_idempotency_key(&identity_key);
+    drop(command);
+    let before = crate::changelog_v3_cursor::history(&original).unwrap();
+    let mut retained = Vec::with_capacity(RETAINED_SOURCES);
+    for _ in 0..RETAINED_SOURCES {
+        let previously_admitted = budget.observation().unwrap().owned_bytes;
+        // Separate admissions exercise each source's engine/control allowance;
+        // their immutable generation's data ownership is shared honestly.
+        retained.push(
+            ports
+                .open_owned_snapshot()
+                .unwrap()
+                .with_provider_ownership_admitted_v1(&budget)
+                .unwrap(),
+        );
+        assert!(
+            budget.observation().unwrap().owned_bytes > previously_admitted,
+            "each distinct snapshot retains admitted source/control ownership"
+        );
+    }
+    let admitted = budget.observation().unwrap().owned_bytes;
+    assert!(admitted <= EXACT_PROVIDER_BUDGET_BYTES);
+
+    assert!(matches!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    ));
+    let current = ports.open_owned_snapshot().unwrap();
+    let access = current.complete_logical_access_for_test();
+    let after = crate::changelog_v3_cursor::history(access).unwrap();
+    assert_eq!(after.lineage(), before.lineage());
+    assert_eq!(after.tail().frontier(), before.tail().frontier());
+    assert_eq!(
+        after.tail().sequence().get(),
+        before.tail().sequence().get() + 1
+    );
+    assert!(
+        access
+            .read_value(crate::journal::JournalTable::Commits, &command_key)
+            .unwrap()
+            .is_none()
+    );
+    let current_generation = access.locator_capability().require_complete().unwrap();
+    assert!(!current_generation.has_command_at(one).unwrap());
+    assert!(
+        !current_generation
+            .has_command_member(
+                riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
+                identity,
+            )
+            .unwrap()
+    );
+
+    for snapshot in &retained {
+        let access = snapshot.complete_logical_access_for_test();
+        assert_eq!(
+            access
+                .read_value(crate::journal::JournalTable::Commits, &command_key)
+                .unwrap(),
+            Some(original_bytes.clone()),
+            "a real published prune cannot splice the current source into an old pin"
+        );
+        let generation = access.locator_capability().require_complete().unwrap();
+        assert!(generation.has_command_at(one).unwrap());
+        assert!(
+            generation
+                .has_command_member(
+                    riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
+                    identity,
+                )
+                .unwrap()
+        );
+    }
+    // Retention preserves these first-party authoritative records in its new
+    // source too; current locator absence is not outcome/provenance loss.
+    for snapshot in retained.iter().chain(std::iter::once(&current)) {
+        let actual_outcome = snapshot
+            .read_stored_outcome(outcome.identity())
+            .unwrap()
+            .unwrap();
+        let actual_provenance = snapshot
+            .read_provenance(provenance.provenance_id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual_outcome, outcome);
+        assert_eq!(actual_provenance, provenance);
+        assert_eq!(
+            codec::encode_stored_outcome_v1(&actual_outcome).unwrap(),
+            outcome_bytes
+        );
+        assert_eq!(
+            codec::encode_provenance_record_v1(&actual_provenance).unwrap(),
+            provenance_bytes
+        );
+    }
+    assert_eq!(budget.observation().unwrap().owned_bytes, admitted);
+    drop(current);
+    drop(original);
+    drop(ports);
+    drop(retained);
+    // Advance the real bounded reaper explicitly, without sleeps or relying on
+    // its scheduling. Each call retains the production 256-item work ceiling.
+    let pool = crate::locator_memory::NativeLocatorPool::global();
+    for _ in 0..4096 {
+        if budget.observation().unwrap().owned_bytes == 0 {
+            break;
+        }
+        pool.drain_retired_step();
+    }
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}

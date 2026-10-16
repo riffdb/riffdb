@@ -351,12 +351,23 @@ impl RedbWriteAccess {
                     previous_hash,
                     frame_hash,
                 )?;
-            let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
-                Arc::from(checkpoint_mutations);
+            let source_class = if matches!(
+                kind,
+                riffdb_storage_api::CompositeFrameKindV1::RetentionPrune
+                    | riffdb_storage_api::CompositeFrameKindV1::SourceReclamation
+            ) {
+                crate::locator_memory::LocatorAllocationClass::Maintenance
+            } else {
+                crate::locator_memory::LocatorAllocationClass::Ordinary
+            };
+            let checkpoint_mutations = crate::changelog_v3_cursor::SourceMutations::try_new(
+                checkpoint_mutations,
+                source_class,
+            )?;
             composite_successor.append_changelog_source(
                 changelog_successor,
                 attribution,
-                Arc::clone(&checkpoint_mutations),
+                checkpoint_mutations.clone(),
                 encoded_bytes,
             )?;
             if let Some(proof) = &source_cut {

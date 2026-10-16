@@ -1101,7 +1101,7 @@ impl OwnedValidatedMaterialization {
         // Archive conversion is bound to the immutable backup's exact history,
         // not a source-compatibility receipt appended to the private copy.
         validate_copied_database_facts(
-            read_database_facts(shared.database.as_ref())?,
+            read_database_facts(shared.database.database())?,
             &self.materialization.manifest,
         )?;
         drop(self.logical);
@@ -6536,7 +6536,7 @@ mod tests {
             .into_authorization()
             .unwrap();
         assert_eq!(
-            certificate(owner.shared.database.as_ref()),
+            certificate(owner.shared.database.database()),
             clean,
             "normal restore staging preserves exact immutable certificate bytes"
         );

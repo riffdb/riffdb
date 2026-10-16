@@ -259,6 +259,8 @@ pub(crate) struct SnapshotHistoryResolver {
     database_id: DatabaseId,
     location: ExtentLocation,
     media: Arc<dyn JournalMedia>,
+    // Moves into queued retirement; path/media drop before numerical ownership.
+    provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell,
 }
 pub(crate) type SnapshotHistoryResolverRef =
     crate::locator_memory::ChargedLocatorAllocation<SnapshotHistoryResolver>;
@@ -278,10 +280,16 @@ impl crate::locator_memory::LocatorRetireContents for SnapshotHistoryResolver {
                 ExtentLocation::Database(PathBuf::new()),
             ),
             media: Arc::clone(&self.media),
+            provider: std::mem::take(&mut self.provider),
         }
     }
 }
 impl SnapshotHistoryResolver {
+    pub(crate) fn provider_metadata_cell(
+        &self,
+    ) -> &riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell {
+        &self.provider
+    }
     pub(crate) fn resolve_commits_value<'a>(
         &self,
         bytes: &'a [u8],
@@ -311,7 +319,7 @@ impl SnapshotHistoryResolver {
 
 #[derive(Debug, Default)]
 struct PendingFrames {
-    frames: std::collections::HashMap<[u8; 32], Weak<[riffdb_storage_api::CompositeMutationV1]>>,
+    frames: std::collections::HashMap<[u8; 32], crate::changelog_v3_cursor::WeakSourceMutations>,
     /// Size at which dropped entries are next swept, keeping inserts O(1).
     sweep_at: usize,
 }
@@ -333,7 +341,7 @@ impl HistoryResolver {
         };
         let content_bytes = path_bytes
             .checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(128))
+            .and_then(|bytes| bytes.checked_add(256))
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
         crate::locator_memory::ChargedLocatorAllocation::try_new(
             &crate::locator_memory::NativeLocatorPool::global(),
@@ -344,6 +352,8 @@ impl HistoryResolver {
                     database_id: self.database_id,
                     location: self.location.clone(),
                     media: Arc::clone(&self.media),
+                    provider:
+                        riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
                 })
             },
         )
@@ -418,7 +428,7 @@ impl HistoryResolver {
     pub(crate) fn note_pending_frame(
         &self,
         frame_hash: [u8; 32],
-        mutations: &Arc<[riffdb_storage_api::CompositeMutationV1]>,
+        mutations: &crate::changelog_v3_cursor::SharedSourceMutations,
     ) {
         let Ok(mut pending) = self.pending.lock() else {
             return;
@@ -427,7 +437,7 @@ impl HistoryResolver {
             pending.frames.retain(|_, frame| frame.strong_count() > 0);
             pending.sweep_at = pending.frames.len().saturating_mul(2).max(64);
         }
-        pending.frames.insert(frame_hash, Arc::downgrade(mutations));
+        pending.frames.insert(frame_hash, mutations.downgrade());
     }
 
     fn pending_segment(&self, frame_hash: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
@@ -1080,14 +1090,18 @@ mod tests {
         let first = CommitSequence::new(7).expect("sequence");
         let key = crate::keys::encode_application_sequence_key(first);
         let segment = b"segment bytes the frame carries".to_vec();
-        let mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> = Arc::from(vec![
-            riffdb_storage_api::CompositeMutationV1::put(
-                riffdb_storage_api::CompositeTableV1::Commits,
-                key.to_vec(),
-                segment.clone(),
-            )
-            .expect("mutation"),
-        ]);
+        let mutations = crate::changelog_v3_cursor::SourceMutations::try_new(
+            vec![
+                riffdb_storage_api::CompositeMutationV1::put(
+                    riffdb_storage_api::CompositeTableV1::Commits,
+                    key.to_vec(),
+                    segment.clone(),
+                )
+                .expect("mutation"),
+            ],
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
         let frame_hash = [0x5a; 32];
         let stub = StubLocator {
             database_id,

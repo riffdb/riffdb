@@ -259,7 +259,8 @@ impl RedbValidatedPrivateArchiveRestore {
         {
             return Ok(snapshot);
         }
-        let database = Arc::new(read_only_database(&self.candidate.file)?);
+        let database =
+            crate::maintenance::archive_backup::owned_read_only_database(&self.candidate.file)?;
         let read = database.begin_read().map_err(unavailable)?;
         self.candidate.binding.validate(&read)?;
         if sha256_file(self.staged_database_file())? != self.checksum {

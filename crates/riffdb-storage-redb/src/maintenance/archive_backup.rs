@@ -197,6 +197,19 @@ impl RedbVerifiedArchiveBackup {
     }
 }
 
+const READ_ONLY_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+pub(in crate::maintenance) fn owned_read_only_database(
+    file: &File,
+) -> Result<std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>, StorageError>
+{
+    crate::engine_owner::EngineOwner::try_new(
+        read_only_database(file)?,
+        READ_ONLY_CACHE_BYTES,
+        crate::locator_memory::LocatorAllocationClass::Maintenance,
+    )
+}
+
 #[cfg(target_os = "linux")]
 pub(in crate::maintenance) fn read_only_database(
     file: &File,
@@ -204,7 +217,7 @@ pub(in crate::maintenance) fn read_only_database(
     use std::os::fd::AsRawFd;
     // Same retained-inode read-only open used by bootstrap publication.
     redb::Database::builder()
-        .set_cache_size(64 * 1024 * 1024)
+        .set_cache_size(READ_ONLY_CACHE_BYTES)
         .open_read_only(format!("/proc/self/fd/{}", file.as_raw_fd()))
         .map_err(unavailable)
 }

@@ -7,6 +7,7 @@ mod read_census;
 mod locator_root_tracking;
 use locator_root_tracking::RootTracking;
 
+mod async_checkpoint_install;
 mod checkpoint_completion;
 mod source_reclamation_drain;
 use checkpoint_completion::{CheckpointCompletion, CheckpointPublisher};
@@ -150,6 +151,7 @@ use crate::codec::{
 };
 
 use crate::checkpoint_root::CheckpointRoot;
+use crate::engine_owner::EngineOwner;
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
@@ -438,7 +440,7 @@ pub(crate) struct SharedRedb {
     pub(crate) derived_source_pins: Arc<crate::derived_source_pin::DerivedSourcePins>,
     open_mode: OpenMode,
     follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
-    pub(crate) database: Arc<Database>,
+    pub(crate) database: Arc<EngineOwner<Database>>,
     pub(super) checkpoint_rewrite: Arc<crate::checkpoint_rewrite::CheckpointRewrite>,
     pub(super) restore_integrity: Option<crate::maintenance::RestoreIntegrityBinding>,
     pub(crate) outbox_stage_census: crate::outbox_stage_census::Census,
@@ -446,7 +448,10 @@ pub(crate) struct SharedRedb {
     /// acquire `mutation_gate` or the primary store's write transaction.
     /// Opened on first derived read or write so archive inventories that never
     /// touch derived state keep their closed three-file sets.
-    derived: std::sync::OnceLock<Arc<Database>>,
+    derived: std::sync::OnceLock<Arc<EngineOwner<Database>>>,
+    // Empty escaped reads retain their exact in-memory engine, independently
+    // of a sidecar that may be created after their capture.
+    empty_derived: std::sync::OnceLock<Arc<EngineOwner<Database>>>,
     /// Serialises the first open of `derived`. redb takes an exclusive file
     /// lock, so two threads racing to open the sidecar leave one holding an
     /// `Unavailable` that says nothing about the store's health. Only the
@@ -686,19 +691,67 @@ impl SharedRedb {
             return Ok(database);
         }
         let opened = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
-        let _ = self.derived.set(Arc::new(opened));
+        let _ = self.derived.set(EngineOwner::try_new(
+            opened,
+            REDB_CACHE_SIZE_BYTES,
+            self.engine_allocation_class(),
+        )?);
         self.derived
             .get()
-            .map(Arc::as_ref)
+            .map(|owner| owner.database())
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
     }
 
-    pub(crate) fn retain_derived_engine(&self) -> Result<Arc<Database>, StorageError> {
-        self.derived_database()?;
-        self.derived
-            .get()
-            .cloned()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    pub(crate) fn captured_derived_read(
+        &self,
+    ) -> Result<(redb::ReadTransaction, Arc<EngineOwner<Database>>), StorageError> {
+        let _open = self
+            .derived_open
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let engine = if let Some(engine) = self.derived.get() {
+            Arc::clone(engine)
+        } else if !self.derived_in_memory
+            && (self.derived_absent.load(Ordering::Acquire) || {
+                #[cfg(test)]
+                DERIVED_PATH_PROBES.with(|probes| probes.set(probes.get() + 1));
+                !derived_store_path(&self.path).exists()
+            })
+        {
+            self.derived_absent.store(true, Ordering::Release);
+            if self.empty_derived.get().is_none() {
+                let database = RedbStore::open_derived_database(Path::new("empty-derived"), true)?;
+                let owner = EngineOwner::try_new(
+                    database,
+                    REDB_CACHE_SIZE_BYTES,
+                    self.engine_allocation_class(),
+                )?;
+                let _ = self.empty_derived.set(owner);
+            }
+            self.empty_derived
+                .get()
+                .cloned()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+        } else {
+            let database = RedbStore::open_derived_database(&self.path, self.derived_in_memory)?;
+            let owner = EngineOwner::try_new(
+                database,
+                REDB_CACHE_SIZE_BYTES,
+                self.engine_allocation_class(),
+            )?;
+            let _ = self.derived.set(Arc::clone(&owner));
+            owner
+        };
+        let read = engine.begin_read().map_err(transaction_error)?;
+        Ok((read, engine))
+    }
+
+    fn engine_allocation_class(&self) -> LocatorAllocationClass {
+        if self.open_mode.is_private_validation() {
+            LocatorAllocationClass::Maintenance
+        } else {
+            LocatorAllocationClass::Ordinary
+        }
     }
 
     pub(crate) fn before_test_commit(
@@ -1600,7 +1653,7 @@ impl SharedRedb {
             // CheckpointRoot behind a clone of the same charged capability.
             if let Some(root) = extent_roots
                 .iter()
-                .filter_map(std::sync::Weak::upgrade)
+                .filter_map(crate::checkpoint_root::TrackedRootWeak::upgrade)
                 .find(|root| root.identity() == version)
             {
                 if self.durable_root_publication.load(Ordering::Acquire) == version
@@ -1633,7 +1686,7 @@ impl SharedRedb {
                     None => CheckpointRoot::new(transaction, after),
                 }?;
                 let root = Arc::new(self.retain_snapshot_root(root)?);
-                extent_roots.push(Arc::downgrade(&root));
+                extent_roots.push(CheckpointRoot::downgrade_for_tracking(&root));
                 return Ok(root);
             }
             drop(transaction);
@@ -1662,6 +1715,13 @@ impl SharedRedb {
     pub(crate) fn capture_checkpoint_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
         let version = self.stable_durable_root_version()?;
         self.capture_checkpoint_root_at(version)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn root_tracking_for_tests(
+        &self,
+    ) -> crate::locator_memory::ChargedLocatorAllocation<RootTracking> {
+        self.extent_roots.clone()
     }
 
     /// Binds a genuinely committed raw fixture to a fresh source owner. Tests
@@ -2044,7 +2104,7 @@ struct ValidatedCheckpointFrame {
     command_count: u16,
     audit_count: u16,
     encoded: crate::journal::EncodedJournalFrame,
-    mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
+    mutations: crate::changelog_v3_cursor::SharedSourceMutations,
     /// The extent generation and position the lane writes this frame at, which
     /// the checkpoint's history stubs name (ADR-0263 Amendment 3).
     extent_generation: u64,
@@ -7419,8 +7479,10 @@ impl RedbDurabilityEpoch {
                         previous_hash,
                         frame_hash,
                     )?;
-                let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
-                    Arc::from(checkpoint_mutations);
+                let checkpoint_mutations = crate::changelog_v3_cursor::SourceMutations::try_new(
+                    checkpoint_mutations,
+                    LocatorAllocationClass::Ordinary,
+                )?;
                 self.shared.note_pending_frame(
                     runtime.database_id,
                     frame_hash,
@@ -7442,7 +7504,7 @@ impl RedbDurabilityEpoch {
                 composite_successor.append_changelog_source(
                     changelog_successor,
                     riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
-                    Arc::clone(&checkpoint_mutations),
+                    checkpoint_mutations.clone(),
                     encoded_bytes,
                 )?;
                 let composite_successor = Arc::new(composite_successor);
@@ -8308,7 +8370,7 @@ impl SharedRedb {
         &self,
         database_id: DatabaseId,
         frame_hash: [u8; 32],
-        mutations: &Arc<[riffdb_storage_api::CompositeMutationV1]>,
+        mutations: &crate::changelog_v3_cursor::SharedSourceMutations,
     ) {
         self.register_history_resolver(database_id);
         if let Some(resolver) = self.history_resolver.get() {
@@ -8458,129 +8520,6 @@ impl SharedRedb {
             database_id,
         )
         .map_err(journal_io_error)
-    }
-
-    fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
-        let mut checkpoint = match self.journal_checkpoint.lock() {
-            Ok(checkpoint) => checkpoint,
-            Err(poisoned) => {
-                drop(poisoned.into_inner());
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
-            }
-        };
-        let Some(state) = checkpoint.as_mut() else {
-            return Ok(());
-        };
-        let runtime = match self.journal_runtime.lock() {
-            Ok(runtime) => runtime,
-            Err(poisoned) => {
-                drop(poisoned.into_inner());
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
-            }
-        };
-        let Some(runtime) = runtime.as_ref() else {
-            return Ok(());
-        };
-        if runtime.unpublished_transitions != 0 || runtime.unpublished_bytes != 0 {
-            return Ok(());
-        }
-        let Some(result) = state.result.take() else {
-            return Ok(());
-        };
-        if let Err(error) = result {
-            self.fence_writes();
-            return Err(error);
-        }
-        let batch = state.batch.clone();
-        let covered_view = Arc::clone(&state.covered_view);
-        let descriptor = state
-            .locator_descriptor
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut publication_began = false;
-        let rebase_result = (|| -> Result<(), StorageError> {
-            let current = self
-                .composite_publication
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .as_ref()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-                .capture()?;
-            let root = self.capture_checkpoint_root()?;
-            if read_commit_tail(&root)? != batch.last_sequence
-                || read_administration_tail(&root)? != batch.last_administration_sequence
-            {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            if covered_view.overlay().published_application() != batch.last_sequence
-                || covered_view.overlay().published_administration()
-                    != batch.last_administration_sequence
-                || covered_view.overlay().terminal_frame_hash() != batch.last_hash
-            {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            let successor =
-                Arc::new(current.rebase_after(&covered_view, root, batch.last_hash, descriptor)?);
-            let mut private = self
-                .private_composite_frontier
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-            if private
-                .as_ref()
-                .is_none_or(|private| !Arc::ptr_eq(private, &current))
-            {
-                self.fence_writes();
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            self.composite_publication
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
-                .as_ref()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-                .publish_rebased(&current, Arc::clone(&successor))?;
-            publication_began = true;
-            *private = Some(Arc::clone(&successor));
-            *self
-                .durable_read_frontier
-                .write()
-                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
-                Some(successor.checkpoint_root_shared());
-            #[cfg(feature = "test-fixtures")]
-            if let Some(controller) = &self.test_controller {
-                controller
-                    .checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::BeforeReclaim);
-            }
-            // The installed extent is retained history now (ADR-0263): it is
-            // sealed, not recycled. The sealer retires and seals it off the
-            // writer's path; the next rotation waits for the checkpoint name.
-            self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
-                runtime.database_id,
-                runtime.last_sequence,
-                runtime.last_administration_sequence,
-                runtime.last_hash,
-            ))?;
-            #[cfg(feature = "test-fixtures")]
-            if let Some(controller) = &self.test_controller {
-                controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);
-            }
-            *checkpoint = None;
-            crate::checkpoint_census::CHECKPOINTS.installed();
-            self.note_journal_checkpoint_finished();
-            Ok(())
-        })();
-        match rebase_result {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if publication_began {
-                    self.fence_writes();
-                }
-                Err(error)
-            }
-        }
     }
 
     #[cfg(test)]

@@ -8,7 +8,7 @@ use crate::locator_memory::{
     ChargedLocatorAllocation, ChargedLocatorKey, LocatorAllocationClass, LocatorOwner,
     LocatorRetireContents, NativeLocatorPool,
 };
-use crate::locator_tree::LocatorTree;
+use crate::locator_tree::{LocatorFamilyMember, LocatorTree};
 #[cfg(test)]
 pub(crate) use payload::PAYLOAD_COLD_DECODES;
 #[cfg(test)]
@@ -70,6 +70,17 @@ pub(crate) struct CommandDerivedLocator {
     pub(crate) member: CommandDerivedMemberV1,
 }
 
+impl LocatorFamilyMember for CommandDerivedLocator {
+    fn validate_family(&self, _: &NativeLocatorPool) -> Result<(), StorageError> {
+        Ok(()) // Copy-only scalar locator identity owns no allocation.
+    }
+}
+impl LocatorFamilyMember for SegmentMetadataRef {
+    fn validate_family(&self, pool: &NativeLocatorPool) -> Result<(), StorageError> {
+        self.validate_family_pool(pool)
+    }
+}
+
 type ExactLocatorTree = LocatorTree<ChargedLocatorKey, CommandDerivedLocator>;
 
 /// One complete immutable directory for exactly one captured command authority.
@@ -90,10 +101,6 @@ pub(crate) struct LocatorGenerationState {
     audit_request: ExactLocatorTree,
     event_route: ExactLocatorTree,
     pending_outbox: ExactLocatorTree,
-    provider_admission: std::sync::Mutex<()>,
-    // Keep the numerical provider charge until every charged data field has
-    // released ownership. Arc clones share this one lifecycle and attachment.
-    provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1,
     // Last: node/key release is enqueued before this preadmitted owner barrier.
     _owner: LocatorOwner,
 }
@@ -134,6 +141,7 @@ impl LocatorGeneration {
         pool: Arc<NativeLocatorPool>,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
+        let pool = pool.fresh_source_family(class)?;
         let owner = LocatorOwner::try_new_with_bytes(&pool, class, Self::descriptor_bytes())?;
         Ok(Self::empty_with_owner(pool, owner, class))
     }
@@ -142,11 +150,8 @@ impl LocatorGeneration {
         owner: LocatorOwner,
         class: LocatorAllocationClass,
     ) -> Result<Self, StorageError> {
-        Ok(Self::empty_with_owner(
-            NativeLocatorPool::global(),
-            owner,
-            class,
-        ))
+        let pool = owner.family_pool();
+        Ok(Self::empty_with_owner(pool, owner, class))
     }
 
     fn empty_with_owner(
@@ -167,8 +172,6 @@ impl LocatorGeneration {
             audit_request: LocatorTree::empty(Arc::clone(&pool), class),
             event_route: LocatorTree::empty(Arc::clone(&pool), class),
             pending_outbox: LocatorTree::empty(pool, class),
-            provider_admission: std::sync::Mutex::new(()),
-            provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
         }))
     }
 
@@ -187,8 +190,6 @@ impl LocatorGeneration {
             audit_request: self.audit_request.with_allocation_class(class),
             event_route: self.event_route.with_allocation_class(class),
             pending_outbox: self.pending_outbox.with_allocation_class(class),
-            provider_admission: std::sync::Mutex::new(()),
-            provider_lifecycle: riffdb_types::OwnedCapacityLifecycleV1::default(),
         })))
     }
 
@@ -251,6 +252,19 @@ impl LocatorGeneration {
             result.insert_segment(segment.as_ref())?;
         }
         Ok(result)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebuild_test_segments_with_owner(
+        segments: impl IntoIterator<Item = Arc<StoredCommandSegmentV1>>,
+        owner: LocatorOwner,
+        class: LocatorAllocationClass,
+    ) -> Result<Self, StorageError> {
+        let mut generation = Self::try_empty_with_owner(owner, class)?;
+        for segment in segments {
+            generation.insert_segment(&segment)?;
+        }
+        Ok(generation)
     }
 
     pub(crate) fn rebuild_from_access_with_owner(
@@ -331,50 +345,33 @@ impl LocatorGeneration {
         Ok(())
     }
 
+    pub(crate) fn provider_family_pool(&self) -> &Arc<NativeLocatorPool> {
+        &self.pool
+    }
+
     #[cfg(test)]
     pub(crate) fn admit_provider_ownership(
         &self,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
-        // Serialize the first numerical attachment, so concurrent families do
-        // not each transiently reserve the complete shared native generation.
-        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
-        let bound = self.retained_ownership_bound()?;
-        let lifecycle = self.provider_lifecycle.reference();
-        let owner = match lifecycle.attached_owner().map_err(|_| unavailable())? {
-            Some(owner) => owner,
-            None => {
-                let candidate = budget
-                    .reserve(bound)
-                    .map_err(|_| unavailable())?
-                    .commit()
-                    .map_err(|_| unavailable())?;
-                lifecycle.attach(candidate).map_err(|_| unavailable())?
-            }
-        };
-        if !owner.belongs_to(budget) || owner.bytes() < bound {
-            return Err(unavailable());
-        }
-        self._owner.attach_provider_charge(Arc::clone(&owner))?;
-        Ok(owner)
+        let mut family = self.pool.lock_provider_family()?;
+        let needed = family.provider_ownership_needed(budget)?;
+        // Keep the caller's nonzero parent allowance while splitting the exact
+        // family plan. This private allowance is released after publication.
+        let mut work = budget
+            .reserve(needed.checked_add(128).ok_or_else(unavailable)?)
+            .map_err(|_| unavailable())?;
+        let prepared = family.prepare_provider_ownership(&mut work, budget)?;
+        Ok(prepared.commit())
     }
 
     pub(crate) fn provider_ownership_needed(
         &self,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<u64, StorageError> {
-        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
-        let bound = self.retained_ownership_bound()?;
-        match self
-            .provider_lifecycle
-            .reference()
-            .attached_owner()
-            .map_err(|_| unavailable())?
-        {
-            Some(owner) if owner.belongs_to(budget) && owner.bytes() >= bound => Ok(0),
-            Some(_) => Err(unavailable()),
-            None => Ok(bound),
-        }
+        self.pool
+            .lock_provider_family()?
+            .provider_ownership_needed(budget)
     }
 
     pub(crate) fn admit_provider_ownership_from(
@@ -382,27 +379,13 @@ impl LocatorGeneration {
         reservation: &mut riffdb_types::exact_provider_budget_v1::Reservation,
         budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
     ) -> Result<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>, StorageError> {
-        let _admission = self.provider_admission.lock().map_err(|_| unavailable())?;
-        let bound = self.retained_ownership_bound()?;
-        let lifecycle = self.provider_lifecycle.reference();
-        let owner = match lifecycle.attached_owner().map_err(|_| unavailable())? {
-            Some(owner) => owner,
-            None => {
-                let candidate = reservation
-                    .split(bound)
-                    .map_err(|_| unavailable())?
-                    .commit()
-                    .map_err(|_| unavailable())?;
-                lifecycle.attach(candidate).map_err(|_| unavailable())?
-            }
-        };
-        if !owner.belongs_to(budget) || owner.bytes() < bound {
-            return Err(unavailable());
-        }
-        self._owner.attach_provider_charge(Arc::clone(&owner))?;
-        Ok(owner)
+        let mut family = self.pool.lock_provider_family()?;
+        Ok(family
+            .prepare_provider_ownership(reservation, budget)?
+            .commit())
     }
 
+    #[cfg(test)]
     pub(crate) fn retained_ownership_bound(&self) -> Result<u64, StorageError> {
         let mut bytes = self
             ._owner
@@ -1852,6 +1835,10 @@ fn visit_captured_locator_rows(
 mod seed_admission_tests;
 
 #[cfg(test)]
+#[path = "transient_provider_sharing_tests.rs"]
+mod provider_sharing_tests;
+
+#[cfg(test)]
 mod tests {
     use riffdb_types::CommitSequence;
 
@@ -1934,7 +1921,6 @@ mod tests {
         )
         .unwrap();
         generation.insert_segment(&segment).unwrap();
-        let bound = generation.retained_ownership_bound().unwrap();
         let budget = ProviderBudget::new();
         let barrier = Arc::new(std::sync::Barrier::new(9));
         let joins: Vec<_> = (0..8)
@@ -1951,7 +1937,8 @@ mod tests {
         barrier.wait();
         let owners: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
         assert!(owners.iter().all(|owner| Arc::ptr_eq(owner, &owners[0])));
-        assert_eq!(budget.observation().unwrap().owned_bytes, bound);
+        let bound = budget.observation().unwrap().owned_bytes;
+        assert!(bound > owners[0].bytes());
         let foreign = ProviderBudget::new();
         assert_eq!(
             generation

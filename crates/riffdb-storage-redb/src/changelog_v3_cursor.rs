@@ -6,13 +6,17 @@ pub(crate) mod progress;
 #[path = "changelog_v3_state.rs"]
 pub(crate) mod state;
 
+use crate::locator_memory::{
+    ChargedLocatorAllocation, LocatorAllocationClass, LocatorRetireContents, NativeLocatorPool,
+    ProviderOnlyFamilyMember,
+};
 use riffdb_storage_api::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogCursorErrorV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
     ChangelogReceiptCursorV3, ChangelogTransactionSequence, CompositeMutationV1, StorageError,
     StorageErrorKind,
 };
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::{
     changelog_v3_activation::HISTORY,
@@ -24,13 +28,323 @@ use crate::{
     store::RedbReadAccess,
 };
 
+/// One original mutation allocation shared by receipt and checkpoint owners.
+/// Borrowing exposes no raw owning alias that can escape its physical token.
+#[derive(Clone)]
+pub(crate) struct SharedSourceMutations(Arc<SourceMutationsHandle>);
+struct SourceMutationsHandle {
+    rows: ChargedLocatorAllocation<SourceMutations>,
+    // A weak resolver reference keeps only this charge, never the row payload.
+    control: SourceControl,
+}
+pub(crate) struct WeakSourceMutations {
+    weak: Weak<SourceMutationsHandle>,
+    control: SourceControl,
+}
+impl std::fmt::Debug for WeakSourceMutations {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WeakSourceMutations")
+            .finish_non_exhaustive()
+    }
+}
+impl Clone for WeakSourceMutations {
+    fn clone(&self) -> Self {
+        Self {
+            weak: self.weak.clone(),
+            control: self.control.clone(),
+        }
+    }
+}
+impl WeakSourceMutations {
+    pub(crate) fn strong_count(&self) -> usize {
+        self.weak.strong_count()
+    }
+    pub(crate) fn upgrade(&self) -> Option<SharedSourceMutations> {
+        self.weak.upgrade().map(SharedSourceMutations)
+    }
+}
+impl std::ops::Deref for SharedSourceMutations {
+    type Target = SourceMutations;
+    fn deref(&self) -> &SourceMutations {
+        &self.0.rows
+    }
+}
+impl AsRef<[CompositeMutationV1]> for SharedSourceMutations {
+    fn as_ref(&self) -> &[CompositeMutationV1] {
+        &self.rows
+    }
+}
+impl SharedSourceMutations {
+    pub(crate) fn downgrade(&self) -> WeakSourceMutations {
+        WeakSourceMutations {
+            weak: Arc::downgrade(&self.0),
+            control: self.0.control.clone(),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(first: &Self, second: &Self) -> bool {
+        Arc::ptr_eq(&first.0, &second.0)
+    }
+    fn retained_charge_bound(&self) -> usize {
+        self.0.rows.retained_charge_bound()
+    }
+}
+pub(crate) struct SourceMutations {
+    rows: Vec<CompositeMutationV1>,
+    payload_bytes: u64,
+    construction_pool: Arc<NativeLocatorPool>,
+    class: LocatorAllocationClass,
+    // After rows: queued row retirement retains the full original byte owner.
+    provider: OnceLock<ProviderOnlyFamilyMember>,
+}
+impl AsRef<[CompositeMutationV1]> for SourceMutations {
+    fn as_ref(&self) -> &[CompositeMutationV1] {
+        &self.rows
+    }
+}
+impl std::ops::Deref for SourceMutations {
+    type Target = [CompositeMutationV1];
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+impl LocatorRetireContents for SourceMutations {
+    fn retire_one(&mut self) -> bool {
+        self.rows.pop();
+        self.rows.is_empty()
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            rows: std::mem::take(&mut self.rows),
+            payload_bytes: self.payload_bytes,
+            construction_pool: Arc::clone(&self.construction_pool),
+            class: self.class,
+            provider: std::mem::take(&mut self.provider),
+        }
+    }
+}
+impl SourceMutations {
+    pub(crate) fn try_new(
+        rows: Vec<CompositeMutationV1>,
+        class: LocatorAllocationClass,
+    ) -> Result<SharedSourceMutations, StorageError> {
+        Self::try_new_in_pool(rows, NativeLocatorPool::global(), class)
+    }
+    pub(crate) fn try_new_in_pool(
+        rows: Vec<CompositeMutationV1>,
+        pool: Arc<NativeLocatorPool>,
+        class: LocatorAllocationClass,
+    ) -> Result<SharedSourceMutations, StorageError> {
+        if pool.provider_family_identity() != 0 {
+            return Err(corrupt());
+        }
+        let payload = rows.iter().try_fold(
+            rows.capacity()
+                .checked_mul(std::mem::size_of::<CompositeMutationV1>())
+                .and_then(|n| n.checked_add(64))
+                .ok_or_else(limit)?,
+            |bytes, row| {
+                bytes
+                    .checked_add(row.key().len())
+                    .and_then(|n| n.checked_add(64))
+                    .and_then(|n| {
+                        n.checked_add(
+                            row.value()
+                                .map_or(Some(0), |value| value.len().checked_add(64))?,
+                        )
+                    })
+                    .ok_or_else(limit)
+            },
+        )?;
+        let payload_bytes = u64::try_from(payload).map_err(|_| limit())?;
+        // Only wrapper/retirement metadata is native. Original row/key/value
+        // capacities remain under their unchanged journal/provider ceilings.
+        let control = unbound_source_control(
+            &pool,
+            class,
+            std::mem::size_of::<SourceMutationsHandle>() + 64,
+        )?;
+        let rows = ChargedLocatorAllocation::try_new(&pool, class, 128, || {
+            Ok(Self {
+                rows,
+                payload_bytes,
+                construction_pool: Arc::clone(&pool),
+                class,
+                provider: OnceLock::new(),
+            })
+        })?;
+        let handle = Arc::new(SourceMutationsHandle { rows, control });
+        handle
+            .control
+            .allocation
+            .set(SourceAllocationWeak::Mutations(Arc::downgrade(&handle)))
+            .map_err(|_| corrupt())?;
+        Ok(SharedSourceMutations(handle))
+    }
+}
+fn bind_mutations_family(
+    mutations: &SharedSourceMutations,
+    pool: &NativeLocatorPool,
+) -> Result<(), StorageError> {
+    if !mutations.construction_pool.shares_native_budget(pool) {
+        return Err(corrupt());
+    }
+    bind_control_family(&mutations.0.control, pool)?;
+    if let Some(member) = mutations.provider.get() {
+        return if member.same_provider_family(pool) {
+            Ok(())
+        } else {
+            Err(corrupt())
+        };
+    }
+    let bytes = mutations
+        .payload_bytes
+        .checked_add(mutations.retained_charge_bound() as u64)
+        .ok_or_else(limit)?;
+    let member = pool.register_external_provider_member(bytes)?;
+    if let Err(member) = mutations.provider.set(member) {
+        let same = member.same_provider_family(pool)
+            && mutations
+                .provider
+                .get()
+                .is_some_and(|current| current.same_provider_family(pool));
+        if !same {
+            return Err(corrupt());
+        }
+    }
+    Ok(())
+}
+
+// The self-weak reference keeps the represented Arc allocation physically live
+// until the queued control drops it, before releasing its numerical charge.
+// It owns no data and cannot keep any strong Source/Node/buffer alive.
+enum SourceAllocationWeak {
+    Source(Weak<Source>),
+    Node(Weak<SourceNode>),
+    Mutations(Weak<SourceMutationsHandle>),
+}
+impl SourceAllocationWeak {
+    fn release(self) {
+        match self {
+            Self::Source(weak) => drop(weak),
+            Self::Node(weak) => drop(weak),
+            Self::Mutations(weak) => drop(weak),
+        }
+    }
+}
+struct SourceAllocationControl {
+    allocation: OnceLock<SourceAllocationWeak>,
+    provider: OnceLock<ProviderOnlyFamilyMember>,
+}
+impl LocatorRetireContents for SourceAllocationControl {
+    fn retire_one(&mut self) -> bool {
+        if let Some(allocation) = self.allocation.take() {
+            allocation.release();
+        }
+        true
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            allocation: std::mem::take(&mut self.allocation),
+            provider: std::mem::take(&mut self.provider),
+        }
+    }
+}
+type SourceControl = ChargedLocatorAllocation<SourceAllocationControl>;
+fn unbound_source_control(
+    pool: &Arc<NativeLocatorPool>,
+    class: LocatorAllocationClass,
+    represented: usize,
+) -> Result<SourceControl, StorageError> {
+    ChargedLocatorAllocation::try_new(pool, class, represented, || {
+        Ok(SourceAllocationControl {
+            allocation: OnceLock::new(),
+            provider: OnceLock::new(),
+        })
+    })
+}
+fn bind_control_family(
+    control: &SourceControl,
+    family: &NativeLocatorPool,
+) -> Result<(), StorageError> {
+    if let Some(member) = control.provider.get() {
+        return if member.same_provider_family(family) {
+            Ok(())
+        } else {
+            Err(corrupt())
+        };
+    }
+    let bytes = u64::try_from(control.retained_charge_bound()).map_err(|_| limit())?;
+    let member = family.register_external_provider_member(bytes)?;
+    if let Err(member) = control.provider.set(member)
+        && (!member.same_provider_family(family)
+            || !control
+                .provider
+                .get()
+                .is_some_and(|current| current.same_provider_family(family)))
+    {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+fn source_control(
+    pool: &Arc<NativeLocatorPool>,
+    family: &NativeLocatorPool,
+    class: LocatorAllocationClass,
+    represented: usize,
+) -> Result<SourceControl, StorageError> {
+    let control = unbound_source_control(pool, class, represented)?;
+    bind_control_family(&control, family)?;
+    Ok(control)
+}
+
+fn source_control_for_node(
+    pool: &Arc<NativeLocatorPool>,
+    family: &NativeLocatorPool,
+    class: LocatorAllocationClass,
+) -> Result<SourceControl, StorageError> {
+    let represented = std::mem::size_of::<SourceNode>()
+        + 17 * std::mem::size_of::<SourceWeak<SourceNode>>()
+        + 128;
+    source_control(pool, family, class, represented)
+}
+
+// The weak reference drops before its charge-only control. No control owns a
+// Node/Source, so binary ancestors cannot become a strong ancestry cycle.
+struct SourceWeak<T> {
+    weak: Weak<T>,
+    control: SourceControl,
+}
+impl<T> Clone for SourceWeak<T> {
+    fn clone(&self) -> Self {
+        Self {
+            weak: self.weak.clone(),
+            control: self.control.clone(),
+        }
+    }
+}
+impl<T> SourceWeak<T> {
+    fn new(value: &Arc<T>, control: &SourceControl) -> Self {
+        Self {
+            weak: Arc::downgrade(value),
+            control: control.clone(),
+        }
+    }
+    fn upgrade(&self) -> Option<Arc<T>> {
+        self.weak.upgrade()
+    }
+}
+
 struct Source {
     binding: AuthoritativeTransactionBindingV3,
     attribution: ChangelogAttributionV3,
     history: ChangelogHistoryStateV3,
-    mutations: Arc<[CompositeMutationV1]>,
+    mutations: SharedSourceMutations,
     encoded_bytes: usize,
     reclaimed_resume: Option<ChangelogHistoryPointV3>,
+    // Last: source values and payload handles drop before allocation control.
+    control: SourceControl,
 }
 
 struct SourceNode {
@@ -38,7 +352,8 @@ struct SourceNode {
     source: Arc<Source>,
     // Weak binary ancestors index the immutable source chain without retaining
     // retired ancestry or copying a population-sized cursor vector per pin.
-    ancestors: Box<[Weak<SourceNode>]>,
+    ancestors: Box<[SourceWeak<SourceNode>]>,
+    control: SourceControl,
 }
 
 // A full bounded suffix can contain thousands of nodes. Release uniquely owned
@@ -78,6 +393,8 @@ pub(crate) struct ChangelogSuffix {
     bytes: usize,
     // Cached retained source ownership; point/provider capture never walks it.
     ownership_bytes: usize,
+    provider_pool: Option<Arc<NativeLocatorPool>>,
+    construction_pool: Arc<NativeLocatorPool>,
 }
 
 impl ChangelogSuffix {
@@ -87,11 +404,30 @@ impl ChangelogSuffix {
     pub(crate) fn has_sources(&self) -> bool {
         self.head.is_some()
     }
+    #[cfg(test)]
     pub(crate) fn retained_ownership_bound(&self) -> usize {
         self.ownership_bytes
     }
+    pub(crate) fn provider_ownership_family(
+        &self,
+    ) -> Result<
+        Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
+        StorageError,
+    > {
+        self.provider_pool
+            .as_ref()
+            .map(|pool| pool.provider_accounting_family())
+            .transpose()
+    }
 
     pub(crate) fn from_checkpoint(root: &CheckpointRoot) -> Result<Self, StorageError> {
+        Self::from_checkpoint_in_pool(root, NativeLocatorPool::global())
+    }
+
+    fn from_checkpoint_in_pool(
+        root: &CheckpointRoot,
+        construction_pool: Arc<NativeLocatorPool>,
+    ) -> Result<Self, StorageError> {
         // Transitional routing only. A V3 cursor never serves an inactive view;
         // full startup owns receipted activation and the exact registry decision.
         let history = if crate::changelog_v3_journal::has_recovery_roots(root)? {
@@ -106,6 +442,8 @@ impl ChangelogSuffix {
             frames: 0,
             bytes: 0,
             ownership_bytes: 0,
+            provider_pool: None,
+            construction_pool,
         })
     }
 
@@ -113,7 +451,7 @@ impl ChangelogSuffix {
         &mut self,
         successor: Option<(AuthoritativeTransactionBindingV3, ChangelogHistoryStateV3)>,
         attribution: ChangelogAttributionV3,
-        mutations: Arc<[CompositeMutationV1]>,
+        mutations: SharedSourceMutations,
         encoded_bytes: usize,
     ) -> Result<(), StorageError> {
         let Some((binding, history)) = successor else {
@@ -122,17 +460,53 @@ impl ChangelogSuffix {
             }
             return Ok(());
         };
-        self.append_source(Arc::new(Source {
+        let family = match &self.provider_pool {
+            Some(pool) => Arc::clone(pool),
+            None => self
+                .construction_pool
+                .fresh_source_family(mutations.class)?,
+        };
+        bind_mutations_family(&mutations, &family)?;
+        let control = source_control(
+            &self.construction_pool,
+            &family,
+            mutations.class,
+            std::mem::size_of::<Source>() + 128,
+        )?;
+        let node_class = mutations.class;
+        let source = Arc::new(Source {
             binding,
             attribution,
             history,
             mutations,
             encoded_bytes,
             reclaimed_resume: None,
-        }))
+            control,
+        });
+        source
+            .control
+            .allocation
+            .set(SourceAllocationWeak::Source(Arc::downgrade(&source)))
+            .map_err(|_| corrupt())?;
+        self.append_source_in_family(source, family, node_class)
     }
 
-    fn append_source(&mut self, source: Arc<Source>) -> Result<(), StorageError> {
+    fn append_source(
+        &mut self,
+        source: Arc<Source>,
+        node_class: LocatorAllocationClass,
+    ) -> Result<(), StorageError> {
+        let family = self.provider_pool.as_ref().cloned().ok_or_else(corrupt)?;
+        self.append_source_in_family(source, family, node_class)
+    }
+
+    fn append_source_in_family(
+        &mut self,
+        source: Arc<Source>,
+        family: Arc<NativeLocatorPool>,
+        node_class: LocatorAllocationClass,
+    ) -> Result<(), StorageError> {
+        bind_mutations_family(&source.mutations, &family)?;
         let previous = self.history.ok_or_else(corrupt)?;
         let binding = source.binding;
         if source.history.lineage() != previous.lineage()
@@ -171,7 +545,7 @@ impl ChangelogSuffix {
         let source_bytes = source.mutations.iter().try_fold(
             std::mem::size_of::<SourceNode>()
                 + std::mem::size_of::<Source>()
-                + 17 * std::mem::size_of::<Weak<SourceNode>>()
+                + 17 * std::mem::size_of::<SourceWeak<SourceNode>>()
                 + 256,
             |bytes, mutation| {
                 bytes
@@ -188,10 +562,10 @@ impl ChangelogSuffix {
             .ownership_bytes
             .checked_add(source_bytes)
             .ok_or_else(limit)?;
-        self.history = Some(source.history);
+        let control = source_control_for_node(&self.construction_pool, &family, node_class)?;
         let mut ancestors = Vec::with_capacity(17);
         if let Some(predecessor) = self.head.as_ref() {
-            ancestors.push(Arc::downgrade(predecessor));
+            ancestors.push(SourceWeak::new(predecessor, &predecessor.control));
             for index in 1..17 {
                 let previous = ancestors[index - 1].upgrade().ok_or_else(corrupt)?;
                 let Some(ancestor) = previous.ancestors.get(index - 1) else {
@@ -200,11 +574,20 @@ impl ChangelogSuffix {
                 ancestors.push(ancestor.clone());
             }
         }
-        self.head = Some(Arc::new(SourceNode {
+        let successor_history = source.history;
+        let node = Arc::new(SourceNode {
             predecessor: self.head.clone(),
             source,
             ancestors: ancestors.into_boxed_slice(),
-        }));
+            control,
+        });
+        node.control
+            .allocation
+            .set(SourceAllocationWeak::Node(Arc::downgrade(&node)))
+            .map_err(|_| corrupt())?;
+        self.history = Some(successor_history);
+        self.head = Some(node);
+        self.provider_pool = Some(family);
         self.frames = frames;
         self.bytes = bytes;
         self.ownership_bytes = ownership_bytes;
@@ -232,17 +615,47 @@ impl ChangelogSuffix {
             proof.retained().minimum_resume(),
         )
         .map_err(value_error)?;
-        let head = self
-            .head
-            .as_mut()
-            .and_then(Arc::get_mut)
-            .ok_or_else(corrupt)?;
-        let source = Arc::get_mut(&mut head.source).ok_or_else(corrupt)?;
-        if source.attribution != ChangelogAttributionV3::HistoryReclamation {
+        let head = self.head.as_ref().ok_or_else(corrupt)?;
+        if head.source.attribution != ChangelogAttributionV3::HistoryReclamation {
             return Err(corrupt());
         }
-        source.history = successor;
-        source.reclaimed_resume = Some(successor.minimum_resume());
+        let family = self.provider_pool.as_ref().ok_or_else(corrupt)?;
+        let class = head.source.mutations.class;
+        // Header custody includes self-weak owners, so replacement constructs
+        // new private wrappers rather than mutating a possibly captured Arc.
+        // Both controls are admitted before either allocation or publication.
+        let source_control = source_control(
+            &self.construction_pool,
+            family,
+            class,
+            std::mem::size_of::<Source>() + 128,
+        )?;
+        let node_control = source_control_for_node(&self.construction_pool, family, class)?;
+        let source = Arc::new(Source {
+            binding: head.source.binding,
+            attribution: head.source.attribution,
+            history: successor,
+            mutations: head.source.mutations.clone(),
+            encoded_bytes: head.source.encoded_bytes,
+            reclaimed_resume: Some(successor.minimum_resume()),
+            control: source_control,
+        });
+        source
+            .control
+            .allocation
+            .set(SourceAllocationWeak::Source(Arc::downgrade(&source)))
+            .map_err(|_| corrupt())?;
+        let node = Arc::new(SourceNode {
+            predecessor: head.predecessor.clone(),
+            source,
+            ancestors: head.ancestors.clone(),
+            control: node_control,
+        });
+        node.control
+            .allocation
+            .set(SourceAllocationWeak::Node(Arc::downgrade(&node)))
+            .map_err(|_| corrupt())?;
+        self.head = Some(node);
         self.history = Some(successor);
         Ok(())
     }
@@ -360,7 +773,8 @@ impl ChangelogSuffix {
         covered: &Self,
         root: &CheckpointRoot,
     ) -> Result<Self, StorageError> {
-        let mut successor = Self::from_checkpoint(root)?;
+        let mut successor =
+            Self::from_checkpoint_in_pool(root, Arc::clone(&self.construction_pool))?;
         if successor.history != covered.history || self.checkpoint != covered.checkpoint {
             return Err(corrupt());
         }
@@ -381,8 +795,14 @@ impl ChangelogSuffix {
             newer.push(Arc::clone(&node.source));
             head = node.predecessor.as_ref();
         }
+        if !newer.is_empty() {
+            successor.provider_pool = self.provider_pool.clone();
+        }
         for source in newer.into_iter().rev() {
-            successor.append_source(source)?;
+            // Only native checkpoint installation calls this rebase. Original
+            // buffers/source wrappers keep their existing class; its new node
+            // metadata uses the already reserved maintenance progress domain.
+            successor.append_source(source, LocatorAllocationClass::Maintenance)?;
         }
         if successor.history != self.history {
             return Err(corrupt());

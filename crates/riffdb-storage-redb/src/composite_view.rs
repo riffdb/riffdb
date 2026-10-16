@@ -145,6 +145,7 @@ impl RedbCompositeViewBuilder {
             locator_descriptor: self.locator_descriptor,
             overlay: self.overlay.freeze(),
             snapshot_head: OnceLock::new(),
+            provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
         }
     }
 }
@@ -154,13 +155,16 @@ pub(crate) struct RedbCompositeReadView {
     changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     locator_capability: crate::locator_capability::LocatorCapability,
-    locator_descriptor: LocatorCharge,
     overlay: FrozenCompositeOverlay,
     /// The snapshot-visible application frontier of THIS view, derived once.
     ///
     /// Empty in every constructor below, so a successor can never inherit its
     /// predecessor's frontier: each one is a distinct published state.
     snapshot_head: OnceLock<Option<CommitSequence>>,
+    // Actual shared view metadata remains charged until its final owner drops.
+    provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell,
+    // Last: native metadata remains admitted throughout data/cell destruction.
+    locator_descriptor: LocatorCharge,
 }
 
 /// Redb-rooted private mutation stage for one command subgroup.
@@ -375,6 +379,7 @@ impl RedbCompositeMutationStage {
             locator_descriptor: self.locator_descriptor,
             overlay,
             snapshot_head: OnceLock::new(),
+            provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
         })
     }
 
@@ -414,6 +419,7 @@ impl RedbCompositeMutationStage {
             locator_descriptor: self.locator_descriptor,
             overlay,
             snapshot_head: OnceLock::new(),
+            provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
         })
     }
 
@@ -460,6 +466,8 @@ impl RedbCompositeMutationStage {
                 locator_descriptor: self.locator_descriptor,
                 overlay,
                 snapshot_head: OnceLock::new(),
+                provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(
+                ),
             },
             mutations,
         ))
@@ -631,18 +639,69 @@ impl RedbCompositePublication {
     }
 }
 
+/// Private rebase preparation owns only its newly constructed contents. The
+/// completed checkpoint keeps its move-only descriptor until this entire
+/// fallible preparation succeeds; cancellation never consumes that reservation.
+pub(crate) struct PreparedRedbCompositeRebase {
+    changelog: crate::changelog_v3_cursor::ChangelogSuffix,
+    root: Arc<CheckpointRoot>,
+    locator_capability: crate::locator_capability::LocatorCapability,
+    overlay: FrozenCompositeOverlay,
+}
+
+impl PreparedRedbCompositeRebase {
+    pub(crate) fn finish(self, locator_descriptor: LocatorCharge) -> RedbCompositeReadView {
+        RedbCompositeReadView {
+            changelog: self.changelog,
+            root: self.root,
+            locator_capability: self.locator_capability,
+            locator_descriptor,
+            overlay: self.overlay,
+            snapshot_head: OnceLock::new(),
+            provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(),
+        }
+    }
+}
+
 impl RedbCompositeReadView {
+    pub(crate) fn provider_metadata_needed(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<u64, StorageError> {
+        self.provider
+            .provider_ownership_needed(self.provider_metadata_bound()?, budget)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+    }
+    pub(crate) fn prepare_provider_metadata_from(
+        &self,
+        work: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        riffdb_types::exact_provider_budget_v1::PreparedSharedPhysicalOwnership<'_>,
+        StorageError,
+    > {
+        self.provider
+            .prepare_provider_ownership_from(self.provider_metadata_bound()?, work, budget)
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+    }
+    fn provider_metadata_bound(&self) -> Result<u64, StorageError> {
+        self.locator_descriptor
+            .bytes()
+            .checked_add(128)
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+    }
+    #[cfg(test)]
+    pub(crate) fn provider_metadata_charge_bytes(&self) -> u64 {
+        self.provider.owned_bytes().unwrap()
+    }
     /// Cached native ownership retained by a provider pin, excluding locator
     /// generations which have their own shared provider accounting owners.
     pub(crate) fn retained_provider_nonlocator_bound(&self) -> Result<u64, StorageError> {
         let bytes = self
-            .locator_capability
-            .descriptor_charge_bound()?
-            .checked_add(self.root.locator_capability().descriptor_charge_bound()?)
-            .and_then(|bytes| bytes.checked_add(self.root.retained_history_custody_bound()))
-            .and_then(|bytes| bytes.checked_add(self.locator_descriptor.bytes()))
-            .and_then(|bytes| bytes.checked_add(self.overlay.charged_bytes()))
-            .and_then(|bytes| bytes.checked_add(self.changelog.retained_ownership_bound()))
+            .root
+            .retained_history_custody_bound()
+            .checked_add(self.locator_descriptor.bytes())
             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
         u64::try_from(bytes).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))
     }
@@ -677,7 +736,7 @@ impl RedbCompositeReadView {
             riffdb_storage_api::ChangelogHistoryStateV3,
         )>,
         attribution: riffdb_storage_api::ChangelogAttributionV3,
-        mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
+        mutations: crate::changelog_v3_cursor::SharedSourceMutations,
         encoded_bytes: usize,
     ) -> Result<(), StorageError> {
         self.changelog
@@ -735,25 +794,23 @@ impl RedbCompositeReadView {
 
     /// Re-roots the exact published successor after `covered` has become the
     /// durable redb checkpoint, retaining only concurrent newer final states.
-    pub(crate) fn rebase_after(
+    pub(crate) fn prepare_rebase_after(
         &self,
         covered: &Self,
         root: Arc<CheckpointRoot>,
         checkpoint_frame_hash: [u8; 32],
-        locator_descriptor: LocatorCharge,
-    ) -> Result<Self, StorageError> {
+    ) -> Result<PreparedRedbCompositeRebase, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
         let overlay = self
             .overlay
             .rebase_after(&covered.overlay, checkpoint)
             .map_err(corrupt_value)?;
-        Ok(Self {
-            changelog: self.changelog.rebase_after(&covered.changelog, &root)?,
+        let changelog = self.changelog.rebase_after(&covered.changelog, &root)?;
+        Ok(PreparedRedbCompositeRebase {
+            changelog,
             locator_capability: self.locator_capability.clone(),
-            locator_descriptor,
             root,
             overlay,
-            snapshot_head: OnceLock::new(),
         })
     }
 

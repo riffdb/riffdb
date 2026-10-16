@@ -113,13 +113,15 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
         command_count: 0,
         audit_count: 1,
         encoded: encoded.clone(),
-        mutations: Arc::from(
+        mutations: crate::changelog_v3_cursor::SourceMutations::try_new(
             source
                 .mutations()
                 .iter()
                 .map(|m| m.composite().unwrap())
                 .collect::<Vec<_>>(),
-        ),
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap(),
     };
     let batch = JournalCheckpointBatch {
         database_id,
@@ -498,13 +500,15 @@ fn chained_audit_batch_with_source_cut(
             command_count: source.command_count(),
             audit_count: source.audit_count(),
             encoded,
-            mutations: Arc::from(
+            mutations: crate::changelog_v3_cursor::SourceMutations::try_new(
                 source
                     .mutations()
                     .iter()
                     .map(|m| m.composite().unwrap())
                     .collect::<Vec<_>>(),
-            ),
+                crate::locator_memory::LocatorAllocationClass::Ordinary,
+            )
+            .unwrap(),
         });
     }
     drop(lane);
@@ -554,7 +558,7 @@ fn multi_frame_checkpoint_validates_roots_once_per_batch_and_matches_sequential_
     assert!(store.shared.materialize_checkpoint_batch(&invalid).is_err());
     // A middle frame that skips its allocator before-image is refused too.
     let mut invalid = batch.clone();
-    invalid.frames[1].mutations = Arc::clone(&batch.frames[0].mutations);
+    invalid.frames[1].mutations = batch.frames[0].mutations.clone();
     assert!(store.shared.materialize_checkpoint_batch(&invalid).is_err());
     assert_eq!(
         store.shared.durable_commit_epoch.load(Ordering::Acquire),

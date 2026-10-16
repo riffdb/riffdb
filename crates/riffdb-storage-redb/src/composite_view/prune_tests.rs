@@ -142,14 +142,18 @@ fn prune_overlay_checks_canonical_before_images_without_changing_receipt_hashes(
             &path,
             Arc::new(crate::media::RealJournalMedia),
         );
-        let pending: Arc<[riffdb_storage_api::CompositeMutationV1]> = Arc::from(vec![
-            riffdb_storage_api::CompositeMutationV1::put(
-                CompositeTableV1::Commits,
-                key.as_slice(),
-                encoded.as_bytes(),
-            )
-            .expect("pending bytes"),
-        ]);
+        let pending = crate::changelog_v3_cursor::SourceMutations::try_new(
+            vec![
+                riffdb_storage_api::CompositeMutationV1::put(
+                    CompositeTableV1::Commits,
+                    key.as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("pending bytes"),
+            ],
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
         resolver.note_pending_frame(frame_hash, &pending);
         let write = store.shared.database.begin_write().expect("fixture write");
         write

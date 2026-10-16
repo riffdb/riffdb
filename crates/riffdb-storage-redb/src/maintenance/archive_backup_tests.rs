@@ -7,6 +7,78 @@ use riffdb_storage_api::*;
 use riffdb_types::{DatabaseId, DualFrontier};
 use std::{fs, path::Path};
 
+// req: OQ-040, TXN-042, STO-032
+#[test]
+fn archive_readonly_snapshot_admits_its_actual_cache_capacity() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-readonly-cache-owner");
+    let path = scope.join("source.redb");
+    let mut store = crate::RedbStore::open(&path).unwrap();
+    store
+        .initialize_database(DatabaseId::from_unix_milliseconds_and_random(1, [0x5c; 10]).unwrap())
+        .unwrap();
+    drop(store);
+    let file = fs::File::open(&path).unwrap();
+    let engine = super::archive_backup::owned_read_only_database(&file).unwrap();
+    let generation = crate::transient::LocatorGeneration::try_empty(
+        crate::locator_memory::LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
+    let capability = crate::locator_capability::LocatorCapability::try_complete(
+        generation,
+        crate::locator_memory::LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
+    let root = std::sync::Arc::new(
+        crate::checkpoint_root::CheckpointRoot::new_with_locator_capability(
+            engine.begin_read().unwrap(),
+            0,
+            capability,
+        )
+        .unwrap()
+        .retain_engine_and_history(std::sync::Arc::clone(&engine), None),
+    );
+    let snapshot =
+        crate::RedbOwnedSnapshot::from_read_access(crate::store::RedbReadAccess::Durable(root));
+    let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let other_build = budget
+        .reserve(
+            riffdb_types::exact_provider_budget_v1::EXACT_PROVIDER_BUDGET_BYTES
+                - budget.observation().unwrap().fixed_owner_bytes
+                - 20 * 1024 * 1024,
+        )
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .clone()
+            .with_provider_ownership_admitted_v1(&budget)
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable,
+        "archive engines retain their configured64MiB cache rather than an assumed operational cache"
+    );
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        0,
+        "the whole plan refuses before attachment"
+    );
+    drop(other_build);
+    let snapshot = snapshot
+        .with_provider_ownership_admitted_v1(&budget)
+        .unwrap();
+    assert!(budget.observation().unwrap().owned_bytes >= 64 * 1024 * 1024);
+    drop(snapshot);
+    drop(engine);
+    let pool = crate::locator_memory::NativeLocatorPool::global();
+    for _ in 0..4096 {
+        if budget.observation().unwrap().owned_bytes == 0 {
+            break;
+        }
+        pool.drain_retired_step();
+    }
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
+
 pub(super) fn backup(
     scope: &crate::test_path::ScopedDirectory,
 ) -> (std::path::PathBuf, ChangelogHistoryStateV3) {

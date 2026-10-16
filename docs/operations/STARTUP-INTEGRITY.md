@@ -307,12 +307,29 @@ Cleanup yields after at most 256 ownership items. Capacity refusal happens befor
 durable submission and preserves protected pins. These are compiled POC limits,
 with no tuning or bypass setting.
 
+If private checkpoint rebase preparation encounters capacity pressure, the
+completed checkpoint I/O and its admitted descriptor remain owned for a later
+attempt. Releasing pressure lets that same checkpoint finish publication; it
+does not require repeating the completed I/O or replacing retained reads.
+Publication and invariant failures still fence writes.
+
 Separately,
 its disposable decoded payload cache is capped at 64 entries and a conservative
 64 MiB ownership charge. Recovery scratch, the journal overlay and exact providers
 retain their separate 64-MiB, 256-MiB and 1-GiB limits. Provider admission also
-accounts for the native generations and source ownership it retains. These
-limits do not bound total database or process memory. Startup construction
+accounts for the native generations and source ownership it retains. Shared
+engine caches are charged once at their actual configured capacity, with the
+charge retained through final engine destruction. Derived snapshots retain the
+engine that supplied their transaction; later sidecar creation cannot replace
+an already captured empty read. Shared overlay buffers, tree nodes and journal
+buffers likewise have one physical owner across retained snapshots. Ownership
+includes allocation and control metadata; accounting for this metadata can
+cause an earlier typed capacity refusal under the unchanged overlay limit.
+Shared resolver, view and cached-root metadata remain charged through their last
+physical owner, including tracked weak root allocations and queued retirement.
+Admitting another provider for the same source reuses those shared charges.
+These limits do not bound total database or
+process memory. Startup construction
 streams one admitted segment at a time. The payload
 cache fills lazily from validated reads, so publication does not encode or
 decode commands again to populate it.

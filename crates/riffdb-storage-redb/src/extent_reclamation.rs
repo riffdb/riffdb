@@ -231,7 +231,7 @@ impl SharedRedb {
         }
         if roots
             .iter()
-            .filter_map(std::sync::Weak::upgrade)
+            .filter_map(crate::checkpoint_root::TrackedRootWeak::upgrade)
             .any(|root| root.identity() < version)
         {
             cursor.retry = Some(generation);
@@ -559,7 +559,8 @@ mod tests {
         {
             let mut tracking = shared.extent_roots.lock().unwrap();
             for _ in 1..MAX_EXTENT_READ_ROOTS {
-                tracking.push(Arc::downgrade(&root));
+                tracking
+                    .push(crate::checkpoint_root::CheckpointRoot::downgrade_for_tracking(&root));
             }
         }
         shared

@@ -42,8 +42,11 @@ impl RedbStagedRestore {
             .open_file_read_write(OsStr::new(DATABASE_ARTIFACT_FILE_NAME))?
             .into_std();
         let binding = {
-            let database = Arc::new(super::super::archive_backup::read_only_database(&file)?);
-            crate::backup::validate_readable_database_semantics(database.as_ref(), &self.manifest)?;
+            let database = super::super::archive_backup::owned_read_only_database(&file)?;
+            crate::backup::validate_readable_database_semantics(
+                database.database(),
+                &self.manifest,
+            )?;
             let read = database.begin_read().map_err(transaction_error)?;
             PromotionValidationBinding::for_verified_backup(&read, &self.manifest)?
         };
@@ -88,7 +91,7 @@ impl RedbStagedRestore {
         if &self.promoted_file_checksum(&file)? != expected {
             return Err(corrupt());
         }
-        let database = Arc::new(super::super::archive_backup::read_only_database(&file)?);
+        let database = super::super::archive_backup::owned_read_only_database(&file)?;
         let read = database.begin_read().map_err(transaction_error)?;
         if PromotionValidationBinding::for_verified_backup(&read, &self.manifest)?.is_none()
             || &self.promoted_file_checksum(&file)? != expected

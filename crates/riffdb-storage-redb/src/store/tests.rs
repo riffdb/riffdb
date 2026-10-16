@@ -17,6 +17,8 @@ use crate::keys::{
 
 use super::*;
 
+include!("async_checkpoint_retry_tests.rs");
+
 // These legacy migration fixtures stop at dormant open. Their terminal registry
 // is PRE_V3_REGISTRY; only a separate complete startup/catalog join activates V3.
 

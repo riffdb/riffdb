@@ -642,3 +642,200 @@ fn locator_maximum_legal_identity_key_is_charged_once_across_pins_and_retirement
     drain(&pool);
     assert_eq!(pool.charged_bytes(), baseline);
 }
+
+// req: TXN-042, STO-032, REC-001, OQ-040
+#[test]
+fn sharing_family_cut_covers_existing_members_and_later_members_remain_unprovided() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let infrastructure = NativeLocatorPool::isolated_for_tests();
+    let pool = infrastructure
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let retired = Arc::new(AtomicUsize::new(0));
+    let original = entries(&pool, 8, &retired);
+    let budget = ProviderBudget::new();
+    let mut family = pool.lock_provider_family().unwrap();
+    let needed = family.provider_ownership_needed(&budget).unwrap();
+    let started = Arc::new(Barrier::new(2));
+    let later = {
+        let pool = Arc::clone(&pool);
+        let retired = Arc::clone(&retired);
+        let started = Arc::clone(&started);
+        std::thread::spawn(move || {
+            started.wait();
+            entries(&pool, 4, &retired)
+        })
+    };
+    started.wait();
+    // The family guard holds ordinal assignment out until this cut commits.
+    let mut work = budget.reserve(needed + 128).unwrap();
+    let marker = family
+        .prepare_provider_ownership(&mut work, &budget)
+        .unwrap()
+        .commit();
+    drop(work);
+    let cut = family.observation().cut;
+    let covered = budget.observation().unwrap().owned_bytes;
+    drop(family);
+    let later = later.join().unwrap();
+    assert!(later.0.task.as_ref().unwrap()._charge.ordinal > cut);
+    assert_eq!(budget.observation().unwrap().owned_bytes, covered);
+    let later_bytes = later.0.task.as_ref().unwrap()._charge.bytes as u64;
+    let mut family = pool.lock_provider_family().unwrap();
+    assert_eq!(
+        family.provider_ownership_needed(&budget).unwrap(),
+        later_bytes
+    );
+    let mut work = budget.reserve(later_bytes + 128).unwrap();
+    family
+        .prepare_provider_ownership(&mut work, &budget)
+        .unwrap()
+        .commit();
+    drop(work);
+    drop(family);
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        covered + later_bytes
+    );
+    drop(original);
+    drop(later);
+    assert_eq!(
+        budget.observation().unwrap().owned_bytes,
+        covered + later_bytes
+    );
+    drain(&infrastructure);
+    assert!(budget.observation().unwrap().owned_bytes < covered);
+    drop(marker);
+    drop(pool);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert!(
+        infrastructure.charged_bytes() > 0,
+        "global backing does not bind provider ownership"
+    );
+}
+
+// req: TXN-042, STO-032, REC-001, OQ-040
+#[test]
+fn sharing_family_private_increment_cancellation_does_not_advance_cut() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let infrastructure = NativeLocatorPool::isolated_for_tests();
+    let pool = infrastructure
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let retired = Arc::new(AtomicUsize::new(0));
+    let first = entries(&pool, 2, &retired);
+    let budget = ProviderBudget::new();
+    let mut family = pool.lock_provider_family().unwrap();
+    let mut work = budget
+        .reserve(family.provider_ownership_needed(&budget).unwrap() + 128)
+        .unwrap();
+    let marker = family
+        .prepare_provider_ownership(&mut work, &budget)
+        .unwrap()
+        .commit();
+    drop(work);
+    drop(family);
+    let second = entries(&pool, 3, &retired);
+    let before = budget.observation().unwrap();
+    let mut family = pool.lock_provider_family().unwrap();
+    let old_cut = family.observation().cut;
+    let old_uncovered = family.observation().uncovered;
+    let mut work = budget.reserve(old_uncovered + 128).unwrap();
+    {
+        let _private = family
+            .prepare_provider_ownership(&mut work, &budget)
+            .unwrap();
+    }
+    drop(work);
+    assert_eq!(family.observation().cut, old_cut);
+    assert_eq!(family.observation().uncovered, old_uncovered);
+    assert_eq!(budget.observation().unwrap(), before);
+    drop(family);
+    drop(second);
+    drain(&infrastructure);
+    let family = pool.lock_provider_family().unwrap();
+    assert_eq!(family.observation().uncovered, 0);
+    assert_eq!(budget.observation().unwrap(), before);
+    drop(family);
+    drop(first);
+    drain(&infrastructure);
+    drop(marker);
+    drop(pool);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
+
+// req: TXN-042, STO-032, REC-001, OQ-040
+#[test]
+fn independent_rebuild_families_keep_foreign_graphs_and_global_scratch_separate() {
+    use riffdb_types::exact_provider_budget_v1::ProviderBudget;
+    let infrastructure = NativeLocatorPool::isolated_for_tests();
+    let first = infrastructure
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let second = first
+        .fresh_source_family(LocatorAllocationClass::Ordinary)
+        .unwrap();
+    assert!(!first.same_provider_family(&second));
+    let retired = Arc::new(AtomicUsize::new(0));
+    let first_data = entries(&first, 1, &retired);
+    let second_data = entries(&second, 1, &retired);
+    let first_budget = ProviderBudget::new();
+    let second_budget = ProviderBudget::new();
+    for (pool, budget) in [(&first, &first_budget), (&second, &second_budget)] {
+        let mut family = pool.lock_provider_family().unwrap();
+        let mut work = budget
+            .reserve(family.provider_ownership_needed(budget).unwrap() + 128)
+            .unwrap();
+        family
+            .prepare_provider_ownership(&mut work, budget)
+            .unwrap()
+            .commit();
+    }
+    assert!(
+        first
+            .lock_provider_family()
+            .unwrap()
+            .provider_ownership_needed(&second_budget)
+            .is_err()
+    );
+    assert!(
+        second
+            .lock_provider_family()
+            .unwrap()
+            .provider_ownership_needed(&first_budget)
+            .is_err()
+    );
+    let before = first
+        .lock_provider_family()
+        .unwrap()
+        .observation()
+        .uncovered;
+    let scratch = first.admit(4096, LocatorAllocationClass::Ordinary).unwrap();
+    assert!(scratch.family.is_none());
+    assert_eq!(
+        first
+            .lock_provider_family()
+            .unwrap()
+            .observation()
+            .uncovered,
+        before
+    );
+    {
+        let backing = lock(&infrastructure.retirement.state);
+        assert!(backing._directory_charge.family.is_none());
+        assert!(
+            backing
+                .chunks
+                .iter()
+                .all(|chunk| chunk._charge.family.is_none())
+        );
+    }
+    drop(scratch);
+    drop(first_data);
+    drop(second_data);
+    drain(&infrastructure);
+    drop(first);
+    drop(second);
+    assert_eq!(first_budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(second_budget.observation().unwrap().owned_bytes, 0);
+}

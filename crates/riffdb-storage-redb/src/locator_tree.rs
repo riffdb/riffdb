@@ -13,20 +13,39 @@ use crate::locator_memory::{
     NativeLocatorPool,
 };
 
+/// Closed source-ownership proof for keys and values admitted into one family.
+/// Heap-owning members must retain their original charged physical allocation.
+pub(crate) trait LocatorFamilyMember: Clone + Send + Sync + 'static {
+    fn validate_family(&self, pool: &NativeLocatorPool) -> Result<(), StorageError>;
+}
+impl LocatorFamilyMember for u64 {
+    fn validate_family(&self, _: &NativeLocatorPool) -> Result<(), StorageError> {
+        Ok(())
+    }
+}
+impl LocatorFamilyMember for riffdb_types::CommitSequence {
+    fn validate_family(&self, _: &NativeLocatorPool) -> Result<(), StorageError> {
+        Ok(())
+    }
+}
+impl LocatorFamilyMember for crate::locator_memory::ChargedLocatorKey {
+    fn validate_family(&self, pool: &NativeLocatorPool) -> Result<(), StorageError> {
+        self.validate_family_pool(pool)
+    }
+}
+
 const MAX_HEIGHT: usize = 64;
 type Link<K, V> = Option<ChargedLocatorAllocation<Node<K, V>>>;
 type RemovedFirst<K, V> = ((K, V), Link<K, V>);
 
-struct Node<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> {
+struct Node<K: LocatorFamilyMember, V: LocatorFamilyMember> {
     key: K,
     value: V,
     height: u8,
     left: Link<K, V>,
     right: Link<K, V>,
 }
-impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> LocatorRetireContents
-    for Node<K, V>
-{
+impl<K: LocatorFamilyMember, V: LocatorFamilyMember> LocatorRetireContents for Node<K, V> {
     fn retire_one(&mut self) -> bool {
         // Each handle's final destruction only enqueues a preadmitted descriptor.
         self.left.take();
@@ -46,15 +65,13 @@ impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> Locator
     }
 }
 
-pub(crate) struct LocatorTree<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> {
+pub(crate) struct LocatorTree<K: LocatorFamilyMember, V: LocatorFamilyMember> {
     root: Link<K, V>,
     pool: Arc<NativeLocatorPool>,
     class: LocatorAllocationClass,
     len: usize,
 }
-impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> Clone
-    for LocatorTree<K, V>
-{
+impl<K: LocatorFamilyMember, V: LocatorFamilyMember> Clone for LocatorTree<K, V> {
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
@@ -64,9 +81,7 @@ impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> Clone
         }
     }
 }
-impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> fmt::Debug
-    for LocatorTree<K, V>
-{
+impl<K: LocatorFamilyMember, V: LocatorFamilyMember> fmt::Debug for LocatorTree<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocatorTree")
             .field("len", &self.len)
@@ -74,16 +89,14 @@ impl<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> fmt::De
             .finish()
     }
 }
-fn height<K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static>(
-    link: &Link<K, V>,
-) -> u8 {
+fn height<K: LocatorFamilyMember, V: LocatorFamilyMember>(link: &Link<K, V>) -> u8 {
     link.as_ref().map_or(0, |node| node.height)
 }
 fn invariant() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
 }
 
-impl<K: Ord + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> LocatorTree<K, V> {
+impl<K: Ord + LocatorFamilyMember, V: LocatorFamilyMember> LocatorTree<K, V> {
     pub(crate) fn empty(pool: Arc<NativeLocatorPool>, class: LocatorAllocationClass) -> Self {
         Self {
             root: None,
@@ -103,6 +116,7 @@ impl<K: Ord + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> L
     /// All reachable nodes, including precreated final-release tasks and a
     /// conservative descriptor share. External key/value ownership is counted
     /// by the generation's admitted metadata total, rather than walked here.
+    #[cfg(test)]
     pub(crate) fn structural_charge_bound(&self) -> Option<usize> {
         let node = ChargedLocatorAllocation::<Node<K, V>>::allocation_charge_bound(0)?
             .checked_add(ChargedLocatorAllocation::<Node<K, V>>::retirement_descriptor_bound())?;
@@ -248,6 +262,11 @@ impl<K: Ord + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> L
         left: Link<K, V>,
         right: Link<K, V>,
     ) -> Result<ChargedLocatorAllocation<Node<K, V>>, StorageError> {
+        key.validate_family(&self.pool)?;
+        value.validate_family(&self.pool)?;
+        for child in [&left, &right].into_iter().flatten() {
+            child.validate_family_pool(&self.pool)?;
+        }
         let height = 1 + height(&left).max(height(&right));
         if usize::from(height) > MAX_HEIGHT {
             return Err(invariant());
@@ -421,17 +440,11 @@ impl<K: Ord + Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> L
     }
 }
 
-pub(crate) struct LocatorTreeIter<
-    'a,
-    K: Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
-> {
+pub(crate) struct LocatorTreeIter<'a, K: LocatorFamilyMember, V: LocatorFamilyMember> {
     stack: [Option<&'a Node<K, V>>; MAX_HEIGHT],
     depth: usize,
 }
-impl<'a, K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static>
-    LocatorTreeIter<'a, K, V>
-{
+impl<'a, K: LocatorFamilyMember, V: LocatorFamilyMember> LocatorTreeIter<'a, K, V> {
     fn push(&mut self, node: &'a Node<K, V>) {
         // Constructor admission rejects a height exceeding this fixed stack.
         if self.depth < MAX_HEIGHT {
@@ -446,9 +459,7 @@ impl<'a, K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static>
         }
     }
 }
-impl<'a, K: Clone + Send + Sync + 'static, V: Clone + Send + Sync + 'static> Iterator
-    for LocatorTreeIter<'a, K, V>
-{
+impl<'a, K: LocatorFamilyMember, V: LocatorFamilyMember> Iterator for LocatorTreeIter<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
         self.depth = self.depth.checked_sub(1)?;

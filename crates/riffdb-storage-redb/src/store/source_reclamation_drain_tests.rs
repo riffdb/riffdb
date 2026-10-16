@@ -1216,7 +1216,11 @@ fn runtime(path: &std::path::Path, value_bytes: usize) -> JournalRuntime {
         transition_count: 1,
         command_count: 1,
         audit_count: 0,
-        mutations: Arc::from(Vec::new()),
+        mutations: crate::changelog_v3_cursor::SourceMutations::try_new(
+            Vec::new(),
+            crate::locator_memory::LocatorAllocationClass::Maintenance,
+        )
+        .unwrap(),
         extent_generation: lane.generation(),
         placement: crate::journal::frame_placement_after(0, &encoded).unwrap(),
         segment_summaries: Arc::from(Vec::new()),

@@ -155,9 +155,7 @@ impl RedbMaintenanceStorage {
                 );
             }
         }
-        let database = std::sync::Arc::new(super::super::archive_backup::read_only_database(
-            &staged_files[0],
-        )?);
+        let database = super::super::archive_backup::owned_read_only_database(&staged_files[0])?;
         // A raw target pin also works before journal/engine recovery. It never
         // repairs a target merely to decide whether publication occurred.
         let _target_custody = target_files

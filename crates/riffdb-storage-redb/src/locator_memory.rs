@@ -63,6 +63,8 @@ pub(crate) struct LocatorCharge {
     budget: Arc<Budget>,
     bytes: usize,
     class: LocatorAllocationClass,
+    family: Option<Arc<LocatorFamily>>,
+    ordinal: u64,
 }
 impl LocatorCharge {
     pub(crate) const fn bytes(&self) -> usize {
@@ -71,11 +73,89 @@ impl LocatorCharge {
 }
 impl Drop for LocatorCharge {
     fn drop(&mut self) {
+        if let Some(family) = &self.family {
+            family
+                .accounting
+                .release_member_bytes(self.ordinal, self.bytes as u64);
+        }
         let mut state = lock(&self.budget.state);
         state.total -= self.bytes;
         if self.class == LocatorAllocationClass::Ordinary {
             state.ordinary -= self.bytes;
         }
+    }
+}
+
+// One family contains only allocations shared by immutable successors. It
+// retains no source/tree; physical member charges keep its control alive.
+const FAMILY_MARKER_BYTES: u64 = 128;
+struct LocatorFamily {
+    accounting: Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    // Global-only: charging the family to itself would create an immortal cycle.
+    _control: LocatorCharge,
+}
+impl fmt::Debug for LocatorFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LocatorFamily")
+    }
+}
+
+pub(crate) struct LocatorFamilyGuard<'a> {
+    inner: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamilyGuard<'a>,
+}
+
+pub(crate) struct PreparedLocatorFamilyAdmission<'a>(
+    riffdb_types::exact_provider_budget_v1::PreparedPhysicalFamilyAdmission<'a>,
+);
+impl PreparedLocatorFamilyAdmission<'_> {
+    pub(crate) fn commit(self) -> Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge> {
+        self.0.commit()
+    }
+}
+impl LocatorFamilyGuard<'_> {
+    #[cfg(test)]
+    pub(crate) fn observation(
+        &self,
+    ) -> riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamilyObservation {
+        self.inner.observation()
+    }
+    #[cfg(test)]
+    pub(crate) fn provider_owned_bytes(&self) -> u64 {
+        self.inner.provider_owned_bytes()
+    }
+    pub(crate) fn provider_ownership_needed(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<u64, StorageError> {
+        self.inner
+            .provider_ownership_needed(budget)
+            .map_err(|_| unavailable())
+    }
+    pub(crate) fn prepare_provider_ownership<'a>(
+        &'a mut self,
+        work: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<PreparedLocatorFamilyAdmission<'a>, StorageError> {
+        self.inner
+            .prepare_provider_ownership(work, budget)
+            .map(PreparedLocatorFamilyAdmission)
+            .map_err(|_| unavailable())
+    }
+}
+
+/// Original payloads keep only their provider-family bytes here. Their own
+/// wrapper/control allocation is admitted separately under its existing native
+/// or overlay ceiling; the payload never enters native locator accounting.
+pub(crate) struct ProviderOnlyFamilyMember {
+    _member: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
+    // Last: the typed ledger and its native control remain alive through release.
+    family: Arc<LocatorFamily>,
+}
+impl ProviderOnlyFamilyMember {
+    pub(crate) fn same_provider_family(&self, pool: &NativeLocatorPool) -> bool {
+        pool.family
+            .as_ref()
+            .is_some_and(|family| Arc::ptr_eq(family, &self.family))
     }
 }
 
@@ -171,7 +251,8 @@ pub(crate) struct NativeLocatorPool {
     budget: Arc<Budget>,
     retirement: &'static RetirementQueue,
     // Serializes workers, not readers or the lifetime of a captured snapshot.
-    worker: Mutex<()>,
+    worker: Arc<Mutex<()>>,
+    family: Option<Arc<LocatorFamily>>,
 }
 impl fmt::Debug for NativeLocatorPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -183,6 +264,110 @@ impl fmt::Debug for NativeLocatorPool {
     }
 }
 impl NativeLocatorPool {
+    pub(crate) fn source_family(
+        self: &Arc<Self>,
+        class: LocatorAllocationClass,
+    ) -> Result<Arc<Self>, StorageError> {
+        if self.family.is_some() {
+            return Ok(Arc::clone(self));
+        }
+        self.fresh_source_family(class)
+    }
+
+    /// Independent construction never imports another family's binding. Only
+    /// successors and recovery of an original owner use source_family reuse.
+    pub(crate) fn fresh_source_family(
+        self: &Arc<Self>,
+        class: LocatorAllocationClass,
+    ) -> Result<Arc<Self>, StorageError> {
+        let control_bytes = std::mem::size_of::<Self>()
+            + std::mem::size_of::<LocatorFamily>()
+            + std::mem::size_of::<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>(
+            )
+            + 5 * ALLOCATION_OVERHEAD;
+        let control = self.admit(control_bytes + FAMILY_MARKER_BYTES as usize, class)?;
+        let family = Arc::new(LocatorFamily {
+            accounting: Arc::new(
+                riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+                    control_bytes as u64,
+                ),
+            ),
+            _control: control,
+        });
+        Ok(Arc::new(Self {
+            budget: Arc::clone(&self.budget),
+            retirement: self.retirement,
+            worker: Arc::clone(&self.worker),
+            family: Some(family),
+        }))
+    }
+
+    fn admit_retained(
+        &self,
+        bytes: usize,
+        class: LocatorAllocationClass,
+    ) -> Result<LocatorCharge, StorageError> {
+        let mut charge = self.admit(bytes, class)?;
+        if let Some(family) = &self.family {
+            let next = family
+                .accounting
+                .register_member_bytes(bytes as u64)
+                .map_err(|_| unavailable())?;
+            charge.family = Some(Arc::clone(family));
+            charge.ordinal = next;
+        }
+        Ok(charge)
+    }
+
+    pub(crate) fn shares_native_budget(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.budget, &other.budget)
+    }
+
+    pub(crate) fn same_provider_family(&self, other: &Self) -> bool {
+        match (&self.family, &other.family) {
+            (Some(first), Some(second)) => Arc::ptr_eq(first, second),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn provider_family_identity(&self) -> usize {
+        self.family
+            .as_ref()
+            .map_or(0, |family| family.accounting.identity())
+    }
+
+    pub(crate) fn lock_provider_family(&self) -> Result<LocatorFamilyGuard<'_>, StorageError> {
+        let family = self.family.as_ref().ok_or_else(unavailable)?;
+        Ok(LocatorFamilyGuard {
+            inner: family.accounting.lock().map_err(|_| unavailable())?,
+        })
+    }
+
+    pub(crate) fn provider_accounting_family(
+        &self,
+    ) -> Result<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>, StorageError>
+    {
+        self.family
+            .as_ref()
+            .map(|family| &family.accounting)
+            .ok_or_else(unavailable)
+    }
+
+    pub(crate) fn register_external_provider_member(
+        &self,
+        bytes: u64,
+    ) -> Result<ProviderOnlyFamilyMember, StorageError> {
+        let family = self.family.as_ref().ok_or_else(unavailable)?;
+        let member = family
+            .accounting
+            .register_member(bytes)
+            .map_err(|_| unavailable())?;
+        Ok(ProviderOnlyFamilyMember {
+            _member: member,
+            family: Arc::clone(family),
+        })
+    }
+
     pub(crate) fn global() -> Arc<Self> {
         static POOL: OnceLock<Arc<NativeLocatorPool>> = OnceLock::new();
         Arc::clone(POOL.get_or_init(|| {
@@ -199,6 +384,7 @@ impl NativeLocatorPool {
         // Charge its complete capacity before allocating it; it never grows.
         let directory_bytes = MAX_CHUNKS * std::mem::size_of::<SlotChunk>()
             + std::mem::size_of::<Self>()
+            + std::mem::size_of::<Mutex<()>>()
             + std::mem::size_of::<Budget>()
             + std::mem::size_of::<RetirementQueue>()
             + 5 * ALLOCATION_OVERHEAD;
@@ -215,6 +401,8 @@ impl NativeLocatorPool {
             budget: Arc::clone(&budget),
             bytes: directory_bytes,
             class: LocatorAllocationClass::Maintenance,
+            family: None,
+            ordinal: 0,
         };
         // Production has one global pool. Isolated tests use the same explicit
         // process-lifetime queue, so final release never needs a fallback drain.
@@ -236,7 +424,8 @@ impl NativeLocatorPool {
         Arc::new(Self {
             budget,
             retirement,
-            worker: Mutex::new(()),
+            worker: Arc::new(Mutex::new(())),
+            family: None,
         })
     }
 
@@ -303,6 +492,8 @@ impl NativeLocatorPool {
             budget: Arc::clone(&self.budget),
             bytes,
             class,
+            family: None,
+            ordinal: 0,
         })
     }
 
@@ -586,6 +777,21 @@ impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
         Arc::ptr_eq(&left.0, &right.0)
     }
 
+    pub(crate) fn validate_family_pool(
+        &self,
+        pool: &NativeLocatorPool,
+    ) -> Result<(), StorageError> {
+        let charge = &self.0.task.as_ref().ok_or_else(unavailable)?._charge;
+        match (&charge.family, &pool.family) {
+            (Some(first), Some(second)) if Arc::ptr_eq(first, second) => Ok(()),
+            (None, None) => Ok(()),
+            _ => Err(StorageError::new(
+                StorageErrorKind::InvariantViolation,
+                None,
+            )),
+        }
+    }
+
     pub(crate) fn try_new(
         pool: &Arc<NativeLocatorPool>,
         class: LocatorAllocationClass,
@@ -593,7 +799,7 @@ impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
         construct: impl FnOnce() -> Result<T, StorageError>,
     ) -> Result<Self, StorageError> {
         let bytes = Self::allocation_charge_bound(content_bytes).ok_or_else(unavailable)?;
-        let charge = pool.admit(bytes, class)?;
+        let charge = pool.admit_retained(bytes, class)?;
         let slot = pool.reserve_slot(class)?;
         let value = construct()?;
         Ok(Self(Arc::new(AllocationOwner {
@@ -626,6 +832,13 @@ impl LocatorRetireContents for KeyAllocation {
 #[derive(Clone, Debug)]
 pub(crate) struct ChargedLocatorKey(ChargedLocatorAllocation<KeyAllocation>);
 impl ChargedLocatorKey {
+    pub(crate) fn validate_family_pool(
+        &self,
+        pool: &NativeLocatorPool,
+    ) -> Result<(), StorageError> {
+        self.0.validate_family_pool(pool)
+    }
+
     pub(crate) fn retained_charge_bound(&self) -> usize {
         self.0.retained_charge_bound()
     }
@@ -674,6 +887,7 @@ impl Ord for ChargedLocatorKey {
 
 struct OwnerContents {
     budget: Arc<Budget>,
+    pool: Arc<NativeLocatorPool>,
     class: LocatorAllocationClass,
     released: bool,
     provider_charge: Mutex<Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>>,
@@ -689,6 +903,7 @@ impl LocatorRetireContents for OwnerContents {
     fn take_for_retirement(&mut self) -> Self {
         let result = Self {
             budget: Arc::clone(&self.budget),
+            pool: Arc::clone(&self.pool),
             class: self.class,
             released: self.released,
             provider_charge: Mutex::new(lock(&self.provider_charge).take()),
@@ -743,8 +958,13 @@ impl fmt::Debug for LocatorOwner {
     }
 }
 impl LocatorOwner {
+    pub(crate) fn family_pool(&self) -> Arc<NativeLocatorPool> {
+        Arc::clone(&self.0.pool)
+    }
+
     /// The pending-provider graph marker has its own fixed slot: it must not
     /// conflict with the later complete generation's distinct numerical charge.
+    #[cfg(test)]
     pub(crate) fn attach_provider_control_charge(
         &self,
         candidate: Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>,
@@ -779,6 +999,7 @@ impl LocatorOwner {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn retained_charge_bound(&self) -> usize {
         self.0.retained_charge_bound()
     }
@@ -801,6 +1022,7 @@ impl LocatorOwner {
         class: LocatorAllocationClass,
         descriptor_bytes: usize,
     ) -> Result<Self, StorageError> {
+        let pool = pool.source_family(class)?;
         // Admit the optional marker's actual Arc allocation before any provider
         // can attach it. Its reservation follows this same owner/task through
         // final queued retirement, even after Completion has been destroyed.
@@ -824,9 +1046,10 @@ impl LocatorOwner {
                 state.ordinary_owners += 1;
             }
         }
-        let result = ChargedLocatorAllocation::try_new(pool, class, content_bytes, || {
+        let result = ChargedLocatorAllocation::try_new(&pool, class, content_bytes, || {
             Ok(OwnerContents {
                 budget: Arc::clone(&pool.budget),
+                pool: Arc::clone(&pool),
                 class,
                 released: false,
                 provider_charge: Mutex::new(None),

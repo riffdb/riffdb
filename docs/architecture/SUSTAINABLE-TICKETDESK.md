@@ -8,7 +8,92 @@ receipt reclamation and exact-provider retirement are implemented and validated.
 WP-823 and WP-824 are complete; the real workload and rehearsal remain open.
 The evidence checker is preparatory acceptance code.
 
-## Current status (2026-10-15 UTC)
+## Current status (2026-10-16 UTC)
+
+WP-825 and WP-826 remain open. Current ordinary shipping binaries are built
+from `191868a5`, which includes main through `b1e5117c`. The original eight-hour
+attempt still failed at its 60-minute deployment; no complete eight-hour or
+24-hour campaign is qualified.
+
+Native locator accounting now admits the full 65,536-ticket seed. A short
+public diagnostic completes 100 updates and 400 reads, then independently
+reconciles all 65,536 tickets and 65,636 archive records. This one-second load
+is semantic and capacity evidence, not the required 1,500-second preparation
+or a latency/accounting qualification window.
+
+On the saved population, public restore reaches daemon readiness in
+**16.469 seconds**, but the immediate original acknowledged-command replay
+returns temporary storage unavailability while exact command locators are
+Pending. Consequently the unchanged 45/60-second recovery gates still fail.
+The native metadata recovery correction passes three consumer checks and six
+captured-builder schedules. A separate deterministic service regression proves
+that the unchanged service can submit required audit work while its dependency
+is Pending; accepted audit errors retain their fail-closed behavior. Initial
+request admission and its audit boundary are under separate human review and
+are not implemented by these results.
+
+A private debug build of the same source confirms public terminal restore
+success and readiness in **97.271 seconds**, without reproducing the earlier
+debug-only refusal. This is diagnostic evidence, not shipping timing or a
+recovery-gate pass; the original failed attempt remains preserved. Restore
+readiness alone proves neither original acknowledgement replay nor a new write.
+
+A minimally instrumented build uses the ordinary release profile on the same
+saved backup. It observes Pending at the exact readiness boundary, then complete
+current-source locator publication **6.721 seconds** later. Observed readiness
+is **14.916 seconds** and total observation is **21.424 seconds**. The witness
+compares actual current-source ownership under the native publication lease;
+it does not infer completion from the application frontier. No application
+request is issued. This diagnostic measures the missing dependency interval,
+not successful replay, a new write or the shipping recovery gates.
+
+A separate full-population native diagnostic publishes 32 retention steps while
+keeping all 32 original source generations readable. Old and current outcomes
+and provenance remain exact, and peak native locator ownership is **373.890 MiB**
+within the unchanged 512-MiB pool. This does not establish public provider
+capacity: only two distinct provider snapshots are admitted. The third returns
+typed unavailable after the budget charges a full shared-directory bound for
+each generation, despite a native physical union of about 350 MiB. Shared
+ownership accounting needs repair; no impact on the frozen workload is inferred
+from this isolated diagnostic. Original fixtures and key files remain unchanged.
+
+Two deterministic regressions independently reproduce duplicate provider
+charges for shared locator generations and for separate sources using the same
+physical engine cache. Both pass with the candidate sharing-family and engine
+ownership repairs. Focused checks also cover pressure, foreign budgets, actual
+destruction, read-only cache capacity and exact empty-to-real derived-engine
+capture. These are candidate checks, not shipping qualification.
+
+Repeating the same full-population diagnostic with those repairs admits
+**29 provider snapshots**; the **30th is refused** under the unchanged 1-GiB
+aggregate budget. At that refusal, the source asks again for **21.428 MiB**
+of overlay ownership and **24.110 MiB** of journal-suffix ownership, while
+checkpoint custody accounts for only 780 bytes. The actual probe confirms that
+shared overlay and suffix allocations are still charged repeatedly. Repairing
+both actual allocation lifetimes and repeating the original 32-snapshot test
+remain required. No pins are dropped and no qualification ceiling is raised.
+
+The saved-population diagnostic now passes all **32 provider admissions** and
+**32 retention publications** after shared buffer, overlay and metadata repairs.
+Original outcomes and provenance remain exact. Provider ownership reaches
+423,447,479 bytes, with a native peak of 403,569,440 bytes; final provider
+ownership and reservations, native owners and retirement queues return to zero.
+This does not qualify the unfinished candidate: public restore and complete
+source CI remain outstanding. Scoped acceptance is recorded with the
+implementation commit. Four focused regressions
+also pass for shared resolver, view and cached-root ownership, including the
+final tracked weak reference.
+Completed checkpoint I/O remains retryable after native capacity refusal; the
+same completion publishes once after pressure is released.
+
+Concurrent workload interference with retained source/provider owners, the full
+preparation, current-source integrated acceptance and CI, and the actual
+scheduled faults remain required before the complete eight-hour rehearsal.
+WP-826 additionally requires its merged WP-825 dependency, the exact uninterrupted
+24-hour run, three reclaimed extent generations, six final fault-free hours
+with stable backlog, independent reconciliation and sanitized final evidence.
+
+## Earlier locator repair observations (2026-10-15 UTC)
 
 WP-825 remains open. The actual eight-hour rehearsal at `5be13d11` failed at
 the 60-minute additive deployment, before the scheduled 90-minute restore.

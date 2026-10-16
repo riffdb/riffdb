@@ -32,8 +32,12 @@ pub const MAX_COMPOSITE_SUFFIX_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 256 * 1024 * 1024;
 /// Maximum key or value component accepted from one journal mutation.
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
-/// Conservative per-entry ordered-map and enum overhead charge.
-const OVERLAY_ENTRY_OVERHEAD: usize = 64;
+/// Size-derived bound for distinct node, byte-owner and shared family controls.
+/// The numeric 256-MiB ceiling is unchanged; construction stack is checked separately.
+const OVERLAY_ENTRY_OVERHEAD: usize = OVERLAY_NODE_CONTROL_BYTES
+    + 2 * OVERLAY_BYTE_CONTROL_BYTES
+    + OVERLAY_FAMILY_CONTROL_BYTES
+    + 128;
 const TABLE_COUNT: usize = 22;
 
 /// Closed authoritative table catalog shared by journal overlays.
@@ -519,13 +523,32 @@ impl CompositeOverlayBuilder {
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
         self.validate_frame_identity(frame)?;
-        let (lineage, lineage_bytes) =
-            overlay_lineage_successor(self.lineage.clone(), self.lineage_bytes, &frame.mutations)?;
+        validate_overlay_family(&self.tables)?;
+        let mut tables = self.tables.clone();
+        let family = if frame.mutations.is_empty() {
+            tables[0].family.clone()
+        } else {
+            let minimum = raw_entry_charge(frame.mutations[0].key(), frame.mutations[0].value())?;
+            if minimum
+                .checked_add(OVERLAY_NODE_PLAN_BYTES)
+                .is_none_or(|n| n > MAX_COMPOSITE_OVERLAY_BYTES)
+            {
+                return Err(StorageValueError::LimitExceeded);
+            }
+            Some(ensure_overlay_family(&mut tables))
+        };
+        let (lineage, lineage_bytes) = overlay_lineage_successor(
+            self.lineage.clone(),
+            self.lineage_bytes,
+            &frame.mutations,
+            family.as_ref(),
+        )?;
         let maximum_table_charge = MAX_COMPOSITE_OVERLAY_BYTES
             .checked_sub(lineage_bytes)
+            .and_then(|n| n.checked_sub(OVERLAY_NODE_PLAN_BYTES))
             .ok_or(StorageValueError::LimitExceeded)?;
         apply_mutations_atomically(
-            &mut self.tables,
+            &mut tables,
             &mut self.charged_bytes,
             &frame.mutations,
             base,
@@ -542,6 +565,7 @@ impl CompositeOverlayBuilder {
         self.current_application = frame.covered_application;
         self.current_administration = frame.covered_administration;
         self.current_hash = frame.frame_hash;
+        self.tables = tables;
         self.lineage = lineage;
         self.lineage_bytes = lineage_bytes;
         Ok(())
@@ -639,6 +663,7 @@ impl CompositeMutationStage {
         mutation: CompositeMutationV1,
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
         let current = match self.tables[mutation.table().index()].get(mutation.key()) {
             Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
@@ -661,6 +686,7 @@ impl CompositeMutationStage {
         observed_current: Option<&[u8]>,
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
         self.apply_after_current_validation(mutation, observed_current)
     }
@@ -701,20 +727,30 @@ impl CompositeMutationStage {
         let (Some(value), None) = (mutation.value(), mutation.expected_hash()) else {
             return Ok(false);
         };
+        validate_overlay_family(&self.tables)?;
+        let family = ensure_overlay_family(&mut self.tables);
         let entries = &mut self.tables[mutation.table().index()];
         let prior = match entries.get(mutation.key()) {
             Some(prior @ OverlayValue::Value(current)) if current.as_ref() == value => prior,
             _ => return Ok(false),
         };
-        let key: Arc<[u8]> = Arc::from(mutation.key());
-        let replacement = OverlayValue::Value(Arc::from(representation));
         let charge = self
             .charged_bytes
-            .checked_sub(entry_charge(&key, prior)?)
+            .checked_sub(entry_charge(mutation.key(), prior)?)
             .ok_or(StorageValueError::SizeOverflow)?
-            .checked_add(entry_charge(&key, &replacement)?)
+            .checked_add(raw_entry_charge(mutation.key(), Some(representation))?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        entries.insert(key, replacement);
+        if charge
+            .checked_add(self.predecessor_lineage_bytes)
+            .and_then(|n| n.checked_add(self.staged_lineage_bytes))
+            .and_then(|n| n.checked_add(OVERLAY_NODE_PLAN_BYTES))
+            .is_none_or(|n| n > MAX_COMPOSITE_OVERLAY_BYTES)
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let key = OverlayBytes::try_new(mutation.key(), &family)?;
+        let replacement = OverlayValue::Value(OverlayBytes::try_new(representation, &family)?);
+        entries.insert(key, replacement)?;
         self.charged_bytes = charge;
         Ok(true)
     }
@@ -724,64 +760,36 @@ impl CompositeMutationStage {
         mutation: CompositeMutationV1,
         current: Option<&[u8]>,
     ) -> Result<(), StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         validate_before_image(current, mutation.expected_hash())?;
-        let table = &mut self.tables[mutation.table().index()];
-        let key: Arc<[u8]> = Arc::from(mutation.key());
-        let replacement = mutation
-            .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
-            .unwrap_or(OverlayValue::Tombstone);
         let next_staged_lineage_bytes = self
             .staged_lineage_bytes
             .checked_add(lineage_key_charge(mutation.key())?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        let replacement_charge = entry_charge(&key, &replacement)?;
-        let within_limit = |charge: usize| {
-            charge
-                .checked_add(self.predecessor_lineage_bytes)
-                .and_then(|charge| charge.checked_add(next_staged_lineage_bytes))
-                .is_some_and(|charge| charge <= MAX_COMPOSITE_OVERLAY_BYTES)
-        };
-        let upper_bound = self
-            .charged_bytes
-            .checked_add(replacement_charge)
-            .ok_or(StorageValueError::SizeOverflow)?;
-        let next_charge = if within_limit(upper_bound) {
-            // Even with no prior to release, the replacement fits, so one
-            // descent can insert and return the prior for exact accounting.
-            match table.insert_replacing(Arc::clone(&key), replacement) {
-                None => upper_bound,
-                Some(prior) => {
-                    let released = entry_charge(&key, &prior)?;
-                    match upper_bound.checked_sub(released) {
-                        Some(charge) => charge,
-                        None => {
-                            // Accounting cannot release more than it charged.
-                            // Restore the prior in place (same key, no shape
-                            // change) so a failure leaves the stage unchanged.
-                            table.insert_replacing(key, prior);
-                            return Err(StorageValueError::SizeOverflow);
-                        }
-                    }
-                }
-            }
-        } else {
-            // Near the bound: resolve the exact charge before any change.
-            let mut next_charge = self.charged_bytes;
-            if let Some(prior) = table.get(key.as_ref()) {
-                next_charge = next_charge
-                    .checked_sub(entry_charge(&key, prior)?)
-                    .ok_or(StorageValueError::SizeOverflow)?;
-            }
+        let mut next_charge = self.charged_bytes;
+        if let Some(prior) = self.tables[mutation.table().index()].get(mutation.key()) {
             next_charge = next_charge
-                .checked_add(replacement_charge)
+                .checked_sub(entry_charge(mutation.key(), prior)?)
                 .ok_or(StorageValueError::SizeOverflow)?;
-            if !within_limit(next_charge) {
-                return Err(StorageValueError::LimitExceeded);
-            }
-            table.insert(key, replacement);
-            next_charge
+        }
+        next_charge = next_charge
+            .checked_add(raw_entry_charge(mutation.key(), mutation.value())?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if next_charge
+            .checked_add(self.predecessor_lineage_bytes)
+            .and_then(|n| n.checked_add(next_staged_lineage_bytes))
+            .and_then(|n| n.checked_add(OVERLAY_NODE_PLAN_BYTES))
+            .is_none_or(|n| n > MAX_COMPOSITE_OVERLAY_BYTES)
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let family = ensure_overlay_family(&mut self.tables);
+        let key = OverlayBytes::try_new(mutation.key(), &family)?;
+        let replacement = match mutation.value() {
+            Some(value) => OverlayValue::Value(OverlayBytes::try_new(value, &family)?),
+            None => OverlayValue::Tombstone,
         };
+        self.tables[mutation.table().index()].insert(key, replacement)?;
         self.charged_bytes = next_charge;
         self.staged_lineage_bytes = next_staged_lineage_bytes;
         self.mutations.push(mutation);
@@ -797,6 +805,7 @@ impl CompositeMutationStage {
         self,
         frame: &CompositeFrameV1,
     ) -> Result<FrozenCompositeOverlay, StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         if frame.database_id != self.checkpoint.database_id
             || frame.predecessor_application != self.predecessor_application
             || frame.predecessor_administration != self.predecessor_administration
@@ -819,6 +828,7 @@ impl CompositeMutationStage {
             self.predecessor_lineage,
             self.predecessor_lineage_bytes,
             &self.mutations,
+            self.tables[0].family.as_ref(),
         )?;
         if lineage_bytes
             .checked_add(self.charged_bytes)
@@ -899,6 +909,7 @@ impl CompositeMutationStage {
         previous_hash: [u8; 32],
         frame_hash: [u8; 32],
     ) -> Result<(FrozenCompositeOverlay, Vec<CompositeMutationV1>), StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         let Self {
             checkpoint,
             predecessor_application: staged_predecessor_application,
@@ -945,6 +956,7 @@ impl CompositeMutationStage {
             predecessor_lineage,
             predecessor_lineage_bytes,
             &frame.mutations,
+            tables[0].family.as_ref(),
         )?;
         if lineage_bytes
             .checked_add(charged_bytes)
@@ -977,6 +989,7 @@ impl CompositeMutationStage {
         table: CompositeTableV1,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         resolve_overlay_point(&self.tables, base, table, key)
     }
 
@@ -994,6 +1007,7 @@ impl CompositeMutationStage {
     where
         I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
     {
+        validate_overlay_family(&self.tables)?;
         merge_overlay_bounded(
             &self.tables,
             table,
@@ -1019,6 +1033,7 @@ impl CompositeMutationStage {
     where
         I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
     {
+        validate_overlay_family(&self.tables)?;
         merge_overlay_bounded_reverse(
             &self.tables,
             table,
@@ -1060,6 +1075,14 @@ pub struct FrozenCompositeOverlay {
 }
 
 impl FrozenCompositeOverlay {
+    /// First-party numeric ownership family; it contains no table data or authority.
+    #[doc(hidden)]
+    pub fn provider_ownership_family(
+        &self,
+    ) -> Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>> {
+        self.tables[0].family.as_ref()
+    }
+
     /// Returns the exact checkpoint identity.
     #[must_use]
     pub const fn checkpoint(&self) -> &CompositeCheckpointV1 {
@@ -1128,17 +1151,19 @@ impl FrozenCompositeOverlay {
             return Err(StorageValueError::IdentityMismatch);
         }
 
-        let mut touched = BTreeMap::<(CompositeTableV1, Arc<[u8]>), ()>::new();
+        validate_overlay_family(&self.tables)?;
+        validate_overlay_family(&covered.tables)?;
+        let mut touched = BTreeMap::<(CompositeTableV1, Box<[u8]>), ()>::new();
         let mut lineage = self.lineage.as_ref();
         while !same_lineage(lineage, covered.lineage.as_ref()) {
             let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
             for (table, key) in node.keys.iter() {
-                touched.insert((*table, Arc::from(key.as_ref())), ());
+                touched.insert((*table, key.clone()), ());
             }
             lineage = node.predecessor.as_ref();
         }
 
-        let mut pending: [BTreeMap<Arc<[u8]>, OverlayValue>; TABLE_COUNT] =
+        let mut pending: [BTreeMap<OverlayBytes, OverlayValue>; TABLE_COUNT] =
             array::from_fn(|_| BTreeMap::new());
         let mut charged_bytes = 0_usize;
         for ((table, key), ()) in touched {
@@ -1154,11 +1179,28 @@ impl FrozenCompositeOverlay {
             }
             charged_bytes = charged_bytes
                 .checked_add(entry_charge(&key, value)?)
-                .filter(|charge| *charge <= MAX_COMPOSITE_OVERLAY_BYTES)
+                .filter(|charge| {
+                    charge
+                        .checked_add(OVERLAY_NODE_PLAN_BYTES)
+                        .is_some_and(|n| n <= MAX_COMPOSITE_OVERLAY_BYTES)
+                })
                 .ok_or(StorageValueError::LimitExceeded)?;
-            pending[table_index].insert(key, value.clone());
+            let owned_key = self.tables[table_index]
+                .key(&key)
+                .ok_or(StorageValueError::IdentityMismatch)?
+                .clone();
+            pending[table_index].insert(owned_key, value.clone());
         }
-        let tables = pending.map(PersistentOverlayMap::from_sorted_entries);
+        let family = self.tables[0].family.as_ref().cloned();
+        let mut tables: [PersistentOverlayMap; TABLE_COUNT] =
+            array::from_fn(|_| PersistentOverlayMap::default());
+        for (target, entries) in tables.iter_mut().zip(pending) {
+            if let Some(family) = &family {
+                *target = PersistentOverlayMap::from_sorted_entries(entries, Arc::clone(family))?;
+            } else if !entries.is_empty() {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+        }
 
         Ok(Self {
             checkpoint,
@@ -1192,6 +1234,7 @@ impl FrozenCompositeOverlay {
         table: CompositeTableV1,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageValueError> {
+        validate_overlay_family(&self.tables)?;
         resolve_overlay_point(&self.tables, base, table, key)
     }
 
@@ -1209,6 +1252,7 @@ impl FrozenCompositeOverlay {
     where
         I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
     {
+        validate_overlay_family(&self.tables)?;
         merge_overlay_bounded(
             &self.tables,
             table,
@@ -1234,6 +1278,7 @@ impl FrozenCompositeOverlay {
     where
         I: IntoIterator<Item = Result<(Box<[u8]>, Box<[u8]>), StorageValueError>>,
     {
+        validate_overlay_family(&self.tables)?;
         merge_overlay_bounded_reverse(
             &self.tables,
             table,
@@ -1466,10 +1511,107 @@ impl BoundedCompositePage {
     }
 }
 
+// Each byte allocation is shared independently of its AVL node. Its numerical
+// owner is destroyed after the payload, including when a path-copy replaces it.
+struct OverlayByteAllocation {
+    bytes: Box<[u8]>,
+    _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
+}
+#[derive(Clone)]
+struct OverlayBytes(Arc<OverlayByteAllocation>);
+impl OverlayBytes {
+    fn try_new(
+        bytes: &[u8],
+        family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    ) -> Result<Self, StorageValueError> {
+        let charge = bytes
+            .len()
+            .checked_add(std::mem::size_of::<OverlayByteAllocation>() + 32)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        let ownership = family
+            .register_member(u64::try_from(charge).map_err(|_| StorageValueError::SizeOverflow)?)
+            .map_err(|_| StorageValueError::LimitExceeded)?;
+        Ok(Self(Arc::new(OverlayByteAllocation {
+            bytes: bytes.into(),
+            _ownership: ownership,
+        })))
+    }
+}
+impl std::ops::Deref for OverlayBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0.bytes
+    }
+}
+impl AsRef<[u8]> for OverlayBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+impl std::borrow::Borrow<[u8]> for OverlayBytes {
+    fn borrow(&self) -> &[u8] {
+        self
+    }
+}
+impl PartialEq for OverlayBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+impl Eq for OverlayBytes {}
+impl PartialOrd for OverlayBytes {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OverlayBytes {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+
+fn ensure_overlay_family(
+    tables: &mut [PersistentOverlayMap; TABLE_COUNT],
+) -> Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily> {
+    if let Some(family) = &tables[0].family {
+        return Arc::clone(family);
+    }
+    // The first entry's size-derived metadata allowance admits this bounded
+    // control before allocating it; empty overlays allocate no family.
+    let family = Arc::new(
+        riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+            OVERLAY_FAMILY_CONTROL_BYTES as u64,
+        ),
+    );
+    for table in tables {
+        table.family = Some(Arc::clone(&family));
+    }
+    family
+}
+
+fn validate_overlay_family(
+    tables: &[PersistentOverlayMap; TABLE_COUNT],
+) -> Result<(), StorageValueError> {
+    if let Some(family) = &tables[0].family
+        && !family
+            .observation()
+            .map_err(|_| StorageValueError::LimitExceeded)?
+            .enabled
+    {
+        return Err(StorageValueError::LimitExceeded);
+    }
+    Ok(())
+}
+
+const OVERLAY_FAMILY_CONTROL_BYTES: usize =
+    std::mem::size_of::<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>() + 32;
+const OVERLAY_NODE_CONTROL_BYTES: usize = std::mem::size_of::<OverlayNode>() + 32;
+const OVERLAY_BYTE_CONTROL_BYTES: usize = std::mem::size_of::<OverlayByteAllocation>() + 32;
+
 #[derive(Clone)]
 enum OverlayValue {
     Tombstone,
-    Value(Arc<[u8]>),
+    Value(OverlayBytes),
 }
 
 /// Exact persistent publication ancestry used to identify the bounded set of
@@ -1478,6 +1620,7 @@ enum OverlayValue {
 struct OverlayLineageNode {
     predecessor: Option<Arc<Self>>,
     keys: Box<[(CompositeTableV1, Box<[u8]>)]>,
+    _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
 }
 
 impl Drop for OverlayLineageNode {
@@ -1501,30 +1644,66 @@ fn overlay_lineage_successor(
     predecessor: Option<Arc<OverlayLineageNode>>,
     predecessor_bytes: usize,
     mutations: &[CompositeMutationV1],
+    family: Option<&Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
 ) -> Result<(Option<Arc<OverlayLineageNode>>, usize), StorageValueError> {
+    if mutations.is_empty() {
+        return Ok((predecessor, predecessor_bytes));
+    }
     let mut added_bytes = 0_usize;
-    let mut keys = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         added_bytes = added_bytes
             .checked_add(lineage_key_charge(mutation.key())?)
             .ok_or(StorageValueError::SizeOverflow)?;
-        keys.push((mutation.table(), mutation.key().into()));
     }
     let lineage_bytes = predecessor_bytes
         .checked_add(added_bytes)
+        .filter(|bytes| {
+            bytes
+                .checked_add(OVERLAY_NODE_PLAN_BYTES)
+                .is_some_and(|n| n <= MAX_COMPOSITE_OVERLAY_BYTES)
+        })
+        .ok_or(StorageValueError::LimitExceeded)?;
+    let family = family.ok_or(StorageValueError::IdentityMismatch)?;
+    // The per-key bound includes the complete node/control even for one key.
+    // Admit exact closed owned capacities before allocating the vector or keys.
+    let actual_bytes = std::mem::size_of::<OverlayLineageNode>()
+        .checked_add(32)
+        .and_then(|n| {
+            n.checked_add(
+                mutations
+                    .len()
+                    .checked_mul(std::mem::size_of::<(CompositeTableV1, Box<[u8]>)>())?,
+            )
+        })
+        .and_then(|n| {
+            mutations
+                .iter()
+                .try_fold(n, |n, m| n.checked_add(m.key().len()))
+        })
         .ok_or(StorageValueError::SizeOverflow)?;
-    let lineage = (!keys.is_empty()).then(|| {
-        Arc::new(OverlayLineageNode {
+    let ownership = family
+        .register_member(u64::try_from(actual_bytes).map_err(|_| StorageValueError::SizeOverflow)?)
+        .map_err(|_| StorageValueError::LimitExceeded)?;
+    let mut keys = Vec::with_capacity(mutations.len());
+    for mutation in mutations {
+        keys.push((mutation.table(), mutation.key().into()));
+    }
+    Ok((
+        Some(Arc::new(OverlayLineageNode {
             predecessor,
             keys: keys.into_boxed_slice(),
-        })
-    });
-    Ok((lineage, lineage_bytes))
+            _ownership: ownership,
+        })),
+        lineage_bytes,
+    ))
 }
-
 fn lineage_key_charge(key: &[u8]) -> Result<usize, StorageValueError> {
     key.len()
-        .checked_add(48)
+        .checked_add(
+            std::mem::size_of::<(CompositeTableV1, Box<[u8]>)>()
+                + std::mem::size_of::<OverlayLineageNode>()
+                + 32,
+        )
         .ok_or(StorageValueError::SizeOverflow)
 }
 
@@ -1554,9 +1733,11 @@ fn apply_mutations_atomically(
     base: &impl CompositeViewBase,
     maximum_table_charge: usize,
 ) -> Result<(), StorageValueError> {
-    let mut pending_tables: [BTreeMap<Arc<[u8]>, OverlayValue>; TABLE_COUNT] =
+    let mut pending_tables: [BTreeMap<OverlayBytes, OverlayValue>; TABLE_COUNT] =
         array::from_fn(|_| BTreeMap::new());
     let mut candidate_charge = *charged_bytes;
+    validate_overlay_family(tables)?;
+    let family = tables[0].family.as_ref().cloned();
     for mutation in mutations {
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
         let table_index = mutation.table().index();
@@ -1568,31 +1749,32 @@ fn apply_mutations_atomically(
         };
         validate_before_image(current.as_deref(), mutation.expected_hash())?;
 
-        let key: Arc<[u8]> = Arc::from(mutation.key());
-        let replacement = mutation
-            .value()
-            .map(|value| OverlayValue::Value(Arc::from(value)))
-            .unwrap_or(OverlayValue::Tombstone);
         let prior_overlay = pending_tables[table_index]
-            .get(key.as_ref())
-            .or_else(|| tables[table_index].get(key.as_ref()));
+            .get(mutation.key())
+            .or_else(|| tables[table_index].get(mutation.key()));
         if let Some(prior) = prior_overlay {
             candidate_charge = candidate_charge
-                .checked_sub(entry_charge(&key, prior)?)
+                .checked_sub(entry_charge(mutation.key(), prior)?)
                 .ok_or(StorageValueError::SizeOverflow)?;
         }
         candidate_charge = candidate_charge
-            .checked_add(entry_charge(&key, &replacement)?)
+            .checked_add(raw_entry_charge(mutation.key(), mutation.value())?)
             .ok_or(StorageValueError::SizeOverflow)?;
         if candidate_charge > maximum_table_charge {
             return Err(StorageValueError::LimitExceeded);
         }
+        let family = family.as_ref().ok_or(StorageValueError::IdentityMismatch)?;
+        let key = OverlayBytes::try_new(mutation.key(), family)?;
+        let replacement = match mutation.value() {
+            Some(value) => OverlayValue::Value(OverlayBytes::try_new(value, family)?),
+            None => OverlayValue::Tombstone,
+        };
         pending_tables[table_index].insert(key, replacement);
     }
 
     for (target, pending) in tables.iter_mut().zip(pending_tables) {
         for (key, value) in pending {
-            target.insert(key, value);
+            target.insert(key, value)?;
         }
     }
     *charged_bytes = candidate_charge;
@@ -1619,23 +1801,85 @@ fn resolve_overlay_point(
 /// closed overlay lookup and bounded merge contracts above.
 #[derive(Clone, Default)]
 struct PersistentOverlayMap {
+    family: Option<Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>>,
     root: Option<Arc<OverlayNode>>,
 }
 
-#[derive(Clone)]
 struct OverlayNode {
     // Shared, never copied. A successor copies one search path, and a
     // `Box<[u8]>` key here made that copy allocate and memcpy every key on the
-    // path; an `Arc<[u8]>` makes it a refcount bump. The bytes are immutable
+    // path; a shared closed byte owner makes it a refcount bump. The bytes are immutable
     // once inserted, so sharing them across successors is exact.
-    key: Arc<[u8]>,
+    key: OverlayBytes,
     value: OverlayValue,
     height: u16,
     left: Option<Arc<Self>>,
     right: Option<Arc<Self>>,
+    _ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
+}
+
+// A bounded preallocation schedule prevents accounting refusal after a private
+// tree has begun changing. Unused numerical reservations are released on return.
+const MAX_OVERLAY_HEIGHT: usize = 2 * usize::BITS as usize + 2;
+const MAX_OVERLAY_NODE_COPIES: usize = 4 * MAX_OVERLAY_HEIGHT + 8;
+const OVERLAY_NODE_PLAN_BYTES: usize = std::mem::size_of::<OverlayNodeAdmission>();
+struct OverlayNodeAdmission {
+    family: Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    members: [Option<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember>;
+        MAX_OVERLAY_NODE_COPIES],
+    remaining: usize,
+}
+impl OverlayNodeAdmission {
+    fn try_new(
+        family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+        height: usize,
+    ) -> Result<Self, StorageValueError> {
+        if height > MAX_OVERLAY_HEIGHT {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let remaining = 4 * height + 8;
+        let mut admission = Self {
+            family: Arc::clone(family),
+            members: array::from_fn(|_| None),
+            remaining,
+        };
+        for member in &mut admission.members[..remaining] {
+            *member = Some(
+                family
+                    .register_member(OVERLAY_NODE_CONTROL_BYTES as u64)
+                    .map_err(|_| StorageValueError::LimitExceeded)?,
+            );
+        }
+        Ok(admission)
+    }
+    fn take(
+        &mut self,
+    ) -> Result<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember, StorageValueError>
+    {
+        let Some(index) = self.remaining.checked_sub(1) else {
+            self.family.refuse();
+            return Err(StorageValueError::LimitExceeded);
+        };
+        self.remaining = index;
+        self.members[index].take().ok_or_else(|| {
+            self.family.refuse();
+            StorageValueError::LimitExceeded
+        })
+    }
 }
 
 impl PersistentOverlayMap {
+    fn key(&self, key: &[u8]) -> Option<&OverlayBytes> {
+        let mut current = self.root.as_deref();
+        while let Some(node) = current {
+            match key.cmp(node.key.as_ref()) {
+                std::cmp::Ordering::Less => current = node.left.as_deref(),
+                std::cmp::Ordering::Equal => return Some(&node.key),
+                std::cmp::Ordering::Greater => current = node.right.as_deref(),
+            }
+        }
+        None
+    }
     fn get(&self, key: &[u8]) -> Option<&OverlayValue> {
         let mut current = self.root.as_deref();
         while let Some(node) = current {
@@ -1647,31 +1891,55 @@ impl PersistentOverlayMap {
         }
         None
     }
-
-    fn insert(&mut self, key: Arc<[u8]>, value: OverlayValue) {
-        self.insert_replacing(key, value);
+    fn insert(&mut self, key: OverlayBytes, value: OverlayValue) -> Result<(), StorageValueError> {
+        self.insert_replacing(key, value).map(|_| ())
     }
-
-    /// Inserts in one descent and returns the value it replaced, if any.
-    fn insert_replacing(&mut self, key: Arc<[u8]>, value: OverlayValue) -> Option<OverlayValue> {
+    fn insert_replacing(
+        &mut self,
+        key: OverlayBytes,
+        value: OverlayValue,
+    ) -> Result<Option<OverlayValue>, StorageValueError> {
+        let family = key.0._ownership.family();
+        if self
+            .family
+            .as_ref()
+            .is_some_and(|current| !current.same_family(family))
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if let OverlayValue::Value(bytes) = &value
+            && !family.same_family(bytes.0._ownership.family())
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mut admission =
+            OverlayNodeAdmission::try_new(family, usize::from(overlay_height(&self.root)))?;
+        self.family = Some(Arc::clone(family));
         let mut prior = None;
         self.root = Some(insert_overlay_node(
             self.root.take(),
             key,
             value,
             &mut prior,
-        ));
-        prior
+            &mut admission,
+        )?);
+        Ok(prior)
     }
-
-    fn from_sorted_entries(entries: BTreeMap<Arc<[u8]>, OverlayValue>) -> Self {
+    #[expect(
+        clippy::mutable_key_type,
+        reason = "overlay ordering uses only immutable bytes; interior mutability tracks allocation ownership"
+    )]
+    fn from_sorted_entries(
+        entries: BTreeMap<OverlayBytes, OverlayValue>,
+        family: Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+    ) -> Result<Self, StorageValueError> {
         let len = entries.len();
         let mut entries = entries.into_iter();
-        Self {
-            root: build_balanced_overlay(&mut entries, len),
-        }
+        Ok(Self {
+            root: build_balanced_overlay(&mut entries, len, &family)?,
+            family: Some(family),
+        })
     }
-
     fn range<'map>(
         &'map self,
         start: std::ops::Bound<&'map [u8]>,
@@ -1679,7 +1947,6 @@ impl PersistentOverlayMap {
     ) -> PersistentOverlayRange<'map> {
         PersistentOverlayRange::new(self.root.as_deref(), start, end)
     }
-
     fn range_reverse<'map>(
         &'map self,
         start: std::ops::Bound<&'map [u8]>,
@@ -1688,62 +1955,108 @@ impl PersistentOverlayMap {
         PersistentOverlayRangeReverse::new(self.root.as_deref(), start, end)
     }
 }
-
 fn build_balanced_overlay(
-    entries: &mut impl Iterator<Item = (Arc<[u8]>, OverlayValue)>,
+    entries: &mut impl Iterator<Item = (OverlayBytes, OverlayValue)>,
     len: usize,
-) -> Option<Arc<OverlayNode>> {
+    family: &Arc<riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily>,
+) -> Result<Option<Arc<OverlayNode>>, StorageValueError> {
     if len == 0 {
-        return None;
+        return Ok(None);
     }
     let left_len = len / 2;
-    let left = build_balanced_overlay(entries, left_len);
+    let left = build_balanced_overlay(entries, left_len, family)?;
     let (key, value) = entries
         .next()
         .expect("balanced overlay length matches its owned iterator");
-    let right = build_balanced_overlay(entries, len - left_len - 1);
-    Some(overlay_node(key, value, left, right))
+    if !family.same_family(key.0._ownership.family()) {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    if let OverlayValue::Value(bytes) = &value
+        && !family.same_family(bytes.0._ownership.family())
+    {
+        return Err(StorageValueError::IdentityMismatch);
+    }
+    let right = build_balanced_overlay(entries, len - left_len - 1, family)?;
+    let ownership = family
+        .register_member(OVERLAY_NODE_CONTROL_BYTES as u64)
+        .map_err(|_| StorageValueError::LimitExceeded)?;
+    Ok(Some(overlay_node_owned(key, value, left, right, ownership)))
 }
-
+fn owned_overlay_node<'a>(
+    node: &'a mut Arc<OverlayNode>,
+    admission: &mut OverlayNodeAdmission,
+) -> Result<&'a mut OverlayNode, StorageValueError> {
+    if Arc::get_mut(node).is_none() {
+        let ownership = admission.take()?;
+        *node = Arc::new(OverlayNode {
+            key: node.key.clone(),
+            value: node.value.clone(),
+            height: node.height,
+            left: node.left.clone(),
+            right: node.right.clone(),
+            _ownership: ownership,
+        });
+    }
+    Arc::get_mut(node).ok_or_else(|| {
+        admission.family.refuse();
+        StorageValueError::LimitExceeded
+    })
+}
 fn insert_overlay_node(
     node: Option<Arc<OverlayNode>>,
-    key: Arc<[u8]>,
+    key: OverlayBytes,
     value: OverlayValue,
     prior: &mut Option<OverlayValue>,
-) -> Arc<OverlayNode> {
+    admission: &mut OverlayNodeAdmission,
+) -> Result<Arc<OverlayNode>, StorageValueError> {
     let Some(mut node) = node else {
-        return overlay_node(key, value, None, None);
+        return Ok(overlay_node_owned(
+            key,
+            value,
+            None,
+            None,
+            admission.take()?,
+        ));
     };
-    // Copy only shared paths. Subsequent private-stage mutations reuse the
-    // already-owned nodes while predecessor snapshots remain immutable.
-    let owned = Arc::make_mut(&mut node);
+    let owned = owned_overlay_node(&mut node, admission)?;
     match key.as_ref().cmp(owned.key.as_ref()) {
         std::cmp::Ordering::Less => {
-            owned.left = Some(insert_overlay_node(owned.left.take(), key, value, prior));
+            owned.left = Some(insert_overlay_node(
+                owned.left.take(),
+                key,
+                value,
+                prior,
+                admission,
+            )?)
         }
         std::cmp::Ordering::Equal => {
             owned.key = key;
             *prior = Some(std::mem::replace(&mut owned.value, value));
         }
         std::cmp::Ordering::Greater => {
-            owned.right = Some(insert_overlay_node(owned.right.take(), key, value, prior));
+            owned.right = Some(insert_overlay_node(
+                owned.right.take(),
+                key,
+                value,
+                prior,
+                admission,
+            )?)
         }
     }
     update_overlay_height(owned);
-    rebalance_overlay_node(node)
+    rebalance_overlay_node(node, admission)
 }
-
 fn update_overlay_height(node: &mut OverlayNode) {
     node.height = overlay_height(&node.left)
         .max(overlay_height(&node.right))
         .saturating_add(1);
 }
-
-fn overlay_node(
-    key: Arc<[u8]>,
+fn overlay_node_owned(
+    key: OverlayBytes,
     value: OverlayValue,
     left: Option<Arc<OverlayNode>>,
     right: Option<Arc<OverlayNode>>,
+    ownership: riffdb_types::exact_provider_budget_v1::PhysicalOwnershipMember,
 ) -> Arc<OverlayNode> {
     let height = overlay_height(&left)
         .max(overlay_height(&right))
@@ -1754,14 +2067,16 @@ fn overlay_node(
         height,
         left,
         right,
+        _ownership: ownership,
     })
 }
-
 fn overlay_height(node: &Option<Arc<OverlayNode>>) -> u16 {
     node.as_ref().map_or(0, |node| node.height)
 }
-
-fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
+fn rebalance_overlay_node(
+    mut node: Arc<OverlayNode>,
+    admission: &mut OverlayNodeAdmission,
+) -> Result<Arc<OverlayNode>, StorageValueError> {
     let balance = i32::from(overlay_height(&node.left)) - i32::from(overlay_height(&node.right));
     if balance > 1 {
         let left = node
@@ -1769,15 +2084,15 @@ fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("positive AVL balance has left child");
         if overlay_height(&left.left) < overlay_height(&left.right) {
-            let owned = Arc::make_mut(&mut node);
+            let owned = owned_overlay_node(&mut node, admission)?;
             let left = owned
                 .left
                 .take()
                 .expect("positive AVL balance has left child");
-            owned.left = Some(rotate_overlay_left(left));
+            owned.left = Some(rotate_overlay_left(left, admission)?);
             update_overlay_height(owned);
         }
-        return rotate_overlay_right(node);
+        return rotate_overlay_right(node, admission);
     }
     if balance < -1 {
         let right = node
@@ -1785,47 +2100,51 @@ fn rebalance_overlay_node(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
             .as_ref()
             .expect("negative AVL balance has right child");
         if overlay_height(&right.right) < overlay_height(&right.left) {
-            let owned = Arc::make_mut(&mut node);
+            let owned = owned_overlay_node(&mut node, admission)?;
             let right = owned
                 .right
                 .take()
                 .expect("negative AVL balance has right child");
-            owned.right = Some(rotate_overlay_right(right));
+            owned.right = Some(rotate_overlay_right(right, admission)?);
             update_overlay_height(owned);
         }
-        return rotate_overlay_left(node);
+        return rotate_overlay_left(node, admission);
     }
-    node
+    Ok(node)
 }
-
-fn rotate_overlay_left(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let mut right = Arc::make_mut(&mut node)
+fn rotate_overlay_left(
+    mut node: Arc<OverlayNode>,
+    admission: &mut OverlayNodeAdmission,
+) -> Result<Arc<OverlayNode>, StorageValueError> {
+    let mut right = owned_overlay_node(&mut node, admission)?
         .right
         .take()
         .expect("AVL left rotation has right child");
-    let middle = Arc::make_mut(&mut right).left.take();
-    let owned = Arc::make_mut(&mut node);
+    let middle = owned_overlay_node(&mut right, admission)?.left.take();
+    let owned = owned_overlay_node(&mut node, admission)?;
     owned.right = middle;
     update_overlay_height(owned);
-    let owned = Arc::make_mut(&mut right);
+    let owned = owned_overlay_node(&mut right, admission)?;
     owned.left = Some(node);
     update_overlay_height(owned);
-    right
+    Ok(right)
 }
-
-fn rotate_overlay_right(mut node: Arc<OverlayNode>) -> Arc<OverlayNode> {
-    let mut left = Arc::make_mut(&mut node)
+fn rotate_overlay_right(
+    mut node: Arc<OverlayNode>,
+    admission: &mut OverlayNodeAdmission,
+) -> Result<Arc<OverlayNode>, StorageValueError> {
+    let mut left = owned_overlay_node(&mut node, admission)?
         .left
         .take()
         .expect("AVL right rotation has left child");
-    let middle = Arc::make_mut(&mut left).right.take();
-    let owned = Arc::make_mut(&mut node);
+    let middle = owned_overlay_node(&mut left, admission)?.right.take();
+    let owned = owned_overlay_node(&mut node, admission)?;
     owned.left = middle;
     update_overlay_height(owned);
-    let owned = Arc::make_mut(&mut left);
+    let owned = owned_overlay_node(&mut left, admission)?;
     owned.right = Some(node);
     update_overlay_height(owned);
-    left
+    Ok(left)
 }
 
 struct PersistentOverlayRange<'map> {
@@ -1978,6 +2297,13 @@ fn validate_range_key(
     validate_component(key)
 }
 
+fn raw_entry_charge(key: &[u8], value: Option<&[u8]>) -> Result<usize, StorageValueError> {
+    key.len()
+        .checked_add(value.map_or(1, <[u8]>::len))
+        .and_then(|n| n.checked_add(OVERLAY_ENTRY_OVERHEAD))
+        .ok_or(StorageValueError::SizeOverflow)
+}
+
 fn entry_charge(key: &[u8], value: &OverlayValue) -> Result<usize, StorageValueError> {
     key.len()
         .checked_add(match value {
@@ -2007,6 +2333,10 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 }
 
 #[cfg(test)]
+#[path = "composite_physical_ownership_tests.rs"]
+mod physical_ownership_tests;
+
+#[cfg(test)]
 #[path = "composite_lineage_drop_tests.rs"]
 mod lineage_drop_tests;
 
@@ -2017,7 +2347,7 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct Base {
+    pub(super) struct Base {
         rows: BTreeMap<(CompositeTableV1, Vec<u8>), Vec<u8>>,
         reads: Cell<usize>,
         validations: Cell<usize>,
@@ -2059,11 +2389,11 @@ mod tests {
         }
     }
 
-    fn database_id() -> DatabaseId {
+    pub(super) fn database_id() -> DatabaseId {
         DatabaseId::from_unix_milliseconds_and_random(1, [7; 10]).expect("database")
     }
 
-    fn checkpoint() -> CompositeCheckpointV1 {
+    pub(super) fn checkpoint() -> CompositeCheckpointV1 {
         CompositeCheckpointV1::new(
             database_id(),
             1,
@@ -2075,7 +2405,7 @@ mod tests {
         .expect("checkpoint")
     }
 
-    fn frame(mutations: Vec<CompositeMutationV1>) -> CompositeFrameV1 {
+    pub(super) fn frame(mutations: Vec<CompositeMutationV1>) -> CompositeFrameV1 {
         CompositeFrameV1::new(
             CompositeFrameKindV1::Command,
             database_id(),
@@ -2092,7 +2422,7 @@ mod tests {
         .expect("frame")
     }
 
-    fn second_frame(mutations: Vec<CompositeMutationV1>) -> CompositeFrameV1 {
+    pub(super) fn second_frame(mutations: Vec<CompositeMutationV1>) -> CompositeFrameV1 {
         CompositeFrameV1::new(
             CompositeFrameKindV1::Command,
             database_id(),
@@ -2403,7 +2733,7 @@ mod tests {
         let lineage = stage.predecessor_lineage_bytes
             + stage.staged_lineage_bytes
             + lineage_key_charge(b"row").expect("lineage");
-        stage.charged_bytes = MAX_COMPOSITE_OVERLAY_BYTES - lineage - 100;
+        stage.charged_bytes = MAX_COMPOSITE_OVERLAY_BYTES - lineage - OVERLAY_NODE_PLAN_BYTES - 100;
         let headroom_charge = stage.charged_bytes;
         let smaller = vec![8_u8; 900];
         stage
@@ -2948,19 +3278,28 @@ mod tests {
 
     #[test]
     fn private_overlay_updates_reuse_owned_paths_without_changing_snapshots() {
+        let family = Arc::new(
+            riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+                OVERLAY_FAMILY_CONTROL_BYTES as u64,
+            ),
+        );
         let mut stage = PersistentOverlayMap::from_sorted_entries(
             (0_u64..127)
                 .map(|key| {
                     (
-                        Arc::<[u8]>::from(key.to_be_bytes()),
-                        OverlayValue::Value(Arc::from(key.to_be_bytes())),
+                        OverlayBytes::try_new(&key.to_be_bytes(), &family).unwrap(),
+                        OverlayValue::Value(
+                            OverlayBytes::try_new(&key.to_be_bytes(), &family).unwrap(),
+                        ),
                     )
                 })
                 .collect(),
-        );
+            Arc::clone(&family),
+        )
+        .unwrap();
         let predecessor = stage.clone();
-        let key: Arc<[u8]> = Arc::from(1_u64.to_be_bytes());
-        stage.insert(Arc::clone(&key), OverlayValue::Tombstone);
+        let key = OverlayBytes::try_new(&1_u64.to_be_bytes(), &family).unwrap();
+        stage.insert(key.clone(), OverlayValue::Tombstone).unwrap();
         let path = |map: &PersistentOverlayMap| {
             let mut nodes = Vec::new();
             let mut cursor = map.root.as_ref();
@@ -2976,10 +3315,14 @@ mod tests {
         };
         let private_path = path(&stage);
         for value in 0_u64..100 {
-            stage.insert(
-                Arc::clone(&key),
-                OverlayValue::Value(Arc::from(value.to_be_bytes())),
-            );
+            stage
+                .insert(
+                    key.clone(),
+                    OverlayValue::Value(
+                        OverlayBytes::try_new(&value.to_be_bytes(), &family).unwrap(),
+                    ),
+                )
+                .unwrap();
             assert_eq!(
                 path(&stage),
                 private_path,
@@ -2999,6 +3342,11 @@ mod tests {
     #[test]
     fn persistent_overlay_map_stays_balanced_for_ordered_keys() {
         for descending in [false, true] {
+            let family = Arc::new(
+                riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+                    OVERLAY_FAMILY_CONTROL_BYTES as u64,
+                ),
+            );
             let mut map = PersistentOverlayMap::default();
             let keys: Vec<u16> = if descending {
                 (0..4_096).rev().collect()
@@ -3007,9 +3355,12 @@ mod tests {
             };
             for key in keys {
                 map.insert(
-                    Arc::from(key.to_be_bytes().as_slice()),
-                    OverlayValue::Value(Arc::from(key.to_be_bytes())),
-                );
+                    OverlayBytes::try_new(&key.to_be_bytes(), &family).unwrap(),
+                    OverlayValue::Value(
+                        OverlayBytes::try_new(&key.to_be_bytes(), &family).unwrap(),
+                    ),
+                )
+                .unwrap();
             }
             let root = map.root.as_ref().expect("nonempty map");
             assert!(root.height <= 14, "AVL height was {}", root.height);

@@ -63,6 +63,7 @@ mod consumer_ports;
 mod derived;
 #[cfg(feature = "test-fixtures")]
 mod durable_fixtures;
+mod engine_owner;
 mod error;
 #[cfg(feature = "test-fixtures")]
 mod fixtures;

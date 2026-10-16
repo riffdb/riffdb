@@ -52,7 +52,7 @@
 //! snapshot-visible application frontier is the one such value cached here.
 
 use std::ops::Deref;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
@@ -77,22 +77,102 @@ const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 /// a read transaction still retains transactional memory.
 pub(crate) enum CheckpointEngineCustody {
     Writable {
-        _owner: std::sync::Arc<redb::Database>,
+        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>,
     },
     ReadOnly {
-        _owner: std::sync::Arc<redb::ReadOnlyDatabase>,
+        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>,
     },
 }
 
-impl From<std::sync::Arc<redb::Database>> for CheckpointEngineCustody {
-    fn from(owner: std::sync::Arc<redb::Database>) -> Self {
-        Self::Writable { _owner: owner }
+impl From<std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>>
+    for CheckpointEngineCustody
+{
+    fn from(owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>) -> Self {
+        Self::Writable { owner }
     }
 }
 
-impl From<std::sync::Arc<redb::ReadOnlyDatabase>> for CheckpointEngineCustody {
-    fn from(owner: std::sync::Arc<redb::ReadOnlyDatabase>) -> Self {
-        Self::ReadOnly { _owner: owner }
+impl From<std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>>
+    for CheckpointEngineCustody
+{
+    fn from(
+        owner: std::sync::Arc<crate::engine_owner::EngineOwner<redb::ReadOnlyDatabase>>,
+    ) -> Self {
+        Self::ReadOnly { owner }
+    }
+}
+
+impl CheckpointEngineCustody {
+    #[cfg(test)]
+    pub(crate) fn provider_charge_bytes(&self) -> u64 {
+        match self {
+            Self::Writable { owner } => owner.provider_charge_bytes(),
+            Self::ReadOnly { owner } => owner.provider_charge_bytes(),
+        }
+    }
+    pub(crate) fn is_writable_owner(
+        &self,
+        other: &std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>,
+    ) -> bool {
+        match self {
+            Self::Writable { owner } => std::sync::Arc::ptr_eq(owner, other),
+            Self::ReadOnly { .. } => false,
+        }
+    }
+    pub(crate) fn provider_ownership_needed(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<u64, riffdb_storage_api::StorageError> {
+        match self {
+            Self::Writable { owner } => owner.provider_ownership_needed(budget),
+            Self::ReadOnly { owner } => owner.provider_ownership_needed(budget),
+        }
+    }
+
+    pub(crate) fn prepare_provider_ownership_from(
+        &self,
+        work: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        crate::engine_owner::PreparedEngineProviderOwnership<'_>,
+        riffdb_storage_api::StorageError,
+    > {
+        match self {
+            Self::Writable { owner } => owner.prepare_provider_ownership_from(work, budget),
+            Self::ReadOnly { owner } => owner.prepare_provider_ownership_from(work, budget),
+        }
+    }
+}
+
+// This control contains only bounded accounting, never a root or engine. A
+// tracking weak alias keeps it until after releasing the real Arc allocation.
+struct RootAllocationControl {
+    provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell,
+}
+
+pub(crate) const ROOT_ALLOCATION_CONTROL_BYTES: usize =
+    std::mem::size_of::<RootAllocationControl>()
+        + 4 * std::mem::size_of::<usize>()
+        + std::mem::size_of::<riffdb_types::exact_provider_budget_v1::OwnershipCharge>()
+        + 4 * std::mem::size_of::<usize>();
+
+#[derive(Clone)]
+pub(crate) struct TrackedRootWeak {
+    // Release the actual residual allocation before its numerical owner.
+    weak: Weak<CheckpointRoot>,
+    _control: Arc<RootAllocationControl>,
+}
+
+impl TrackedRootWeak {
+    pub(crate) fn upgrade(&self) -> Option<Arc<CheckpointRoot>> {
+        self.weak.upgrade()
+    }
+    pub(crate) fn strong_count(&self) -> usize {
+        self.weak.strong_count()
+    }
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Weak<CheckpointRoot>) -> bool {
+        self.weak.ptr_eq(other)
     }
 }
 
@@ -104,7 +184,6 @@ impl From<std::sync::Arc<redb::ReadOnlyDatabase>> for CheckpointEngineCustody {
 /// the snapshot it was resolved from.
 pub(crate) struct CheckpointRoot {
     identity: u64,
-    locator_capability: crate::locator_capability::LocatorCapability,
     meta: OnceLock<MetaTable>,
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
@@ -114,9 +193,83 @@ pub(crate) struct CheckpointRoot {
     // A resolver holds no shared engine or later locator generations.
     history_resolver: Option<crate::history_stub::SnapshotHistoryResolverRef>,
     engine: Option<CheckpointEngineCustody>,
+    // Cached handles, transaction and engine disappear before this owner. The
+    // capability is last: its size-derived construction allowance covers the
+    // plain control while strong, and tracking covers residual weak ownership.
+    allocation_control: Arc<RootAllocationControl>,
+    locator_capability: crate::locator_capability::LocatorCapability,
 }
 
 impl CheckpointRoot {
+    pub(crate) fn downgrade_for_tracking(root: &Arc<Self>) -> TrackedRootWeak {
+        TrackedRootWeak {
+            weak: Arc::downgrade(root),
+            _control: Arc::clone(&root.allocation_control),
+        }
+    }
+
+    pub(crate) fn history_resolver_shared(
+        &self,
+    ) -> Option<&crate::history_stub::SnapshotHistoryResolverRef> {
+        self.history_resolver.as_ref()
+    }
+
+    fn provider_metadata_bound(&self) -> Result<u64, riffdb_storage_api::StorageError> {
+        // The existing maximum lazy-table allowance follows the one actual
+        // immutable root, rather than being charged again for each source pin.
+        let bytes = (32_usize * 1024)
+            .checked_add(std::mem::size_of::<Self>())
+            .and_then(|n| n.checked_add(4 * std::mem::size_of::<usize>()))
+            .and_then(|n| n.checked_add(ROOT_ALLOCATION_CONTROL_BYTES))
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| {
+                crate::error::storage_error(riffdb_storage_api::StorageErrorKind::LimitExceeded)
+            })?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn provider_metadata_needed(
+        &self,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<u64, riffdb_storage_api::StorageError> {
+        self.allocation_control
+            .provider
+            .provider_ownership_needed(self.provider_metadata_bound()?, budget)
+            .map_err(|_| {
+                crate::error::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable)
+            })
+    }
+
+    pub(crate) fn prepare_provider_metadata_from(
+        &self,
+        work: &mut riffdb_types::exact_provider_budget_v1::Reservation,
+        budget: &riffdb_types::exact_provider_budget_v1::ProviderBudget,
+    ) -> Result<
+        riffdb_types::exact_provider_budget_v1::PreparedSharedPhysicalOwnership<'_>,
+        riffdb_storage_api::StorageError,
+    > {
+        self.allocation_control
+            .provider
+            .prepare_provider_ownership_from(self.provider_metadata_bound()?, work, budget)
+            .map_err(|_| {
+                crate::error::storage_error(riffdb_storage_api::StorageErrorKind::Unavailable)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn provider_metadata_charge_bytes(&self) -> u64 {
+        self.allocation_control.provider.owned_bytes().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_resolver_for_tests(
+        &self,
+    ) -> Option<&crate::history_stub::SnapshotHistoryResolverRef> {
+        self.history_resolver.as_ref()
+    }
+    pub(crate) fn engine_custody(&self) -> Option<&CheckpointEngineCustody> {
+        self.engine.as_ref()
+    }
     /// Wraps one captured snapshot with an empty handle cache.
     pub(crate) fn new(
         transaction: ReadTransaction,
@@ -144,6 +297,12 @@ impl CheckpointRoot {
             transaction,
             history_resolver: None,
             engine: None,
+            // Native construction/class allowance was admitted by the source
+            // capability before this actual control allocation is created.
+            allocation_control: Arc::new(RootAllocationControl {
+                provider: riffdb_types::exact_provider_budget_v1::SharedPhysicalOwnershipCell::new(
+                ),
+            }),
         })
     }
 
@@ -450,7 +609,15 @@ mod tests {
         write.commit().unwrap();
         drop(database);
 
-        let readonly = std::sync::Arc::new(redb::ReadOnlyDatabase::open(&path).unwrap());
+        let readonly = crate::engine_owner::EngineOwner::try_new(
+            redb::Database::builder()
+                .set_cache_size(crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES)
+                .open_read_only(&path)
+                .unwrap(),
+            crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES,
+            crate::locator_memory::LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
         let root = std::sync::Arc::new(
             CheckpointRoot::new(readonly.begin_read().unwrap(), 1)
                 .unwrap()

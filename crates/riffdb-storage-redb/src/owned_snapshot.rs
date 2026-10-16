@@ -14,6 +14,10 @@ mod provider_read;
 #[path = "owned_snapshot_provider_ownership.rs"]
 pub(crate) mod provider_ownership;
 
+#[cfg(test)]
+#[path = "owned_snapshot_engine_tests.rs"]
+mod engine_tests;
+
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -64,7 +68,7 @@ pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
     derived: Option<std::sync::Arc<redb::ReadTransaction>>,
     // redb closes its backend when Database drops, even with live read handles.
-    _derived_engine: Option<std::sync::Arc<redb::Database>>,
+    _derived_engine: Option<std::sync::Arc<crate::engine_owner::EngineOwner<redb::Database>>>,
     source_pins: Option<std::sync::Arc<crate::derived_source_pin::DerivedSourcePins>>,
     shared: Option<std::sync::Weak<crate::store::SharedRedb>>,
     // Field order releases every read before the final retained lease/engine.
@@ -220,10 +224,12 @@ impl OwnedSnapshotReader for RedbOperationalPorts {
     type Snapshot<'a> = RedbOwnedSnapshot;
 
     fn open_owned_snapshot(&self) -> Result<Self::Snapshot<'_>, StorageError> {
+        let access = self.begin_composite_read()?;
+        let (derived, engine) = self.shared.captured_derived_read()?;
         Ok(RedbOwnedSnapshot {
-            access: self.begin_composite_read()?,
-            derived: Some(std::sync::Arc::new(self.begin_derived_read()?)),
-            _derived_engine: Some(self.shared.retain_derived_engine()?),
+            access,
+            derived: Some(std::sync::Arc::new(derived)),
+            _derived_engine: Some(engine),
             source_pins: Some(std::sync::Arc::clone(&self.shared.derived_source_pins)),
             shared: Some(std::sync::Arc::downgrade(&self.shared)),
             validated_custody: None,

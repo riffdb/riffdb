@@ -78,12 +78,17 @@ fn borrowed_next<'view>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::PersistentOverlayMap;
+    use super::super::{OVERLAY_FAMILY_CONTROL_BYTES, OverlayBytes, PersistentOverlayMap};
     use super::*;
     use std::sync::Arc;
 
     #[test]
     fn borrowed_seek_preserves_exact_order_bounds_and_tombstones() {
+        let family = Arc::new(
+            riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily::new(
+                OVERLAY_FAMILY_CONTROL_BYTES as u64,
+            ),
+        );
         let mut map = PersistentOverlayMap::default();
         for (key, value) in [
             (b"a".as_slice(), Some(b"A".as_slice())),
@@ -91,11 +96,12 @@ mod tests {
             (b"c".as_slice(), Some(b"C".as_slice())),
         ] {
             map.insert(
-                Arc::from(key),
+                OverlayBytes::try_new(key, &family).unwrap(),
                 value.map_or(OverlayValue::Tombstone, |value| {
-                    OverlayValue::Value(Arc::from(value))
+                    OverlayValue::Value(OverlayBytes::try_new(value, &family).unwrap())
                 }),
-            );
+            )
+            .unwrap();
         }
         let root = map.root.as_deref();
         assert_eq!(

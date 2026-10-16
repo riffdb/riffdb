@@ -9,8 +9,8 @@ use crate::error::storage_error;
 use crate::store::RedbReadAccess;
 
 pub(crate) struct ProviderSnapshotOwnership {
-    // Source descriptors and fixed engine caches remain charged through every
-    // snapshot/source-pin clone; generation owners separately deduplicate data.
+    // Source descriptors remain charged through every snapshot/source-pin
+    // clone. Actual engine owners separately share each physical cache charge.
     _generation: Arc<OwnershipCharge>,
     // A complete checkpoint's generation charge, or a pending checkpoint's
     // fixed ownership/graph marker. Pending completion admits its full data
@@ -30,40 +30,37 @@ impl ProviderSnapshotOwnership {
 
     pub(crate) fn admit(
         access: &RedbReadAccess,
-        derived_cache: bool,
+        derived_engine: Option<&Arc<crate::engine_owner::EngineOwner<redb::Database>>>,
         budget: &ProviderBudget,
     ) -> Result<Arc<Self>, StorageError> {
         let generation = access.locator_capability().require_complete()?.clone();
-        let (source_bytes, checkpoint_capability) = match &access {
-            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => (
-                u64::try_from(
-                    root.locator_capability()
-                        .descriptor_charge_bound()?
-                        .checked_add(root.retained_history_custody_bound())
-                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?,
-                )
-                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-                None,
-            ),
-            RedbReadAccess::Composite(view) => {
-                let root = view.checkpoint_root_shared();
-                let checkpoint = root.locator_capability().clone();
-                (view.retained_provider_nonlocator_bound()?, Some(checkpoint))
-            }
+        let root = match access {
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => Arc::clone(root),
+            RedbReadAccess::Composite(view) => view.checkpoint_root_shared(),
         };
-        // The primary cache is compiled at 12 MiB; an optional derived read
-        // retains its compiled 4-MiB cache. Include source and accounting control
-        // allocations and lazily resolved fixed table handles in the allowance.
-        let fixed = crate::store::PRIMARY_REDB_CACHE_SIZE_BYTES as u64
-            + if derived_cache {
-                crate::store::REDB_CACHE_SIZE_BYTES as u64
-            } else {
-                0
+        let primary_engine = root
+            .engine_custody()
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let checkpoint_capability = match access {
+            RedbReadAccess::Composite(view) => {
+                Some(view.checkpoint_root_shared().locator_capability().clone())
             }
-            + 32 * 1024;
-        let allowance = source_bytes
-            .checked_add(fixed)
-            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            _ => None,
+        };
+        let resolver = root.history_resolver_shared();
+        let resolver_bound = resolver
+            .map(|resolver| {
+                u64::try_from(resolver.retained_charge_bound())
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))
+            })
+            .transpose()?;
+        let view_metadata = match access {
+            RedbReadAccess::Composite(view) => Some(view.as_ref()),
+            _ => None,
+        };
+        // Only this newly allocated source capsule is unique. Actual engines,
+        // cached root handles, extent custody and views own shared attachments.
+        let allowance: u64 = 32 * 1024;
         // Reserve final-release ownership before attaching any provider charge.
         // This uses the existing native owner quota and allocation-free queue.
         let retirement = crate::locator_memory::LocatorOwner::try_new_with_bytes(
@@ -75,44 +72,245 @@ impl ProviderSnapshotOwnership {
         // still pending at preflight cannot grow between this complete plan's
         // reserve and its immutable provider-graph attachment.
         let _admission = crate::locator_capability::native_provider_admission_gate()?;
-        let same_checkpoint = checkpoint_capability.as_ref().is_some_and(|checkpoint| {
-            checkpoint.require_complete().is_ok_and(|checkpoint| {
-                checkpoint
-                    .owner_handle()
-                    .same_owner(&generation.owner_handle())
-            })
+        let current_pool = Arc::clone(generation.provider_family_pool());
+        let capability_pool = access.locator_capability().provider_family_pool()?;
+        if !current_pool.same_provider_family(capability_pool.as_ref()) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let checkpoint_pool = checkpoint_capability
+            .as_ref()
+            .map(|capability| capability.provider_family_pool())
+            .transpose()?;
+        // Four closed sharing domains at most: current/checkpoint locator
+        // generations, original receipt sources, and the composite overlay.
+        // Each admission consults cached physical counters, never a graph walk.
+        let current_family = current_pool.provider_accounting_family()?;
+        let (suffix_family, overlay_family) = match access {
+            RedbReadAccess::Composite(view) => (
+                view.changelog_suffix()
+                    .provider_ownership_family()?
+                    .cloned(),
+                view.overlay().provider_ownership_family().cloned(),
+            ),
+            _ => (None, None),
+        };
+        let checkpoint_family = checkpoint_pool
+            .as_ref()
+            .map(|pool| pool.provider_accounting_family().cloned())
+            .transpose()?;
+        // Fixed arrays keep the complete preflight free of unadmitted heaps.
+        let mut families = [
+            Some(Arc::clone(current_family)),
+            checkpoint_family,
+            suffix_family,
+            overlay_family,
+        ];
+        families.sort_unstable_by_key(|family| {
+            family
+                .as_ref()
+                .map_or(usize::MAX, |family| family.identity())
         });
-        let needed = generation.provider_ownership_needed(budget)?;
-        let checkpoint_needed = match &checkpoint_capability {
-            Some(checkpoint) if !same_checkpoint => checkpoint.provider_ownership_needed(budget)?,
+        for index in 1..4 {
+            if matches!((&families[index - 1], &families[index]),
+                (Some(first), Some(second)) if first.same_family(second))
+            {
+                families[index - 1] = None;
+            }
+        }
+        let [first, second, third, fourth] = &families;
+        let mut family_guards = [
+            first
+                .as_ref()
+                .map(|family| {
+                    family
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+                })
+                .transpose()?,
+            second
+                .as_ref()
+                .map(|family| {
+                    family
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+                })
+                .transpose()?,
+            third
+                .as_ref()
+                .map(|family| {
+                    family
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+                })
+                .transpose()?,
+            fourth
+                .as_ref()
+                .map(|family| {
+                    family
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+                })
+                .transpose()?,
+        ];
+        let family_needed = family_guards
+            .iter()
+            .flatten()
+            .try_fold(0_u64, |bytes, family| {
+                let needed = family
+                    .provider_ownership_needed(budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+                bytes
+                    .checked_add(needed)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+            })?;
+        let current_binding = access
+            .locator_capability()
+            .prepare_provider_binding(budget)?;
+        let checkpoint_binding = match &checkpoint_capability {
+            Some(checkpoint) if !checkpoint.same_construction(access.locator_capability()) => {
+                Some(checkpoint.prepare_provider_binding(budget)?)
+            }
+            _ => None,
+        };
+        let primary_needed = primary_engine.provider_ownership_needed(budget)?;
+        let derived_needed = match derived_engine {
+            Some(derived) if !primary_engine.is_writable_owner(derived) => {
+                derived.provider_ownership_needed(budget)?
+            }
             _ => 0,
         };
+        let root_needed = root.provider_metadata_needed(budget)?;
+        let resolver_needed = resolver
+            .zip(resolver_bound)
+            .map(|(resolver, bound)| {
+                resolver
+                    .provider_metadata_cell()
+                    .provider_ownership_needed(bound, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let view_needed = view_metadata
+            .map(|view| view.provider_metadata_needed(budget))
+            .transpose()?
+            .unwrap_or(0);
         let total = allowance
-            .checked_add(needed)
-            .and_then(|bytes| bytes.checked_add(checkpoint_needed))
+            .checked_add(family_needed)
+            .and_then(|bytes| bytes.checked_add(primary_needed))
+            .and_then(|bytes| bytes.checked_add(derived_needed))
+            .and_then(|bytes| bytes.checked_add(root_needed))
+            .and_then(|bytes| bytes.checked_add(resolver_needed))
+            .and_then(|bytes| bytes.checked_add(view_needed))
             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
         // The entire incremental plan fits before its first immutable lifecycle
         // attachment. Every later operation only splits this admitted allowance.
         let mut work = budget
             .reserve(total)
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        let generation_owner = generation.admit_provider_ownership_from(&mut work, budget)?;
-        let checkpoint_owner = match &checkpoint_capability {
-            Some(_) if same_checkpoint => Some(Arc::clone(&generation_owner)),
-            Some(checkpoint) => checkpoint.admit_provider_ownership_from(&mut work, budget)?,
-            None => None,
+        let [first, second, third, fourth] = &mut family_guards;
+        let first_plan = first
+            .as_mut()
+            .map(|family| {
+                family
+                    .prepare_provider_ownership(&mut work, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
+        let second_plan = second
+            .as_mut()
+            .map(|family| {
+                family
+                    .prepare_provider_ownership(&mut work, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
+        let third_plan = third
+            .as_mut()
+            .map(|family| {
+                family
+                    .prepare_provider_ownership(&mut work, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
+        let fourth_plan = fourth
+            .as_mut()
+            .map(|family| {
+                family
+                    .prepare_provider_ownership(&mut work, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
+        let family_plans = [first_plan, second_plan, third_plan, fourth_plan];
+        let marker_for =
+            |family: &riffdb_types::exact_provider_budget_v1::PhysicalOwnershipFamily| {
+                families
+                    .iter()
+                    .position(|candidate| {
+                        candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.same_family(family))
+                    })
+                    .and_then(|index| family_plans[index].as_ref().map(|plan| plan.marker()))
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+            };
+        let generation_owner = marker_for(current_family)?;
+        let checkpoint_owner = checkpoint_pool
+            .as_ref()
+            .map(|pool| marker_for(pool.provider_accounting_family()?))
+            .transpose()?;
+        // Keep both bounded engine slots locked and all new charges PRIVATE
+        // until every remaining plan piece has passed its fallible preparation.
+        let primary_plan = primary_engine.prepare_provider_ownership_from(&mut work, budget)?;
+        let derived_plan = match derived_engine {
+            Some(derived) if !primary_engine.is_writable_owner(derived) => {
+                Some(derived.prepare_provider_ownership_from(&mut work, budget)?)
+            }
+            _ => None,
         };
+        let root_plan = root.prepare_provider_metadata_from(&mut work, budget)?;
+        let resolver_plan = resolver
+            .zip(resolver_bound)
+            .map(|(resolver, bound)| {
+                resolver
+                    .provider_metadata_cell()
+                    .prepare_provider_ownership_from(bound, &mut work, budget)
+                    .map_err(|_| storage_error(StorageErrorKind::Unavailable))
+            })
+            .transpose()?;
+        let view_plan = view_metadata
+            .map(|view| view.prepare_provider_metadata_from(&mut work, budget))
+            .transpose()?;
         let source = work
             .commit()
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         retirement.attach_provider_charge(Arc::clone(&source))?;
-        drop(_admission);
-        Ok(Arc::new(ProviderSnapshotOwnership {
+        // Allocate the complete source owner before the first visible cut.
+        // Every remaining operation only transfers already prepared ownership.
+        let ownership = Arc::new(ProviderSnapshotOwnership {
             _source: source,
-            _generation: generation_owner,
-            _checkpoint_generation: checkpoint_owner,
+            _generation: Arc::clone(&generation_owner),
+            _checkpoint_generation: checkpoint_owner.clone(),
             _retirement: retirement,
-        }))
+        });
+        for plan in family_plans.into_iter().flatten() {
+            plan.commit();
+        }
+        current_binding.commit(generation_owner);
+        if let (Some(binding), Some(marker)) = (checkpoint_binding, checkpoint_owner) {
+            binding.commit(marker);
+        }
+        primary_plan.commit();
+        if let Some(derived_plan) = derived_plan {
+            derived_plan.commit();
+        }
+        root_plan.commit();
+        if let Some(plan) = resolver_plan {
+            plan.commit();
+        }
+        if let Some(plan) = view_plan {
+            plan.commit();
+        }
+        Ok(ownership)
     }
 }
 
@@ -128,7 +326,10 @@ impl RedbOwnedSnapshot {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         self.request_locator_construction()?;
-        ProviderSnapshotOwnership::admit(&self.access, self.derived.is_some(), budget)
+        if self.derived.is_some() != self._derived_engine.is_some() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        ProviderSnapshotOwnership::admit(&self.access, self._derived_engine.as_ref(), budget)
     }
 
     /// First-party exact providers retain native source ownership in the same
@@ -148,6 +349,9 @@ impl RedbOwnedSnapshot {
 
 #[cfg(test)]
 mod tests {
+    include!("owned_snapshot_overlay_ownership_tests.rs");
+    include!("owned_snapshot_metadata_ownership_tests.rs");
+    include!("owned_snapshot_root_weak_tests.rs");
     use super::*;
     use crate::locator_memory::LocatorAllocationClass;
     use crate::transient::LocatorGeneration;
@@ -253,6 +457,9 @@ mod tests {
                 .unwrap();
         }
         write.commit().unwrap();
+        store
+            .shared
+            .register_history_resolver(base_segment.database_id());
         let ports = crate::RedbOperationalPorts {
             shared: Arc::clone(&store.shared),
         };
@@ -498,6 +705,68 @@ mod tests {
         assert!(budget.observation().unwrap().owned_bytes >= native_bound);
     }
 
+    // req: OQ-040, TXN-042, STO-032
+    #[test]
+    fn separate_provider_sources_share_one_physical_engine_cache_owner() {
+        use riffdb_storage_api::AuthoritativePointReader;
+        const SOURCE_CONTROL_ROOM: u64 = 64 * 1024;
+        let (_scope, store, snapshot) = fixture();
+        let command = crate::command_authority::command_member_at_access(
+            &snapshot.access,
+            riffdb_types::CommitSequence::first(),
+        )
+        .unwrap()
+        .unwrap();
+        let outcome = command.base().outcome().clone();
+        let provenance = command.base().provenance().clone();
+        drop(command);
+        let budget = ProviderBudget::new();
+        let first = snapshot
+            .with_provider_ownership_admitted_v1(&budget)
+            .unwrap();
+        let before = budget.observation().unwrap();
+        // The second source shares the exact existing root, generation and
+        // actual engine. Only its separate bounded control owner is new.
+        let second = RedbOwnedSnapshot::from_read_access(first.access.clone());
+        let other_build = budget
+            .reserve(
+                EXACT_PROVIDER_BUDGET_BYTES
+                    - before.fixed_owner_bytes
+                    - before.owned_bytes
+                    - before.reserved_bytes
+                    - SOURCE_CONTROL_ROOM,
+            )
+            .unwrap();
+        let second = second
+            .with_provider_ownership_admitted_v1(&budget)
+            .expect("the same physical engine cache has already been admitted");
+        let after = budget.observation().unwrap();
+        assert!(after.owned_bytes >= before.owned_bytes);
+        assert!(after.owned_bytes - before.owned_bytes <= SOURCE_CONTROL_ROOM);
+        drop(other_build);
+        drop(first);
+        drop(store);
+        assert_eq!(
+            second.read_stored_outcome(outcome.identity()).unwrap(),
+            Some(outcome)
+        );
+        assert_eq!(
+            second.read_provenance(provenance.provenance_id()).unwrap(),
+            Some(provenance)
+        );
+        assert!(budget.observation().unwrap().owned_bytes > 0);
+        drop(second);
+        let pool = crate::locator_memory::NativeLocatorPool::global();
+        for _ in 0..4096 {
+            if budget.observation().unwrap().owned_bytes == 0 {
+                break;
+            }
+            pool.drain_retired_step();
+        }
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+        assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    }
+
     // req: OQ-040, TXN-042
     #[test]
     fn competing_provider_families_share_one_native_generation_attachment() {
@@ -523,11 +792,67 @@ mod tests {
             &first_owner._generation,
             &second_owner._generation
         ));
+        let _admission = crate::locator_capability::native_provider_admission_gate().unwrap();
+        let family = first
+            .access
+            .locator_capability()
+            .provider_family_pool()
+            .unwrap();
+        let checkpoint = match &first.access {
+            RedbReadAccess::Composite(view) => Some(
+                view.checkpoint_root_shared()
+                    .locator_capability()
+                    .provider_family_pool()
+                    .unwrap(),
+            ),
+            _ => None,
+        };
+        // Physical reclamation legitimately changes the family balance. Hold
+        // its bounded guards until the exact whole-budget observation completes.
+        let family_guard = family.lock_provider_family().unwrap();
+        let checkpoint_guard = match &checkpoint {
+            Some(checkpoint) if !family.same_provider_family(checkpoint) => {
+                Some(checkpoint.lock_provider_family().unwrap())
+            }
+            _ => None,
+        };
+        let native_owned = family_guard.provider_owned_bytes()
+            + checkpoint_guard
+                .as_ref()
+                .map_or(0, |guard| guard.provider_owned_bytes());
+        let metadata_root = match &first.access {
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => Arc::clone(root),
+            RedbReadAccess::Composite(view) => view.checkpoint_root_shared(),
+        };
+        let shared_metadata = metadata_root.provider_metadata_charge_bytes()
+            + metadata_root
+                .history_resolver_shared()
+                .map_or(0, |resolver| {
+                    resolver.provider_metadata_cell().owned_bytes().unwrap()
+                })
+            + match &first.access {
+                RedbReadAccess::Composite(view) => view.provider_metadata_charge_bytes(),
+                _ => 0,
+            };
         assert_eq!(
             budget.observation().unwrap().owned_bytes,
-            first_owner._generation.bytes()
+            native_owned
+                + shared_metadata
                 + first_owner._source.bytes()
                 + second_owner._source.bytes()
+                + match &first.access {
+                    RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) =>
+                        root.engine_custody().unwrap().provider_charge_bytes(),
+                    RedbReadAccess::Composite(view) => view
+                        .checkpoint_root_shared()
+                        .engine_custody()
+                        .unwrap()
+                        .provider_charge_bytes(),
+                }
+                + first
+                    ._derived_engine
+                    .as_ref()
+                    .map_or(0, |engine| engine.provider_charge_bytes())
         );
     }
 
@@ -594,6 +919,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             snapshot
+                .clone()
                 .with_provider_ownership_admitted_v1(&budget)
                 .err()
                 .unwrap()
@@ -607,6 +933,17 @@ mod tests {
         );
         drop(occupied);
         assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+        let later_graph = ProviderBudget::new();
+        let admitted = snapshot.with_provider_ownership_admitted_v1(&later_graph)
+            .expect("refusal cannot leave either engine, capability or native family bound to the failed graph");
+        assert!(
+            admitted
+                .provider_ownership
+                .as_ref()
+                .unwrap()
+                .belongs_to(&later_graph)
+        );
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 
     // req: OQ-040, TXN-042
@@ -685,7 +1022,7 @@ mod tests {
         let access = snapshot.complete_logical_access_for_test();
         let budget = ProviderBudget::new();
         assert_eq!(
-            ProviderSnapshotOwnership::admit(access, false, &budget)
+            ProviderSnapshotOwnership::admit(access, None, &budget)
                 .err()
                 .unwrap()
                 .kind(),

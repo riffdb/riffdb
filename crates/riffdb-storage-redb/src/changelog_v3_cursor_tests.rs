@@ -70,7 +70,7 @@ fn source(
 ) -> (
     JournalFrame,
     AuthoritativeTransactionV3,
-    Arc<[CompositeMutationV1]>,
+    SharedSourceMutations,
 ) {
     let frontier = history.tail().frontier();
     let assigned = CommitSequence::new(frontier.application().map_or(1, |s| s.get() + 1)).unwrap();
@@ -145,14 +145,33 @@ fn source(
         prior_history_hash: history.tail().history_hash(),
     };
     let receipt = crate::changelog_v3::receipt_from_journal(&frame, binding).unwrap();
-    let mutations = Arc::from(
+    let mutations = SourceMutations::try_new(
         frame
             .mutations()
             .iter()
             .map(|m| m.composite().unwrap())
             .collect::<Vec<_>>(),
-    );
+        LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
     (frame, receipt, mutations)
+}
+
+fn test_source_control(represented: usize) -> SourceControl {
+    let infrastructure = NativeLocatorPool::global();
+    static FAMILY: OnceLock<Arc<NativeLocatorPool>> = OnceLock::new();
+    let family = FAMILY.get_or_init(|| {
+        infrastructure
+            .fresh_source_family(LocatorAllocationClass::Ordinary)
+            .unwrap()
+    });
+    source_control(
+        &infrastructure,
+        family,
+        LocatorAllocationClass::Ordinary,
+        represented,
+    )
+    .unwrap()
 }
 
 fn cursor(
@@ -194,11 +213,11 @@ fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_b
             .append(
                 Some((receipt.binding(), history)),
                 receipt.attribution(),
-                Arc::clone(&mutations),
+                mutations.clone(),
                 frame.encode().unwrap().as_bytes().len(),
             )
             .unwrap();
-        assert!(Arc::ptr_eq(
+        assert!(SharedSourceMutations::ptr_eq(
             &suffix.head.as_ref().unwrap().source.mutations,
             &mutations
         ));
@@ -209,7 +228,10 @@ fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_b
         receipts.push(receipt);
     }
     let covered = covered.unwrap();
-    let first_source = Arc::downgrade(&covered.head.as_ref().unwrap().source);
+    let first_source = SourceWeak::new(
+        &covered.head.as_ref().unwrap().source,
+        &covered.head.as_ref().unwrap().source.control,
+    );
     let mut old = cursor(Arc::clone(&old_root), &suffix, anchor.tail());
     let write = store.shared.database.begin_write().unwrap();
     crate::changelog_v3_journal::materialize_recovered_frame(&write, &frames[0]).unwrap();
@@ -217,6 +239,17 @@ fn cursor_rebase_releases_only_materialized_sources_and_keeps_overwrite_delete_b
     let checkpoint =
         Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap());
     let rebased = suffix.rebase_after(&covered, &checkpoint).unwrap();
+    assert!(Arc::ptr_eq(
+        suffix.provider_ownership_family().unwrap().unwrap(),
+        rebased.provider_ownership_family().unwrap().unwrap()
+    ));
+    assert!(
+        Arc::ptr_eq(
+            &suffix.head.as_ref().unwrap().source,
+            &rebased.head.as_ref().unwrap().source
+        ),
+        "rebase retains the original source and mutation owners"
+    );
     assert_eq!(rebased.frames, 2);
     assert_eq!(rebased.sources().unwrap()[0].binding.sequence.get(), 3);
     let mut combined = cursor(Arc::clone(&checkpoint), &rebased, anchor.tail());
@@ -379,8 +412,9 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
         mutations,
         reclaimed_resume: None,
         encoded_bytes: frame.encode().unwrap().as_bytes().len(),
+        control: test_source_control(std::mem::size_of::<Source>() + 128),
     });
-    let weak = Arc::downgrade(&source);
+    let weak = SourceWeak::new(&source, &source.control);
     // Only graph depth matters to Drop. No repeated source is admitted as history.
     std::thread::Builder::new()
         .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
@@ -391,6 +425,7 @@ fn maximum_receipt_source_ancestry_drops_on_the_production_stack() {
                     predecessor: head,
                     source: Arc::clone(&source),
                     ancestors: Box::new([]),
+                    control: test_source_control(std::mem::size_of::<SourceNode>() + 128),
                 }));
             }
             drop(head);
@@ -416,8 +451,9 @@ fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
         mutations,
         reclaimed_resume: None,
         encoded_bytes: frame.encode().unwrap().as_bytes().len(),
+        control: test_source_control(std::mem::size_of::<Source>() + 128),
     });
-    let source_weak = Arc::downgrade(&source);
+    let source_weak = SourceWeak::new(&source, &source.control);
     let mut head = None;
     let mut competing_owners = Vec::new();
     let mut weak_nodes = Vec::new();
@@ -428,8 +464,9 @@ fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
             predecessor: head,
             source: Arc::clone(&source),
             ancestors: Box::new([]),
+            control: test_source_control(std::mem::size_of::<SourceNode>() + 128),
         });
-        weak_nodes.push(Arc::downgrade(&node));
+        weak_nodes.push(SourceWeak::new(&node, &node.control));
         competing_owners.push(Arc::clone(&node));
         head = Some(node);
     }
@@ -437,8 +474,9 @@ fn raced_last_receipt_source_owners_release_ancestry_without_recursive_drop() {
         predecessor: head,
         source,
         ancestors: Box::new([]),
+        control: test_source_control(std::mem::size_of::<SourceNode>() + 128),
     });
-    weak_nodes.push(Arc::downgrade(&head));
+    weak_nodes.push(SourceWeak::new(&head, &head.control));
     let (release, requests) = mpsc::sync_channel(0);
     let (released, acknowledgements) = mpsc::sync_channel(0);
     let competitor = std::thread::spawn(move || {
@@ -485,6 +523,11 @@ fn receipt_source_bounds_refuse_before_linking_or_advancing_the_private_tail() {
     let history = anchor.advance(&receipt).unwrap();
     let encoded = frame.encode().unwrap().as_bytes().len();
     for fault in 0..4 {
+        let mutations = SourceMutations::try_new(
+            mutations.iter().cloned().collect(),
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
         let mut suffix = ChangelogSuffix::from_checkpoint(&root).unwrap();
         if fault == 0 {
             suffix.frames = MAX_JOURNAL_SUFFIX_TRANSITIONS;
@@ -506,7 +549,7 @@ fn receipt_source_bounds_refuse_before_linking_or_advancing_the_private_tail() {
                 .append(
                     Some((binding, history)),
                     receipt.attribution(),
-                    Arc::clone(&mutations),
+                    mutations.clone(),
                     size
                 )
                 .is_err()
@@ -755,7 +798,10 @@ fn composite_source_index_finds_full_bounded_suffix_and_releases_retired_ancesto
             || index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS / 2
             || index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS
         {
-            witnesses.push((Arc::downgrade(head), Arc::downgrade(&head.source)));
+            witnesses.push((
+                SourceWeak::new(head, &head.control),
+                SourceWeak::new(&head.source, &head.source.control),
+            ));
         }
         if index + 1 == MAX_JOURNAL_SUFFIX_TRANSITIONS / 2 {
             middle_pin = Some(suffix.clone());
@@ -933,6 +979,8 @@ fn native_source_point_receipts_keep_full_frame_checks_without_round_trip_serial
         frames: 0,
         bytes: 0,
         ownership_bytes: 0,
+        provider_pool: None,
+        construction_pool: NativeLocatorPool::global(),
     };
     crate::history_stub::RECEIPT_SERIALIZATIONS.with(|count| count.set(0));
     assert_eq!(&*point.receipt(sequence, None).unwrap().unwrap(), &expected);
@@ -962,4 +1010,196 @@ fn native_source_point_receipts_keep_full_frame_checks_without_round_trip_serial
     file.sync_all().unwrap();
     assert!(point.receipt(sequence, None).is_err());
     assert!(suffix.read_receipt(&root, sequence).is_err());
+}
+
+// req: OQ-040, TXN-042, STO-032, REC-001
+#[test]
+fn suffix_original_payload_metadata_is_admitted_and_weak_node_keeps_its_control() {
+    let (_scope, store, anchor) = fixture();
+    let root =
+        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, Arc::clone(&pool)).unwrap();
+    let drain = |pool: &NativeLocatorPool| {
+        for _ in 0..4096 {
+            if !pool.drain_retired_step() {
+                return;
+            }
+        }
+        panic!("bounded source retirement did not drain");
+    };
+    // Preallocate one bounded descriptor chunk, whose process infrastructure
+    // intentionally remains charged independently of individual source owners.
+    drop(
+        SourceMutations::try_new_in_pool(
+            Vec::new(),
+            Arc::clone(&pool),
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap(),
+    );
+    drain(&pool);
+    let before = pool.charged_bytes();
+    let first_payload = vec![0x61; 1024 * 1024];
+    let second_payload = vec![0x62; 1024 * 1024];
+    let (first, receipt, mutations) = source(anchor, None, Some(&first_payload));
+    let mutations = SourceMutations::try_new_in_pool(
+        mutations.iter().cloned().collect(),
+        Arc::clone(&pool),
+        LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
+    let history = anchor.advance(&receipt).unwrap();
+    suffix
+        .append(
+            Some((receipt.binding(), history)),
+            receipt.attribution(),
+            mutations,
+            first.encode().unwrap().as_bytes().len(),
+        )
+        .unwrap();
+    let (second, receipt, mutations) = source(history, Some(&first_payload), Some(&second_payload));
+    let mutations = SourceMutations::try_new_in_pool(
+        mutations.iter().cloned().collect(),
+        Arc::clone(&pool),
+        LocatorAllocationClass::Ordinary,
+    )
+    .unwrap();
+    let history = history.advance(&receipt).unwrap();
+    suffix
+        .append(
+            Some((receipt.binding(), history)),
+            receipt.attribution(),
+            mutations,
+            second.encode().unwrap().as_bytes().len(),
+        )
+        .unwrap();
+    let retained_weak = suffix.head.as_ref().unwrap().ancestors[0].clone();
+    let checkpoint_buffer = suffix.head.as_ref().unwrap().source.mutations.clone();
+    let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    {
+        let family = suffix.provider_pool.as_ref().unwrap();
+        let mut guard = family.lock_provider_family().unwrap();
+        let needed = guard.provider_ownership_needed(&budget).unwrap();
+        assert!(
+            needed >= 2 * 1024 * 1024,
+            "original payload bytes enter only provider ownership"
+        );
+        let mut work = budget.reserve(needed.checked_add(1).unwrap()).unwrap();
+        guard
+            .prepare_provider_ownership(&mut work, &budget)
+            .unwrap()
+            .commit();
+        assert_eq!(
+            guard.provider_ownership_needed(&budget).unwrap(),
+            0,
+            "separate source pins share the actual original buffers"
+        );
+    }
+    assert!(retained_weak.upgrade().is_some());
+    drain(&pool);
+    let metadata_bytes = pool
+        .charged_bytes()
+        .checked_sub(before)
+        .expect("source construction must keep its admitted controls");
+    assert!(
+        metadata_bytes > 0,
+        "original source/payload/node ownership controls must be admitted before publication"
+    );
+    assert!(
+        metadata_bytes < first_payload.len(),
+        "the existing native ceiling covers controls, not raw suffix payload bytes"
+    );
+    drop(suffix);
+    drain(&pool);
+    assert!(
+        budget.observation().unwrap().owned_bytes >= second_payload.len() as u64,
+        "checkpoint ownership keeps the original shared mutation buffer charged after receipt owners retire"
+    );
+    drop(checkpoint_buffer);
+    drain(&pool);
+    assert!(retained_weak.upgrade().is_none());
+    assert!(
+        pool.charged_bytes() > before,
+        "a weak-retained node allocation must keep its physical control charge"
+    );
+    drop(retained_weak);
+    drain(&pool);
+    assert_eq!(
+        pool.charged_bytes(),
+        before,
+        "all new controls release after their actual last owners"
+    );
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    assert_eq!(budget.observation().unwrap().reserved_bytes, 0);
+    drop(first);
+    drop(second);
+}
+
+// req: OQ-040, STO-032, REC-001
+#[test]
+fn checkpoint_source_rebase_uses_maintenance_metadata_when_ordinary_is_full() {
+    let (_scope, store, anchor) = fixture();
+    let root =
+        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 1).unwrap());
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let mut suffix = ChangelogSuffix::from_checkpoint_in_pool(&root, Arc::clone(&pool)).unwrap();
+    let mut history = anchor;
+    let mut first = None;
+    let mut covered = None;
+    let mut expected = Vec::new();
+    for prior in [None, Some(b"same".as_slice())] {
+        let (frame, receipt, mutations) = source(history, prior, Some(b"same"));
+        let mutations = SourceMutations::try_new_in_pool(
+            mutations.iter().cloned().collect(),
+            Arc::clone(&pool),
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
+        history = history.advance(&receipt).unwrap();
+        suffix
+            .append(
+                Some((receipt.binding(), history)),
+                receipt.attribution(),
+                mutations,
+                frame.encode().unwrap().as_bytes().len(),
+            )
+            .unwrap();
+        if covered.is_none() {
+            covered = Some(suffix.clone());
+            first = Some(frame);
+        }
+        expected.push(receipt);
+    }
+    let write = store.shared.database.begin_write().unwrap();
+    crate::changelog_v3_journal::materialize_recovered_frame(&write, &first.unwrap()).unwrap();
+    write.commit().unwrap();
+    let checkpoint =
+        Arc::new(CheckpointRoot::new(store.shared.database.begin_read().unwrap(), 2).unwrap());
+    let held = pool.exhaust_ordinary_for_tests();
+    assert!(
+        SourceMutations::try_new_in_pool(
+            Vec::new(),
+            Arc::clone(&pool),
+            LocatorAllocationClass::Ordinary
+        )
+        .is_err()
+    );
+    let rebased = suffix
+        .rebase_after(&covered.unwrap(), &checkpoint)
+        .expect("checkpoint copies only new node metadata from the maintenance reserve");
+    assert_eq!(rebased.frames, 1);
+    assert!(SharedSourceMutations::ptr_eq(
+        &suffix.head.as_ref().unwrap().source.mutations,
+        &rebased.head.as_ref().unwrap().source.mutations
+    ));
+    let mut old = cursor(root, &suffix, anchor.tail());
+    for receipt in expected {
+        assert_eq!(
+            old.next_receipt().unwrap().unwrap().encode().unwrap(),
+            receipt.encode().unwrap()
+        );
+    }
+    assert!(old.next_receipt().unwrap().is_none());
+    drop(held);
 }

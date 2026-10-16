@@ -171,7 +171,7 @@ pub(super) fn validate_physical(
         .with_cancellation(cancellation)
         .run_follower()?;
     verify_file(&replayed.stage, &replayed.file)?;
-    let database = Arc::new(read_only_database(&replayed.file)?);
+    let database = crate::maintenance::archive_backup::owned_read_only_database(&replayed.file)?;
     let read = database.begin_read().map_err(unavailable)?;
     if crate::changelog_v3_roots::validate_retained_history(&read)? != Some(replayed.history)
         || !crate::follower_lifecycle::is_attached(&read)?
@@ -229,7 +229,8 @@ impl RedbPreparedArchiveRestore {
                 if let Some(snapshot) = replayed.stage.native_archive_authorization_snapshot()? {
                     return Ok(snapshot);
                 }
-                let database = Arc::new(read_only_database(&replayed.file)?);
+                let database =
+                    crate::maintenance::archive_backup::owned_read_only_database(&replayed.file)?;
                 let read = database.begin_read().map_err(unavailable)?;
                 if crate::changelog_v3_roots::validate_retained_history(&read)?
                     != Some(replayed.history)
