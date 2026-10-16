@@ -34,7 +34,7 @@ passes all six original failures, including both process-crash boundaries, and
 two new direct-receipt membership regressions. The repaired immediate metadata-only
 commit uses checked same-membership reuse; command-changing mutations remain pending.
 These focused results do not qualify the combined source or the campaign.
-Main is integrated through `067a0f7b` at merge checkpoint `f12a2888`.
+Main is integrated through `b1e5117c5` at merge checkpoint `6635a546`.
 The preceding full native library run passes 1,367 cases, with one owned catalog
 migration failure and one existing ignored case. Focused check 1384 repairs the
 internal cached-engine ownership seam and passes the original failure, an escaped
@@ -96,8 +96,14 @@ Focused check 1412 confirms the exact-manifest regression fails under the old
 reservation and passes with the correction, including every membership field,
 alias retention and charge release only after physical retirement. Payload,
 shared-scratch, dense-window and structural-vector checks, three-crate Clippy,
-allowed paths and handbook checks pass. Complete public reconciliation and
-final-source qualification remain open.
+allowed paths and handbook checks pass. Public component 1417 then uses the
+ordinary main-synced binaries to reconcile all 65,536 tickets and 65,636 archive
+records, including payloads and policy anchors, on a byte-verified owned copy.
+Original inputs remain unchanged. This closes the omitted semantic stage without
+qualifying the failed telemetry receipt or replacing full preparation. Scope
+check 1419 proves every branch path after removing redundant locator-record
+path globs: required ADR records are already permitted by the checker, and the
+existing source-path scope remains unchanged. Final-source qualification is open.
 
 At the failed revision, `RedbOwnedSnapshot` consults the current mutable locator directory.
 A current miss cannot prove absence in an earlier generation. Reading a newer
