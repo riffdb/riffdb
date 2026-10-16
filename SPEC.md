@@ -5636,6 +5636,41 @@ independent read targets; the linked result is not a target oneof. The record co
 credential, digest, idempotency key, business key, cursor, source text, input,
 output, free-form reason/error, network address, or transport object.
 
+`SEC-005` Every ordinary authenticated request entering the live-source shared
+service composition that owns command, control-plane and audit writers MUST
+complete initial native dependency admission before operation classification,
+idempotency inspection, durable audit input construction, coordinator-ticket
+submission, sequence allocation or protected-result release. A Pending exact
+native locator capability MAY wait only on its admitted first-party
+construction completion under the request's existing absolute deadline and
+cancellation. Waiters and retained source ownership MUST be charged and bounded;
+no writer lease, coordinator actor or population scan may be held or performed
+by that wait. Leaving initial admission MUST prove a complete current-source
+capability and precede fresh current authorization and all ordinary checks.
+
+Only refusal, cancellation or expiry of a request whose initial phase identified
+Pending, proven before any operation or durable audit work or coordinator ticket
+was accepted, returns the existing typed Unavailable, Cancelled or
+DeadlineExceeded result
+without a durable audit row or sequence. This is a specific additional
+pre-admission exception to the ordinary audit obligation above and ADR-0071's
+capacity-only exception; it is not Overloaded or uncertainty recovery. Once any
+operation or audit work is admitted, all existing Started/terminal audit,
+containment, cancellation, completion and audit-failure stop/fence rules apply.
+No post-admission failure may be relabeled as an initial refusal. A complete
+current-source capability admits immediately; cancellation or expiry then retains
+its ordinary prestart durable audit. Invalid/failed capability retains existing
+integrity/corruption refusal and systemic health handling, never healthy-Pending
+classification.
+
+The initial phase also covers ordinary standard reads and authenticated health:
+a denial, cancellation or policy audit obligation can require their first audit.
+Native metadata-only ports, bounded daemon Ready, existing pre-bootstrap health
+and recovery-only access retain their boundaries. Follower and archive/static
+reader authority remains unchanged. No caller bypass, new timeout, increased
+budget, deferred Ready population walk or harness retry is permitted; ADR-0315
+owns this narrow exception and its exact source and lifetime rules.
+
 `riffdb-service` owns the concrete checked pre-sequence `ServiceAuditInput` and
 implements the object-safe, `Send + Sync`, commit-owned
 `AdministrationAuditInputView`. The view exposes by reference only complete

@@ -349,6 +349,7 @@ record with no front matter.
 | [0312](0312-columnar-activation-recovery-projected-aggregate-parity-and-installer-lifecycle.md) | Columnar Activation Recovery, Projected Aggregate Parity, and Installer Lifecycle | Accepted | guarantee |
 | [0313](0313-projected-group-by-canonical-ordering-follower-ann-graph-cache-parity-and-transactional-installer-binary-swap.md) | Projected group-by canonical ordering, follower ANN graph cache parity, and transactional installer binary swap | Accepted | guarantee |
 | [0314](0314-snapshot-owned-exact-command-locator-generations.md) | Snapshot-Owned Exact Command Locator Generations | Accepted | guarantee |
+| [0315](0315-request-scoped-native-dependency-admission-before-durable-audit.md) | Request-Scoped Native Dependency Admission Before Durable Audit | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
