@@ -37,7 +37,9 @@ pub fn locator_segment_decode_work_bound_v1(
     encoded: &[u8],
 ) -> Result<Option<u64>, DurableCodecError> {
     let mut prefix_error = None;
+    let mut prefix_seen = false;
     let shape = inspect_locator_segment_decode_shape_v1(encoded, |prefix| {
+        prefix_seen = true;
         prefix_work_bound(prefix).map_err(|error| {
             prefix_error = Some(error);
             EnvelopeError::InvalidPayload(PayloadValidationError::Malformed)
@@ -56,6 +58,16 @@ pub fn locator_segment_decode_work_bound_v1(
     // copies while the original generated graph is still resident.
     let wire_node = maximum_wire_node_bytes();
     let mut bytes = 512u64 * 1024;
+    // General provider receipt admission includes its ownership inspector's
+    // transient workspace. Prefix reconstruction is sequential; retained
+    // evidence owns mutations, not an inspector per command. Reserve one
+    // conservative inspection window for the whole segment, independently of
+    // the variable per-prefix graphs/copies summed below.
+    if prefix_seen {
+        bytes = bytes
+            .checked_add(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1)
+            .ok_or_else(capacity)?;
+    }
     add(
         &mut bytes,
         u64::try_from(encoded.len()).map_err(|_| capacity())?,
@@ -100,12 +112,14 @@ fn prefix_work_bound(bytes: &[u8]) -> Result<u64, DurableCodecError> {
     if count > crate::MAX_CHANGELOG_FRAME_ENTRIES || count > reader.remaining.len() / 45 {
         return Err(corrupt());
     }
-    // The existing receipt allowance includes vectors, complete fold maps,
-    // intermediate copies and verification buffers. Prefixes share the fixed
-    // 256-KiB window, charged once by the containing segment above.
+    // Keep every prefix's vectors, fold maps, copies and verification buffers.
+    // Its general provider receipt adapter also includes fixed scratch for
+    // allocation inspection; that transient window is shared by this segment,
+    // not retained once for every prefix's immutable mutation graph.
     let mut work = crate::provider_receipt_work_bound_v1(count, bytes.len())
         .map_err(|_| capacity())?
         .checked_sub(256 * 1024)
+        .and_then(|work| work.checked_sub(riffdb_types::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1))
         .ok_or_else(capacity)?;
     for _ in 0..count {
         let namespace = AuthoritativeStateCatalogV1

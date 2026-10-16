@@ -118,6 +118,38 @@ mod tests {
                 digit(pair[0]) * 16 + digit(pair[1])
             })
             .collect();
+        let decoded = crate::durable::decode_readable_message::<
+            crate::storage::v1::StoredCommandSegmentV6,
+        >(&bytes)
+        .unwrap();
+        let body = decoded.body.as_ref().unwrap();
+        let heap = |canonical: &[u8]| {
+            if canonical.is_empty() {
+                0
+            } else {
+                riffdb_types::inspect_canonical_decode_capacity_v1(canonical)
+                    .unwrap()
+                    .owned_heap_bytes()
+            }
+        };
+        let mut expected_heap = 0;
+        for command in &body.commands {
+            expected_heap += heap(&command.canonical_service_values);
+            if let Some(outcome) = command
+                .base
+                .as_ref()
+                .and_then(|base| base.declared_outcome.as_ref())
+            {
+                expected_heap += heap(&outcome.canonical_value);
+            }
+            for event in &command.events {
+                use crate::storage::v1::stored_durable_event_variant_v1::Value;
+                expected_heap += match event.value.as_ref().unwrap() {
+                    Value::Unanchored(event) => heap(&event.canonical_payload),
+                    Value::Anchored(event) => heap(&event.canonical_payload),
+                };
+            }
+        }
         let mut prefixes = 0;
         let shape = inspect_locator_segment_decode_shape_v1(&bytes, |prefix| {
             assert!(prefix.len() >= 40);
@@ -127,13 +159,28 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(prefixes, 1);
-        assert_eq!(shape.capsules, 1);
-        assert!(shape.manifest_entries >= 6);
-        assert!(shape.canonical_heap_bytes > 0);
-        crate::durable::decode_readable_message::<crate::storage::v1::StoredCommandSegmentV6>(
-            &bytes,
-        )
-        .unwrap();
+        assert_eq!(
+            prefixes,
+            body.commands
+                .iter()
+                .filter(|command| !command.command_prefix_evidence.is_empty())
+                .count()
+        );
+        assert_eq!(
+            shape.capsules,
+            body.commands
+                .iter()
+                .filter(|command| command.base.is_some())
+                .count() as u64
+        );
+        // The frozen codec vector has synthetic independent rows and a
+        // partial manifest. Its actual wire graph, rather than application
+        // storage requirements, owns these borrowed structural counts.
+        assert_eq!(
+            shape.manifest_entries,
+            body.manifest.as_ref().unwrap().entries.len() as u64
+        );
+        assert_eq!(shape.canonical_heap_bytes, expected_heap);
         let mut corrupt = bytes;
         let last = corrupt.len() - 1;
         corrupt[last] ^= 1;

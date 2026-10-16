@@ -47,15 +47,57 @@ measured load. Deterministic regression 1392 reproduces a native retirement
 fairness defect: a dead generation's owner and provider charges wait for the
 entire cleanup queue to become empty, so later independent work can indefinitely
 prevent their release. The regression includes a child first queued while its
-parent is being retired and checks the unchanged 256-item step limit. The repair
-must distinguish that generation's physical descendants from later independent
-work while retaining all owner and byte charges until physical retirement.
+parent is being retired and checks the unchanged 256-item step limit. Retirement
+now tracks that generation's physical descendants through fixed causal epochs,
+retaining owner and byte charges until physical retirement while later independent
+work continues. The existing owner ceiling bounds the tracking ring.
 Focused check 1395 passes the original regression, all 18 retirement cases,
 five persistent-tree cases and nine provider cases. A separate seed reproduction
 1393 reports ordinary byte pressure: 382,903,734 bytes charged and an additional
 87,353,040-byte reservation refused, with one generation owner. Thus the fairness
-repair does not yet establish the cause of preparation 1391; the reservation and
-standing ownership need further investigation. Complete qualification remains open.
+repair alone does not establish recovery from the seeding failure.
+
+Borrowed-data probe 1397 finds a 71,729-byte, 16-command segment with an 83-MiB decode
+reservation. The general provider receipt allowance includes a transient 4-MiB
+ownership-inspection workspace. The native adapter accidentally sums that fixed
+window for every command prefix, although prefix decoding retains mutation graphs
+and no inspection workspace per prefix. The corrected composition keeps all
+variable graphs, copies and canonical allowances and reserves one conservative
+inspection window per segment that contains prefixes. General provider admission,
+the original conservative message-size model and all ceilings remain unchanged.
+Focused check 1403 passes a genuine 32-command V7 graph at the same retained memory
+pressure: its decode reservation falls from 158,686,512 to 28,663,088 bytes, with
+full equality, checksum refusal and scratch release asserted. Both existing dense
+canonical-value checks also pass, including refusal before decoding when the
+unchanged recovery window is insufficient. Focused check 1409 also passes the
+corrected structural-vector test, scoped Clippy, handbook and allowed-path checks;
+no fixture bytes or production parser checks change.
+
+The ordinary daemon's closest full-seed check 1404 acknowledges 61,887 of 65,536
+tickets before another `AuditUnavailable` failure; retention completed 26 steps
+covering 6,492 sequences. Private reproduction 1406 confirms ordinary pressure:
+451,346,308 bytes charged and an additional 23,211,824-byte decode reservation
+refused. Its retirement queue has no pending population destruction. Cold rebuild
+1408 of an owned copy also refuses, with one owner and no segment crossing the
+unchanged 64-MiB recovery window. This establishes a native footprint problem.
+
+Segment metadata reserves four times its manifest vector's element storage even
+though construction preallocates the final count once and never grows it. The
+corrected lifetime allowance counts that allocation once; conservative event-map,
+key, wrapper, task, descriptor and header allowances remain. Closest cold rebuild
+1410 now succeeds against the same failed input, retaining 420,713,796 charged
+bytes. The ordinary release daemon in closest check 1411 acknowledges all 65,536
+seed tickets and completes 100 business commands and 400 reads without retries;
+its one-second diagnostic then correctly fails the required provider telemetry
+coverage, whose native period is 60 seconds. This is stage evidence only, not a
+passed preparation receipt. Future native-observed diagnostics need a long enough
+window to capture the periodic samples; required qualification remains unchanged.
+Focused check 1412 confirms the exact-manifest regression fails under the old
+reservation and passes with the correction, including every membership field,
+alias retention and charge release only after physical retirement. Payload,
+shared-scratch, dense-window and structural-vector checks, three-crate Clippy,
+allowed paths and handbook checks pass. Complete public reconciliation and
+final-source qualification remain open.
 
 At the failed revision, `RedbOwnedSnapshot` consults the current mutable locator directory.
 A current miss cannot prove absence in an earlier generation. Reading a newer

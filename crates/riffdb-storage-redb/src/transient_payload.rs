@@ -184,11 +184,12 @@ impl SegmentMetadata {
                     .checked_add(command.events().len())
                     .ok_or_else(unavailable)
             })?;
-        // Exact Vec capacity plus conservative B-tree node/header ownership.
-        // The wrapper separately admits its live value and retirement task.
+        // The manifest preallocates its final entry count and never grows, so
+        // it needs one element allocation rather than vector-growth headroom.
+        // Keep conservative B-tree node/header ownership. The wrapper admits
+        // its live value and retirement task separately.
         let content_bytes = entry_count
             .checked_mul(std::mem::size_of::<MetadataManifestEntry>())
-            .and_then(|n| n.checked_mul(4))
             .and_then(|n| {
                 n.checked_add(event_count.checked_mul(
                     4 * (std::mem::size_of::<(EventId, (PartitionKeyHash, StoredEventRouteV1))>()

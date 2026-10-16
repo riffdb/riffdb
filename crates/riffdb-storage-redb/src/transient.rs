@@ -1848,6 +1848,10 @@ fn visit_captured_locator_rows(
 }
 
 #[cfg(test)]
+#[path = "transient_seed_admission_tests.rs"]
+mod seed_admission_tests;
+
+#[cfg(test)]
 mod tests {
     use riffdb_types::CommitSequence;
 
