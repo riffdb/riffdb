@@ -269,19 +269,28 @@ fn native_retention_refusal_preserves_closed_failure_phase_and_kind() {
         (K::SequenceExhausted, 7),
         (K::HistoryPruned, 8),
     ];
-    for (phase, name) in [
-        (RetentionRefusalPhase::Step, 1),
-        (RetentionRefusalPhase::PrefixRefresh, 2),
+    let mut lines = std::collections::BTreeSet::new();
+    for (site, phase, code) in [
+        (RetentionRefusalSite::Step, 1, 1),
+        (RetentionRefusalSite::PrefixRefresh, 2, 2),
+        (RetentionRefusalSite::ObservationPending, 1, 3),
+        (RetentionRefusalSite::RestWait, 1, 4),
+        (RetentionRefusalSite::CheckpointWait, 1, 5),
     ] {
         for (kind, label) in kinds {
-            let line = format_retention_refusal(phase, kind);
+            let line = format_retention_refusal(site, kind);
             assert_eq!(
                 line,
-                format!("riffdb-retention-refusal-v1\tphase={name}\tkind={label}")
+                format!("riffdb-retention-refusal-v1\tphase={phase}\tkind={label}\tsite={code}")
             );
             assert!(line.len() < 128);
+            assert!(
+                lines.insert(line),
+                "distinct closed sites must remain distinguishable"
+            );
         }
     }
+    assert_eq!(lines.len(), 40);
 }
 
 // req: STO-030, STO-031, END-008

@@ -408,21 +408,29 @@ impl fmt::Display for RetentionLaneRefused {
 impl std::error::Error for RetentionLaneRefused {}
 
 #[derive(Clone, Copy)]
-enum RetentionRefusalPhase {
+enum RetentionRefusalSite {
     Step,
     PrefixRefresh,
+    ObservationPending,
+    RestWait,
+    CheckpointWait,
 }
 
 fn format_retention_refusal(
-    phase: RetentionRefusalPhase,
+    site: RetentionRefusalSite,
     kind: riffdb_storage_api::StorageErrorKind,
 ) -> String {
     use riffdb_storage_api::StorageErrorKind as K;
     // Only closed discriminants enter this private observation: no engine
     // source, incident identity, path, payload or caller-provided text.
-    let phase = match phase {
-        RetentionRefusalPhase::Step => 1,
-        RetentionRefusalPhase::PrefixRefresh => 2,
+    // Preserve the existing phase values while distinguishing each terminal
+    // refusal site. No source, payload, path or caller string can enter a site.
+    let (phase, site) = match site {
+        RetentionRefusalSite::Step => (1, 1),
+        RetentionRefusalSite::PrefixRefresh => (2, 2),
+        RetentionRefusalSite::ObservationPending => (1, 3),
+        RetentionRefusalSite::RestWait => (1, 4),
+        RetentionRefusalSite::CheckpointWait => (1, 5),
     };
     let kind = match kind {
         K::Unavailable => 1,
@@ -434,16 +442,16 @@ fn format_retention_refusal(
         K::SequenceExhausted => 7,
         K::HistoryPruned => 8,
     };
-    format!("riffdb-retention-refusal-v1\tphase={phase}\tkind={kind}")
+    format!("riffdb-retention-refusal-v1\tphase={phase}\tkind={kind}\tsite={site}")
 }
 
 fn refuse_lane(
     status: &RetentionLaneStatus,
     sinks: &RetentionLaneFailureSinks,
-    phase: RetentionRefusalPhase,
+    site: RetentionRefusalSite,
     kind: riffdb_storage_api::StorageErrorKind,
 ) {
-    eprintln!("{}", format_retention_refusal(phase, kind));
+    eprintln!("{}", format_retention_refusal(site, kind));
     if let Ok(incident) = sinks.incident_ids.next_incident_id() {
         sinks.diagnostics.record_internal(InternalError::new(
             incident,
@@ -850,7 +858,7 @@ fn run_lane(
                     return;
                 }
                 Err(error) => {
-                    refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                    refuse_lane(status, sinks, RetentionRefusalSite::Step, error.kind());
                     return;
                 }
             };
@@ -879,7 +887,7 @@ fn run_lane(
                     refuse_lane(
                         status,
                         sinks,
-                        RetentionRefusalPhase::PrefixRefresh,
+                        RetentionRefusalSite::PrefixRefresh,
                         error.kind(),
                     );
                     return;
@@ -934,7 +942,12 @@ fn run_lane(
                 return;
             }
             Err(error) => {
-                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                refuse_lane(
+                    status,
+                    sinks,
+                    RetentionRefusalSite::ObservationPending,
+                    error.kind(),
+                );
                 return;
             }
         };
@@ -957,7 +970,7 @@ fn run_lane(
                 return;
             }
             Err(error) => {
-                refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                refuse_lane(status, sinks, RetentionRefusalSite::RestWait, error.kind());
                 return;
             }
         }
@@ -992,7 +1005,12 @@ fn run_lane(
                     return;
                 }
                 Err(error) => {
-                    refuse_lane(status, sinks, RetentionRefusalPhase::Step, error.kind());
+                    refuse_lane(
+                        status,
+                        sinks,
+                        RetentionRefusalSite::CheckpointWait,
+                        error.kind(),
+                    );
                     return;
                 }
             }

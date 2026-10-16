@@ -220,6 +220,25 @@ The graph and process release receipts share that frozen observation. The separa
 by references or readers, and off-writer reclamation microseconds. Logical
 sequence progress does not imply physical space reclamation.
 
+On terminal refusal, `riffdb-retention-refusal-v1` records closed numeric
+`phase`, `kind`, and `site` fields. Phase 1 covers step and observation work;
+phase 2 covers validated-prefix refresh. The site identifies the server
+boundary that returned the error:
+
+| Site | Boundary |
+| --- | --- |
+| 1 | Retention step attempt |
+| 2 | Validated-prefix refresh |
+| 3 | Captured-observation pending probe |
+| 4 | Observation work during writer rest |
+| 5 | Observation or publication work during checkpoint wait |
+
+Kind 1 means unavailable; 2 unknown commit status; 3 corrupt data; 4 incompatible
+format; 5 limit exceeded; 6 invariant violation; 7 exhausted sequence; 8 pruned
+history. These fields contain no request values or source paths. The lane still
+records its internal incident and stops. A site identifies a boundary, which can
+contain several native calls; it neither authorizes a retry nor proves the cause.
+
 The retention lane also owns source-receipt reclamation across observations.
 It validates immutable history in pages of at most 256 rows, then yields if a
 writer is queued, a checkpoint is in flight, or the journal is not drained.
