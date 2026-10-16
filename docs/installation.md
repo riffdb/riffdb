@@ -338,10 +338,11 @@ key beside later-phase configuration, unit, data, backup, or state evidence,
 fails closed as possible key loss. It refuses linked or malformed key state,
 unsafe file types, unexpected ownership, or modes.
 
-Each binary replacement is atomic on its destination filesystem, but the
-three-binary update is not one transaction. If installation is interrupted
-during publication, rerun the same install command before starting or
-restarting the service.
+Each binary replacement is staged on its destination filesystem and backed up in
+`.riffdb-binary-rollback-v1` until all three binaries are published and unit
+verification succeeds. If installation fails or is interrupted during binary
+publication, the installer restores the previous binary set on exit or at the
+start of the next `cargo riffdb install` invocation.
 
 Consequently, the convenience command is not a general configuration
 migration, key-rotation, uninstall, or compatibility-aware upgrade tool.

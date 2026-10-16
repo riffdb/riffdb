@@ -299,6 +299,92 @@ if [[ "$(grep -Fxc -- "$expected_verify_call" "$verify_call_log")" -ne 2 ]]; the
     fail "repeat installation did not verify the preserved user unit"
 fi
 
+fixture_bin_v2="$work_root/prebuilt binaries v2"
+mkdir -p "$fixture_bin_v2"
+for binary in riffdb riffdb-mcp riffdbd; do
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        "printf '%s\\n' 'riffdb-source-install-fixture-v2 $binary'" \
+        >"$fixture_bin_v2/$binary"
+    chmod 0755 "$fixture_bin_v2/$binary"
+done
+
+if RIFFDB_INSTALL_TEST_INTERRUPT_AFTER=first_binary_published \
+    "$installer" install --user \
+    --from-binaries "$fixture_bin_v2" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "binary replacement crossed its armed first_binary_published interruption"
+fi
+actual_binaries="$(
+    find "$bin_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_binaries" != "$expected_binaries" ]]; then
+    fail "rolled-back binary directory contains an unexpected file set"
+fi
+for binary in riffdb riffdb-mcp riffdbd; do
+    installed="$bin_root/$binary"
+    require_regular_mode "$installed" 0755
+    require_owned_by_current_user "$installed"
+    cmp "$fixture_bin/$binary" "$installed" \
+        || fail "interrupted binary replacement failed to roll back $binary to v1"
+done
+
+if RIFFDB_INSTALL_TEST_INTERRUPT_AFTER=first_binary_published \
+    RIFFDB_INSTALL_TEST_LEAVE_INTERRUPTED_ROLLBACK=1 \
+    "$installer" install --user \
+    --from-binaries "$fixture_bin_v2" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "crashed binary replacement crossed its armed interruption"
+fi
+cmp "$fixture_bin_v2/riffdbd" "$bin_root/riffdbd" \
+    || fail "simulated crash after first binary did not leave riffdbd at v2 before recovery"
+cmp "$fixture_bin/riffdb" "$bin_root/riffdb" \
+    || fail "simulated crash after first binary modified riffdb before recovery"
+if "$installer" install --user \
+    --database unexpected \
+    --from-binaries "$fixture_bin_v2" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "installer accepted mismatched database aliases during binary rollback recovery"
+fi
+actual_binaries="$(
+    find "$bin_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)"
+if [[ "$actual_binaries" != "$expected_binaries" ]]; then
+    fail "startup binary rollback recovery left an unexpected file set"
+fi
+for binary in riffdb riffdb-mcp riffdbd; do
+    cmp "$fixture_bin/$binary" "$bin_root/$binary" \
+        || fail "startup binary rollback recovery did not restore $binary to v1"
+done
+"$installer" install --user \
+    --from-binaries "$fixture_bin_v2" \
+    --no-start \
+    >/dev/null
+for binary in riffdb riffdb-mcp riffdbd; do
+    cmp "$fixture_bin_v2/$binary" "$bin_root/$binary" \
+        || fail "resumed binary upgrade did not publish v2 $binary"
+done
+
+fresh_interrupt_root="$work_root/fresh interrupted binary install"
+set_isolated_user_roots "$fresh_interrupt_root"
+if RIFFDB_INSTALL_TEST_INTERRUPT_AFTER=first_binary_published \
+    "$installer" install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null 2>&1
+then
+    fail "fresh interrupted binary installation crossed its armed interruption"
+fi
+if [[ -n "$(find "$HOME/.local/bin" -mindepth 1 -maxdepth 1 -printf '%f\n')" ]]; then
+    fail "fresh interrupted binary installation left a partial binary or rollback directory"
+fi
+
 attack_root="$work_root/symlink attack"
 set_isolated_user_roots "$attack_root"
 attack_config="$XDG_CONFIG_HOME/riffdb"

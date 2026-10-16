@@ -106,13 +106,39 @@ for tool in cat chmod cmp find id install ln mktemp mv od rm stat tail tr uname;
 done
 
 temporary_roots=()
+user_binary_rollback_destination=
+system_binary_rollback_pending=0
+system_binary_staging=
 cleanup() {
     local path
+    if [[ -n "$user_binary_rollback_destination" \
+       && ( -z "${RIFFDB_INSTALL_TEST_INTERRUPT_AFTER:-}" \
+            || "${RIFFDB_INSTALL_TEST_LEAVE_INTERRUPTED_ROLLBACK:-}" != 1 ) ]]; then
+        rollback_user_binaries "$user_binary_rollback_destination" || true
+        user_binary_rollback_destination=
+    fi
+    if [[ "$system_binary_rollback_pending" -eq 1 \
+       && ( -z "${RIFFDB_INSTALL_TEST_INTERRUPT_AFTER:-}" \
+            || "${RIFFDB_INSTALL_TEST_LEAVE_INTERRUPTED_ROLLBACK:-}" != 1 ) ]]; then
+        rollback_system_binaries || true
+        system_binary_rollback_pending=0
+    fi
+    if [[ -n "$system_binary_staging" ]]; then
+        sudo rm -rf -- "$system_binary_staging" || true
+        system_binary_staging=
+    fi
     for path in "${temporary_roots[@]}"; do
         rm -rf -- "$path"
     done
 }
 trap cleanup EXIT INT TERM
+
+interrupt_after() {
+    if [[ "${RIFFDB_INSTALL_TEST_INTERRUPT_AFTER:-}" == "$1" ]]; then
+        printf 'riffdb source install: simulated interruption after %s\n' "$1" >&2
+        exit 86
+    fi
+}
 
 new_temporary_root() {
     local label="$1"
@@ -539,18 +565,98 @@ preflight_binary_destinations() {
     done
 }
 
+recover_user_binary_rollback() {
+    local destination_root="$1"
+    local rollback_root="$destination_root/.riffdb-binary-rollback-v1"
+    local type binary
+    type="$(path_type "$rollback_root")"
+    if [[ "$type" == absent ]]; then
+        return
+    fi
+    [[ "$type" == directory ]] \
+        || fail "binary rollback directory is unsafe: $rollback_root"
+    validate_owned_directory "$rollback_root" 0700 "$current_uid" "$current_gid"
+    if [[ "$(path_type "$rollback_root/COMPLETE")" == file ]]; then
+        validate_owned_file \
+            "$rollback_root/COMPLETE" 0600 "$current_uid" "$current_gid"
+        for binary in riffdbd riffdb riffdb-mcp; do
+            if [[ "$(path_type "$rollback_root/$binary")" == file ]]; then
+                validate_owned_file \
+                    "$rollback_root/$binary" 0755 "$current_uid" "$current_gid"
+                install -m 0755 \
+                    "$rollback_root/$binary" \
+                    "$rollback_root/${binary}.restore"
+                mv -f -- \
+                    "$rollback_root/${binary}.restore" \
+                    "$destination_root/$binary"
+            elif [[ "$(path_type "$rollback_root/absent-$binary")" == file ]]; then
+                validate_owned_file \
+                    "$rollback_root/absent-$binary" 0600 "$current_uid" "$current_gid"
+                rm -f -- "$destination_root/$binary"
+            else
+                fail "binary rollback directory is incomplete: $rollback_root"
+            fi
+        done
+    elif [[ "$(path_type "$rollback_root/COMPLETE")" != absent ]]; then
+        fail "binary rollback completion marker is unsafe: $rollback_root/COMPLETE"
+    fi
+    rm -rf -- "$rollback_root"
+}
+
+rollback_user_binaries() {
+    local destination_root="$1"
+    local rollback_root="$destination_root/.riffdb-binary-rollback-v1"
+    local binary
+    if [[ "$(path_type "$rollback_root/COMPLETE")" != file ]]; then
+        rm -rf -- "$rollback_root"
+        return
+    fi
+    for binary in riffdbd riffdb riffdb-mcp; do
+        if [[ "$(path_type "$rollback_root/$binary")" == file ]]; then
+            mv -f -- "$rollback_root/$binary" "$destination_root/$binary"
+        elif [[ "$(path_type "$rollback_root/absent-$binary")" == file ]]; then
+            rm -f -- "$destination_root/$binary"
+        fi
+    done
+    rm -rf -- "$rollback_root"
+}
+
+commit_user_binaries() {
+    local destination_root="$1"
+    user_binary_rollback_destination=
+    rm -rf -- "$destination_root/.riffdb-binary-rollback-v1"
+}
+
 publish_user_binaries() {
     local destination_root="$1"
+    local rollback_root="$destination_root/.riffdb-binary-rollback-v1"
     local staging
     local binary
     validate_binary_source "$binary_source"
+    [[ "$(path_type "$rollback_root")" == absent ]] \
+        || fail "binary rollback directory already exists: $rollback_root"
     staging="$(mktemp -d "$destination_root/.riffdb-install.XXXXXX")"
     temporary_roots+=("$staging")
     for binary in riffdbd riffdb riffdb-mcp; do
         install -m 0755 "$binary_source/$binary" "$staging/$binary"
     done
+    install -d -m 0700 "$rollback_root"
+    for binary in riffdbd riffdb riffdb-mcp; do
+        if [[ "$(path_type "$destination_root/$binary")" == file ]]; then
+            install -m 0755 "$destination_root/$binary" "$rollback_root/$binary"
+        else
+            : >"$rollback_root/absent-$binary"
+            chmod 0600 "$rollback_root/absent-$binary"
+        fi
+    done
+    : >"$rollback_root/COMPLETE"
+    chmod 0600 "$rollback_root/COMPLETE"
+    user_binary_rollback_destination="$destination_root"
     for binary in riffdbd riffdb riffdb-mcp; do
         mv -f -- "$staging/$binary" "$destination_root/$binary"
+        if [[ "$binary" == riffdbd ]]; then
+            interrupt_after first_binary_published
+        fi
     done
 }
 
@@ -596,6 +702,7 @@ install_user() {
     validate_owned_directory "$config_home/systemd" 0755 "$current_uid" "$current_gid"
     validate_owned_directory "$unit_root" 0755 "$current_uid" "$current_gid"
 
+    recover_user_binary_rollback "$bin_root"
     preflight_binary_destinations "$bin_root" "$current_uid" "$current_gid"
 
     capability_type="$(path_type "$capability_path")"
@@ -734,6 +841,7 @@ install_user() {
     command -v systemd-analyze >/dev/null 2>&1 \
         || fail 'required tool is missing: systemd-analyze'
     systemd-analyze --user verify "$unit_path"
+    commit_user_binaries "$bin_root"
     if ((no_start)); then
         printf '%s\n' \
             'RiffDB user files installed; service reload/start was skipped.'
@@ -877,13 +985,73 @@ preflight_system_binary_destinations() {
     done
 }
 
+recover_system_binary_rollback() {
+    local rollback_root="/usr/local/bin/.riffdb-binary-rollback-v1"
+    local type binary
+    type="$(system_path_type "$rollback_root")"
+    if [[ "$type" == absent ]]; then
+        return
+    fi
+    [[ "$type" == directory ]] \
+        || fail "system binary rollback directory is unsafe: $rollback_root"
+    validate_system_directory "$rollback_root" 0700 0 0
+    if [[ "$(system_path_type "$rollback_root/COMPLETE")" == file ]]; then
+        validate_system_file "$rollback_root/COMPLETE" 0600 0 0
+        for binary in riffdbd riffdb riffdb-mcp; do
+            if [[ "$(system_path_type "$rollback_root/$binary")" == file ]]; then
+                validate_system_file "$rollback_root/$binary" 0755 0 0
+                sudo install -o root -g root -m 0755 \
+                    "$rollback_root/$binary" \
+                    "$rollback_root/${binary}.restore"
+                sudo mv -f -- \
+                    "$rollback_root/${binary}.restore" \
+                    "/usr/local/bin/$binary"
+            elif [[ "$(system_path_type "$rollback_root/absent-$binary")" == file ]]; then
+                validate_system_file "$rollback_root/absent-$binary" 0600 0 0
+                sudo rm -f -- "/usr/local/bin/$binary"
+            else
+                fail "system binary rollback directory is incomplete: $rollback_root"
+            fi
+        done
+    elif [[ "$(system_path_type "$rollback_root/COMPLETE")" != absent ]]; then
+        fail "system binary rollback completion marker is unsafe: $rollback_root/COMPLETE"
+    fi
+    sudo rm -rf -- "$rollback_root"
+}
+
+rollback_system_binaries() {
+    local rollback_root="/usr/local/bin/.riffdb-binary-rollback-v1"
+    local binary
+    if [[ "$(system_path_type "$rollback_root/COMPLETE")" != file ]]; then
+        sudo rm -rf -- "$rollback_root"
+        return
+    fi
+    for binary in riffdbd riffdb riffdb-mcp; do
+        if [[ "$(system_path_type "$rollback_root/$binary")" == file ]]; then
+            sudo mv -f -- "$rollback_root/$binary" "/usr/local/bin/$binary"
+        elif [[ "$(system_path_type "$rollback_root/absent-$binary")" == file ]]; then
+            sudo rm -f -- "/usr/local/bin/$binary"
+        fi
+    done
+    sudo rm -rf -- "$rollback_root"
+}
+
+commit_system_binaries() {
+    system_binary_rollback_pending=0
+    sudo rm -rf -- /usr/local/bin/.riffdb-binary-rollback-v1
+}
+
 publish_system_binaries() {
-    local staging binary failed_binary
+    local staging rollback_root binary failed_binary
     staging="/usr/local/bin/.riffdb-install.$$"
+    rollback_root="/usr/local/bin/.riffdb-binary-rollback-v1"
     validate_binary_source "$binary_source"
     [[ "$(system_path_type "$staging")" == absent ]] \
         || fail "system binary staging path already exists: $staging"
+    [[ "$(system_path_type "$rollback_root")" == absent ]] \
+        || fail "system binary rollback path already exists: $rollback_root"
     sudo install -d -o root -g root -m 0700 "$staging"
+    system_binary_staging="$staging"
     for binary in riffdbd riffdb riffdb-mcp; do
         sudo install -o root -g root -m 0755 /dev/null "$staging/$binary"
         if ! command cat -- "$binary_source/$binary" \
@@ -894,13 +1062,32 @@ publish_system_binaries() {
                 sudo rm -f -- "$staging/$binary"
             done
             sudo rmdir "$staging"
+            system_binary_staging=
             fail "unable to stream system binary: $failed_binary"
         fi
     done
+    sudo install -d -o root -g root -m 0700 "$rollback_root"
+    for binary in riffdbd riffdb riffdb-mcp; do
+        if [[ "$(system_path_type "/usr/local/bin/$binary")" == file ]]; then
+            sudo install -o root -g root -m 0755 \
+                "/usr/local/bin/$binary" \
+                "$rollback_root/$binary"
+        else
+            sudo install -o root -g root -m 0600 \
+                /dev/null \
+                "$rollback_root/absent-$binary"
+        fi
+    done
+    sudo install -o root -g root -m 0600 /dev/null "$rollback_root/COMPLETE"
+    system_binary_rollback_pending=1
     for binary in riffdbd riffdb riffdb-mcp; do
         sudo mv -f -- "$staging/$binary" "/usr/local/bin/$binary"
+        if [[ "$binary" == riffdbd ]]; then
+            interrupt_after first_binary_published
+        fi
     done
     sudo rmdir "$staging"
+    system_binary_staging=
 }
 
 install_system() {
@@ -951,6 +1138,7 @@ install_system() {
     validate_system_directory /var/lib/riffdb/data 0700 "$riffdb_uid" "$riffdb_gid"
     validate_system_directory /var/lib/riffdb/backups 0700 "$riffdb_uid" "$riffdb_gid"
     validate_system_directory /etc/riffdb 0750 0 "$riffdb_gid"
+    recover_system_binary_rollback
     preflight_system_binary_destinations
 
     capability_type="$(system_path_type "$capability_path")"
@@ -1104,6 +1292,7 @@ install_system() {
 
     publish_system_binaries
     sudo systemd-analyze verify "$unit_path"
+    commit_system_binaries
     if ((no_start)); then
         printf '%s\n' \
             'RiffDB system files installed; service reload/start was skipped.'

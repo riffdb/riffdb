@@ -1156,6 +1156,15 @@ fn execute_group_by(
             .collect::<Result<Vec<_>, _>>()?;
         out.push((key_cells, aggregates));
     }
+    out.sort_by(|(left_keys, _), (right_keys, _)| {
+        for (left, right) in left_keys.iter().zip(right_keys.iter()) {
+            let cmp = compare_values(left, right);
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        }
+        left_keys.len().cmp(&right_keys.len())
+    });
     Ok(QueryResult::Groups {
         key_fields: group.keys.clone(),
         groups: out,

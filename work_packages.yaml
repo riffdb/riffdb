@@ -31666,3 +31666,12 @@ work_packages:
   human_review_triggers:
   - Follower ANN graph caching reuses a graph across different LocalView ordinals, frontiers, or policy bindings.
   - Binary rollback deletes or overwrites server configuration, digest keys, or database files.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PRJ-002, PRJ-005, OQ-045, VEC-007, VEC-008, VEC-009, EFF-002, STO-010, DX-002, DX-014]
+    evidence: cargo nextest run -p riffdb-columnar --test acceptance projected_group_by_orders_groups_by_canonical_value_order && cargo nextest run -p riffdb-server --lib -E 'test(follower_vector_projection_warms_and_reuses_ann_graph_cache) | test(follower_columnar)' && ./scripts/release-source-install-smoke && ./scripts/handbook check
+    decision: Sorted projected group-by buckets by canonical compare_values order in execute_group_by, attached per-LocalView NearestGraphCache instances to FollowerColumnarRuntime in riffdb-server, added .riffdb-binary-rollback-v1 backup/rollback/recovery across three-binary installation and systemd-analyze verification in scripts/release-source-install, and reconciled outbox_archive_root and known-limitations documentation.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

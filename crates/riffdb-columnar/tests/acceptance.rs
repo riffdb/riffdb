@@ -2145,3 +2145,100 @@ fn columnar_provider_descriptor_matches_real_reference_engine_contract() {
     }
     assert!(!aggregate_semantics.contains(AggregateSemanticIdentityV1::ExactCount));
 }
+
+#[test]
+// req: OQ-019, QRY-003
+fn projected_group_by_orders_groups_by_canonical_value_order() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let mut engine = open_engine(definition, "group_by_canonical_order");
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x79);
+    for (id, status, title, prio) in [
+        (1u64, 1u64, "b", 256i64),
+        (2, 1, "aa", 10),
+        (3, 2, "b", -5),
+        (4, 2, "aa", -1),
+    ] {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            id,
+            org,
+            id,
+            status,
+            title,
+            prio,
+        );
+    }
+    engine.apply_available(&source).expect("apply");
+
+    let priority = field_id(&bundle, "Ticket", "priority");
+    let title = field_id(&bundle, "Ticket", "title");
+
+    // Length-prefixed encoded bytes would order "b" (len 1) before "aa" (len 2),
+    // whereas canonical compare_values orders "aa" before "b".
+    let by_title = engine
+        .query(&ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: Some(GroupBySpec {
+                keys: vec![title],
+                aggregates: vec![AggregateOp::Count],
+            }),
+            aggregate: None,
+            budget: QueryBudget::default(),
+        })
+        .expect("group by title");
+    match by_title {
+        QueryResult::Groups { groups, .. } => {
+            let keys: Vec<Vec<CanonicalValue>> = groups.into_iter().map(|(key, _)| key).collect();
+            assert_eq!(
+                keys,
+                vec![
+                    vec![CanonicalValue::string("aa").unwrap()],
+                    vec![CanonicalValue::string("b").unwrap()],
+                ]
+            );
+        }
+        other => panic!("expected groups: {other:?}"),
+    }
+
+    // Little-endian signed bytes would order 256 ([0x00, 0x01, ...]) before 10 ([0x0a, 0x00, ...])
+    // and negative values after positive values; canonical compare_values orders -5 < -1 < 10 < 256.
+    let by_priority = engine
+        .query(&ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: Some(GroupBySpec {
+                keys: vec![priority],
+                aggregates: vec![AggregateOp::Count],
+            }),
+            aggregate: None,
+            budget: QueryBudget::default(),
+        })
+        .expect("group by priority");
+    match by_priority {
+        QueryResult::Groups { groups, .. } => {
+            let keys: Vec<Vec<CanonicalValue>> = groups.into_iter().map(|(key, _)| key).collect();
+            assert_eq!(
+                keys,
+                vec![
+                    vec![CanonicalValue::I64(-5)],
+                    vec![CanonicalValue::I64(-1)],
+                    vec![CanonicalValue::I64(10)],
+                    vec![CanonicalValue::I64(256)],
+                ]
+            );
+        }
+        other => panic!("expected groups: {other:?}"),
+    }
+}

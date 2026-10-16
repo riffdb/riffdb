@@ -31,10 +31,16 @@ use std::{
     time::Duration,
 };
 
+pub(crate) type ObservedVectorCache = (
+    Arc<riffdb_columnar::NearestGraphCache>,
+    ProjectionGeneration,
+);
+
 struct LocalView {
     process: [u8; 16],
     ordinal: NonZeroU64,
     snapshot: Arc<ColumnarSnapshot>,
+    ann_cache: Arc<riffdb_columnar::NearestGraphCache>,
 }
 enum State {
     Cold,
@@ -207,9 +213,11 @@ impl FollowerColumnarRuntime {
     ) -> Result<FollowerColumnarWorker, ColumnarPortError> {
         FollowerColumnarWorker::claim(self.clone())
     }
-}
-impl ColumnarProjectionPort for FollowerColumnarRuntime {
-    fn observe(&self, name: &str) -> Result<ColumnarObservation, ColumnarPortError> {
+
+    pub(crate) fn observe_with_vector_cache(
+        &self,
+        name: &str,
+    ) -> Result<(ColumnarObservation, Option<ObservedVectorCache>), ColumnarPortError> {
         let view = self.current()?;
         let index = self
             .bindings
@@ -228,11 +236,12 @@ impl ColumnarProjectionPort for FollowerColumnarRuntime {
             inventory.states[index] = State::Activating;
             self.wake.signal();
         }
-        let (snapshot, published, lifecycle) = match &inventory.states[index] {
+        let (snapshot, published, lifecycle, cache) = match &inventory.states[index] {
             State::Activating => (
                 self.cold_snapshot.clone(),
                 false,
                 Some(ColumnarLifecycle::Building),
+                None,
             ),
             State::Active(local) => {
                 if local.process != self.process
@@ -241,20 +250,36 @@ impl ColumnarProjectionPort for FollowerColumnarRuntime {
                 {
                     return Err(ColumnarPortError::Integrity);
                 }
-                (local.snapshot.clone(), true, Some(ColumnarLifecycle::Ready))
+                let generation = ProjectionGeneration::new(local.ordinal.get())
+                    .ok_or(ColumnarPortError::Integrity)?;
+                (
+                    local.snapshot.clone(),
+                    true,
+                    Some(ColumnarLifecycle::Ready),
+                    Some((Arc::clone(&local.ann_cache), generation)),
+                )
             }
             State::Cold | State::Failed | State::Stopped => {
                 return Err(ColumnarPortError::Unavailable);
             }
         };
-        Ok(ColumnarObservation::new(
-            self.bindings[index].definition.clone(),
-            snapshot.clone(),
-            ProjectionFrontier::new(self.incarnation, snapshot.visible_frontier),
-            ProjectionFrontier::new(self.incarnation, frontier(&view)),
-            published,
-            lifecycle,
+        Ok((
+            ColumnarObservation::new(
+                self.bindings[index].definition.clone(),
+                snapshot.clone(),
+                ProjectionFrontier::new(self.incarnation, snapshot.visible_frontier),
+                ProjectionFrontier::new(self.incarnation, frontier(&view)),
+                published,
+                lifecycle,
+            ),
+            cache,
         ))
+    }
+}
+impl ColumnarProjectionPort for FollowerColumnarRuntime {
+    fn observe(&self, name: &str) -> Result<ColumnarObservation, ColumnarPortError> {
+        self.observe_with_vector_cache(name)
+            .map(|(observation, _)| observation)
     }
     fn definition(&self, name: &str) -> Option<RegisteredDefinition> {
         self.current().ok()?;
@@ -287,8 +312,8 @@ impl riffdb_service::VectorProjectionPort for FollowerColumnarRuntime {
         {
             return Err(riffdb_service::VectorProjectionPortError::Integrity);
         }
-        let observation = self
-            .observe(request.source_name())
+        let (observation, cache) = self
+            .observe_with_vector_cache(request.source_name())
             .map_err(super::map_vector_port_error)?;
         let source = crate::projection_read_source::ProjectionReadSource::new(self.reads.clone());
         super::vector_view::execute(
@@ -296,7 +321,9 @@ impl riffdb_service::VectorProjectionPort for FollowerColumnarRuntime {
             observation,
             &source,
             &source.query_executor(),
-            None,
+            cache
+                .as_ref()
+                .map(|(cache, generation)| (cache.as_ref(), *generation)),
         )
     }
 }
@@ -504,6 +531,7 @@ impl FollowerColumnarWorker {
             process: self.runtime.process,
             ordinal,
             snapshot,
+            ann_cache: Arc::new(riffdb_columnar::NearestGraphCache::new()),
         })
     }
 }
