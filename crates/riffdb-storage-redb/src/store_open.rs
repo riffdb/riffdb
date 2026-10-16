@@ -540,6 +540,7 @@ impl RedbStore {
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(open_mode.is_private_validation()),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire)
+                    | initialize_marker_witness.is_some()
                     | (!refuse_repair && take_engine_repaired_by_prior_open(path)),
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),

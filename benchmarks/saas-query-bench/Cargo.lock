@@ -1035,19 +1035,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "riffdb-api-grpc"
-version = "0.1.0"
-dependencies = [
- "base64",
- "prost",
- "prost-types",
- "riffdb-proto",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
 name = "riffdb-auth"
 version = "0.1.0"
 dependencies = [
@@ -1057,13 +1044,6 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
-]
-
-[[package]]
-name = "riffdb-bench-root"
-version = "0.1.0"
-dependencies = [
- "rustix",
 ]
 
 [[package]]
@@ -1196,9 +1176,7 @@ name = "riffdb-saas-query-bench"
 version = "0.1.0"
 dependencies = [
  "postgres",
- "riffdb-api-grpc",
  "riffdb-auth",
- "riffdb-bench-root",
  "riffdb-client-rust",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
@@ -1206,7 +1184,6 @@ dependencies = [
  "riffdb-types",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tonic",
 ]
