@@ -6924,24 +6924,42 @@ impl RedbWriteAccess {
         } else {
             LocatorAllocationClass::Ordinary
         };
+        let pending_metadata = delta.is_none()
+            && execution_failure_rows == 0
+            && matches!(
+                self.direct_changelog_attribution,
+                Some(
+                    riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
+                        | riffdb_storage_api::ChangelogAttributionV3::OutboxTransition
+                        | riffdb_storage_api::ChangelogAttributionV3::ColumnarProjectionControl
+                )
+            );
         let generation = {
             let state = self
                 .shared
                 .transient_indexes
                 .read()
                 .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-            let TransientIndexState::Ready(indexes) = &*state else {
-                return Err(storage_error(StorageErrorKind::Unavailable));
-            };
-            match &delta {
-                Some(delta) => indexes.prepare_locator_delta(delta, locator_class)?,
-                None => indexes.locator_generation()?,
+            match &*state {
+                TransientIndexState::Ready(indexes) => Some(match &delta {
+                    Some(delta) => indexes.prepare_locator_delta(delta, locator_class)?,
+                    None => indexes.locator_generation()?,
+                }),
+                TransientIndexState::Dormant if pending_metadata => None,
+                TransientIndexState::Dormant | TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
             }
         };
-        let capability = crate::locator_capability::LocatorCapability::try_complete(
-            generation.clone(),
-            locator_class,
-        )?;
+        let capability = generation
+            .as_ref()
+            .map(|generation| {
+                crate::locator_capability::LocatorCapability::try_complete(
+                    generation.clone(),
+                    locator_class,
+                )
+            })
+            .transpose()?;
         let transaction = self
             .transaction
             .take()
@@ -6951,7 +6969,11 @@ impl RedbWriteAccess {
             // No transient delta has been applied; keep the valid published
             // indexes and let Drop restore the original journal source.
         })?;
-        if let Err(error) = prepared.commit_with_locator(&self.shared, capability) {
+        let committed = match capability {
+            Some(capability) => prepared.commit_with_locator(&self.shared, capability),
+            None => prepared.commit_pending_metadata(&self.shared),
+        };
+        if let Err(error) = committed {
             self.invalidate_transient_indexes();
             // `commit_durable` fences writes on any commit error, and a fenced
             // handle can no longer pass `ensure_writable`, so no checkpoint is
@@ -6979,7 +7001,10 @@ impl RedbWriteAccess {
             .transient_indexes
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        state.install_locator_generation(generation)?;
+        let remains_pending = generation.is_none();
+        if let Some(generation) = generation {
+            state.install_locator_generation(generation)?;
+        }
         if let Some(delta) = delta {
             state.apply_disposable_delta(delta)?;
         }
@@ -6991,6 +7016,19 @@ impl RedbWriteAccess {
             return Err(error);
         }
         self.shared.observe_changelog_checkpoint_v3();
+        if remains_pending
+            && let Ok(access) = self.shared.begin_composite_operational_read()
+            && access.locator_capability().is_pending()
+        {
+            // Metadata durability is already known. Request construction of
+            // this exact successor without waiting or claiming completion. If
+            // disposable admission is pressured, the capability stays Pending
+            // and the existing indexed-access path can request it again.
+            let _ = crate::locator_builder::start_locator_builder(
+                access,
+                Some(Arc::clone(&self.shared)),
+            );
+        }
         Ok(())
     }
 

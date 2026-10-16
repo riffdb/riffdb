@@ -196,6 +196,8 @@ It then stamps and publishes the restored incarnation and performs a fresh,
 receipt-bound bounded startup before readiness. Success proves authorized
 materialization and bounded recoverability; it does not certify a complete
 semantic scrub of every entity, audit, outcome or other population row.
+Retained event-consumer leases are normalized to the restored incarnation
+before readiness, without waiting for command-locator reconstruction.
 First access still validates each record and fails closed on corruption. The
 ordinary background scrub runs after readiness and degrades Health on failure.
 Operators requiring complete semantic assurance can request the existing

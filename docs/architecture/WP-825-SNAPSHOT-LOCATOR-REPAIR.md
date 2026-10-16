@@ -272,6 +272,25 @@ avoid unbounded recursive drops, predecessor chains and whole-index copies.
 
 ## Focused proof and integration order
 
+The saved-population restore diagnostic exposed a native commit-path mismatch:
+consumer recovery was admitted while derived indexes were dormant, but its
+direct commit still required ready indexes. Publication succeeded and runtime
+construction then refused before readiness. The native regression reproduces
+this with a genuine restored incarnation and pending source, without manually
+completing a directory.
+
+The correction uses the existing closed mutation proof for the three metadata
+attributions already admitted during bounded startup. A dormant source permits
+only a transition without a locator delta or execution-failure census; its net
+mutations must preserve command membership and decoder identity. Invalid
+indexes still refuse. The durable successor retains explicit pending ownership
+and requests asynchronous construction. Tests check consumer incarnation and
+revision, exact receipt advancement, old-source refusal and successor progress.
+The recovery test fails with typed unavailable before the fix and passes after
+it. The negative history-identity test, all three local consumer tests, six
+captured-source builder tests, workspace formatting and handbook checks pass.
+Public restore timing and the complete rehearsal remain separate gates.
+
 1. Retain the separate failed outcome/provenance regressions and original evidence.
 2. Apply the accepted ADR-0314 budget/readiness policy and registered scope.
 3. Prove persistent-map insertion/deletion, balanced bounds, shared-root isolation,

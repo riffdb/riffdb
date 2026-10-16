@@ -1335,6 +1335,185 @@ mod tests {
         let continuation = ports.begin_write().expect("begin continuation");
         continuation.abort().expect("abort continuation");
     }
+
+    // req: OUT-001, OUT-002, TXN-042, REC-001
+    #[test]
+    fn restored_consumer_recovery_commits_metadata_while_locator_source_is_pending() {
+        let path = TestDatabasePath::new("pending-restored-consumer-recovery");
+        let mut store = RedbStore::open(&path.0).unwrap();
+        store.initialize_database(test_database_id()).unwrap();
+        let ports = RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        let original = replacement();
+        let identity = original.consumer().identity().identity_hash();
+        let access = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .unwrap();
+        replace_snapshot_with_permit(&access, None, &original).unwrap();
+        access
+            .commit_for(RedbTestOperation::EventConsumerTransition)
+            .unwrap();
+        assert_eq!(
+            ports.inspect_event_consumer(identity).unwrap(),
+            Some(original.clone())
+        );
+        drop(ports);
+
+        // Use the native offline restore-incarnation transition. The next
+        // source has a real fresh Pending owner and Dormant accelerators; this
+        // test deliberately starts no worker and manufactures no completion.
+        crate::stamp_history_incarnation(&path.0, 2).unwrap();
+        let store = RedbStore::open(&path.0).unwrap();
+        let mut ports = RedbOperationalPorts {
+            shared: store.shared,
+        };
+        let source = ports.begin_composite_read().unwrap();
+        assert!(source.locator_capability().is_pending());
+        let dormant_probe = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .unwrap();
+        assert!(dormant_probe.transient_indexes_dormant().unwrap());
+        dormant_probe.abort().unwrap();
+        let before = crate::changelog_v3_cursor::history(&source).unwrap();
+        assert_eq!(before.lineage().history_incarnation(), 2);
+        let observed_at = Timestamp::new(10, 0).unwrap();
+        riffdb_storage_api::recover_event_consumers(&mut ports, observed_at, 2)
+            .expect("incarnation-only consumer recovery does not require command membership");
+        let recovered = ports.inspect_event_consumer(identity).unwrap().unwrap();
+        assert_eq!(
+            recovered.consumer().identity(),
+            original.consumer().identity()
+        );
+        assert_eq!(recovered.consumer().history_incarnation(), 2);
+        assert_eq!(
+            recovered.consumer().revision(),
+            original.consumer().revision().checked_next().unwrap()
+        );
+        assert_eq!(
+            recovered.consumer().checkpoint(),
+            original.consumer().checkpoint()
+        );
+        assert_eq!(recovered.deliveries(), original.deliveries());
+        let current = ports.begin_composite_read().unwrap();
+        let after = crate::changelog_v3_cursor::history(&current).unwrap();
+        assert!(after.lineage() == before.lineage());
+        assert_eq!(
+            after.tail().sequence(),
+            before.tail().sequence().checked_next().unwrap()
+        );
+        assert_eq!(after.tail().frontier(), before.tail().frontier());
+        assert!(source.locator_capability().is_pending());
+        assert_eq!(
+            source
+                .locator_capability()
+                .require_complete()
+                .err()
+                .unwrap()
+                .kind(),
+            StorageErrorKind::Unavailable,
+            "metadata recovery cannot turn the old Pending source into an absence proof"
+        );
+        match current.locator_capability().require_complete() {
+            Ok(generation) => assert_eq!(generation.coverage(), None),
+            Err(error) => assert_eq!(error.kind(), StorageErrorKind::Unavailable),
+        }
+        // The successor request cannot strand the new owner when an older
+        // construction is cancelled. Wait for the real admitted worker's
+        // completion predicate, including its ancillary Ready handoff.
+        current
+            .locator_capability()
+            .wait_for_builder_for_test()
+            .unwrap();
+        assert_eq!(
+            current
+                .locator_capability()
+                .require_complete()
+                .unwrap()
+                .coverage(),
+            None
+        );
+        let dormant_probe = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .unwrap();
+        assert!(!dormant_probe.transient_indexes_dormant().unwrap());
+        dormant_probe.abort().unwrap();
+    }
+    // req: TXN-042, REC-001, STO-032
+    #[test]
+    fn pending_consumer_transition_refuses_incoherent_history_identity_before_durability() {
+        let path = TestDatabasePath::new("pending-metadata-history-identity-refusal");
+        let mut store = RedbStore::open(&path.0).unwrap();
+        store.initialize_database(test_database_id()).unwrap();
+        drop(store);
+        let store = RedbStore::open(&path.0).unwrap();
+        let ports = RedbOperationalPorts {
+            shared: store.shared,
+        };
+        let source = ports.begin_composite_read().unwrap();
+        assert!(source.locator_capability().is_pending());
+        let before_history = crate::changelog_v3_cursor::history(&source).unwrap();
+        let before_incarnation = source
+            .read_value(
+                crate::journal::JournalTable::Meta,
+                crate::layout::META_HISTORY_INCARNATION.as_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        let access = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+            )
+            .unwrap();
+        assert!(access.transient_indexes_dormant().unwrap());
+        let altered = crate::codec::encode_history_incarnation_v1(2).unwrap();
+        access
+            .transaction()
+            .unwrap()
+            .open_table(crate::layout::META)
+            .unwrap()
+            .insert(crate::layout::META_HISTORY_INCARNATION, altered.as_bytes())
+            .unwrap();
+        let error = access
+            .commit_for(RedbTestOperation::EventConsumerTransition)
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            StorageErrorKind::CorruptData,
+            "metadata attribution cannot bypass coherent history identity checks"
+        );
+        let current = ports.begin_composite_read().unwrap();
+        assert!(crate::changelog_v3_cursor::history(&current).unwrap() == before_history);
+        assert_eq!(
+            current
+                .read_value(
+                    crate::journal::JournalTable::Meta,
+                    crate::layout::META_HISTORY_INCARNATION.as_bytes(),
+                )
+                .unwrap()
+                .unwrap(),
+            before_incarnation
+        );
+        assert!(source.locator_capability().is_pending());
+        assert_eq!(
+            current
+                .locator_capability()
+                .require_complete()
+                .err()
+                .unwrap()
+                .kind(),
+            StorageErrorKind::Unavailable
+        );
+    }
 }
 
 pub(crate) fn retention_low_water_from_table<T>(

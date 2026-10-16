@@ -156,6 +156,16 @@ impl PreparedImmediateReceipt {
         Ok(())
     }
 
+    /// Commits a metadata transition whose complete net mutations preserve
+    /// command membership and every decoder identity. This does not grant a
+    /// pending source a complete directory or a negative membership proof.
+    pub(crate) fn commit_pending_metadata(self, shared: &SharedRedb) -> Result<(), StorageError> {
+        if self.locator_predecessor.is_none() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        self.commit(shared)
+    }
+
     /// Publishes a directory admitted from this operation's exact predecessor
     /// and complete command-membership delta under the engine's root fence.
     pub(crate) fn commit_with_locator(

@@ -62,6 +62,11 @@ they do not report an incomplete lookup as absence. Bounded metadata reads remai
 available. The first dependent request cannot trigger a synchronous history walk.
 A full startup completes the directory for its exact source before handoff.
 
+Restore normalizes retained event-consumer leases to the restored incarnation
+before readiness. This metadata recovery can commit while command locators are
+pending. It preserves the refusal of incomplete command lookups and requests
+asynchronous construction for the committed successor.
+
 Complete startup validation is still used when those bounded-recovery
 preconditions do not hold: a database with neither a loadable validated-prefix
 checkpoint nor an exact Completed registry binding, an inactive or incompatible
