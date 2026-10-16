@@ -22,3 +22,10 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
+  - adr: "0311"
+    status: accepted-on-main
+    note: >-
+      Main owns the capability inventory, decision-arm workflow and offline
+      compaction record. Its merge immediately follows the approved identifier-only
+      move of the snapshot-locator decision to ADR-0312. Remove this entry when
+      that main record lands.
