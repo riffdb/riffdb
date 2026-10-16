@@ -1192,10 +1192,8 @@ fn engine_aggregates_equal_client_side_folds_of_the_same_rows() {
             .map(|row| as_i64(&row[0]))
             .max()
             .expect("non-empty");
-        // MIN/MAX use typed value order — for strings, lexicographic on the
-        // string itself. That is deliberately NOT the length-prefixed encoded
-        // byte order that governs group emission, and one result can carry
-        // both: see `min_max_use_typed_order_not_group_key_byte_order`.
+        // MIN/MAX and group emission use canonical typed value order, which
+        // differs from the length-prefixed storage encoding for these titles.
         let expected_min_title = cells
             .iter()
             .map(|row| row[2].clone())
@@ -1372,10 +1370,10 @@ fn engine_aggregates_equal_client_side_folds_of_the_same_rows() {
     });
 }
 
-/// One aggregate result can carry two different orders, and conflating them
-/// silently reports the wrong extreme. MIN/MAX compare typed values; group
-/// emission compares length-prefixed encoded keys. The seeded titles separate
+/// MIN/MAX and group emission compare canonical typed values rather than
+/// length-prefixed storage keys (ADR-0313). The seeded titles separate
 /// the two: lexicographic min is "alpha", encoded-byte min is the shortest.
+// req: OQ-045
 #[test]
 fn min_max_use_typed_order_not_group_key_byte_order() {
     run_async_threads(4, async move {
@@ -1428,11 +1426,11 @@ fn min_max_use_typed_order_not_group_key_byte_order() {
             .expect("min title serves");
         assert_eq!(
             whole_set_value(&min),
-            AggregateValue::Scalar(Some(typed_min)),
+            AggregateValue::Scalar(Some(typed_min.clone())),
             "MIN must use typed value order, not encoded-key byte order"
         );
 
-        // The same query grouped by title emits in encoded-key byte order.
+        // The same query grouped by title emits in canonical typed order.
         let (context, _cancellation) = harness.context(0xd9);
         let grouped = harness
             .service
@@ -1445,18 +1443,19 @@ fn min_max_use_typed_order_not_group_key_byte_order() {
         let (_, groups) = grouped_values(&grouped);
         assert_eq!(
             encode(&groups[0].0[0]),
-            encode(&encoded_min),
-            "the first emitted group is the encoded-byte minimum, not the typed one"
+            encode(&typed_min),
+            "the first emitted group is the canonical typed minimum"
         );
         harness.stop_coordinator();
     });
 }
 
-/// Group emission order is the engine's encoded-key byte order, and the
+/// Group emission order is the engine's canonical typed value order, and the
 /// service reports it untouched. Sorting anywhere downstream would make the
 /// documented ordering contract a lie.
+// req: OQ-045
 #[test]
-fn grouped_results_arrive_in_encoded_group_key_byte_order() {
+fn grouped_results_arrive_in_canonical_group_key_value_order() {
     run_async_threads(4, async move {
         let mut harness = ServiceHarness::columnar_board();
         let org = uuid(0x41);
@@ -1476,12 +1475,18 @@ fn grouped_results_arrive_in_encoded_group_key_byte_order() {
             .await
             .expect("grouped serves");
         let (_, groups) = grouped_values(&grouped);
-        let observed: Vec<Vec<u8>> = groups.iter().map(|(keys, _)| encode(&keys[0])).collect();
+        let observed: Vec<String> = groups
+            .iter()
+            .map(|(keys, _)| match &keys[0] {
+                CanonicalValue::String(title) => title.as_str().to_owned(),
+                other => panic!("string group key expected, got {other:?}"),
+            })
+            .collect();
         let mut sorted = observed.clone();
         sorted.sort();
         assert_eq!(
             observed, sorted,
-            "groups must arrive in ascending encoded-key byte order"
+            "groups must arrive in ascending canonical typed value order"
         );
         assert_eq!(groups.len(), AGGREGATE_SEED.len(), "titles are distinct");
         harness.stop_coordinator();
@@ -1948,11 +1953,11 @@ fn the_declared_row_limit_bounds_grouped_output_volume() {
     });
 }
 
-/// Summing a money column is a real engine limitation. It must surface as a
-/// typed, actionable rejection naming a wrong *type* — not the generic invalid
-/// value code every other projected rejection uses.
+/// Uniform-currency money sums preserve exact coefficients (ADR-0312), and
+/// agree with an independent fold over the corresponding real projected rows.
+// req: OQ-045, OQ-046
 #[test]
-fn summing_a_money_column_is_a_typed_actionable_rejection() {
+fn summing_a_money_column_matches_exact_projected_row_coefficients() {
     run_async_threads(4, async move {
         let mut harness = ServiceHarness::columnar_board();
         let org = uuid(0x41);
@@ -1963,7 +1968,7 @@ fn summing_a_money_column_is_a_typed_actionable_rejection() {
             .wait_until_applied(sequence, Duration::from_secs(10));
 
         let (context, _cancellation) = harness.context(0xa8);
-        let failure = harness
+        let sum = harness
             .service
             .execute_projected_query(
                 context,
@@ -1976,24 +1981,32 @@ fn summing_a_money_column_is_a_typed_actionable_rejection() {
                 ),
             )
             .await
-            .expect_err("money columns cannot be summed by the engine");
-        let error = failure
-            .public_error()
-            .expect("the rejection must be public and typed");
-        assert_eq!(error.kind(), PublicErrorKind::Validation);
-        let riffdb_errors::PublicErrorDetails::Validation(issues) = error.details() else {
-            panic!("a validation failure carries its issues, got {error:?}");
-        };
-        assert!(
-            issues
-                .as_slice()
+            .expect("uniform-currency money columns can be summed");
+        let (context, _cancellation) = harness.context(0xaa);
+        let rows = harness
+            .service
+            .execute_projected_query(context, row_twin_request(org, Vec::new(), &["cost"]))
+            .await
+            .expect("money row twin serves");
+        let cells = row_cells(&rows, &["cost"]);
+        assert_eq!(cells.len(), AGGREGATE_SEED.len());
+        let expected: i128 = cells
+            .iter()
+            .map(|row| match row[0] {
+                CanonicalValue::Money(money) => money.amount().coefficient(),
+                ref other => panic!("money cell expected, got {other:?}"),
+            })
+            .sum();
+        assert_eq!(
+            expected,
+            AGGREGATE_SEED
                 .iter()
-                .any(|issue| issue.code() == riffdb_errors::ValidationCode::TypeMismatch),
-            "the caller must be told the column type is wrong, not that a value is: {issues:?}"
+                .map(|(_, cost, _, _)| i128::from(*cost))
+                .sum::<i128>()
         );
+        assert_eq!(whole_set_value(&sum), AggregateValue::Sum(expected));
 
-        // Min and max over the same money column still work: the rejection is
-        // specific to the fold that needs integer arithmetic.
+        // Min and max over the same money column retain typed comparison.
         let (context, _cancellation) = harness.context(0xa9);
         let min = harness
             .service

@@ -1731,9 +1731,15 @@ fn open_operational_offline(database_path: &Path) -> RedbOperationalPorts {
         panic!("stopped daemon database must not require index migration");
     };
     let (_, _, _, dormant): (_, _, _, RedbDormantPorts) = opened.into_parts();
-    dormant
+    let ports = dormant
         .into_operational_after_catalog_validation()
-        .expect("activate operational ports over the stopped daemon database")
+        .expect("activate operational ports over the stopped daemon database");
+    // Offline inspection below requires exact command/outbox membership. The
+    // daemon's public startup and requests retain their ordinary admission path.
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the stopped database's captured native fixture source");
+    ports
 }
 
 /// Offline preparation over the stopped daemon database: drains every pending

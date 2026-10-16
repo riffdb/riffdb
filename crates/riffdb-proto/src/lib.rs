@@ -43,6 +43,12 @@ pub mod storage {
 }
 
 pub use application_error::*;
+#[cfg(feature = "client")]
+#[doc(hidden)]
+pub use client_codec::{
+    CLIENT_WIRE_CARRIER_ID_BASE, ClientQueryWireCarrierScopeGuard,
+    enter_client_query_wire_carrier_scope, lookup_client_query_wire_response,
+};
 pub use command::*;
 pub use local_outbox_archive::*;
 pub use public_error::*;

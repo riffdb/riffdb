@@ -25,9 +25,7 @@ path = "src/main.rs"
 
 [dependencies]
 postgres = { version = "=0.19.14", default-features = false }
-riffdb-api-grpc = { path = "../../crates/riffdb-api-grpc", version = "0.1.0", default-features = false, features = ["client"] }
 riffdb-auth = { path = "../../crates/riffdb-auth", version = "0.1.0", default-features = false }
-riffdb-bench-root = { path = "../../crates/riffdb-bench-root", version = "0.1.0", default-features = false }
 riffdb-client-rust = { path = "../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-contract-compiler = { path = "../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
 riffdb-contract-ir = { path = "../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }
@@ -35,6 +33,5 @@ riffdb-query-module = { path = "../../crates/riffdb-query-module", version = "0.
 riffdb-types = { path = "../../crates/riffdb-types", version = "0.1.0", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
-tempfile = { version = "=3.27.0", default-features = false }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }

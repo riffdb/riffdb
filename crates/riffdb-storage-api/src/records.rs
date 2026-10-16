@@ -21,8 +21,8 @@ use riffdb_types::{
     ConflictKeyHash, ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId,
     EventTypeId, IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
     MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
-    RequestId, RowPolicyName, decode_canonical_value, encode_canonical_record, hash_entity_record,
-    hash_event, hash_partition_key,
+    RequestId, RowPolicyName, canonical_value_encoded_len, decode_canonical_value,
+    encode_canonical_record, hash_entity_record, hash_event, hash_partition_key,
 };
 
 use crate::{
@@ -91,8 +91,19 @@ pub enum DurabilityMode {
     Memory,
 }
 
+/// Shared projected field map on a [`StoredEntityRecordV1`].
+pub type ProjectedFieldMapV1 = Arc<std::collections::BTreeMap<Arc<str>, CanonicalValue>>;
+
+/// Materialized field projection and positional values for one entity.
+pub type ProjectedEntityFieldsV1 = (
+    Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ProjectedFieldMapV1,
+    Arc<[CanonicalValue]>,
+    u64,
+);
+
 /// One authoritative canonical entity row.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct StoredEntityRecordV1 {
     target: EntityTarget,
     entity_version: EntityVersion,
@@ -103,6 +114,20 @@ pub struct StoredEntityRecordV1 {
     // Last: field data is destroyed before its provider ownership capture.
     provider_fields: ProviderEntityFieldCaptureV1,
 }
+
+impl PartialEq for StoredEntityRecordV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.entity_version == other.entity_version
+            && self.written_by_contract == other.written_by_contract
+            && self.schema_binding == other.schema_binding
+            && self.fields == other.fields
+            && self.fields_encoded == other.fields_encoded
+            && self.provider_fields == other.provider_fields
+    }
+}
+
+impl Eq for StoredEntityRecordV1 {}
 
 impl StoredEntityRecordV1 {
     /// Constructs a complete bounded entity row.
@@ -221,6 +246,47 @@ impl StoredEntityRecordV1 {
     #[must_use]
     pub fn fields(&self) -> &CanonicalRecord {
         &self.fields
+    }
+
+    /// Materializes a field projection and encoded byte charge for `needed` sorted by `FieldId`.
+    #[must_use]
+    pub fn materialize_projected_fields(
+        &self,
+        needed: &Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ) -> Option<(ProjectedFieldMapV1, u64)> {
+        self.materialize_projected_fields_with_values(needed)
+            .map(|(map, _, bytes)| (map, bytes))
+    }
+
+    /// Materializes a field projection, positional values and encoded charge for `needed` sorted by `FieldId`.
+    #[must_use]
+    pub fn materialize_projected_fields_with_values(
+        &self,
+        needed: &Arc<[(riffdb_types::FieldId, Arc<str>)]>,
+    ) -> Option<(ProjectedFieldMapV1, Arc<[CanonicalValue]>, u64)> {
+        let record_fields = self.fields.fields();
+        let mut fields = std::collections::BTreeMap::new();
+        let mut fields_bytes = 0u64;
+        let mut cursor = 0usize;
+        for (field_id, name) in needed.iter() {
+            while cursor < record_fields.len() && record_fields[cursor].0.get() < field_id.get() {
+                cursor = cursor.saturating_add(1);
+            }
+            let (actual_id, value) = record_fields.get(cursor)?;
+            if actual_id != field_id {
+                return None;
+            }
+            let encoded_len = canonical_value_encoded_len(value).ok()?;
+            fields_bytes = fields_bytes
+                .checked_add(name.len() as u64)?
+                .checked_add(encoded_len as u64)?
+                .checked_add(160)?;
+            fields.insert(Arc::clone(name), value.clone());
+            cursor = cursor.saturating_add(1);
+        }
+        let values: Arc<[CanonicalValue]> = fields.values().cloned().collect::<Vec<_>>().into();
+        let map = Arc::new(fields);
+        Some((map, values, fields_bytes))
     }
 
     /// Returns the checked canonical encoding length retained at construction.

@@ -21,8 +21,7 @@ use riffdb_storage_api::{
     VectorObservationTargetV1,
 };
 use riffdb_types::{
-    ApplicationRoleHash, CanonicalValue, EntityKey, EntityTypeId, EventId, FieldId, IndexEntryKey,
-    Timestamp,
+    ApplicationRoleHash, CanonicalValue, EntityKey, EntityTypeId, EventId, FieldId, Timestamp,
 };
 
 use crate::{
@@ -30,11 +29,11 @@ use crate::{
     QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
     QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
     QueryRow, QueryScanPage, VectorInspectionCandidateV1, VectorInspectionSnapshotV1,
-    VectorInspectionTargetV1, covered_row_matches_predicates_v1, execute_in_snapshot,
+    VectorInspectionTargetV1, covered_row_matches_predicates_at_positions_v1, execute_in_snapshot,
     execute_operational_page_in_snapshot, execute_page_in_snapshot,
     execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
     execute_policy_provider_page_in_snapshot, execute_provider_page_in_snapshot,
-    validate_query_execution_group,
+    step_output_selected_fields_v1, validate_query_execution_group,
 };
 
 /// Composite-query executor assembled around one API-neutral snapshot source.
@@ -393,6 +392,15 @@ struct StorageQueryView<'a, H> {
     program: &'a QueryAccessProgramV1,
     head: u64,
     relationship_cache: BTreeMap<RelationshipLookupCacheKey, bool>,
+    prepared: Arc<PreparedStorageProgramPlans>,
+    materialize_plans: BTreeMap<String, Arc<RowMaterializePlan>>,
+    last_index_epoch: Option<(
+        riffdb_types::IndexId,
+        CanonicalValue,
+        PartitionIndexTarget,
+        u64,
+    )>,
+    point_key_values_scratch: Vec<CanonicalValue>,
 }
 
 impl<'a, H> StorageQueryView<'a, H>
@@ -413,7 +421,53 @@ where
             program,
             head,
             relationship_cache: BTreeMap::new(),
+            prepared: prepared_storage_program_plans(program),
+            materialize_plans: BTreeMap::new(),
+            last_index_epoch: None,
+            point_key_values_scratch: Vec::with_capacity(4),
         })
+    }
+
+    fn materialize_plan(
+        &mut self,
+        step: &QueryAccessStep,
+    ) -> Result<Arc<RowMaterializePlan>, StorageError> {
+        if let Some(plan) = self
+            .prepared
+            .steps
+            .iter()
+            .find(|candidate| {
+                candidate.binding == step.binding() && candidate.entity == step.entity()
+            })
+            .and_then(|candidate| candidate.materialize_plan.as_ref())
+        {
+            return Ok(Arc::clone(plan));
+        }
+        if let Some(plan) = self.materialize_plans.get(step.entity()) {
+            return Ok(Arc::clone(plan));
+        }
+        let plan = Arc::new(RowMaterializePlan::for_step(self.program, step)?);
+        self.materialize_plans
+            .insert(step.entity().to_owned(), Arc::clone(&plan));
+        Ok(plan)
+    }
+
+    fn covered_plan(
+        &self,
+        step: &QueryAccessStep,
+    ) -> Result<Option<Arc<CoveredScanPlan>>, StorageError> {
+        if let Some(plan) = self
+            .prepared
+            .steps
+            .iter()
+            .find(|candidate| {
+                candidate.binding == step.binding() && candidate.entity == step.entity()
+            })
+            .and_then(|candidate| candidate.covered_plan.as_ref())
+        {
+            return Ok(Some(Arc::clone(plan)));
+        }
+        CoveredScanPlan::for_step(self.program, step).map(|plan| plan.map(Arc::new))
     }
 
     fn point_with_plan(
@@ -429,19 +483,34 @@ where
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
             _ => return Err(invariant()),
         };
-        let values = key_fields
-            .iter()
-            .map(|field| exact_value(predicates, field))
-            .collect::<Result<Vec<_>, _>>()?;
-        if values
-            .iter()
-            .any(|value| matches!(value, CanonicalValue::Null))
+        self.point_key_values_scratch.clear();
+        if let Some(indices) = &plan.point_key_predicate_indices
+            && indices.len() == key_fields.len()
+            && indices.iter().all(|&idx| {
+                predicates
+                    .get(idx)
+                    .is_some_and(|p| p.operator() == QueryPredicateOperator::Equal)
+            })
         {
-            return Ok(None);
+            for &idx in indices {
+                let value = predicates[idx].value();
+                if matches!(value, CanonicalValue::Null) {
+                    return Ok(None);
+                }
+                self.point_key_values_scratch.push(value.clone());
+            }
+        } else {
+            for field in key_fields {
+                let value = exact_value(predicates, field)?;
+                if matches!(value, CanonicalValue::Null) {
+                    return Ok(None);
+                }
+                self.point_key_values_scratch.push(value);
+            }
         }
         let key = step
             .internal_entity_key_schema()
-            .encode_entity(&values)
+            .encode_entity(&self.point_key_values_scratch)
             .map_err(|_| invariant())?;
         let target = EntityTarget::new(step.internal_entity_id(), key).map_err(|_| invariant())?;
         let Some(record) = self.snapshot.read_entity(&target)? else {
@@ -468,27 +537,44 @@ where
         after_inclusive: bool,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, StorageError> {
+        let plan = self.materialize_plan(step)?;
+        let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
         let direction = access_direction(step)?;
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
         let schedule =
             crate::bound_index_range_schedule_v1(step, predicates).map_err(|_| invariant())?;
-        let partition_value = partition_value(self.program, step, predicates)?;
-        let partition = step
-            .internal_partition_key_schema()
-            .encode_partition(std::slice::from_ref(partition_value))
-            .map_err(|_| invariant())?;
-        let target =
-            PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
-        let epoch = self.snapshot.index_epoch(&target)?;
-        let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
+        let partition_value = partition_value_at(
+            self.program,
+            step,
+            predicates,
+            plan.partition_predicate_index,
+        )?;
+        let index_id = step.internal_index_id().ok_or_else(invariant)?;
+        let (target, epoch) = if let Some((cached_idx, cached_val, cached_target, cached_epoch)) =
+            &self.last_index_epoch
+            && *cached_idx == index_id
+            && cached_val == partition_value
+        {
+            (cached_target.clone(), *cached_epoch)
+        } else {
+            let partition = step
+                .internal_partition_key_schema()
+                .encode_partition(std::slice::from_ref(partition_value))
+                .map_err(|_| invariant())?;
+            let target = PartitionIndexTarget::new(partition, index_id);
+            let epoch = self.snapshot.index_epoch(&target)?;
+            self.last_index_epoch =
+                Some((index_id, partition_value.clone(), target.clone(), epoch));
+            (target, epoch)
+        };
         let fetch_limit = page_limit.saturating_add(1);
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
-        let mut rows =
-            Vec::<(IndexEntryKey, QueryRow)>::with_capacity(fetch_limit.min(scan_ceiling));
+        let mut rows = Vec::<QueryRow>::new();
+        let mut last_page_key: Option<Vec<u8>> = None;
         let mut physical = 0usize;
         let mut eligible = 0usize;
 
+        let mut all_predicates_verified = !plan.has_lossy_index_predicate;
         'ranges: for range in schedule.ranges() {
             let Some(window) = range.resume_window(direction, after, after_inclusive) else {
                 continue;
@@ -521,6 +607,9 @@ where
                 )
                 .map_err(|_| invariant())?;
                 let page = self.snapshot.scan_snapshot_index_range(request)?;
+                if rows.capacity() == 0 {
+                    rows.reserve(page.entries().len().min(fetch_limit).min(scan_ceiling));
+                }
                 physical = physical
                     .checked_add(page.entries().len())
                     .ok_or_else(limit_exceeded)?;
@@ -530,11 +619,12 @@ where
                         continue;
                     }
                     eligible = eligible.checked_add(1).ok_or_else(limit_exceeded)?;
-                    let decoded = schema.decode_index(entry.key()).map_err(|_| corrupt())?;
-                    let entity_target =
-                        EntityTarget::new(step.internal_entity_id(), decoded.entity_key().clone())
-                            .map_err(|_| corrupt())?;
-                    let record = self
+                    let entity_key = schema
+                        .decode_index_entity_key(entry.key())
+                        .map_err(|_| corrupt())?;
+                    let entity_target = EntityTarget::new(step.internal_entity_id(), entity_key)
+                        .map_err(|_| corrupt())?;
+                    let fetched = self
                         .snapshot
                         .read_entity(&entity_target)?
                         .ok_or_else(corrupt)?;
@@ -543,11 +633,25 @@ where
                         &mut self.relationship_cache,
                         policy,
                         step.internal_entity_id(),
-                        record.fields(),
+                        fetched.fields(),
                     )? {
                         continue;
                     }
-                    rows.push((entry.key().clone(), plan.materialize(&record)?));
+                    let row = plan.materialize(&fetched)?;
+                    let row_verified = !plan.has_lossy_index_predicate
+                        && row.entity() == step.entity()
+                        && crate::predicates_match_at_positions(
+                            &row,
+                            predicates,
+                            plan.predicate_positions.as_deref(),
+                        ) == Ok(true);
+                    if !row_verified {
+                        all_predicates_verified = false;
+                    }
+                    rows.push(row);
+                    if rows.len() == page_limit {
+                        last_page_key = Some(entry.key().as_bytes().to_vec());
+                    }
                     if rows.len() == fetch_limit {
                         break 'ranges;
                     }
@@ -562,20 +666,19 @@ where
         if has_more {
             rows.truncate(page_limit);
         }
-        let continuation = has_more
-            .then(|| rows.last().map(|row| row.0.as_bytes().to_vec()))
-            .flatten();
-        let rows = rows.into_iter().map(|(_, row)| row).collect();
+        let continuation = if has_more { last_page_key } else { None };
         let scanned_rows = u64::try_from(eligible).map_err(|_| limit_exceeded())?;
-        match continuation {
+        let mut scan_page = match continuation {
             Some(continuation) => {
                 QueryScanPage::continued(rows, epoch, scanned_rows.max(1), continuation)
-                    .ok_or_else(invariant)
+                    .ok_or_else(invariant)?
             }
             None => {
-                QueryScanPage::policy_exact_end(rows, epoch, scanned_rows).ok_or_else(invariant)
+                QueryScanPage::policy_exact_end(rows, epoch, scanned_rows).ok_or_else(invariant)?
             }
-        }
+        };
+        scan_page.predicates_verified = all_predicates_verified;
+        Ok(scan_page)
     }
 
     fn read_covered_rows(
@@ -596,7 +699,13 @@ where
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
         let schedule =
             crate::bound_index_range_schedule_v1(step, predicates).map_err(|_| invariant())?;
-        let partition_value = partition_value(self.program, step, predicates)?;
+        let covered_plan = self.covered_plan(step)?.ok_or_else(invariant)?;
+        let partition_value = partition_value_at(
+            self.program,
+            step,
+            predicates,
+            covered_plan.partition_predicate_index,
+        )?;
         let partition = step
             .internal_partition_key_schema()
             .encode_partition(std::slice::from_ref(partition_value))
@@ -607,23 +716,12 @@ where
         let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
         let fetch_limit = page_limit.saturating_add(1);
         let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
-        let mut expected_cover_ids = layout.internal_cover_field_ids().to_vec();
-        expected_cover_ids.sort_unstable();
-        let cover_positions = layout
-            .fields()
-            .iter()
-            .map(|field| match field.internal_source() {
-                CoveredResultSourceV1::Cover => expected_cover_ids
-                    .binary_search(&field.internal_field_id())
-                    .map_err(|_| invariant()),
-                CoveredResultSourceV1::IndexKey(_) | CoveredResultSourceV1::EntityKey(_) => {
-                    Ok(usize::MAX)
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut rows = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::with_capacity(
-            fetch_limit.min(scan_ceiling),
-        );
+        let expected_cover_ids = &covered_plan.expected_cover_ids;
+        let needs_entity_key = covered_plan.needs_entity_key;
+        let cover_positions = &covered_plan.cover_positions;
+        let predicate_positions = covered_plan.predicate_positions.as_deref();
+        let mut rows = Vec::<Vec<CanonicalValue>>::with_capacity(fetch_limit.min(scan_ceiling));
+        let mut last_page_key: Option<Vec<u8>> = None;
         let mut physical = 0usize;
         let mut eligible = 0usize;
         'ranges: for range in schedule.ranges() {
@@ -679,20 +777,26 @@ where
                     if covered.len() != expected_cover_ids.len()
                         || covered
                             .iter()
-                            .zip(&expected_cover_ids)
+                            .zip(expected_cover_ids.iter())
                             .any(|((actual, _), expected)| actual != expected)
                     {
                         return Err(corrupt());
                     }
                     let decoded = schema.decode_index(entry.key()).map_err(|_| corrupt())?;
-                    let entity_values = step
-                        .internal_entity_key_schema()
-                        .decode_entity(decoded.entity_key())
-                        .map_err(|_| corrupt())?;
+                    let entity_values = if needs_entity_key {
+                        step.internal_entity_key_schema()
+                            .decode_entity(decoded.entity_key())
+                            .map_err(|_| corrupt())?
+                    } else {
+                        step.internal_entity_key_schema()
+                            .validate_entity(decoded.entity_key())
+                            .map_err(|_| corrupt())?;
+                        Vec::new()
+                    };
                     let values = layout
                         .fields()
                         .iter()
-                        .zip(&cover_positions)
+                        .zip(cover_positions)
                         .map(|(field, position)| match field.internal_source() {
                             CoveredResultSourceV1::IndexKey(index) => decoded
                                 .values()
@@ -709,12 +813,20 @@ where
                                 .ok_or_else(corrupt),
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    if !covered_row_matches_predicates_v1(layout, &values, predicates)
-                        .map_err(|_| invariant())?
-                    {
+                    let matches = covered_row_matches_predicates_at_positions_v1(
+                        layout,
+                        &values,
+                        predicates,
+                        predicate_positions,
+                    )
+                    .map_err(|_| invariant())?;
+                    if !matches {
                         continue;
                     }
-                    rows.push((entry.key().clone(), values));
+                    rows.push(values);
+                    if rows.len() == page_limit {
+                        last_page_key = Some(entry.key().as_bytes().to_vec());
+                    }
                     if rows.len() == fetch_limit {
                         break 'ranges;
                     }
@@ -729,10 +841,7 @@ where
         if has_more {
             rows.truncate(page_limit);
         }
-        let continuation = has_more
-            .then(|| rows.last().map(|row| row.0.as_bytes().to_vec()))
-            .flatten();
-        let rows = rows.into_iter().map(|(_, values)| values).collect();
+        let continuation = if has_more { last_page_key } else { None };
         CoveredResultBatch::checked(
             layout.clone(),
             rows,
@@ -743,6 +852,249 @@ where
         )
         .map(Some)
         .ok_or_else(invariant)
+    }
+
+    fn read_covered_scan_page(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<QueryScanPage>, StorageError> {
+        let Some(layout) = step.covered_result_layout() else {
+            return Ok(None);
+        };
+        if policy.is_some() {
+            return Err(invariant());
+        }
+        let covered_plan = self.covered_plan(step)?.ok_or_else(invariant)?;
+        if !covered_plan.rows_valid {
+            return Err(invariant());
+        }
+        let page_limit = usize::try_from(limit).map_err(|_| limit_exceeded())?;
+        let direction = access_direction(step)?;
+        let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
+        let schedule =
+            crate::bound_index_range_schedule_v1(step, predicates).map_err(|_| invariant())?;
+        let partition_value = partition_value_at(
+            self.program,
+            step,
+            predicates,
+            covered_plan.partition_predicate_index,
+        )?;
+        let index_id = step.internal_index_id().ok_or_else(invariant)?;
+        let (target, epoch) = if let Some((cached_idx, cached_val, cached_target, cached_epoch)) =
+            &self.last_index_epoch
+            && *cached_idx == index_id
+            && cached_val == partition_value
+        {
+            (cached_target.clone(), *cached_epoch)
+        } else {
+            let partition = step
+                .internal_partition_key_schema()
+                .encode_partition(std::slice::from_ref(partition_value))
+                .map_err(|_| invariant())?;
+            let target = PartitionIndexTarget::new(partition, index_id);
+            let epoch = self.snapshot.index_epoch(&target)?;
+            self.last_index_epoch =
+                Some((index_id, partition_value.clone(), target.clone(), epoch));
+            (target, epoch)
+        };
+        let fetch_limit = page_limit.saturating_add(1);
+        let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS).map_err(|_| limit_exceeded())?;
+        let expected_cover_ids = &covered_plan.expected_cover_ids;
+        let entity = &covered_plan.entity;
+        let field_names = &covered_plan.field_names;
+        let selected_prevalidated = covered_plan.selected_prevalidated;
+        let needs_entity_key = covered_plan.needs_entity_key;
+        let cover_positions = &covered_plan.cover_positions;
+        let predicate_positions = covered_plan.predicate_positions.as_deref();
+        let mut rows = Vec::<QueryRow>::new();
+        let mut last_page_key: Option<Vec<u8>> = None;
+        let mut physical = 0usize;
+        let mut eligible = 0usize;
+        'ranges: for range in schedule.ranges() {
+            let Some(window) = range.resume_window(direction, after, false) else {
+                continue;
+            };
+            let mut lower_after = None;
+            loop {
+                let remaining = scan_ceiling.saturating_sub(physical);
+                if remaining == 0 {
+                    return Err(limit_exceeded());
+                }
+                let request_limit = u16::try_from(
+                    remaining
+                        .min(riffdb_storage_api::MAX_SCAN_PAGE_ENTRIES)
+                        .min(fetch_limit.saturating_sub(rows.len()).max(1)),
+                )
+                .ok()
+                .and_then(StorageScanLimit::new)
+                .ok_or_else(limit_exceeded)?;
+                let request = SnapshotIndexRangeRequestV1::new(
+                    window.start_inclusive().to_vec(),
+                    !window.skip_start_equal(),
+                    window.end_exclusive().to_vec(),
+                    window.include_end_equal(),
+                    storage_direction(direction),
+                    lower_after.take(),
+                    request_limit,
+                )
+                .map_err(|_| invariant())?;
+                let page = self.snapshot.scan_snapshot_index_range(request)?;
+                if rows.capacity() == 0 {
+                    rows.reserve(page.entries().len().min(fetch_limit).min(scan_ceiling));
+                }
+                physical = physical
+                    .checked_add(page.entries().len())
+                    .ok_or_else(limit_exceeded)?;
+                for charged in page.entries() {
+                    let entry = charged.value();
+                    if entry.partition_key() != target.partition_key() {
+                        continue;
+                    }
+                    eligible = eligible.checked_add(1).ok_or_else(limit_exceeded)?;
+                    let (values_arc, fields_arc, fields_bytes, projected_fields) = {
+                        let binding = entry.schema_binding();
+                        let contract = self.program.contract();
+                        if binding.lineage() != contract.lineage()
+                            || binding.contract_version() != contract.version()
+                            || binding.bundle_hash() != contract.bundle_hash()
+                        {
+                            return Err(corrupt());
+                        }
+                        let covered = entry.covered_values().fields();
+                        if covered.len() != expected_cover_ids.len()
+                            || covered
+                                .iter()
+                                .zip(expected_cover_ids.iter())
+                                .any(|((actual, _), expected)| actual != expected)
+                        {
+                            return Err(corrupt());
+                        }
+                        let decoded = schema.decode_index(entry.key()).map_err(|_| corrupt())?;
+                        let entity_values = if needs_entity_key {
+                            step.internal_entity_key_schema()
+                                .decode_entity(decoded.entity_key())
+                                .map_err(|_| corrupt())?
+                        } else {
+                            step.internal_entity_key_schema()
+                                .validate_entity(decoded.entity_key())
+                                .map_err(|_| corrupt())?;
+                            Vec::new()
+                        };
+                        let values = layout
+                            .fields()
+                            .iter()
+                            .zip(cover_positions)
+                            .map(|(field, position)| match field.internal_source() {
+                                CoveredResultSourceV1::IndexKey(index) => decoded
+                                    .values()
+                                    .get(usize::from(index))
+                                    .cloned()
+                                    .ok_or_else(corrupt),
+                                CoveredResultSourceV1::EntityKey(index) => entity_values
+                                    .get(usize::from(index))
+                                    .cloned()
+                                    .ok_or_else(corrupt),
+                                CoveredResultSourceV1::Cover => covered
+                                    .get(*position)
+                                    .map(|(_, value)| value.clone())
+                                    .ok_or_else(corrupt),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let values_arc: Arc<[CanonicalValue]> = values.into();
+                        let matches = covered_row_matches_predicates_at_positions_v1(
+                            layout,
+                            &values_arc,
+                            predicates,
+                            predicate_positions,
+                        )
+                        .map_err(|_| invariant())?;
+                        if !matches {
+                            continue;
+                        }
+                        let mut fields_map = BTreeMap::new();
+                        let mut fields_bytes = 0u64;
+                        for (name, value) in field_names.iter().zip(values_arc.iter()) {
+                            let encoded_len = riffdb_types::canonical_value_encoded_len(value)
+                                .map_err(|_| invariant())?;
+                            fields_bytes = fields_bytes
+                                .checked_add(name.len() as u64)
+                                .and_then(|v| v.checked_add(encoded_len as u64))
+                                .and_then(|v| v.checked_add(160))
+                                .ok_or_else(limit_exceeded)?;
+                            fields_map.insert(Arc::clone(name), value.clone());
+                        }
+                        if fields_map.len() != field_names.len() {
+                            return Err(invariant());
+                        }
+                        let fields_arc = Arc::new(fields_map);
+                        let projected_fields = match &covered_plan.selected_positions {
+                            Some(positions) => {
+                                let mut proj = BTreeMap::new();
+                                let mut proj_bytes = 0u64;
+                                for (name, pos) in positions {
+                                    if let Some(val) = values_arc.get(*pos) {
+                                        let encoded_len =
+                                            riffdb_types::canonical_value_encoded_len(val)
+                                                .map_err(|_| invariant())?;
+                                        proj_bytes = proj_bytes
+                                            .checked_add(name.len() as u64)
+                                            .and_then(|v| v.checked_add(encoded_len as u64))
+                                            .and_then(|v| v.checked_add(160))
+                                            .ok_or_else(limit_exceeded)?;
+                                        proj.insert(Arc::clone(name), val.clone());
+                                    }
+                                }
+                                Some((Arc::new(proj), proj_bytes))
+                            }
+                            None => None,
+                        };
+                        (values_arc, fields_arc, fields_bytes, projected_fields)
+                    };
+                    let row = QueryRow::from_materialized_plan(
+                        Arc::clone(entity),
+                        fields_arc,
+                        Some(fields_bytes),
+                        Some(values_arc),
+                        projected_fields,
+                        selected_prevalidated,
+                    )
+                    .ok_or_else(invariant)?;
+                    rows.push(row);
+                    if rows.len() == page_limit {
+                        last_page_key = Some(entry.key().as_bytes().to_vec());
+                    }
+                    if rows.len() == fetch_limit {
+                        break 'ranges;
+                    }
+                }
+                let Some(next) = page.next_after() else {
+                    break;
+                };
+                lower_after = Some(next.as_bytes().to_vec());
+            }
+        }
+        let has_more = rows.len() > page_limit;
+        if has_more {
+            rows.truncate(page_limit);
+        }
+        let continuation = if has_more { last_page_key } else { None };
+        let scanned_rows = u64::try_from(eligible).map_err(|_| limit_exceeded())?;
+        if (rows.len() as u64) > scanned_rows {
+            return Err(invariant());
+        }
+        let reported_scanned = if continuation.is_some() {
+            scanned_rows.max(1)
+        } else {
+            scanned_rows
+        };
+        let mut page = QueryScanPage::reported(rows, epoch, reported_scanned, 0, continuation)
+            .ok_or_else(invariant)?;
+        page.predicates_verified = true;
+        Ok(Some(page))
     }
 }
 
@@ -764,7 +1116,7 @@ where
         predicates: &[BoundPredicate],
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
+        let plan = self.materialize_plan(step)?;
         self.point_with_plan(step, predicates, &plan, policy)
     }
     fn dependent_point_batch(
@@ -780,7 +1132,7 @@ where
         ) {
             return Err(invariant());
         }
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
+        let plan = self.materialize_plan(step)?;
         predicates
             .iter()
             .map(|predicates| self.point_with_plan(step, predicates, &plan, policy))
@@ -806,6 +1158,17 @@ where
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<CoveredResultBatch>, Self::Error> {
         self.read_covered_rows(step, predicates, limit, after, policy)
+    }
+    fn scan_covered_rows(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<Option<QueryScanPage>>, Self::Error> {
+        self.read_covered_scan_page(step, predicates, limit, after, policy)
+            .map(Some)
     }
     fn nearest(
         &mut self,
@@ -1037,11 +1400,18 @@ fn indexed_relationship_exists<H: OwnedSnapshotHandle>(
     }
 }
 
-fn partition_value<'a>(
+fn partition_value_at<'a>(
     program: &QueryAccessProgramV1,
     step: &QueryAccessStep,
     predicates: &'a [BoundPredicate],
+    index: Option<usize>,
 ) -> Result<&'a CanonicalValue, StorageError> {
+    if let Some(idx) = index
+        && let Some(predicate) = predicates.get(idx)
+        && predicate.operator() == QueryPredicateOperator::Equal
+    {
+        return Ok(predicate.value());
+    }
     predicates
         .iter()
         .find(|predicate| {
@@ -1085,49 +1455,390 @@ fn exact_value(predicates: &[BoundPredicate], field: &str) -> Result<CanonicalVa
         .ok_or_else(invariant)
 }
 
+fn step_has_lossy_index_predicate(step: &QueryAccessStep) -> bool {
+    let Some(descriptor) = step.internal_operational_index_descriptor() else {
+        return true;
+    };
+    let fields = match step.access() {
+        QueryAccessKind::Index { fields, .. }
+        | QueryAccessKind::PartitionSetIndex { fields, .. }
+        | QueryAccessKind::ExpansionIndex { fields, .. } => fields,
+        _ => return true,
+    };
+    step.predicates().iter().any(|pred| {
+        pred.operator() == QueryPredicateOperator::NotEqual
+            || !fields.iter().any(|field| field == pred.field())
+    }) || fields.iter().enumerate().any(|(pos, field)| {
+        descriptor.component(pos, field).is_none_or(|comp| {
+            matches!(
+                comp.encoding(),
+                riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+                    riffdb_contract_ir::TextKeyProfileV1::UnicodeFold
+                )
+            )
+        })
+    })
+}
+
+type NeededFieldsSlice = Arc<[(FieldId, Arc<str>)]>;
+type EntityNeededSpec = (Arc<str>, NeededFieldsSlice);
+
 struct RowMaterializePlan {
     entity: Arc<str>,
-    needed: Vec<(FieldId, Arc<str>)>,
+    needed: NeededFieldsSlice,
+    selected_needed: Option<NeededFieldsSlice>,
+    selected_prevalidated: bool,
+    point_key_predicate_indices: Option<Vec<usize>>,
+    partition_predicate_index: Option<usize>,
+    predicate_positions: Option<Vec<usize>>,
+    has_lossy_index_predicate: bool,
+}
+
+fn find_partition_predicate_index(
+    program: &QueryAccessProgramV1,
+    step: &QueryAccessStep,
+) -> Option<usize> {
+    step.predicates().iter().position(|source| {
+        source.operator() == QueryPredicateOperator::Equal
+            && matches!(
+                source.value(),
+                riffdb_query_ir::QueryPredicateValue::Parameter(name)
+                    if name == program.partition_parameter()
+            )
+    })
 }
 
 impl RowMaterializePlan {
-    fn for_step(
+    fn build_entity_needed(
         program: &QueryAccessProgramV1,
-        step: &QueryAccessStep,
-    ) -> Result<Self, StorageError> {
+        entity_name: &str,
+    ) -> Result<EntityNeededSpec, StorageError> {
         let access = program
-            .internal_entity_access(step.entity())
+            .internal_entity_access(entity_name)
             .ok_or_else(invariant)?;
         let mut needed = access
             .internal_fields()
             .map(|(name, id)| (id, Arc::<str>::from(name)))
             .collect::<Vec<_>>();
         needed.sort_by_key(|(id, _)| id.get());
-        Ok(Self {
-            entity: Arc::<str>::from(step.entity()),
+        Ok((Arc::<str>::from(entity_name), Arc::from(needed)))
+    }
+
+    fn for_step(
+        program: &QueryAccessProgramV1,
+        step: &QueryAccessStep,
+    ) -> Result<Self, StorageError> {
+        let (entity, needed) = Self::build_entity_needed(program, step.entity())?;
+        Ok(Self::for_step_with_needed(program, step, entity, needed))
+    }
+
+    fn for_step_with_needed(
+        program: &QueryAccessProgramV1,
+        step: &QueryAccessStep,
+        entity: Arc<str>,
+        needed: Arc<[(FieldId, Arc<str>)]>,
+    ) -> Self {
+        let mut selected_pairs = Vec::with_capacity(step.selected_fields().len());
+        let mut selected_valid = !entity.is_empty()
+            && step.selected_fields().len() <= crate::MAX_QUERY_ROW_FIELDS
+            && needed.len() <= crate::MAX_QUERY_ROW_FIELDS;
+        if selected_valid {
+            for name in step.selected_fields() {
+                if name.is_empty() {
+                    selected_valid = false;
+                    break;
+                }
+                if let Some((id, arc_name)) = needed
+                    .iter()
+                    .find(|(_, candidate)| candidate.as_ref() == name.as_str())
+                {
+                    selected_pairs.push((*id, Arc::clone(arc_name)));
+                } else {
+                    selected_valid = false;
+                    break;
+                }
+            }
+        }
+        selected_pairs.sort_by_key(|(id, _)| id.get());
+        selected_pairs.dedup_by_key(|(id, _)| id.get());
+        let selected_prevalidated =
+            selected_valid && selected_pairs.len() == step.selected_fields().len();
+        let output_selected = step_output_selected_fields_v1(program, step);
+        let selected_needed = if selected_prevalidated && !step.result_names().is_empty() {
+            if let Some(output_fields) = output_selected {
+                let mut out_pairs = Vec::with_capacity(output_fields.len());
+                for name in &output_fields {
+                    if let Some((id, arc_name)) = needed
+                        .iter()
+                        .find(|(_, candidate)| candidate.as_ref() == name.as_str())
+                    {
+                        out_pairs.push((*id, Arc::clone(arc_name)));
+                    }
+                }
+                out_pairs.sort_by_key(|(id, _)| id.get());
+                out_pairs.dedup_by_key(|(id, _)| id.get());
+                if out_pairs.len() == output_fields.len() && out_pairs.len() < needed.len() {
+                    Some(Arc::from(out_pairs))
+                } else {
+                    None
+                }
+            } else if selected_pairs.len() < needed.len() {
+                Some(Arc::from(selected_pairs))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let point_key_predicate_indices = match step.access() {
+            QueryAccessKind::Point { key_fields }
+            | QueryAccessKind::DependentPointBatch { key_fields, .. }
+            | QueryAccessKind::CandidateRootHydration { key_fields, .. } => {
+                let mut indices = Vec::with_capacity(key_fields.len());
+                let mut all_found = true;
+                for key_field in key_fields {
+                    if let Some(pos) = step.predicates().iter().position(|pred| {
+                        pred.field() == key_field
+                            && matches!(
+                                pred.operator(),
+                                QueryPredicateOperator::Equal | QueryPredicateOperator::In
+                            )
+                    }) {
+                        indices.push(pos);
+                    } else {
+                        all_found = false;
+                        break;
+                    }
+                }
+                all_found.then_some(indices)
+            }
+            _ => None,
+        };
+        let partition_predicate_index = find_partition_predicate_index(program, step);
+        let mut sorted_names: Vec<&str> = needed.iter().map(|(_, name)| name.as_ref()).collect();
+        sorted_names.sort_unstable();
+        let predicate_positions = step
+            .predicates()
+            .iter()
+            .map(|pred| sorted_names.binary_search(&pred.field()).ok())
+            .collect::<Option<Vec<usize>>>();
+        let has_lossy_index_predicate = step_has_lossy_index_predicate(step);
+        Self {
+            entity,
             needed,
-        })
+            selected_needed,
+            selected_prevalidated,
+            point_key_predicate_indices,
+            partition_predicate_index,
+            predicate_positions,
+            has_lossy_index_predicate,
+        }
     }
 
     fn materialize(
         &self,
         record: &riffdb_storage_api::StoredEntityRecordV1,
     ) -> Result<QueryRow, StorageError> {
-        let stored = record.fields().fields();
-        let mut fields = BTreeMap::new();
-        let mut store_index = 0usize;
-        for (need_id, name) in &self.needed {
-            while store_index < stored.len() && stored[store_index].0.get() < need_id.get() {
-                store_index += 1;
-            }
-            if store_index >= stored.len() || stored[store_index].0 != *need_id {
-                return Err(corrupt());
-            }
-            fields.insert(Arc::clone(name), stored[store_index].1.clone());
-            store_index += 1;
-        }
-        QueryRow::from_shared(Arc::clone(&self.entity), fields).ok_or_else(limit_exceeded)
+        let (fields, values, fields_bytes) = record
+            .materialize_projected_fields_with_values(&self.needed)
+            .ok_or_else(corrupt)?;
+        let projected_fields = match &self.selected_needed {
+            Some(selected) => Some(
+                record
+                    .materialize_projected_fields(selected)
+                    .ok_or_else(corrupt)?,
+            ),
+            None => None,
+        };
+        QueryRow::from_materialized_plan(
+            Arc::clone(&self.entity),
+            fields,
+            Some(fields_bytes),
+            Some(values),
+            projected_fields,
+            self.selected_prevalidated,
+        )
+        .ok_or_else(limit_exceeded)
     }
+}
+
+struct CoveredScanPlan {
+    expected_cover_ids: Arc<[FieldId]>,
+    entity: Arc<str>,
+    field_names: Arc<[Arc<str>]>,
+    rows_valid: bool,
+    selected_prevalidated: bool,
+    selected_positions: Option<Vec<(Arc<str>, usize)>>,
+    predicate_positions: Option<Vec<usize>>,
+    needs_entity_key: bool,
+    cover_positions: Vec<usize>,
+    partition_predicate_index: Option<usize>,
+}
+
+impl CoveredScanPlan {
+    fn for_step(
+        program: &QueryAccessProgramV1,
+        step: &QueryAccessStep,
+    ) -> Result<Option<Self>, StorageError> {
+        let Some(layout) = step.covered_result_layout() else {
+            return Ok(None);
+        };
+        let mut expected_cover_ids_vec = layout.internal_cover_field_ids().to_vec();
+        expected_cover_ids_vec.sort_unstable();
+        let expected_cover_ids: Arc<[FieldId]> = expected_cover_ids_vec.into();
+        let entity = Arc::<str>::from(layout.entity());
+        let field_names: Arc<[Arc<str>]> = layout
+            .fields()
+            .iter()
+            .map(|field| Arc::<str>::from(field.name()))
+            .collect::<Vec<_>>()
+            .into();
+        let rows_valid = !entity.is_empty()
+            && field_names.len() <= crate::MAX_QUERY_ROW_FIELDS
+            && !field_names.iter().any(|name| name.is_empty());
+        let mut selected_pairs = Vec::with_capacity(step.selected_fields().len());
+        let mut selected_valid =
+            rows_valid && step.selected_fields().len() <= crate::MAX_QUERY_ROW_FIELDS;
+        if selected_valid {
+            for (idx, name) in step.selected_fields().iter().enumerate() {
+                if name.is_empty() || step.selected_fields()[..idx].contains(name) {
+                    selected_valid = false;
+                    break;
+                }
+                if let Some((pos, arc_name)) = field_names
+                    .iter()
+                    .enumerate()
+                    .find(|(_, f)| f.as_ref() == name.as_str())
+                {
+                    selected_pairs.push((Arc::clone(arc_name), pos));
+                } else {
+                    selected_valid = false;
+                    break;
+                }
+            }
+        }
+        let selected_prevalidated =
+            selected_valid && selected_pairs.len() == step.selected_fields().len();
+        let output_selected = step_output_selected_fields_v1(program, step);
+        let selected_positions = if selected_prevalidated && !step.result_names().is_empty() {
+            if let Some(output_fields) = output_selected {
+                let mut out_pairs = Vec::with_capacity(output_fields.len());
+                for name in &output_fields {
+                    if let Some((pos, arc_name)) = field_names
+                        .iter()
+                        .enumerate()
+                        .find(|(_, f)| f.as_ref() == name.as_str())
+                    {
+                        out_pairs.push((Arc::clone(arc_name), pos));
+                    }
+                }
+                if out_pairs.len() == output_fields.len() && out_pairs.len() < field_names.len() {
+                    Some(out_pairs)
+                } else {
+                    None
+                }
+            } else if selected_pairs.len() < field_names.len() {
+                Some(selected_pairs)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let predicate_positions = step
+            .predicates()
+            .iter()
+            .map(|pred| {
+                layout
+                    .fields()
+                    .binary_search_by(|field| field.name().cmp(pred.field()))
+                    .ok()
+            })
+            .collect::<Option<Vec<usize>>>();
+        let needs_entity_key = layout
+            .fields()
+            .iter()
+            .any(|field| matches!(field.internal_source(), CoveredResultSourceV1::EntityKey(_)));
+        let cover_positions = layout
+            .fields()
+            .iter()
+            .map(|field| match field.internal_source() {
+                CoveredResultSourceV1::Cover => expected_cover_ids
+                    .binary_search(&field.internal_field_id())
+                    .map_err(|_| invariant()),
+                CoveredResultSourceV1::IndexKey(_) | CoveredResultSourceV1::EntityKey(_) => {
+                    Ok(usize::MAX)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let partition_predicate_index = find_partition_predicate_index(program, step);
+        Ok(Some(Self {
+            expected_cover_ids,
+            entity,
+            field_names,
+            rows_valid,
+            selected_prevalidated,
+            selected_positions,
+            predicate_positions,
+            needs_entity_key,
+            cover_positions,
+            partition_predicate_index,
+        }))
+    }
+}
+
+struct PreparedStorageStepPlan {
+    binding: String,
+    entity: String,
+    materialize_plan: Option<Arc<RowMaterializePlan>>,
+    covered_plan: Option<Arc<CoveredScanPlan>>,
+}
+
+struct PreparedStorageProgramPlans {
+    steps: Vec<PreparedStorageStepPlan>,
+}
+
+fn prepared_storage_program_plans(
+    program: &QueryAccessProgramV1,
+) -> Arc<PreparedStorageProgramPlans> {
+    let mut entity_needed: BTreeMap<String, EntityNeededSpec> = BTreeMap::new();
+    let steps = program
+        .steps()
+        .iter()
+        .map(|step| {
+            let materialize_plan = if let Some((entity, needed)) = entity_needed.get(step.entity())
+            {
+                Some(Arc::new(RowMaterializePlan::for_step_with_needed(
+                    program,
+                    step,
+                    Arc::clone(entity),
+                    Arc::clone(needed),
+                )))
+            } else if let Ok((entity, needed)) =
+                RowMaterializePlan::build_entity_needed(program, step.entity())
+            {
+                entity_needed.insert(
+                    step.entity().to_owned(),
+                    (Arc::clone(&entity), Arc::clone(&needed)),
+                );
+                Some(Arc::new(RowMaterializePlan::for_step_with_needed(
+                    program, step, entity, needed,
+                )))
+            } else {
+                None
+            };
+            PreparedStorageStepPlan {
+                binding: step.binding().to_owned(),
+                entity: step.entity().to_owned(),
+                materialize_plan,
+                covered_plan: CoveredScanPlan::for_step(program, step)
+                    .ok()
+                    .flatten()
+                    .map(Arc::new),
+            }
+        })
+        .collect();
+    Arc::new(PreparedStorageProgramPlans { steps })
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {

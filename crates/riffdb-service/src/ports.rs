@@ -296,6 +296,16 @@ pub trait CurrentPolicyPort: Send + Sync {
         request: OperationRequest,
     ) -> Result<Decision, AuthorizationError>;
 
+    /// Reloads current capability state, samples fresh authorization time, and decides
+    /// from a borrowed request without cloning when a warm policy cache hit can answer.
+    fn authorize_borrowed(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        request: &OperationRequest,
+    ) -> Result<Decision, AuthorizationError> {
+        self.authorize(principal, request.clone())
+    }
+
     /// Reloads current capability state and decides one maintenance safe point.
     fn authorize_offline_maintenance(
         &self,
@@ -676,6 +686,28 @@ pub trait QueryModuleReadPort: Send + Sync {
         Ok(None)
     }
 
+    /// Resolves a warm generated operation from borrowed identity components without cloning.
+    fn prepare_exact_named_query_borrowed(
+        &self,
+        control: &RequestControl,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+        contract_hash: ContractBundleHash,
+        module_hash: QueryModuleHash,
+        query_name: &QueryOperationName,
+    ) -> Result<Option<ResolvedNamedQuery>, QueryModuleReadError> {
+        self.prepare_exact_named_query(
+            control,
+            ExactNamedQueryRequest::new(
+                lineage.clone(),
+                version,
+                contract_hash,
+                module_hash,
+                query_name.clone(),
+            ),
+        )
+    }
+
     /// Reads and recompiles the active module for one exact retained contract.
     fn prepare_active_query_module<'a>(
         &'a self,
@@ -1048,6 +1080,12 @@ pub trait AuthoritativeReadPort: Send + Sync {
     > {
         Box::pin(async { Err(PortAdmissionError::Stopped) })
     }
+    /// Synchronously observes a process-local cached application head when
+    /// admission control permits and capacity is available.
+    fn try_cached_application_head(&self, _control: &RequestControl) -> Option<FrontierPosition> {
+        None
+    }
+
     /// Reserves capacity for one opaque-wakeup application-head observation.
     fn reserve_application_head<'a>(
         &'a self,

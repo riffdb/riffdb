@@ -220,6 +220,15 @@ impl RedbOwnedSnapshot {
     }
 }
 
+impl RedbReadAccess {
+    pub(crate) fn decoded_cache(&self) -> &crate::checkpoint_root::SnapshotDecodedCache {
+        match self {
+            Self::Current(root) | Self::Durable(root) => root.decoded_cache(),
+            Self::Composite(view) => view.decoded_cache(),
+        }
+    }
+}
+
 impl OwnedSnapshotReader for RedbOperationalPorts {
     type Snapshot<'a> = RedbOwnedSnapshot;
 
@@ -254,15 +263,17 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
 
     fn index_epoch(&self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
         self.verify_snapshot_custody()?;
-        let key = encode_partition_index_key(target);
-        let Some(encoded) = self.access.read_value(JournalTable::IndexEpochs, &key)? else {
-            return Ok(0);
-        };
-        let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
-        if epoch.target() != target {
-            return Err(corrupt());
-        }
-        Ok(epoch.epoch().get())
+        self.access.decoded_cache().index_epoch(target, || {
+            let key = encode_partition_index_key(target);
+            let Some(encoded) = self.access.read_value(JournalTable::IndexEpochs, &key)? else {
+                return Ok(0);
+            };
+            let epoch = decode_index_epoch_v1(&encoded)?.into_parts().0;
+            if epoch.target() != target {
+                return Err(corrupt());
+            }
+            Ok(epoch.epoch().get())
+        })
     }
 
     fn scan_snapshot_index_range(
@@ -270,45 +281,49 @@ impl SnapshotFenceReader for RedbOwnedSnapshot {
         request: SnapshotIndexRangeRequestV1,
     ) -> Result<SnapshotIndexRangePageV1, StorageError> {
         self.verify_snapshot_custody()?;
-        let wanted = usize::from(request.limit().get());
-        let mut upper = request.upper().to_vec();
-        if request.upper_inclusive() {
-            upper.push(0);
-        }
-        let lower = request.lower();
-        let raw = match request.direction() {
-            SnapshotIndexDirectionV1::Forward => self.access.read_range(
-                JournalTable::SecondaryIndexes,
-                request.after().unwrap_or(lower),
-                &upper,
-                wanted.saturating_add(2),
-            )?,
-            SnapshotIndexDirectionV1::Reverse => self.access.read_range_reverse(
-                JournalTable::SecondaryIndexes,
-                lower,
-                request.after().unwrap_or(upper.as_slice()),
-                wanted.saturating_add(2),
-            )?,
-        };
-        let mut entries = Vec::with_capacity(wanted);
-        let mut has_more = false;
-        for (physical, encoded) in raw {
-            let key = decode_index_entry_key(&physical).map_err(|_| corrupt())?;
-            if request.after().is_some_and(|after| after == key.as_bytes())
-                || (!request.lower_inclusive() && key.as_bytes() == request.lower())
-                || (!request.upper_inclusive() && key.as_bytes() == request.upper())
-            {
-                continue;
-            }
-            let decoded = decode_and_verify_index_entry(&key, &encoded)?;
-            if entries.len() == wanted {
-                has_more = true;
-                break;
-            }
-            let (entry, charge) = decoded.into_parts();
-            entries.push(EncodedPageItem::new(entry, charge));
-        }
-        SnapshotIndexRangePageV1::new(&request, entries, has_more).map_err(value_error)
+        self.access
+            .decoded_cache()
+            .scan_index_range(request, |request| {
+                let wanted = usize::from(request.limit().get());
+                let mut upper = request.upper().to_vec();
+                if request.upper_inclusive() {
+                    upper.push(0);
+                }
+                let lower = request.lower();
+                let raw = match request.direction() {
+                    SnapshotIndexDirectionV1::Forward => self.access.read_range(
+                        JournalTable::SecondaryIndexes,
+                        request.after().unwrap_or(lower),
+                        &upper,
+                        wanted.saturating_add(2),
+                    )?,
+                    SnapshotIndexDirectionV1::Reverse => self.access.read_range_reverse(
+                        JournalTable::SecondaryIndexes,
+                        lower,
+                        request.after().unwrap_or(upper.as_slice()),
+                        wanted.saturating_add(2),
+                    )?,
+                };
+                let mut entries = Vec::with_capacity(wanted);
+                let mut has_more = false;
+                for (physical, encoded) in raw {
+                    let key = decode_index_entry_key(&physical).map_err(|_| corrupt())?;
+                    if request.after().is_some_and(|after| after == key.as_bytes())
+                        || (!request.lower_inclusive() && key.as_bytes() == request.lower())
+                        || (!request.upper_inclusive() && key.as_bytes() == request.upper())
+                    {
+                        continue;
+                    }
+                    let decoded = decode_and_verify_index_entry(&key, &encoded)?;
+                    if entries.len() == wanted {
+                        has_more = true;
+                        break;
+                    }
+                    let (entry, charge) = decoded.into_parts();
+                    entries.push(EncodedPageItem::new(entry, charge));
+                }
+                SnapshotIndexRangePageV1::new(request, entries, has_more).map_err(value_error)
+            })
     }
 }
 

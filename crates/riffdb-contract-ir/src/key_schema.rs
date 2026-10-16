@@ -303,7 +303,7 @@ impl KeySchema {
     /// same cursor and rejects the same keys; the decoded component values are
     /// dropped rather than collected, so a caller that only needs the key
     /// proved well formed does not pay for a vector it discards.
-    fn validate_entity(&self, key: &EntityKey) -> Result<(), IrValidationError> {
+    pub fn validate_entity(&self, key: &EntityKey) -> Result<(), IrValidationError> {
         let KeyPurpose::Entity(owner) = self.purpose else {
             return Err(IrValidationError::InvalidKey {
                 reason: "not an entity key schema",
@@ -448,7 +448,7 @@ impl KeySchema {
             Vec::new()
         };
         for component in &self.components {
-            let value = cursor.read_component(component)?;
+            let value = cursor.read_component::<RETAIN>(component)?;
             if RETAIN {
                 values.push(value);
             }
@@ -468,11 +468,7 @@ impl KeySchema {
                 .ok_or(IrValidationError::InvalidKey {
                     reason: "missing entity key schema",
                 })?;
-        if RETAIN {
-            entity_schema.decode_entity(&entity_key)?;
-        } else {
-            entity_schema.validate_entity(&entity_key)?;
-        }
+        entity_schema.validate_entity(&entity_key)?;
         Ok((values, entity_key))
     }
 
@@ -562,7 +558,7 @@ impl KeySchema {
                 .components
                 .get(values.len())
                 .ok_or(IrValidationError::TrailingBytes)?;
-            values.push(cursor.read_component(schema)?);
+            values.push(cursor.read_component::<true>(schema)?);
         }
 
         let canonical = self.encode_index_prefix(&values)?;
@@ -815,7 +811,7 @@ fn complete_components<const RETAIN: bool>(
         Vec::new()
     };
     for schema in schemas {
-        let value = cursor.read_component(schema)?;
+        let value = cursor.read_component::<RETAIN>(schema)?;
         if RETAIN {
             result.push(value);
         }
@@ -845,11 +841,27 @@ impl<'a> KeyCursor<'a> {
         Ok(())
     }
 
-    fn read_component(
+    fn read_component<const RETAIN: bool>(
         &mut self,
         schema: &KeyComponentSchema,
     ) -> Result<CanonicalValue, IrValidationError> {
         if schema.codec == KeyComponentCodecV1::OrderedBytes {
+            if !RETAIN {
+                let len = self.validate_ordered_bytes()?;
+                if len > riffdb_types::MAX_BYTES_VALUE_BYTES {
+                    return Err(IrValidationError::InvalidKey {
+                        reason: "oversized ordered bytes key",
+                    });
+                }
+                if schema.value_type.tag() != ValueTypeTag::Bytes
+                    || schema.value_type.byte_bound().is_none_or(|max| len > max)
+                {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "canonical value",
+                    });
+                }
+                return Ok(CanonicalValue::Null);
+            }
             let value =
                 CanonicalValue::Bytes(CanonicalBytes::new(self.read_ordered_bytes()?).map_err(
                     |_| IrValidationError::InvalidKey {
@@ -909,24 +921,56 @@ impl<'a> KeyCursor<'a> {
             ValueTypeTag::String => {
                 let length = self.read_u32()? as usize;
                 let bytes = self.read(length)?;
-                CanonicalValue::String(
-                    CanonicalString::new(
-                        std::str::from_utf8(bytes)
-                            .map_err(|_| IrValidationError::InvalidText { kind: "key" })?
-                            .to_owned(),
-                    )
-                    .map_err(|_| IrValidationError::InvalidKey {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| IrValidationError::InvalidText { kind: "key" })?;
+                if !RETAIN {
+                    if length > riffdb_types::MAX_STRING_BYTES {
+                        return Err(IrValidationError::InvalidKey {
+                            reason: "oversized string key",
+                        });
+                    }
+                    if schema
+                        .value_type
+                        .byte_bound()
+                        .is_none_or(|max| length > max)
+                    {
+                        return Err(IrValidationError::TypeMismatch {
+                            context: "canonical value",
+                        });
+                    }
+                    return Ok(CanonicalValue::Null);
+                }
+                CanonicalValue::String(CanonicalString::new(text.to_owned()).map_err(|_| {
+                    IrValidationError::InvalidKey {
                         reason: "oversized string key",
-                    })?,
-                )
+                    }
+                })?)
             }
             ValueTypeTag::Bytes => {
                 let length = self.read_u32()? as usize;
-                CanonicalValue::Bytes(CanonicalBytes::new(self.read(length)?.to_vec()).map_err(
-                    |_| IrValidationError::InvalidKey {
+                let bytes = self.read(length)?;
+                if !RETAIN {
+                    if length > riffdb_types::MAX_BYTES_VALUE_BYTES {
+                        return Err(IrValidationError::InvalidKey {
+                            reason: "oversized bytes key",
+                        });
+                    }
+                    if schema
+                        .value_type
+                        .byte_bound()
+                        .is_none_or(|max| length > max)
+                    {
+                        return Err(IrValidationError::TypeMismatch {
+                            context: "canonical value",
+                        });
+                    }
+                    return Ok(CanonicalValue::Null);
+                }
+                CanonicalValue::Bytes(CanonicalBytes::new(bytes.to_vec()).map_err(|_| {
+                    IrValidationError::InvalidKey {
                         reason: "oversized bytes key",
-                    },
-                )?)
+                    }
+                })?)
             }
             _ => {
                 return Err(IrValidationError::InvalidKey {
@@ -940,6 +984,26 @@ impl<'a> KeyCursor<'a> {
 
     fn read_u32(&mut self) -> Result<u32, IrValidationError> {
         Ok(u32::from_be_bytes(self.read_array()?))
+    }
+
+    fn validate_ordered_bytes(&mut self) -> Result<usize, IrValidationError> {
+        let mut count = 0usize;
+        loop {
+            let byte = self.read(1)?[0];
+            if byte != 0 {
+                count += 1;
+                continue;
+            }
+            match self.read(1)?[0] {
+                0 => return Ok(count),
+                0xff => count += 1,
+                _ => {
+                    return Err(IrValidationError::InvalidKey {
+                        reason: "invalid ordered-byte escape",
+                    });
+                }
+            }
+        }
     }
 
     fn read_ordered_bytes(&mut self) -> Result<Vec<u8>, IrValidationError> {

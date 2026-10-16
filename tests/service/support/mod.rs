@@ -2395,6 +2395,9 @@ fn new_database_scope() -> riffdb_testkit::scratch::ScratchDir {
 fn scan_service_audits(
     ports: &RedbOperationalPorts,
 ) -> Vec<riffdb_storage_api::StoredServiceAuditRecordV1> {
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact historical audit-inspection source");
     let scan = ports
         .scan_administration_audit(AdministrationAuditScanRequest::new(
             None,

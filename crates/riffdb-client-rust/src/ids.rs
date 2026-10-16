@@ -160,8 +160,48 @@ pub fn generate_application_installation_campaign_id()
     SystemIdSource::new().application_installation_campaign_id()
 }
 
+const SYSTEM_RANDOM_CHUNK_COUNT: usize = 25;
+const SYSTEM_RANDOM_BUFFER_BYTES: usize = SYSTEM_RANDOM_CHUNK_COUNT * 10;
+
+struct ThreadRandomBuffer {
+    bytes: [u8; SYSTEM_RANDOM_BUFFER_BYTES],
+    offset: usize,
+}
+
+impl Default for ThreadRandomBuffer {
+    fn default() -> Self {
+        Self {
+            bytes: [0_u8; SYSTEM_RANDOM_BUFFER_BYTES],
+            offset: SYSTEM_RANDOM_BUFFER_BYTES,
+        }
+    }
+}
+
+std::thread_local! {
+    static THREAD_RANDOM_BUFFER: std::cell::RefCell<ThreadRandomBuffer> =
+        std::cell::RefCell::new(ThreadRandomBuffer::default());
+}
+
 fn fill_system_random(output: &mut [u8; 10]) -> Result<(), IdentifierGenerationError> {
-    getrandom::fill(output).map_err(|_| IdentifierGenerationError::EntropyUnavailable)
+    THREAD_RANDOM_BUFFER.with(|cell| {
+        let Ok(mut buf) = cell.try_borrow_mut() else {
+            return getrandom::fill(output)
+                .map_err(|_| IdentifierGenerationError::EntropyUnavailable);
+        };
+        if buf.offset + 10 > SYSTEM_RANDOM_BUFFER_BYTES {
+            if getrandom::fill(&mut buf.bytes).is_err() {
+                buf.offset = SYSTEM_RANDOM_BUFFER_BYTES;
+                return Err(IdentifierGenerationError::EntropyUnavailable);
+            }
+            buf.offset = 0;
+        }
+        let start = buf.offset;
+        let end = start + 10;
+        output.copy_from_slice(&buf.bytes[start..end]);
+        buf.bytes[start..end].fill(0);
+        buf.offset = end;
+        Ok(())
+    })
 }
 
 fn generate_with<T>(

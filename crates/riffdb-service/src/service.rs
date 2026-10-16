@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::Instant;
 
 use riffdb_commit::{
@@ -673,6 +673,44 @@ impl RiffDbService {
         Box::pin(trusted_service_job_completion(receipt))
     }
 
+    pub(crate) fn spawn_query_operation<T, F>(
+        &self,
+        control: crate::RequestControl,
+        operation: ServiceOperationV1,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        future: F,
+    ) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        if let Err(failure) = self.inner.executors.admit_operation(operation) {
+            return Box::pin(async move { Err(failure) });
+        }
+        let job_inner = Arc::clone(&self.inner);
+        let spawner = Arc::clone(&self.inner.providers.spawner);
+        let spawn_submitted_at = Instant::now();
+        let observed = Box::pin(async move {
+            job_inner
+                .admit_initial_native_dependency(&control, Some(operation))
+                .await?;
+            let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
+            observe_operation(
+                job_inner.as_ref(),
+                operation,
+                ingress,
+                future,
+                lifecycle,
+                Some(spawn_submitted_at),
+            )
+            .await
+        });
+        Box::pin(InlineOrSpawnedQueryJob {
+            spawner,
+            observed: Some(observed),
+        })
+    }
+
     pub(crate) fn spawn_maintenance_operation<T, F>(
         &self,
         control: crate::RequestControl,
@@ -919,6 +957,42 @@ async fn trusted_service_job_completion<T>(
         Ok(result) => result,
         Err(PortDriverStopped) => {
             panic!("accepted service job stopped without publishing its result")
+        }
+    }
+}
+
+struct InlineOrSpawnedQueryJob<T: Send + 'static> {
+    spawner: Arc<dyn ServiceJobSpawner>,
+    observed: Option<Pin<Box<dyn Future<Output = ServiceResult<T>> + Send + 'static>>>,
+}
+
+impl<T: Send + 'static> Future for InlineOrSpawnedQueryJob<T> {
+    type Output = ServiceResult<T>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.as_mut().get_mut();
+        let Some(observed) = this.observed.as_mut() else {
+            panic!("completed query operation polled after completion");
+        };
+        match observed.as_mut().poll(context) {
+            Poll::Ready(result) => {
+                this.observed = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: Send + 'static> Drop for InlineOrSpawnedQueryJob<T> {
+    fn drop(&mut self) {
+        if let Some(observed) = self.observed.take() {
+            spawn_trusted_service_job(
+                self.spawner.as_ref(),
+                Box::pin(async move {
+                    let _ = observed.await;
+                }),
+            );
         }
     }
 }
@@ -1219,6 +1293,88 @@ mod tests {
             let mut context = Context::from_waker(Waker::noop());
             assert!(matches!(job.as_mut().poll(&mut context), Poll::Pending));
         }
+    }
+
+    #[derive(Default)]
+    struct HeldQuerySpawner {
+        accepted: Mutex<Option<ServiceJob>>,
+    }
+
+    impl ServiceJobSpawner for HeldQuerySpawner {
+        fn spawn(&self, job: ServiceJob) {
+            let mut accepted = self.accepted.lock().unwrap();
+            assert!(accepted.is_none(), "only one continuation may be accepted");
+            *accepted = Some(job);
+        }
+    }
+
+    // req: API-001, SEC-005
+    #[test]
+    fn dropped_inline_query_transfers_pending_ownership_and_original_control() {
+        for poll_before_drop in [false, true] {
+            let spawner = Arc::new(HeldQuerySpawner::default());
+            let deadline = Instant::now() + std::time::Duration::from_secs(30);
+            let (control, cancellation) = crate::RequestControl::new(deadline);
+            let original = control.fork();
+            let owner = Arc::new(());
+            let weak_owner = Arc::downgrade(&owner);
+            let completed = Arc::new(AtomicBool::new(false));
+            let completion = Arc::clone(&completed);
+            let observed = Box::pin(poll_fn(move |_| {
+                let _retained = &owner;
+                assert_eq!(control.deadline(), deadline);
+                if control.is_cancelled() {
+                    completion.store(true, Ordering::Release);
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            }));
+            let mut query = Box::pin(InlineOrSpawnedQueryJob {
+                spawner: spawner.clone(),
+                observed: Some(observed),
+            });
+            let mut context = Context::from_waker(Waker::noop());
+            if poll_before_drop {
+                assert!(query.as_mut().poll(&mut context).is_pending());
+            }
+            assert!(spawner.accepted.lock().unwrap().is_none());
+            drop(query);
+            assert!(weak_owner.upgrade().is_some());
+            let mut continuation = spawner.accepted.lock().unwrap().take().unwrap();
+            assert!(continuation.as_mut().poll(&mut context).is_pending());
+            assert!(!completed.load(Ordering::Acquire));
+            cancellation.cancel();
+            assert!(original.is_cancelled());
+            assert!(continuation.as_mut().poll(&mut context).is_ready());
+            assert!(completed.load(Ordering::Acquire));
+            drop(continuation);
+            assert!(weak_owner.upgrade().is_none());
+            assert!(spawner.accepted.lock().unwrap().is_none());
+        }
+    }
+
+    // req: API-001, SEC-005
+    #[test]
+    fn completed_inline_query_does_not_spawn_a_second_continuation() {
+        let spawner = Arc::new(HeldQuerySpawner::default());
+        let owner = Arc::new(());
+        let weak_owner = Arc::downgrade(&owner);
+        let mut query = Box::pin(InlineOrSpawnedQueryJob {
+            spawner: spawner.clone(),
+            observed: Some(Box::pin(async move {
+                drop(owner);
+                Ok(())
+            })),
+        });
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            query.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(weak_owner.upgrade().is_none());
+        drop(query);
+        assert!(spawner.accepted.lock().unwrap().is_none());
     }
 
     #[test]

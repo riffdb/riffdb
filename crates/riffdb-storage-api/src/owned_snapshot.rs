@@ -106,6 +106,28 @@ impl SnapshotIndexRangeRequestV1 {
     }
 }
 
+/// Shared canonical field map for one covered projection entry.
+pub type CoveredProjectionFieldMapV1 =
+    std::sync::Arc<std::collections::BTreeMap<std::sync::Arc<str>, riffdb_types::CanonicalValue>>;
+
+/// Cached covered projection for one entry in a [`SnapshotIndexRangePageV1`].
+pub type CachedCoveredProjectionV1 = (
+    std::sync::Arc<[riffdb_types::FieldId]>,
+    std::sync::Arc<[std::sync::Arc<str>]>,
+    std::sync::Arc<[riffdb_types::CanonicalValue]>,
+    CoveredProjectionFieldMapV1,
+    u64,
+    Option<(CoveredProjectionFieldMapV1, u64)>,
+);
+
+/// Borrowed view of a cached covered projection on [`SnapshotIndexRangePageV1`].
+pub type CoveredProjectionBorrowV1<'a> = (
+    &'a std::sync::Arc<[riffdb_types::CanonicalValue]>,
+    &'a CoveredProjectionFieldMapV1,
+    u64,
+    &'a Option<(CoveredProjectionFieldMapV1, u64)>,
+);
+
 /// One bounded semantic page from an immutable index range.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotIndexRangePageV1 {

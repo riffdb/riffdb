@@ -452,14 +452,7 @@ query ProjectPortfolioRollup(
         order by completed_at desc, task_id desc
         take 32 per project
 
-    many org_tasks from Task
-        where org_id == $org_id
-          && completed_at >= $task_since
-        order by completed_at desc, task_id desc
-        take 240
-
-    aggregate task_stats from org_tasks {
-        group by project_id
+    aggregate task_stats from tasks per projects {
         count() as total_tasks
         count() where status == "done" as completed_tasks
         count() where status == "blocked" as blocked_tasks
@@ -468,8 +461,6 @@ query ProjectPortfolioRollup(
         p95(cycle_hours) as p95_cycle_hours
         any(is_critical_blocker) as has_critical_blocker
         collect_distinct(assignee_id) as assignees
-        order by project_id asc
-        take 12
     }
 
     return Found {
@@ -481,17 +472,16 @@ query ProjectPortfolioRollup(
             tasks: tasks {
                 task_id
             }
-        }
-        task_stats: task_stats {
-            project_id
-            total_tasks
-            completed_tasks
-            blocked_tasks
-            total_points
-            completed_points
-            p95_cycle_hours
-            has_critical_blocker
-            assignees
+            task_stats: task_stats {
+                total_tasks
+                completed_tasks
+                blocked_tasks
+                total_points
+                completed_points
+                p95_cycle_hours
+                has_critical_blocker
+                assignees
+            }
         }
     }
     outcomes Found
@@ -2109,8 +2099,35 @@ impl RiffdbSaasRunner {
             );
         }
 
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
+        let mut handles = Vec::with_capacity(commands.len());
+        for cmd in commands {
+            let sem = Arc::clone(&semaphore);
+            let mut transport = self.transport.clone();
+            let metadata = self.metadata.clone();
+            let attempts = self.attempts;
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.map_err(|e| format!("{e}"))?;
+                let resp = transport
+                    .execute_command(cmd, attempts, &metadata)
+                    .await
+                    .map_err(|e| format!("seed execute_command: {e}"))?;
+                if resp.outcome.as_deref() != Some("Created") {
+                    return Err(format!(
+                        "unexpected seed command outcome: {:?}",
+                        resp.outcome
+                    ));
+                }
+                Ok::<(), String>(())
+            }));
+        }
+        for handle in handles {
+            handle.await.map_err(|e| format!("seed join: {e}"))??;
+        }
+
+        let mut signal_commands = Vec::with_capacity(dataset.signals.len());
         for sig in &dataset.signals {
-            commands.push(
+            signal_commands.push(
                 ApplicationCommand::new(
                     "SeedTaskSignal",
                     Some(CONTRACT_VERSION),
@@ -2144,24 +2161,31 @@ impl RiffdbSaasRunner {
             );
         }
 
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
-        let mut handles = Vec::with_capacity(commands.len());
-        for cmd in commands {
+        let mut signal_handles = Vec::with_capacity(signal_commands.len());
+        for cmd in signal_commands {
             let sem = Arc::clone(&semaphore);
             let mut transport = self.transport.clone();
             let metadata = self.metadata.clone();
             let attempts = self.attempts;
-            handles.push(tokio::spawn(async move {
+            signal_handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire_owned().await.map_err(|e| format!("{e}"))?;
-                transport
+                let resp = transport
                     .execute_command(cmd, attempts, &metadata)
                     .await
-                    .map_err(|e| format!("seed execute_command: {e}"))?;
+                    .map_err(|e| format!("seed signal execute_command: {e}"))?;
+                if resp.outcome.as_deref() != Some("Created") {
+                    return Err(format!(
+                        "unexpected seed signal outcome: {:?}",
+                        resp.outcome
+                    ));
+                }
                 Ok::<(), String>(())
             }));
         }
-        for handle in handles {
-            handle.await.map_err(|e| format!("seed join: {e}"))??;
+        for handle in signal_handles {
+            handle
+                .await
+                .map_err(|e| format!("seed signal join: {e}"))??;
         }
         Ok(())
     }
@@ -2244,7 +2268,7 @@ impl RiffdbSaasRunner {
 
         let mut transport = self.transport.clone();
         let response = transport
-            .execute_named_query(query, &self.metadata)
+            .execute_named_query_shared(query, &self.metadata)
             .await
             .map_err(|e| format!("RiffDB query {} failed: {e}", workload.query_name()))?;
 
@@ -2347,17 +2371,6 @@ fn decode_riffdb_result(
                 .get("projects")
                 .ok_or_else(|| "missing projects field".to_owned())?
                 .records;
-            let stats_records = &result
-                .fields
-                .get("task_stats")
-                .ok_or_else(|| "missing task_stats field".to_owned())?
-                .records;
-            let mut stats_by_project = BTreeMap::new();
-            for srec in stats_records {
-                let sf = &srec.fields;
-                let pid = extract_string(sf, "project_id")?;
-                stats_by_project.insert(pid, sf);
-            }
             let mut rows = Vec::with_capacity(records.len());
             for rec in records {
                 let f = &rec.fields;
@@ -2377,10 +2390,20 @@ fn decode_riffdb_result(
                         }
                     }
                 }
-                let stats = stats_by_project
-                    .get(&project_id)
-                    .copied()
-                    .ok_or_else(|| format!("missing task_stats for project {project_id}"))?;
+                let stats = match f.get("task_stats") {
+                    Some(ApplicationValue::List(items)) => match items.first() {
+                        Some(ApplicationValue::Record(stats_fields)) => stats_fields,
+                        other => {
+                            return Err(format!("expected Record in task_stats, got {other:?}"));
+                        }
+                    },
+                    Some(ApplicationValue::Record(stats_fields)) => stats_fields,
+                    other => {
+                        return Err(format!(
+                            "missing task_stats for project {project_id}: {other:?}"
+                        ));
+                    }
+                };
                 rows.push(CanonicalProjectPortfolioRow {
                     project_id,
                     name: extract_string(f, "name")?,
