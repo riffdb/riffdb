@@ -59,16 +59,6 @@ impl LocatorRetireContents for RootTracking {
         roots.entries.pop();
         roots.entries.is_empty()
     }
-
-    fn take_for_retirement(&mut self) -> Self {
-        let roots = self
-            .roots
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self {
-            roots: Mutex::new(std::mem::take(roots)),
-        }
-    }
 }
 
 /// One bounded cleanup cursor. Its inherent retain shadows Vec::retain, so

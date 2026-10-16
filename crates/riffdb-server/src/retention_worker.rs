@@ -13,7 +13,8 @@
 //! interval once it reaches the target or a fence.
 //!
 //! Lane health is internal and closed: `holding`, `idle`, `advancing`,
-//! `fenced`, `refused`, and `cancelled`. It appears in the shutdown census
+//! `fenced`, `awaiting_native_dependency`, `refused`, and `cancelled`. It appears
+//! in the shutdown census
 //! only; no public health member, RPC, or application operation observes,
 //! starts, stops, or targets it. A refused step (an unreadable, unvalidated,
 //! or incarnation-mismatched fencing source, or any storage failure) records
@@ -64,6 +65,8 @@ pub(crate) enum RetentionLaneState {
     Refused,
     /// Shutdown stopped the lane.
     Cancelled,
+    /// The exact current native directory has not completed construction.
+    AwaitingNativeDependency,
 }
 
 impl RetentionLaneState {
@@ -75,6 +78,7 @@ impl RetentionLaneState {
             Self::Fenced => "fenced",
             Self::Refused => "refused",
             Self::Cancelled => "cancelled",
+            Self::AwaitingNativeDependency => "awaiting_native_dependency",
         }
     }
 
@@ -86,6 +90,7 @@ impl RetentionLaneState {
             Self::Fenced => 3,
             Self::Refused => 4,
             Self::Cancelled => 5,
+            Self::AwaitingNativeDependency => 6,
         }
     }
 
@@ -96,6 +101,7 @@ impl RetentionLaneState {
             2 => Self::Advancing,
             3 => Self::Fenced,
             5 => Self::Cancelled,
+            6 => Self::AwaitingNativeDependency,
             _ => Self::Refused,
         }
     }
@@ -363,7 +369,6 @@ impl LaneControl {
     }
 
     /// Waits for stop, an explicit wake, or `timeout`; true when stopping.
-    #[cfg(test)]
     fn pause(&self, timeout: Duration) -> bool {
         self.pause_observation_slice(timeout).0
     }
@@ -576,6 +581,20 @@ fn idle_recheck_pause(phases: &OnlineRetentionPhases) -> Duration {
     }
 }
 
+fn pause_for_native_dependency(
+    control: &LaneControl,
+    status: &RetentionLaneStatus,
+    gate_held: Duration,
+) -> bool {
+    status.note_fence(None);
+    status.set(RetentionLaneState::AwaitingNativeDependency);
+    let stopped = control.pause(RETENTION_LANE_RECHECK.max(gate_residence_rest(gate_held)));
+    if stopped {
+        status.set(RetentionLaneState::Cancelled);
+    }
+    stopped
+}
+
 fn gate_residence_rest(gate_held: Duration) -> Duration {
     gate_held
         .saturating_mul(RETENTION_LANE_REST_FACTOR)
@@ -772,8 +791,23 @@ fn run_lane(
         let (pause, mut gate_held, step_phases) =
             match lane.step_timed(retain, budget, woke_on_checkpoint) {
                 Ok((step, phases)) => {
-                    receipt_validation_pending = phases.receipt_validation_pending;
                     status.note_phases(&phases);
+                    if step
+                        == OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingNativeDependency)
+                    {
+                        // A Pending source supplies no prefix or observation
+                        // authority. Yield before those callbacks, without
+                        // retrying a failed operation or restarting its builder.
+                        if pause_for_native_dependency(
+                            control,
+                            status,
+                            Duration::from_micros(phases.gate_held_us()),
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    receipt_validation_pending = phases.receipt_validation_pending;
                     let pause = match step {
                         OnlineRetentionStep::Advanced { sequences, .. } => {
                             status.note_fence(None);
@@ -781,6 +815,9 @@ fn run_lane(
                             status.note_step(sequences);
                             Duration::ZERO
                         }
+                        OnlineRetentionStep::Held(
+                            OnlineRetentionHold::AwaitingNativeDependency,
+                        ) => RETENTION_LANE_RECHECK,
                         OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {
                             status.note_hold(2);
                             await_checkpoint = true;

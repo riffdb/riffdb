@@ -153,20 +153,6 @@ impl LocatorRetireContents for SegmentMetadata {
         }
         true
     }
-
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            first: self.first,
-            last: self.last,
-            digest: self.digest,
-            database: self.database,
-            history: self.history,
-            manifest: std::mem::take(&mut self.manifest),
-            events: std::mem::take(&mut self.events),
-            key_ownership_bytes: self.key_ownership_bytes,
-            construction_error: self.construction_error,
-        }
-    }
 }
 
 impl SegmentMetadata {

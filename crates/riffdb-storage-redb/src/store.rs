@@ -24,6 +24,9 @@ pub(crate) use provider_read_range::{ProviderSourcePageBytesV1, copy_provider_ra
 
 #[path = "store/maintenance_writer.rs"]
 mod maintenance_writer;
+#[path = "store/retention_admission.rs"]
+mod retention_admission;
+pub(crate) use retention_admission::RetentionWriteBegin;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -6065,7 +6068,9 @@ impl RedbOperationalPorts {
         source: riffdb_storage_api::ChangelogAttributionV3,
     ) -> Result<RedbWriteAccess, StorageError> {
         loop {
-            if let Some(access) = self.begin_attributed_write_inner(source, false, false, None)? {
+            if let Some(access) =
+                self.begin_attributed_write_inner(source, false, false, None, None)?
+            {
                 return Ok(access);
             }
             // Clone only the completion capability, never the checkpoint state
@@ -6110,13 +6115,14 @@ impl RedbOperationalPorts {
     ///
     /// `timing` receives the microseconds spent waiting for the writer gate
     /// and then publishing, checkpointing, and draining the journal suffix.
+    #[cfg(test)]
     pub(crate) fn begin_attributed_write_unless_checkpointing(
         &self,
         source: riffdb_storage_api::ChangelogAttributionV3,
         checkpoint_first: bool,
         timing: &mut WriteBeginTiming,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
-        self.begin_attributed_write_inner(source, checkpoint_first, true, Some(timing))
+        self.begin_attributed_write_inner(source, checkpoint_first, true, Some(timing), None)
     }
 
     fn begin_attributed_write_inner(
@@ -6125,6 +6131,7 @@ impl RedbOperationalPorts {
         checkpoint_first: bool,
         yield_to_checkpoint: bool,
         mut timing: Option<&mut WriteBeginTiming>,
+        pending_retention: Option<&mut bool>,
     ) -> Result<Option<RedbWriteAccess>, StorageError> {
         crate::changelog_v3_write::require_direct_attribution(source)?;
         use crate::outbox_stage_census::Stage;
@@ -6144,6 +6151,18 @@ impl RedbOperationalPorts {
         let publish_span = stage(Stage::PrefixPublish);
         self.shared.publish_pending_journal_prefix()?;
         drop(publish_span);
+        if let Some(pending) = pending_retention {
+            if source != riffdb_storage_api::ChangelogAttributionV3::RetentionPrune {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            if self.shared.retention_native_dependency_pending()? {
+                *pending = true;
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.drain_us = elapsed_us(gate_acquired, Instant::now());
+                }
+                return Ok(None);
+            }
+        }
         #[cfg(feature = "test-fixtures")]
         if source == riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition
             && let Some(controller) = &self.shared.test_controller
@@ -6361,6 +6380,15 @@ impl RedbOperationalPorts {
         &self,
         timing: &mut WriteBeginTiming,
     ) -> Result<RedbWriteAccess, StorageError> {
+        self.begin_deferred_maintenance_write_inner(timing, false)?
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
+    fn begin_deferred_maintenance_write_inner(
+        &self,
+        timing: &mut WriteBeginTiming,
+        yield_pending: bool,
+    ) -> Result<Option<RedbWriteAccess>, StorageError> {
         let waiting = Instant::now();
         let lease = self.shared.mutation_gate.acquire()?;
         let acquired = Instant::now();
@@ -6369,6 +6397,10 @@ impl RedbOperationalPorts {
             || self.shared.application_commit_profile != RedbCommitProfile::Standard
         {
             return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        if yield_pending && self.shared.retention_native_dependency_pending()? {
+            timing.drain_us = elapsed_us(acquired, Instant::now());
+            return Ok(None);
         }
         self.shared
             .ensure_command_derived_indexes_ready_under_mutation_lease()?;
@@ -6391,7 +6423,7 @@ impl RedbOperationalPorts {
                 LocatorAllocationClass::Maintenance,
             )?;
         timing.drain_us = elapsed_us(acquired, Instant::now());
-        Ok(RedbWriteAccess {
+        Ok(Some(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: None,
             ownership: Some(RedbWriteOwnership::ServiceAudit { _lease: lease }),
@@ -6404,7 +6436,7 @@ impl RedbOperationalPorts {
             composite_predecessor: Some(composite_predecessor),
             composite_stage: Some(RefCell::new(composite_stage)),
             command_prefix_capture: RefCell::default(),
-        })
+        }))
     }
 
     pub(crate) fn acquire_indexed_read_lease(&self) -> Result<RedbIndexedReadLease, StorageError> {

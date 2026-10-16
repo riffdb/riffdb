@@ -272,17 +272,6 @@ impl crate::locator_memory::LocatorRetireContents for SnapshotHistoryResolver {
         ));
         true
     }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            database_id: self.database_id,
-            location: std::mem::replace(
-                &mut self.location,
-                ExtentLocation::Database(PathBuf::new()),
-            ),
-            media: Arc::clone(&self.media),
-            provider: std::mem::take(&mut self.provider),
-        }
-    }
 }
 impl SnapshotHistoryResolver {
     pub(crate) fn provider_metadata_cell(

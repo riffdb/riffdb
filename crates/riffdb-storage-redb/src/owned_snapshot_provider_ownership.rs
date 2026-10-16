@@ -960,11 +960,6 @@ mod tests {
                 self.remaining = self.remaining.saturating_sub(1);
                 self.remaining == 0
             }
-            fn take_for_retirement(&mut self) -> Self {
-                Self {
-                    remaining: std::mem::take(&mut self.remaining),
-                }
-            }
         }
         let pool = NativeLocatorPool::isolated_for_tests();
         let native = ChargedLocatorAllocation::try_new(

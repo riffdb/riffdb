@@ -52,17 +52,6 @@ impl<K: LocatorFamilyMember, V: LocatorFamilyMember> LocatorRetireContents for N
         self.right.take();
         true
     }
-    fn take_for_retirement(&mut self) -> Self {
-        // Cloning handles is O(1); keeping the clones in the retirement task
-        // ensures ordinary field destruction cannot release population ownership.
-        Self {
-            key: self.key.clone(),
-            value: self.value.clone(),
-            height: self.height,
-            left: self.left.take(),
-            right: self.right.take(),
-        }
-    }
 }
 
 pub(crate) struct LocatorTree<K: LocatorFamilyMember, V: LocatorFamilyMember> {

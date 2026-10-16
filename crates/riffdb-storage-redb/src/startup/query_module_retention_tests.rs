@@ -587,3 +587,279 @@ fn published_retention_preserves_thirty_two_provider_source_pins() {
     }
     assert_eq!(budget.observation().unwrap().owned_bytes, 0);
 }
+
+/// Publish a fresh, admitted construction owner over unchanged genuine
+/// command history. The empty engine transaction changes no authoritative
+/// row, receipt, allocator or watermark; only its derived source owner is new.
+/// The test controls the already-admitted construction handoff explicitly.
+fn pending_retention_fixture_source(
+    ports: &RedbOperationalPorts,
+) -> (
+    crate::store::RedbReadAccess,
+    crate::locator_capability::LocatorCapability,
+) {
+    use crate::locator_memory::LocatorAllocationClass;
+    use crate::store::RedbReadAccess;
+
+    let original = ports.begin_composite_read().unwrap();
+    assert!(matches!(
+        &original,
+        RedbReadAccess::Current(_) | RedbReadAccess::Durable(_)
+    ));
+    assert_eq!(ports.shared.journal_suffix_activity().unwrap().1, 0);
+    original.locator_capability().require_complete().unwrap();
+    let (database, incarnation, registry) = original.locator_capability().source_binding().unwrap();
+    let before_head = original.application_frontier().unwrap();
+    let pending =
+        crate::locator_capability::LocatorCapability::try_pending(LocatorAllocationClass::Ordinary)
+            .unwrap();
+    pending
+        .bind_source(database, incarnation, registry)
+        .unwrap();
+    let store = crate::RedbStore {
+        shared: Arc::clone(&ports.shared),
+    };
+    let lease = store.acquire_mutation_lease().unwrap();
+    let transaction = ports.shared.database.begin_write().unwrap();
+    ports
+        .shared
+        .commit_with_source_footprint_and_locator(
+            transaction,
+            crate::source_continuation::SourceContinuationFootprint::unknown(),
+            pending.clone(),
+        )
+        .unwrap();
+    drop(lease);
+    let captured = ports.begin_composite_read().unwrap();
+    assert!(captured.locator_capability().same_construction(&pending));
+    assert!(pending.is_pending());
+    assert_eq!(captured.application_frontier().unwrap(), before_head);
+    assert!(pending.request_build());
+    (captured, pending)
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn eligible_prune_yields_for_healthy_pending_then_advances_after_original_completion() {
+    use crate::journal::JournalTable;
+    use crate::locator_memory::LocatorAllocationClass;
+
+    let (_scope, ports, _contract) = successor_fixture();
+    let (captured, pending) = pending_retention_fixture_source(&ports);
+    let prepared =
+        crate::retention::prepared::PreparedPrune::prepare(&ports, NonZeroU64::MIN, 1).unwrap();
+    assert!(
+        prepared.is_ok(),
+        "the genuine first command is eligible for pruning"
+    );
+    drop(prepared);
+    let before_head = captured.application_frontier().unwrap();
+    let watermark_key = crate::layout::META_RETENTION_WATERMARK.as_bytes();
+    let before_watermark = captured
+        .read_value(JournalTable::Meta, watermark_key)
+        .unwrap();
+    // Construct the real exact directory with the original reserved owner, but
+    // hold its publication at the existing completion predicate. No sleeping,
+    // actor retry or uncontrolled background scheduling chooses this order.
+    let (indexes, _) = crate::transient::TransientIndexes::rebuild_from_access_with_owner(
+        &captured,
+        pending.construction_owner().unwrap(),
+        LocatorAllocationClass::Ordinary,
+        || false,
+    )
+    .unwrap();
+    indexes
+        .locator_generation()
+        .unwrap()
+        .validate_source(&captured)
+        .unwrap();
+    let lane = ports.online_retention_lane();
+    let (lane_step, phases) = lane
+        .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+        .unwrap();
+    assert_eq!(
+        lane_step,
+        crate::OnlineRetentionStep::Held(crate::OnlineRetentionHold::AwaitingNativeDependency)
+    );
+    assert_eq!(phases, crate::OnlineRetentionPhases::default());
+    let initial = ports.online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN);
+    let unchanged = ports.begin_composite_read().unwrap();
+    assert!(unchanged.locator_capability().same_construction(&pending));
+    assert_eq!(unchanged.application_frontier().unwrap(), before_head);
+    assert_eq!(
+        unchanged
+            .read_value(JournalTable::Meta, watermark_key)
+            .unwrap(),
+        before_watermark,
+        "Pending admission cannot advance the watermark"
+    );
+    drop(unchanged);
+    ports
+        .shared
+        .complete_locator_indexes(&captured, indexes)
+        .unwrap();
+    pending.release_build_request();
+    pending.require_complete().unwrap();
+    assert!(matches!(
+        ports
+            .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+            .unwrap(),
+        crate::OnlineRetentionStep::Advanced {
+            through: 1,
+            sequences: 1
+        }
+    ));
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::first())
+            .unwrap_err()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::HistoryPruned
+    );
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(2).unwrap())
+            .unwrap()
+            .is_some()
+    );
+    // Keep this assertion last: the unchanged runtime RED still releases the
+    // controlled construction owner and proves completion permits real progress.
+    // The implementation must supply an explicit native-dependency hold, never
+    // disguise this as a checkpoint/fence or retry arbitrary storage errors.
+    assert!(
+        matches!(
+            initial,
+            Ok(crate::OnlineRetentionStep::Held(
+                crate::OnlineRetentionHold::AwaitingNativeDependency
+            ))
+        ),
+        "healthy Pending is a pre-admission hold, not a terminal lane error: {initial:?}"
+    );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn eligible_prune_keeps_invalid_locator_corruption_as_a_terminal_error() {
+    use crate::journal::JournalTable;
+
+    let (_scope, ports, _contract) = successor_fixture();
+    let (captured, pending) = pending_retention_fixture_source(&ports);
+    let prepared =
+        crate::retention::prepared::PreparedPrune::prepare(&ports, NonZeroU64::MIN, 1).unwrap();
+    assert!(
+        prepared.is_ok(),
+        "the same genuine prune is otherwise eligible"
+    );
+    drop(prepared);
+    let watermark_key = crate::layout::META_RETENTION_WATERMARK.as_bytes();
+    let before = captured
+        .read_value(JournalTable::Meta, watermark_key)
+        .unwrap();
+    pending.invalidate(riffdb_storage_api::StorageErrorKind::CorruptData);
+    pending.release_build_request();
+    let error = ports
+        .online_retention_step(NonZeroU64::MIN, NonZeroU64::MIN)
+        .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        ports
+            .begin_composite_read()
+            .unwrap()
+            .read_value(JournalTable::Meta, watermark_key)
+            .unwrap(),
+        before
+    );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn retention_admission_rechecks_source_changed_after_complete_precheck() {
+    let (_scope, ports, _contract) = successor_fixture();
+    assert!(!ports.shared.retention_native_dependency_pending().unwrap());
+    // The deterministic schedule publishes a different actual owner after
+    // the off-gate check and before either write entry acquires its lease.
+    let (_captured, pending) = pending_retention_fixture_source(&ports);
+    let mut timing = crate::store::WriteBeginTiming::default();
+    assert!(
+        ports
+            .begin_deferred_retention_write(&mut timing)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        ports
+            .begin_retention_write_unless_checkpointing(false, &mut timing,)
+            .unwrap(),
+        crate::store::RetentionWriteBegin::AwaitingNativeDependency
+    ));
+    assert!(pending.is_pending());
+    assert!(
+        !pending.request_build(),
+        "retention must not replace or restart the original owner"
+    );
+    pending.release_build_request();
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn retention_admission_rejects_invalid_source_changed_after_pending_precheck() {
+    let (_scope, ports, _contract) = successor_fixture();
+    let (_captured, pending) = pending_retention_fixture_source(&ports);
+    assert!(ports.shared.retention_native_dependency_pending().unwrap());
+    pending.invalidate(riffdb_storage_api::StorageErrorKind::CorruptData);
+    pending.release_build_request();
+    let mut timing = crate::store::WriteBeginTiming::default();
+    assert_eq!(
+        ports
+            .begin_deferred_retention_write(&mut timing)
+            .err()
+            .unwrap()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        ports
+            .begin_retention_write_unless_checkpointing(false, &mut timing,)
+            .err()
+            .unwrap()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        ports
+            .online_retention_lane()
+            .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+            .unwrap_err()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::CorruptData
+    );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn retention_pending_hold_does_not_hide_write_fencing() {
+    let (_scope, ports, _contract) = successor_fixture();
+    let (_captured, pending) = pending_retention_fixture_source(&ports);
+    ports.shared.fence_writes();
+    assert_eq!(
+        ports
+            .online_retention_lane()
+            .step_timed(NonZeroU64::MIN, NonZeroU64::MIN, false)
+            .unwrap_err()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
+    );
+    let mut timing = crate::store::WriteBeginTiming::default();
+    assert_eq!(
+        ports
+            .begin_deferred_retention_write(&mut timing)
+            .err()
+            .unwrap()
+            .kind(),
+        riffdb_storage_api::StorageErrorKind::Unavailable
+    );
+    pending.release_build_request();
+}

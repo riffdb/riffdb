@@ -747,6 +747,7 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
         RetentionLaneState::Fenced,
         RetentionLaneState::Refused,
         RetentionLaneState::Cancelled,
+        RetentionLaneState::AwaitingNativeDependency,
     ]
     .map(RetentionLaneState::as_str);
     assert_eq!(
@@ -757,7 +758,8 @@ fn retention_lane_states_are_closed_and_shutdown_cancels_the_lane() {
             "advancing",
             "fenced",
             "refused",
-            "cancelled"
+            "cancelled",
+            "awaiting_native_dependency"
         ]
     );
     let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
@@ -1304,5 +1306,45 @@ fn read_only_readiness_failure_never_advances_a_page_or_changes_checkpoint_autho
     assert_eq!(
         error.kind(),
         riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+}
+
+// req: STO-030, STO-031, STO-032, REC-001, END-008
+#[test]
+fn native_dependency_hold_uses_existing_wake_and_cancellation_without_progress() {
+    let status = RetentionLaneStatus::new(RetentionLaneState::Fenced);
+    status.note_fence(Some(RetentionFenceBinding::ProjectionDurableFrontier));
+    let control = LaneControl::default();
+    // Queue the wake before entering the condition variable. The actual
+    // Pending pause must consume it without a sleep or lost-wakeup race.
+    control.wake();
+    assert!(!pause_for_native_dependency(
+        &control,
+        &status,
+        Duration::from_millis(100)
+    ));
+    assert_eq!(status.state(), RetentionLaneState::AwaitingNativeDependency);
+    assert!(!status.state().is_terminal());
+    assert_eq!(
+        RetentionLaneState::from_code(status.state().code()),
+        status.state()
+    );
+    let observation = status.observation();
+    assert_eq!(observation.fence, None);
+    assert_eq!(observation.steps, 0);
+    assert_eq!(observation.sequences, 0);
+    assert_eq!(observation.holds, [0; 4]);
+    control.stop();
+    assert!(pause_for_native_dependency(
+        &control,
+        &status,
+        Duration::from_secs(1)
+    ));
+    assert_eq!(status.state(), RetentionLaneState::Cancelled);
+    status.set(RetentionLaneState::AwaitingNativeDependency);
+    assert_eq!(
+        status.state(),
+        RetentionLaneState::Cancelled,
+        "shutdown stays terminal"
     );
 }

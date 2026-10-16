@@ -89,22 +89,6 @@ impl LocatorRetireContents for Completion {
         self.generation.take();
         true
     }
-
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            _owner: self._owner.clone(),
-            generation: std::mem::take(&mut self.generation),
-            build_started: AtomicBool::new(self.build_started.load(Ordering::Acquire)),
-            binding: std::mem::take(&mut self.binding),
-            provider: Mutex::new(
-                self.provider
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take(),
-            ),
-            changed: std::sync::Condvar::new(),
-        }
-    }
 }
 
 #[derive(Clone)]

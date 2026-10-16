@@ -163,8 +163,6 @@ pub(crate) trait LocatorRetireContents: Send + Sync + 'static {
     /// Destroy at most one bounded ownership item. Return true only when no
     /// population-sized destruction remains in this value's ordinary Drop.
     fn retire_one(&mut self) -> bool;
-    /// Move population ownership without allocation, leaving a bounded empty value.
-    fn take_for_retirement(&mut self) -> Self;
     /// Only a final generation owner may close an epoch: its existing quota
     /// reservation bounds the fixed epoch ring through physical retirement.
     fn is_retirement_barrier(&self) -> bool {
@@ -720,14 +718,14 @@ impl<T: LocatorRetireContents> RetirementTask for AllocationTask<T> {
     }
 }
 struct AllocationOwner<T: LocatorRetireContents> {
-    value: T,
+    // The live value resides only in its original precreated retirement task.
+    // A live Arc always owns both task and slot; final Drop moves that Box.
     task: Option<Box<AllocationTask<T>>>,
     slot: Option<RetirementSlot>,
 }
 impl<T: LocatorRetireContents> Drop for AllocationOwner<T> {
     fn drop(&mut self) {
-        if let (Some(slot), Some(mut task)) = (self.slot.take(), self.task.take()) {
-            task.value = Some(self.value.take_for_retirement());
+        if let (Some(slot), Some(task)) = (self.slot.take(), self.task.take()) {
             slot.enqueue(task);
         }
     }
@@ -745,8 +743,18 @@ impl<T: LocatorRetireContents + fmt::Debug> fmt::Debug for ChargedLocatorAllocat
 }
 impl<T: LocatorRetireContents> Deref for ChargedLocatorAllocation<T> {
     type Target = T;
+    #[expect(
+        clippy::expect_used,
+        reason = "safe shared Arc ownership retains the private retirement value until final release"
+    )]
     fn deref(&self) -> &T {
-        &self.0.value
+        // Only final Arc destruction takes the private task. A safe shared
+        // borrow keeps this Arc alive and cannot overlap queued mutation.
+        self.0
+            .task
+            .as_ref()
+            .and_then(|task| task.value.as_ref())
+            .expect("live locator allocation retains its retirement value")
     }
 }
 impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
@@ -803,9 +811,8 @@ impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
         let slot = pool.reserve_slot(class)?;
         let value = construct()?;
         Ok(Self(Arc::new(AllocationOwner {
-            value,
             task: Some(Box::new(AllocationTask {
-                value: None,
+                value: Some(value),
                 _charge: charge,
             })),
             slot: Some(slot),
@@ -822,11 +829,6 @@ impl LocatorRetireContents for KeyAllocation {
         // This separately charged physical allocation consumes its own step.
         drop(std::mem::take(&mut self.bytes));
         true
-    }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            bytes: std::mem::take(&mut self.bytes),
-        }
     }
 }
 #[derive(Clone, Debug)]
@@ -899,18 +901,6 @@ impl LocatorRetireContents for OwnerContents {
         // The reaper first removes this epoch's barrier, then physically drops
         // the task. Quota and provider ownership remain until that Drop.
         true
-    }
-    fn take_for_retirement(&mut self) -> Self {
-        let result = Self {
-            budget: Arc::clone(&self.budget),
-            pool: Arc::clone(&self.pool),
-            class: self.class,
-            released: self.released,
-            provider_charge: Mutex::new(lock(&self.provider_charge).take()),
-            provider_control_charge: Mutex::new(lock(&self.provider_control_charge).take()),
-        };
-        self.released = true;
-        result
     }
     fn is_retirement_barrier(&self) -> bool {
         // The generation quota, as well as any provider charge, follows all

@@ -74,7 +74,15 @@ before operation or audit work is accepted, can return without a durable service
 audit row. Once work is admitted, the existing audit and failure-containment
 rules apply. Invalid construction fails closed and affects authoritative health.
 Daemon Ready, pre-bootstrap health, recovery-only authority and the recovery
-timing limits retain their existing boundaries. See [ADR-0315](../../adr/0315-request-scoped-native-dependency-admission-before-durable-audit.md).
+timing limits retain their existing boundaries.
+
+Online retention reports `awaiting_native_dependency` while its exact current
+command directory is Pending. It admits no prune, prefix refresh, or dependent
+observation work in that state, and rechecks through its existing cancellable
+backoff. It never restarts construction to make retention progress. The native
+writer checks the current source again under its lease before admitting a prune;
+invalid construction and actual storage failures still stop the lane as
+`refused`. A Pending hold does not count as retention progress.
 
 Restore normalizes retained event-consumer leases to the restored incarnation
 before readiness. This metadata recovery can commit while command locators are

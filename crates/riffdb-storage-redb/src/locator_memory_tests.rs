@@ -14,15 +14,9 @@ impl LocatorRetireContents for Entries {
         }
         self.values.is_empty()
     }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            values: std::mem::take(&mut self.values),
-            retired: Arc::clone(&self.retired),
-        }
-    }
 }
 struct DeferredChild {
-    child: Option<ChargedLocatorAllocation<Entries>>,
+    _child: Option<ChargedLocatorAllocation<Entries>>,
 }
 impl LocatorRetireContents for DeferredChild {
     fn retire_one(&mut self) -> bool {
@@ -30,18 +24,15 @@ impl LocatorRetireContents for DeferredChild {
         // retire_one returns and after the owner's barrier was enqueued.
         true
     }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            child: self.child.take(),
-        }
-    }
 }
 fn deferred_child(
     pool: &Arc<NativeLocatorPool>,
     child: ChargedLocatorAllocation<Entries>,
 ) -> ChargedLocatorAllocation<DeferredChild> {
     ChargedLocatorAllocation::try_new(pool, LocatorAllocationClass::Ordinary, 0, || {
-        Ok(DeferredChild { child: Some(child) })
+        Ok(DeferredChild {
+            _child: Some(child),
+        })
     })
     .unwrap()
 }
@@ -495,16 +486,11 @@ fn locator_epoch_is_reusable_before_owner_quota_release_admits_a_replacement() {
 #[test]
 fn locator_unwinding_task_keeps_descendants_reclaimable_and_restores_context() {
     struct UnwindingParent {
-        child: Option<ChargedLocatorAllocation<Entries>>,
+        _child: Option<ChargedLocatorAllocation<Entries>>,
     }
     impl LocatorRetireContents for UnwindingParent {
         fn retire_one(&mut self) -> bool {
             panic!("deterministic internal retirement failure");
-        }
-        fn take_for_retirement(&mut self) -> Self {
-            Self {
-                child: self.child.take(),
-            }
         }
     }
     let pool = NativeLocatorPool::isolated_for_tests();
@@ -517,7 +503,7 @@ fn locator_unwinding_task_keeps_descendants_reclaimable_and_restores_context() {
     let parent =
         ChargedLocatorAllocation::try_new(&pool, LocatorAllocationClass::Ordinary, 0, || {
             Ok(UnwindingParent {
-                child: Some(entries(&pool, 600, &retired)),
+                _child: Some(entries(&pool, 600, &retired)),
             })
         })
         .unwrap();
@@ -838,4 +824,119 @@ fn independent_rebuild_families_keep_foreign_graphs_and_global_scratch_separate(
     drop(second);
     assert_eq!(first_budget.observation().unwrap().owned_bytes, 0);
     assert_eq!(second_budget.observation().unwrap().owned_bytes, 0);
+}
+
+#[test]
+fn locator_single_live_value_fits_admitted_inline_payload_and_retires_once() {
+    const INLINE_BYTES: usize = 64 * 1024;
+    const ORDINARY_LIMIT: usize = 1024 * 1024;
+    const ONE_VALUE_HEADROOM: usize = 96 * 1024;
+    struct InlinePayload {
+        bytes: [u8; INLINE_BYTES],
+        remaining: usize,
+        retirement_calls: Arc<AtomicUsize>,
+        physical_drops: Arc<AtomicUsize>,
+    }
+    impl LocatorRetireContents for InlinePayload {
+        fn retire_one(&mut self) -> bool {
+            self.retirement_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.remaining -= 1;
+            self.remaining == 0
+        }
+    }
+    impl Drop for InlinePayload {
+        fn drop(&mut self) {
+            self.physical_drops.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+    }
+    let pool = NativeLocatorPool::new(2 * ORDINARY_LIMIT, ORDINARY_LIMIT);
+    let warm_retired = Arc::new(AtomicUsize::new(0));
+    drop(entries(&pool, 1, &warm_retired));
+    drain(&pool);
+    let warmed_baseline = pool.charged_bytes();
+    let owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    let provider = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let provider_bytes = ONE_VALUE_HEADROOM as u64;
+    owner
+        .attach_provider_charge(provider.reserve(provider_bytes).unwrap().commit().unwrap())
+        .unwrap();
+    let ordinary_before = lock(&pool.budget.state).ordinary;
+    let pressure = pool
+        .admit(
+            ORDINARY_LIMIT - ordinary_before - ONE_VALUE_HEADROOM,
+            LocatorAllocationClass::Ordinary,
+        )
+        .unwrap();
+    let pressure_bytes = pressure.bytes();
+    let constructor_calls = AtomicUsize::new(0);
+    let retirement_calls = Arc::new(AtomicUsize::new(0));
+    let physical_drops = Arc::new(AtomicUsize::new(0));
+    // A real non-Clone inline value fits the fixed allowance once. Reserving a
+    // second inline T in its empty retirement task must not consume the budget.
+    let allocation =
+        ChargedLocatorAllocation::try_new(&pool, LocatorAllocationClass::Ordinary, 0, || {
+            constructor_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(InlinePayload {
+                bytes: [0x5a; INLINE_BYTES],
+                remaining: LOCATOR_RETIRE_QUOTA + 1,
+                retirement_calls: Arc::clone(&retirement_calls),
+                physical_drops: Arc::clone(&physical_drops),
+            })
+        })
+        .expect("one physical inline value must fit without a second T allocation");
+    assert_eq!(constructor_calls.load(AtomicOrdering::SeqCst), 1);
+    assert!(std::mem::size_of::<AllocationOwner<InlinePayload>>() < INLINE_BYTES);
+    assert!(allocation.retained_charge_bound() >= std::mem::size_of::<InlinePayload>());
+    assert!(allocation.bytes.iter().all(|byte| *byte == 0x5a));
+    let alias = allocation.clone();
+    drop(allocation);
+    assert!(alias.bytes.iter().all(|byte| *byte == 0x5a));
+    assert_eq!(lock(&pool.retirement.state).queued_count, 0);
+    assert_eq!(physical_drops.load(AtomicOrdering::SeqCst), 0);
+    drop(alias);
+    assert_eq!(lock(&pool.retirement.state).queued_count, 1);
+    assert_eq!(retirement_calls.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(physical_drops.load(AtomicOrdering::SeqCst), 0);
+    drop(owner);
+    assert_eq!(provider.observation().unwrap().owned_bytes, provider_bytes);
+    assert_eq!(lock(&pool.budget.state).owners, 1);
+    assert!(pool.drain_retired_step());
+    assert!(retirement_calls.load(AtomicOrdering::SeqCst) <= LOCATOR_RETIRE_QUOTA);
+    assert_eq!(physical_drops.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(provider.observation().unwrap().owned_bytes, provider_bytes);
+    let mut steps = 1;
+    while pool.drain_retired_step() {
+        steps += 1;
+        assert!(
+            steps <= 4,
+            "one inline value and its barrier must finish bounded retirement"
+        );
+    }
+    assert_eq!(
+        retirement_calls.load(AtomicOrdering::SeqCst),
+        LOCATOR_RETIRE_QUOTA + 1
+    );
+    assert_eq!(physical_drops.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(constructor_calls.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(provider.observation().unwrap().owned_bytes, 0);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    assert_eq!(pool.charged_bytes(), warmed_baseline + pressure_bytes);
+    let free_before = lock(&pool.retirement.state).free;
+    let cancelled = ChargedLocatorAllocation::<InlinePayload>::try_new(
+        &pool,
+        LocatorAllocationClass::Ordinary,
+        0,
+        || {
+            constructor_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(unavailable())
+        },
+    );
+    assert!(cancelled.is_err());
+    assert_eq!(constructor_calls.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(physical_drops.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(lock(&pool.retirement.state).queued_count, 0);
+    assert_eq!(lock(&pool.retirement.state).free, free_before);
+    assert_eq!(pool.charged_bytes(), warmed_baseline + pressure_bytes);
+    drop(pressure);
+    assert_eq!(pool.charged_bytes(), warmed_baseline);
 }

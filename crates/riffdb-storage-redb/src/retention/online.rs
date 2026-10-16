@@ -14,7 +14,7 @@ use std::sync::Arc;
 use riffdb_storage_api::StoredCommandSegmentV1;
 
 use super::*;
-use crate::store::{RedbOperationalPorts, WriteBeginTiming, elapsed_us};
+use crate::store::{RedbOperationalPorts, RetentionWriteBegin, WriteBeginTiming, elapsed_us};
 use crate::transient::TransientIndexDelta;
 
 #[path = "online/prefix_refresh.rs"]
@@ -49,6 +49,9 @@ pub enum OnlineRetentionHold {
     /// background checkpoint to materialize it rather than drain it under the
     /// writer gate; retry shortly.
     AwaitingCheckpoint,
+    /// The exact current command directory is still being constructed. No
+    /// retention write was admitted; recheck without restarting construction.
+    AwaitingNativeDependency,
 }
 
 /// Microsecond phase durations of one online retention step (WP-811
@@ -464,6 +467,12 @@ impl RedbOnlineRetentionLane {
         max_sequences: NonZeroU64,
         after_checkpoint: bool,
     ) -> Result<(OnlineRetentionStep, OnlineRetentionPhases), StorageError> {
+        if self.shared.retention_native_dependency_pending()? {
+            return Ok((
+                OnlineRetentionStep::Held(OnlineRetentionHold::AwaitingNativeDependency),
+                OnlineRetentionPhases::default(),
+            ));
+        }
         // Independent accounting capture belongs to the worker's observation
         // callbacks. A plain retention step must progress without that owner.
         self.physical_bytes
@@ -659,17 +668,22 @@ impl RedbOperationalPorts {
             }
         };
         let mut begin = WriteBeginTiming::default();
-        let opened = self.begin_attributed_write_unless_checkpointing(
-            riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
-            materialize_suffix,
-            &mut begin,
-        );
+        let opened =
+            self.begin_retention_write_unless_checkpointing(materialize_suffix, &mut begin);
         phases.gate_wait_us = begin.gate_wait_us;
         phases.drain_us = begin.drain_us;
-        let Some(access) = opened? else {
-            return Ok(OnlineRetentionStep::Held(
-                OnlineRetentionHold::CheckpointInFlight,
-            ));
+        let access = match opened? {
+            RetentionWriteBegin::Ready(access) => access,
+            RetentionWriteBegin::CheckpointInFlight => {
+                return Ok(OnlineRetentionStep::Held(
+                    OnlineRetentionHold::CheckpointInFlight,
+                ));
+            }
+            RetentionWriteBegin::AwaitingNativeDependency => {
+                return Ok(OnlineRetentionStep::Held(
+                    OnlineRetentionHold::AwaitingNativeDependency,
+                ));
+            }
         };
         self.online_retention_step_with(access, retain_sequences, allowance, phases)
     }
@@ -691,10 +705,15 @@ impl RedbOperationalPorts {
         let waiting = std::time::Instant::now();
         phases.preplan_us = elapsed_us(preparing, waiting);
         let mut begin = WriteBeginTiming::default();
-        let access = self.begin_deferred_maintenance_write(&mut begin)?;
+        let opened = self.begin_deferred_retention_write(&mut begin);
         let validating = std::time::Instant::now();
         phases.gate_wait_us = begin.gate_wait_us;
         phases.drain_us = begin.drain_us;
+        let Some(access) = opened? else {
+            return Ok(OnlineRetentionStep::Held(
+                OnlineRetentionHold::AwaitingNativeDependency,
+            ));
+        };
         let read = self
             .shared
             .database

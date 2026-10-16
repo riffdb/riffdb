@@ -114,15 +114,6 @@ impl LocatorRetireContents for SourceMutations {
         self.rows.pop();
         self.rows.is_empty()
     }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            rows: std::mem::take(&mut self.rows),
-            payload_bytes: self.payload_bytes,
-            construction_pool: Arc::clone(&self.construction_pool),
-            class: self.class,
-            provider: std::mem::take(&mut self.provider),
-        }
-    }
 }
 impl SourceMutations {
     pub(crate) fn try_new(
@@ -243,12 +234,6 @@ impl LocatorRetireContents for SourceAllocationControl {
             allocation.release();
         }
         true
-    }
-    fn take_for_retirement(&mut self) -> Self {
-        Self {
-            allocation: std::mem::take(&mut self.allocation),
-            provider: std::mem::take(&mut self.provider),
-        }
     }
 }
 type SourceControl = ChargedLocatorAllocation<SourceAllocationControl>;
