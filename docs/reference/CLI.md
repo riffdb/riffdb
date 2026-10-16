@@ -751,6 +751,7 @@ Commands:
   scrub      Requests the complete offline storage validation pass. It takes the database offline, validates it, and reopens it; observe the printed operation with `riffdb backup operation`
   preflight  Compares the retained format identity without opening the database
   upgrade    Runs the sole manifest-authorized offline transition from a verified backup
+  compact    Compacts freed pages in a closed database file and lowers its on-disk high-water mark
 
 Options:
       --config <PATH>
@@ -3050,6 +3051,24 @@ Options:
       --config <PATH>
       --database-path <PATH>
       --backup <BACKUP_DIRECTORY>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb storage compact`
+
+```text
+Compacts freed pages in a closed database file and lowers its on-disk high-water mark
+
+Usage: riffdb storage compact [OPTIONS] --database-path <PATH>
+
+Options:
+      --config <PATH>
+      --database-path <PATH>
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --output <human|json>                [possible values: human, json]

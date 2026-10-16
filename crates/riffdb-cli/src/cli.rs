@@ -1511,6 +1511,11 @@ pub(crate) enum StorageCommand {
         #[arg(long, value_name = "BACKUP_DIRECTORY")]
         backup: OsString,
     },
+    /// Compacts freed pages in a closed database file and lowers its on-disk high-water mark.
+    Compact {
+        #[arg(long, value_name = "PATH")]
+        database_path: OsString,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2087,6 +2092,21 @@ mod tests {
             upgrade.command,
             TopLevel::Storage {
                 command: StorageCommand::Upgrade { .. }
+            }
+        ));
+
+        let compact = Cli::try_parse_from([
+            "riffdb",
+            "storage",
+            "compact",
+            "--database-path",
+            "/home/operator/data/application.redb",
+        ])
+        .expect("storage compact");
+        assert!(matches!(
+            compact.command,
+            TopLevel::Storage {
+                command: StorageCommand::Compact { .. }
             }
         ));
     }

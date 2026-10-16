@@ -110,6 +110,7 @@ pub(crate) enum CommandIdentity {
     StorageScrub,
     StoragePreflight,
     StorageUpgrade,
+    StorageCompact,
     RetentionStatus,
     RetentionHoldAdd,
     RetentionHoldRemove,
@@ -208,6 +209,7 @@ impl CommandIdentity {
             Self::StorageScrub => "storage.scrub",
             Self::StoragePreflight => "storage.preflight",
             Self::StorageUpgrade => "storage.upgrade",
+            Self::StorageCompact => "storage.compact",
             Self::RetentionStatus => "retention.status",
             Self::RetentionHoldAdd => "retention.hold.add",
             Self::RetentionHoldRemove => "retention.hold.remove",
@@ -4081,6 +4083,7 @@ mod tests {
             "storage.scrub" => CommandIdentity::StorageScrub,
             "storage.preflight" => CommandIdentity::StoragePreflight,
             "storage.upgrade" => CommandIdentity::StorageUpgrade,
+            "storage.compact" => CommandIdentity::StorageCompact,
             "demo.budget" => CommandIdentity::DemoBudget,
             _ => panic!("unknown command {command}"),
         }

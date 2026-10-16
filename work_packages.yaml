@@ -31522,4 +31522,12 @@ work_packages:
     scale: Offline compaction operates strictly on closed local files without background daemons or unbounded memory buffers.
   human_review_triggers:
   - Offline compaction corrupts retained commit history, drops clean-close markers, or alters database identity.
-
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [STO-001, STO-010, STO-012, DX-014]
+    evidence: cargo test -p riffdb-storage-redb --lib offline_storage_compact_reclaims_freed_pages_and_preserves_authoritative_state
+    decision: Added RedbOfflineCompaction in riffdb-storage-redb and riffdb storage compact in riffdb-cli, removed the three resolved limitations from docs/known-limitations.md, and updated the handbook pages.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

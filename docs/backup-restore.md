@@ -680,3 +680,20 @@ Ordinary backup restore retains its required source compatibility transformation
 The final receipt-stamped source proof closes without granting a second staged
 authorization or source activation; fresh ordinary post-publication startup still
 owns its existing compatibility and readiness checks.
+
+## Offline storage compaction
+
+After offline or online retention pruning deletes historical commit, event, and
+outbox rows, the freed pages remain inside the `redb` file for internal reuse.
+To compact those freed pages and lower the file's on-disk high-water mark while
+`riffdbd` is stopped, run:
+
+```bash
+riffdb storage compact --database-path /var/lib/riffdb/database.redb
+```
+
+Compaction verifies the database format, journal rebase, retained V3 history,
+and tombstone chain before and after running `redb::Database::compact()`,
+compacts the derived sidecar when present, and reports `database_id`,
+`bytes_before`, `bytes_after`, `reclaimed_bytes`, `compacted`,
+`retention_watermark_sequence`, and `history_incarnation`.

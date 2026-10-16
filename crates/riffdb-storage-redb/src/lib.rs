@@ -56,6 +56,7 @@ mod columnar_projection_control;
 mod command_authority;
 mod command_prefix;
 mod command_segment_preparation;
+mod compaction;
 mod composite_view;
 mod consumer;
 mod consumer_ports;
@@ -408,4 +409,5 @@ pub use administration::{
     OfflineCapabilityInspectionV1, OfflineCapabilityListPageV1, OfflineCapabilitySummaryV1,
     RedbOfflineCapabilityInventory,
 };
+pub use compaction::{MAX_COMPACTION_PASSES, RedbOfflineCompaction, StorageCompactionResultV1};
 pub use owned_snapshot::RedbOwnedSnapshot;

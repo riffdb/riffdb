@@ -13363,6 +13363,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Storage {
             command: StorageCommand::Upgrade { .. },
         } => CommandIdentity::StorageUpgrade,
+        TopLevel::Storage {
+            command: StorageCommand::Compact { .. },
+        } => CommandIdentity::StorageCompact,
         TopLevel::Retention {
             command: RetentionCommand::Status { .. },
         } => CommandIdentity::RetentionStatus,
@@ -13519,6 +13522,51 @@ fn storage_command(command: StorageCommand) -> Terminal {
                     )
                 }
             }
+        }
+        StorageCommand::Compact { database_path } => {
+            let identity = CommandIdentity::StorageCompact;
+            if validate_path(&database_path).is_err() {
+                return local_error(identity, "path_invalid", "an input path is invalid");
+            }
+            match riffdb_storage_redb::RedbOfflineCompaction::bind(Path::new(&database_path))
+                .compact()
+            {
+                Ok(result) => success(
+                    identity,
+                    "compacted",
+                    &StorageCompactionView::from(result),
+                ),
+                Err(_) => local_error(
+                    identity,
+                    "storage_compact_failed",
+                    "offline storage compaction failed",
+                ),
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StorageCompactionView {
+    database_id: String,
+    bytes_before: u64,
+    bytes_after: u64,
+    reclaimed_bytes: u64,
+    compacted: bool,
+    retention_watermark_sequence: u64,
+    history_incarnation: u64,
+}
+
+impl From<riffdb_storage_redb::StorageCompactionResultV1> for StorageCompactionView {
+    fn from(result: riffdb_storage_redb::StorageCompactionResultV1) -> Self {
+        Self {
+            database_id: result.database_id.to_string(),
+            bytes_before: result.bytes_before,
+            bytes_after: result.bytes_after,
+            reclaimed_bytes: result.reclaimed_bytes,
+            compacted: result.compacted,
+            retention_watermark_sequence: result.retention_watermark_sequence,
+            history_incarnation: result.history_incarnation,
         }
     }
 }
@@ -17838,5 +17886,53 @@ query GetDocument(
             show_json["result"]["capability"]["permissions"],
             serde_json::json!(["read_health"])
         );
+    }
+
+    #[test]
+    // req: STO-001, STO-010, STO-012, DX-014
+    fn storage_compact_cli_compacts_database_and_reports_metrics() {
+        let scratch =
+            tempfile::TempDir::with_prefix("riffdb-cli-storage-compact-").expect("scratch dir");
+        let db_path = scratch.path().join("database.redb");
+        let id = riffdb_types::DatabaseId::from_unix_milliseconds_and_random(
+            1_700_000_000_000,
+            [0x61; 10],
+        )
+        .expect("database ID");
+        riffdb_storage_redb::RedbOfflineCompaction::initialize_quiescent_for_test(&db_path, id)
+            .expect("initialize database");
+
+        let cli = crate::cli::Cli::parse_from([
+            "riffdb",
+            "storage",
+            "compact",
+            "--database-path",
+            db_path.to_str().expect("db path"),
+        ]);
+        assert_eq!(
+            command_identity(&cli.command),
+            CommandIdentity::StorageCompact
+        );
+        let TopLevel::Storage { command } = cli.command else {
+            panic!("expected storage compact command");
+        };
+        let terminal = storage_command(command);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::SUCCESS
+        );
+        assert!(stderr.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&stdout).expect("compact JSON");
+        assert_eq!(json["command"], "storage.compact");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["result"]["database_id"], id.to_string());
+        assert!(json["result"]["bytes_before"].as_u64().is_some());
+        assert!(json["result"]["bytes_after"].as_u64().is_some());
+        assert!(json["result"]["reclaimed_bytes"].as_u64().is_some());
+        assert!(json["result"]["compacted"].as_bool().is_some());
+        assert_eq!(json["result"]["retention_watermark_sequence"], 0);
+        assert_eq!(json["result"]["history_incarnation"], 1);
     }
 }
