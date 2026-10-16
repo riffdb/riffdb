@@ -27,5 +27,11 @@ reserved:
     note: >-
       Main owns the capability inventory, decision-arm workflow and offline
       compaction record. Its merge immediately follows the approved identifier-only
-      move of the snapshot-locator decision to ADR-0312. Remove this entry when
+      move of the snapshot-locator decision to ADR-0313. Remove this entry when
       that main record lands.
+  - adr: "0312"
+    status: accepted-on-main
+    note: >-
+      Main owns the columnar activation recovery, projected aggregate parity
+      and installer lifecycle record. Remove this declaration when that
+      accepted main record lands in the immediately following merge.
