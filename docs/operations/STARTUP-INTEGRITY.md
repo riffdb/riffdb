@@ -261,6 +261,13 @@ generation may also be admitted through its normal durable lifecycle. Do not
 weaken freshness or emulate the query against authoritative rows.
 
 Shutdown first stops admission and drains writers, workers, and the journal.
+The row-projection recovery and catch-up worker checks termination before each
+bounded repository operation, including pages within authoritative replay. An
+in-flight operation may finish; shutdown prevents the next operation. Interrupted
+validation publishes no successful validation or replacement control state.
+An integrity failure returned by an in-flight operation keeps its failure
+classification when shutdown races it.
+
 If the columnar worker is catching up, it observes the internal stop only after
 finishing its current authoritative page of at most 64 commit records. It may
 discard later unpublished in-memory columnar work at that boundary. Any safe

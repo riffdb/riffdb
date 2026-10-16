@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::num::NonZeroU16;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -36,6 +36,10 @@ use riffdb_storage_redb::RedbMigrationProjectionPorts;
 use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration, ProjectionIdentity};
 
 use crate::storage::SharedRedbOperationalPorts;
+
+#[path = "projection_worker_repository.rs"]
+mod repository;
+use repository::ProjectionWorkerRepository;
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // Seven complete 64-member batches fit beneath the storage scan's 500-row cap.
@@ -150,6 +154,7 @@ impl fmt::Debug for ProjectionWorkerStatus {
 struct StopState {
     requested: Mutex<bool>,
     changed: Condvar,
+    interrupted: AtomicBool,
 }
 
 /// Owning guard for the one projection recovery/catch-up thread.
@@ -169,7 +174,9 @@ impl RunningProjectionWorker {
         let stop = Arc::new(StopState {
             requested: Mutex::new(false),
             changed: Condvar::new(),
+            interrupted: AtomicBool::new(false),
         });
+        let storage = ProjectionWorkerRepository::new(storage, Arc::clone(&stop));
         let status = ProjectionWorkerStatus::new();
         let worker_stop = Arc::clone(&stop);
         let worker_status = status.clone();
@@ -182,15 +189,13 @@ impl RunningProjectionWorker {
                     if stop_requested(&worker_stop) {
                         break;
                     }
-                    match run_projection_pass(&storage, &notifier, &mut state) {
-                        Ok(()) => worker_status.publish(ProjectionWorkerReadiness::Ready),
-                        Err(error) if error.is_transient_writer_backpressure() => {
-                            // A journal frame may be durable but not published for
-                            // a bounded interval after the mutation gate becomes
-                            // available. Derived work retries on its next pass;
-                            // the authoritative application remains ready.
-                        }
-                        Err(_) => worker_status.publish(ProjectionWorkerReadiness::Degraded),
+                    let result = run_projection_pass(&storage, &notifier, &mut state);
+                    if !finish_projection_pass(
+                        result.as_ref().map(|_| ()),
+                        &worker_stop,
+                        &worker_status,
+                    ) {
+                        break;
                     }
                     if wait_for_stop(&worker_stop, WORKER_POLL_INTERVAL) {
                         break;
@@ -233,6 +238,26 @@ impl fmt::Debug for RunningProjectionWorker {
     }
 }
 
+// Returns false only when this worker deliberately refused its next operation
+// after Stop. Partial validation publishes neither Ready nor Degraded.
+fn finish_projection_pass(
+    result: Result<(), &ProjectionWorkerError>,
+    stop: &StopState,
+    status: &ProjectionWorkerStatus,
+) -> bool {
+    match result {
+        Ok(()) => status.publish(ProjectionWorkerReadiness::Ready),
+        Err(error) if error.is_own_stop(stop) => return false,
+        Err(error) if error.is_transient_writer_backpressure() => {
+            // A durable journal frame can be awaiting bounded publication.
+            // Derived work retries on its next pass; authoritative readiness
+            // and the existing storage-error classification stay unchanged.
+        }
+        Err(_) => status.publish(ProjectionWorkerReadiness::Degraded),
+    }
+    true
+}
+
 #[derive(Default)]
 struct ProjectionWorkerState {
     validated: BTreeSet<ProjectionIdentity>,
@@ -240,7 +265,7 @@ struct ProjectionWorkerState {
 }
 
 fn run_projection_pass(
-    storage: &SharedRedbOperationalPorts,
+    storage: &ProjectionWorkerRepository<SharedRedbOperationalPorts>,
     notifier: &ProjectionNotifier,
     state: &mut ProjectionWorkerState,
 ) -> Result<(), ProjectionWorkerError> {
@@ -301,7 +326,7 @@ fn registry_for(
 }
 
 fn drive_projection(
-    storage: SharedRedbOperationalPorts,
+    storage: ProjectionWorkerRepository<SharedRedbOperationalPorts>,
     notifier: ProjectionNotifier,
     resolved: &ResolvedProjectionPlan,
     schema: CheckedProjectionSchema,
@@ -407,7 +432,7 @@ enum ValidationProgress {
 }
 
 fn validate_retained_generations(
-    controller: &mut ProjectionController<SharedRedbOperationalPorts>,
+    controller: &mut ProjectionController<ProjectionWorkerRepository<SharedRedbOperationalPorts>>,
     resolved: &ResolvedProjectionPlan,
     schema: &CheckedProjectionSchema,
     status: &riffdb_storage_api::ProjectionStatus,
@@ -689,7 +714,7 @@ fn apply_migration_generation(
 }
 
 fn apply_generation(
-    controller: &mut ProjectionController<SharedRedbOperationalPorts>,
+    controller: &mut ProjectionController<ProjectionWorkerRepository<SharedRedbOperationalPorts>>,
     resolved: &ResolvedProjectionPlan,
     schema: &CheckedProjectionSchema,
     generation: ProjectionGeneration,
@@ -830,7 +855,7 @@ fn flush_projection_batch<R: ProjectionMutationRepository + ProjectionQueryReade
 }
 
 fn handle_evaluation_failure(
-    controller: &mut ProjectionController<SharedRedbOperationalPorts>,
+    controller: &mut ProjectionController<ProjectionWorkerRepository<SharedRedbOperationalPorts>>,
     identity: &ProjectionIdentity,
     generation: ProjectionGeneration,
     sequence: CommitSequence,
@@ -843,7 +868,7 @@ fn handle_evaluation_failure(
 }
 
 fn record_generation_failure(
-    controller: &mut ProjectionController<SharedRedbOperationalPorts>,
+    controller: &mut ProjectionController<ProjectionWorkerRepository<SharedRedbOperationalPorts>>,
     identity: &ProjectionIdentity,
     generation: ProjectionGeneration,
     code: ProjectionFailureCodeV1,
@@ -933,6 +958,23 @@ enum ProjectionWorkerError {
 }
 
 impl ProjectionWorkerError {
+    // The witness is set only before a repository call is skipped. A stop
+    // racing an in-flight corruption does not replace that operation's error.
+    fn is_own_stop(&self, stop: &StopState) -> bool {
+        stop.interrupted.load(Ordering::Acquire) && self.is_storage_unavailable()
+    }
+
+    fn is_storage_unavailable(&self) -> bool {
+        use riffdb_storage_api::StorageErrorKind;
+        matches!(self, Self::Storage(error) if error.kind() == StorageErrorKind::Unavailable)
+            || matches!(self, Self::Catalog(error) if error.storage_kind() == Some(StorageErrorKind::Unavailable))
+            || matches!(self, Self::Projection(error) if error.kind() == ProjectionCoreErrorKind::StorageUnavailable)
+            || matches!(self, Self::Evaluation(error) if error.kind() == riffdb_projection::ProjectionEvaluationErrorKind::StorageUnavailable)
+            || matches!(self, Self::Recovery(error) if matches!(error.kind(),
+                riffdb_projection::ProjectionRecoveryErrorKind::Control(ProjectionCoreErrorKind::StorageUnavailable)
+                    | riffdb_projection::ProjectionRecoveryErrorKind::Evaluation(riffdb_projection::ProjectionEvaluationErrorKind::StorageUnavailable)))
+    }
+
     fn is_transient_writer_backpressure(&self) -> bool {
         matches!(
             self,
@@ -981,6 +1023,8 @@ impl fmt::Debug for ProjectionWorkerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("projection_worker_shutdown_tests.rs");
 
     #[test]
     fn successor_check_has_no_zero_sequence_case() {

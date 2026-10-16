@@ -72,6 +72,31 @@ The separate retention CorruptData refusal remains unlocalized. The cold
 capacity reproduction does not establish its cause. Fresh full preparation and
 public recovery checks remain required.
 
+## Projection shutdown cancellation
+
+A cold daemon on the failed preparation's copied media also stalled while
+joining row-projection recovery. The worker previously checked termination
+only outside its whole pass. A private repository adapter now checks the
+existing stop state before every bounded operation, including internal
+authoritative replay pages. It delegates the unchanged validation and storage
+semantics and never holds the stop mutex during I/O.
+
+Only an explicit skipped-operation witness together with the corresponding
+closed unavailable error ends the pass quietly. Partial validation cannot
+publish Ready or a replacement control. An in-flight integrity failure remains
+an integrity failure when termination races it; unrelated recovery errors keep
+their original health classification. There are no extra threads, queues,
+retries, deadlines or public controls.
+
+Two barrier schedules reproduce the missing boundary on the old adapter. Six
+targeted corrected tests pass, including real canonical 501-command prefix
+replay, uninterrupted complete validation and error-preservation controls.
+The complete nine-test worker suite, eight projection-recovery acceptance
+tests and server Clippy also pass on the qualification host. Actual failed-media
+daemon shutdown confirmation remains required. One in-flight bounded
+operation still finishes before cancellation; static bounds
+do not establish its elapsed latency.
+
 ## Compatibility and operator documentation
 
 No durable format, registry identity, authorization rule, public protocol,
