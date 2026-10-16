@@ -32,6 +32,7 @@ impl ApplicationInstallationApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::StartApplicationInstallation,
             ingress,
             async move { start_campaign(service, context, request).await },
@@ -46,6 +47,7 @@ impl ApplicationInstallationApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetApplicationInstallation,
             ingress,
             async move { get_campaign(service, context, request).await },

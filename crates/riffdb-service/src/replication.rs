@@ -218,9 +218,12 @@ impl ReplicationApplication for ReplicationService {
     ) -> ReplicationFuture<'_, PrimaryFenceSourceEvidenceV1> {
         let service = self.owner.inner.clone();
         let source = self.source.clone();
-        audit::submit(&self.owner, context.ingress(), async move {
-            audit::observe_fence(service, source, context, request, applied).await
-        })
+        audit::submit(
+            &self.owner,
+            context.control().fork(),
+            context.ingress(),
+            async move { audit::observe_fence(service, source, context, request, applied).await },
+        )
     }
 
     fn stream_changelog(
@@ -230,9 +233,12 @@ impl ReplicationApplication for ReplicationService {
     ) -> ReplicationFuture<'_, ReplicationSubscription> {
         let service = self.owner.inner.clone();
         let source = self.source.clone();
-        audit::submit(&self.owner, context.ingress(), async move {
-            audit::establish(service, source, context, request).await
-        })
+        audit::submit(
+            &self.owner,
+            context.control().fork(),
+            context.ingress(),
+            async move { audit::establish(service, source, context, request).await },
+        )
     }
 }
 

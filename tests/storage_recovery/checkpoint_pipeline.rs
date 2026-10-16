@@ -59,7 +59,7 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
     let path = TestDatabasePath::new("checkpoint-pipeline-schedule");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty()); // warm before the mutation lease
@@ -181,7 +181,9 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
         "the covered extent is reclaimed only after installation"
     );
     for _ in 0..2 {
-        let reopened = open_operational(RedbStore::open(&path.0).expect("idempotent restart"));
+        let reopened = open_operational_completed_fixture(
+            RedbStore::open(&path.0).expect("idempotent restart"),
+        );
         for ordinal in 1..=4 {
             assert_visible(&reopened, ordinal, true);
         }
@@ -207,7 +209,9 @@ fn checkpoint_materialization_allows_pipeline_but_installation_requires_publicat
 fn unpublished_capacity_wait_publishes_the_prefix_without_losing_original_tickets() {
     let path = TestDatabasePath::new("checkpoint-pipeline-capacity");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open capacity fixture"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open capacity fixture"),
+    );
     assert!(command_audit_phases(&ports).is_empty());
     // The production unpublished ceiling is 256 transitions. Storage must
     // apply bounded backpressure before admitting the 257th, even if the
@@ -233,7 +237,8 @@ fn unpublished_capacity_wait_publishes_the_prefix_without_losing_original_ticket
     assert_visible(&ports, 257, true);
     drop(ports);
     for _ in 0..2 {
-        let reopened = open_operational(RedbStore::open(&path.0).expect("capacity restart"));
+        let reopened =
+            open_operational_completed_fixture(RedbStore::open(&path.0).expect("capacity restart"));
         for ordinal in 1..=257 {
             assert_visible(&reopened, ordinal, true);
         }
@@ -248,7 +253,7 @@ fn failed_checkpoint_refuses_new_apply_while_a_durable_predecessor_awaits_public
     let (controller, schedule) =
         RedbTestController::return_before_commit(RedbTestOperation::JournalCheckpoint)
             .with_checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty());
@@ -275,8 +280,9 @@ fn failed_checkpoint_refuses_new_apply_while_a_durable_predecessor_awaits_public
     drop(ports);
     drop(schedule);
     for _ in 0..2 {
-        let reopened =
-            open_operational(RedbStore::open(&path.0).expect("failed-checkpoint recovery"));
+        let reopened = open_operational_completed_fixture(
+            RedbStore::open(&path.0).expect("failed-checkpoint recovery"),
+        );
         assert_visible(&reopened, 1, true);
         assert_visible(&reopened, 2, true);
         assert_visible(&reopened, 3, false);
@@ -383,7 +389,7 @@ fn checkpoint_pipeline_process_crashes_recover_exactly_and_idempotently() {
         );
         let mut recovered_second = None;
         for _ in 0..2 {
-            let reopened = open_operational(
+            let reopened = open_operational_completed_fixture(
                 RedbStore::open(&path.0)
                     .unwrap_or_else(|error| panic!("crash recovery at {edge}: {error:?}")),
             );

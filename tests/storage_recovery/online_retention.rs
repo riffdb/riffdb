@@ -20,7 +20,8 @@ fn sequences(count: u64) -> NonZeroU64 {
 /// event delivered when `deliver` is set.
 fn prepare_segmented_history(path: &Path, deliver: bool) -> Vec<CommandFixture> {
     prepare_command_database(path);
-    let ports = open_operational(RedbStore::open(path).expect("open segmented source"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(path).expect("open segmented source"));
     let mut fixtures = Vec::new();
     for group in 0..GROUPS {
         let batch = (1..=GROUP)
@@ -80,7 +81,8 @@ fn online_retention_prunes_whole_segments_through_the_ordered_writer() {
         "validated_prefix_checkpoint/v1"
     ));
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("open live store"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("open live store"));
     // Warm the transient indexes so the step's delta trims live state.
     use riffdb_storage_api::OutboxRepository;
     assert!(
@@ -186,7 +188,8 @@ fn online_retention_refuses_to_cross_a_fence() {
     // Undelivered outbox: nothing in the first segment was delivered.
     let path = TestDatabasePath::new("online-retention-outbox-fence");
     prepare_segmented_history(&path.0, false);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open undelivered"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("open undelivered"));
     assert_eq!(
         ports
             .online_retention_step(sequences(1), sequences(256))
@@ -204,7 +207,7 @@ fn online_retention_refuses_to_cross_a_fence() {
     riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
         .add_hold("online-cap", GROUP / 2, "fence the online lane")
         .expect("install hold");
-    let ports = open_operational(RedbStore::open(&path.0).expect("open held"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open held"));
     assert_eq!(
         ports
             .online_retention_step(sequences(1), sequences(256))
@@ -268,7 +271,8 @@ fn online_retention_refuses_an_unreadable_fencing_source() {
     prepare_segmented_history(&path.0, true);
     riffdb_storage_redb::plant_unreadable_projection_frontier_fixture(&path.0)
         .expect("plant unreadable projection frontier");
-    let ports = open_operational(RedbStore::open(&path.0).expect("open unreadable"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("open unreadable"));
     let error = ports
         .online_retention_step(sequences(1), sequences(256))
         .expect_err("an unreadable fence refuses");
@@ -350,7 +354,7 @@ fn online_retention_honors_a_staged_migration_frozen_frontier() {
     let path = TestDatabasePath::new("online-retention-staged-fence");
     prepare_segmented_history(&path.0, true);
     plant_staged_migration(&path.0, GROUP / 2);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open staged"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open staged"));
     assert_eq!(
         ports
             .online_retention_step(sequences(1), sequences(256))
@@ -378,7 +382,7 @@ fn online_retention_crash_child() {
         }
         _ => panic!("unknown online retention crash mode"),
     };
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path, controller).expect("open armed store"),
     );
     let _ = ports.online_retention_step(sequences(2 * GROUP), sequences(GROUP));
@@ -434,7 +438,7 @@ fn online_retention_crash_windows_recover_to_a_valid_watermark() {
         let before =
             riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
                 .expect("authority after first recovery");
-        drop(open_operational(
+        drop(open_operational_completed_fixture(
             RedbStore::open(&path.0).expect("second restart"),
         ));
         let after = riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
@@ -445,7 +449,8 @@ fn online_retention_crash_windows_recover_to_a_valid_watermark() {
         );
 
         // The lane resumes from the recovered watermark to its target.
-        let ports = open_operational(RedbStore::open(&path.0).expect("resume lane"));
+        let ports =
+            open_operational_completed_fixture(RedbStore::open(&path.0).expect("resume lane"));
         let mut through = expected_watermark;
         loop {
             match ports
@@ -663,7 +668,7 @@ fn a_finished_journal_checkpoint_releases_a_waiting_retention_lane() {
     let path = TestDatabasePath::new("online-retention-checkpoint-signal");
     prepare_segmented_history(&path.0, true);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("open live store"),
     );
     let lane = ports.online_retention_lane();

@@ -86,7 +86,7 @@ fn physical_retirement_crash_windows_preserve_every_authoritative_frontier() {
         let path = TestDatabasePath::new("extent-retirement-crash");
         let extent = retained_extents::prepare_two_sealed_commands(&path.0);
         {
-            let ports = open_operational(RedbStore::open(&path.0).unwrap());
+            let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
             commit_command_group(&ports, &[command_fixture_at(3)]);
             assert_eq!(
                 ports
@@ -148,7 +148,7 @@ fn physical_retirement_crash_windows_preserve_every_authoritative_frontier() {
                 .last_sequence(),
             2
         );
-        let ports = open_operational(RedbStore::open(&path.0).unwrap());
+        let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
         assert!(matches!(
             ports
                 .lookup_admission(command_fixture_at(1).candidates)
@@ -178,7 +178,7 @@ fn an_unreferenced_extent_with_a_corrupt_footer_is_never_retired() {
     use std::io::{Read, Seek, SeekFrom, Write};
     let path = TestDatabasePath::new("extent-retirement-corrupt-footer");
     let extent = retained_extents::prepare_two_sealed_commands(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     commit_command_group(&ports, &[command_fixture_at(3)]);
     assert!(matches!(
         ports

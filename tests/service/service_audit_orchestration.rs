@@ -4,6 +4,9 @@
 
 #[path = "follower_lifecycle.rs"]
 mod follower_lifecycle;
+mod pending_initial_dependency;
+#[path = "support/pending_initial_dependency.rs"]
+mod pending_initial_dependency_support;
 mod support;
 
 use std::task::{Context, Poll, Waker};

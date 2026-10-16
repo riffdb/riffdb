@@ -42,6 +42,7 @@ impl FollowerPromotionApplication for SourcePromotionRetryService {
         let service = self.service.inner.clone();
         let record = self.record.clone();
         self.service.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::PromoteFollower,
             context.ingress(),
             execute(service, context, request, record),

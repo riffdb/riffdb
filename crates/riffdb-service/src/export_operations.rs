@@ -33,6 +33,7 @@ impl ApplicationExportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::StartApplicationExport,
             ingress,
             async move { start_export(service, context, request_id, request).await },
@@ -48,6 +49,7 @@ impl ApplicationExportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetApplicationExportPage,
             ingress,
             async move { get_export_page(service, context, request_id, request).await },
@@ -63,6 +65,7 @@ impl ApplicationExportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetApplicationExport,
             ingress,
             async move { get_export(service, context, request_id, request).await },
@@ -78,6 +81,7 @@ impl ApplicationExportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::CancelApplicationExport,
             ingress,
             async move { cancel_export(service, context, request_id, request).await },

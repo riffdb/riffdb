@@ -1888,9 +1888,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, DescribeSymbolicContractResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DescribeContract, ingress, async move {
-            describe_contract(service, context, contract).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DescribeContract,
+            ingress,
+            async move { describe_contract(service, context, contract).await },
+        )
     }
 
     fn get_application_catalog(
@@ -1900,9 +1903,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ApplicationCatalogResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DescribeContract, ingress, async move {
-            get_application_catalog(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DescribeContract,
+            ingress,
+            async move { get_application_catalog(service, context, request).await },
+        )
     }
 
     fn check_symbolic_query(
@@ -1912,9 +1918,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, CheckSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::CheckQuery, ingress, async move {
-            check_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::CheckQuery,
+            ingress,
+            async move { check_query(service, context, request).await },
+        )
     }
 
     fn explain_symbolic_query(
@@ -1924,9 +1933,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExplainSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExplainQuery, ingress, async move {
-            explain_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExplainQuery,
+            ingress,
+            async move { explain_query(service, context, request).await },
+        )
     }
 
     fn execute_symbolic_query(
@@ -1936,9 +1948,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
-            execute_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExecuteQuery,
+            ingress,
+            async move { execute_query(service, context, request).await },
+        )
     }
 
     fn deploy_query_module(
@@ -1948,9 +1963,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, DeployQueryModuleResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DeployQueryModule, ingress, async move {
-            deploy_module(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DeployQueryModule,
+            ingress,
+            async move { deploy_module(service, context, request).await },
+        )
     }
 
     fn deploy_reactive_module(
@@ -1961,6 +1979,7 @@ impl SymbolicQueryApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::DeployReactiveModule,
             ingress,
             async move { deploy_reactive_module(service, context, request).await },
@@ -1974,9 +1993,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, Option<QueryModuleInspection>> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExplainQuery, ingress, async move {
-            inspect_module(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExplainQuery,
+            ingress,
+            async move { inspect_module(service, context, request).await },
+        )
     }
 
     fn explain_named_symbolic_query(
@@ -1986,9 +2008,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExplainSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExplainQuery, ingress, async move {
-            explain_named_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExplainQuery,
+            ingress,
+            async move { explain_named_query(service, context, request).await },
+        )
     }
 
     fn execute_named_symbolic_query(
@@ -1998,9 +2023,12 @@ impl SymbolicQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExecuteSymbolicQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExecuteQuery, ingress, async move {
-            execute_named_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExecuteQuery,
+            ingress,
+            async move { execute_named_query(service, context, request).await },
+        )
     }
 }
 

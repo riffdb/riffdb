@@ -178,6 +178,69 @@ pub(crate) struct ServiceHarness {
 }
 
 impl ServiceHarness {
+    /// Ordinary provider assembly shared by tests; simulation actor creation
+    /// remains confined to its owning service integration-test target.
+    pub(crate) fn initial_dependency_fixture_service(
+        &self,
+        audit: riffdb_commit::AdministrationAuditExecutor,
+        dependency: Arc<dyn riffdb_service::InitialNativeDependencyPort>,
+        spawner: Arc<dyn ServiceJobSpawner>,
+        deadlines: Arc<dyn RequestDeadlineScheduler>,
+    ) -> RiffDbService {
+        let command_actor = self.coordinator.as_ref().unwrap();
+        let executors = ServiceExecutors::new(
+            audit,
+            command_actor.control_plane_executor(),
+            command_actor.command_executor(),
+            command_actor.command_idempotency_inspector(Arc::new(FixedDigestProvider)),
+        );
+        let providers = ServiceProviders::new(
+            Arc::clone(&self.ports) as Arc<dyn CatalogReadPort>,
+            Arc::clone(&self.policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
+            Arc::clone(&self.ports) as Arc<dyn AuthoritativeReadPort>,
+            Arc::clone(&self.ports) as Arc<dyn ProjectionQueryPort>,
+            None,
+            Arc::clone(&self.ports) as Arc<dyn OperationalStatusPort>,
+            Arc::clone(&self.ports) as Arc<dyn CapabilityTokenIssuer>,
+            Arc::new(HarnessIncidentIds::new(false)),
+            Arc::new(HarnessDiagnostics),
+            Arc::clone(&self.telemetry) as Arc<dyn ServiceTelemetry>,
+            Arc::clone(&self.health) as Arc<dyn ServiceHealthHooks>,
+            spawner,
+            deadlines,
+            Arc::clone(&self.cursor_tokens) as Arc<dyn CursorTokenGenerator>,
+            Arc::new(FixedCursorClock),
+        );
+        let providers = providers.with_initial_native_dependency(dependency);
+        RiffDbService::new(
+            ServiceIdentity::new(
+                database_id(),
+                environment(),
+                AgentSessionAdmissionPolicy::Discard,
+                1,
+            ),
+            ServiceProcessMetadata::new(
+                timestamp(BASE_SECONDS),
+                BuildInfo::new(
+                    "0.1.0-test",
+                    "pending-initial-dependency",
+                    "rustc-test",
+                    Vec::new(),
+                    1,
+                    1,
+                    "2025-03-26",
+                )
+                .unwrap(),
+            ),
+            executors,
+            providers,
+        )
+    }
+
+    pub(crate) fn initial_dependency_fixture_scheduler(&self) -> Arc<dyn RequestDeadlineScheduler> {
+        Arc::clone(&self.deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>
+    }
+
     /// The real source coordinator remains a canary, but this service receives
     /// none of its writer capabilities.
     pub(crate) fn follower_service(&self) -> RiffDbService {
@@ -2494,10 +2557,10 @@ impl AuthorizationClock for FixedAuthorizationClock {
     }
 }
 
-struct IncrementingAdministrationClock(AtomicI64);
+pub(crate) struct IncrementingAdministrationClock(AtomicI64);
 
 impl IncrementingAdministrationClock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(AtomicI64::new(BASE_SECONDS + 30))
     }
 }

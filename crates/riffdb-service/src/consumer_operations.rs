@@ -906,6 +906,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::ConsumeEventStream,
             ingress,
             async move {
@@ -928,6 +929,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::AcknowledgeEventStream,
             ingress,
             async move {
@@ -951,6 +953,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::NegativeAcknowledgeEventStream,
             ingress,
             async move {
@@ -975,6 +978,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::SeekEventStreamConsumer,
             ingress,
             async move { seek(service, context, request).await },
@@ -989,6 +993,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::RetireEventStreamConsumer,
             ingress,
             async move { retire(service, context, selection).await },
@@ -1003,6 +1008,7 @@ impl EventConsumerServiceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetEventStreamConsumerStatus,
             ingress,
             async move {

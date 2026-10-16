@@ -53,6 +53,17 @@ fn without_whitespace(source: &str) -> String {
     source.split_whitespace().collect()
 }
 
+fn compact_function(source: &str, name: &str) -> String {
+    let mut functions = production_functions(source)
+        .into_iter()
+        .filter(|(candidate, _)| candidate == name);
+    let (_, body) = functions
+        .next()
+        .unwrap_or_else(|| panic!("architecture owner {name} is present"));
+    assert!(functions.next().is_none(), "{name} identifies one owner");
+    without_whitespace(&body)
+}
+
 #[test]
 // req: REP-003, REC-001, STO-012
 fn v3_checkpoint_receipt_rechecks_physical_audit_bound_from_its_own_pin() {
@@ -1095,9 +1106,45 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
 
 #[test]
 fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
-    let sources = rust_sources();
+    let mut paths = Vec::new();
+    collect_rust_sources(&crate_root().join("src"), &mut paths);
+    // Test modules and the feature-gated stopped-file fixture deliberately
+    // exercise this private constructor without an operational witness.
+    let sources = paths
+        .into_iter()
+        .filter(|path| {
+            !path.components().any(|part| part.as_os_str() == "tests")
+                && path.file_name().is_none_or(|name| {
+                    name != "fixtures.rs" && !name.to_string_lossy().ends_with("_tests.rs")
+                })
+        })
+        .map(production_source)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sources = without_whitespace(&sources);
     assert_eq!(
-        sources.matches("into_contract_migration_ports").count(),
+        sources.matches("fninto_contract_migration_ports(").count(),
+        1,
+        "one private constructor owns the dormant-port bypass"
+    );
+    assert_eq!(
+        sources.matches(".into_contract_migration_ports(").count(),
+        1,
+        "one witnessed production call owns the dormant-port bypass"
+    );
+    assert_eq!(
+        without_whitespace(&production_source(crate_root().join("src/fixtures.rs")))
+            .matches(".into_contract_migration_ports(")
+            .count(),
+        1,
+        "the separate stopped-file fixture has exactly one private handoff"
+    );
+    assert!(
+        production_source(crate_root().join("src/lib.rs"))
+            .contains("#[cfg(feature = \"test-fixtures\")]\nmod fixtures;")
+    );
+    assert_eq!(
+        sources.matches("into_contract_migration_ports(").count(),
         2,
         "the dormant-port bypass must remain one private constructor and one witnessed call"
     );
@@ -1241,6 +1288,20 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .expect("common commit boundary end")
         .0;
     assert_eq!(engine_commit.matches("transaction.commit()").count(), 1);
+    let classified_commit = engine_commit
+        .split_once("pub(crate)fncommit_with_source_footprint_and_locator(")
+        .expect("joint source and locator commit boundary")
+        .1;
+    for binding in [
+        "generation.validate_database_incarnation(database,incarnation)?",
+        "capability.bind_source(database,incarnation,registry)?",
+    ] {
+        assert!(
+            classified_commit.find(binding).unwrap()
+                < classified_commit.find("transaction.commit()").unwrap()
+        );
+    }
+    assert!(classified_commit.contains("*slot=Some((stable_successor,capability))"));
     assert!(
         engine_commit
             .contains("if!footprint.is_append_only(){self.invalidate_source_continuation();}")
@@ -1286,10 +1347,15 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     );
     assert_eq!(
         follower
-            .matches("self.shared.commit_durable(write)?")
+            .matches("self.shared.commit_with_source_footprint_and_locator(")
             .count(),
         2
     );
+    assert_eq!(
+        follower.matches("LocatorCapability::try_complete(").count(),
+        2
+    );
+    assert!(!follower.contains("commit_durable("));
     assert_eq!(follower.matches(".commit()").count(), 0);
     assert_eq!(
         follower
@@ -1375,7 +1441,7 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert_eq!(checkpoint.matches("self.database.begin_write()").count(), 1);
     assert_eq!(
         checkpoint
-            .matches("self.commit_with_source_footprint(transaction,footprint)")
+            .matches("self.commit_with_source_footprint_and_locator(transaction,footprint,locator_capability)?")
             .count(),
         1
     );
@@ -1390,7 +1456,15 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
             .count(),
         1
     );
-    assert_eq!(control.matches("shared.commit_durable(raw)").count(), 1);
+    assert_eq!(
+        control
+            .matches("shared.commit_with_source_footprint_and_locator(")
+            .count(),
+        1
+    );
+    assert!(control.contains("letpredecessor=self.barrier.root.locator_capability()"));
+    assert!(control.contains("LocatorCapability::try_complete_from_source("));
+    assert!(!control.contains("commit_durable("));
     assert_eq!(control.matches(".commit()").count(), 0);
     assert!(control.contains("set_durability(Durability::Immediate)"));
     assert!(control.contains("shared.mutation_gate.acquire()?"));
@@ -1461,10 +1535,14 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         .0;
     assert_eq!(
         sealed_commit
-            .matches("shared.commit_with_source_footprint(self.transaction,self.footprint)?")
+            .matches("shared.commit_with_source_footprint_and_locator(self.transaction,self.footprint,capability,)?")
             .count(),
-        1
+        2,
+        "ordinary and explicitly preadmitted receipts use the same joint root fence"
     );
+    assert!(sealed_commit.contains("generation.validate_source(&source)?"));
+    assert!(sealed_commit.contains("LocatorSourceOrigin::Physical"));
+    assert!(sealed_commit.contains("LocatorSourceOrigin::Drained"));
     assert!(!sealed_commit.contains("transaction.commit()"));
 }
 
@@ -1485,7 +1563,11 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
     let finish = captured.split_once("pub(crate)fnfinish(").unwrap().1;
     assert!(!finish.contains("begin_write("));
     assert!(!finish.contains(".commit("));
-    assert!(finish.contains("PreparedImmediateReceipt{transaction:self.transaction,footprint,}"));
+    assert!(finish.contains(
+        "PreparedImmediateReceipt{transaction:self.transaction,footprint,locator_predecessor,}"
+    ));
+    assert!(finish.contains(".filter(|_|preserves_locator_membership(&mutations))"));
+    assert!(finish.contains(".map(|history|(self.locator_origin,history))"));
     assert!(finish.contains("letmutations=self.capture.finish()?"));
     assert!(finish.contains("SourceContinuationFootprint::captured(history,&mutations,)"));
     assert!(!captured.contains("->&WriteTransaction"));
@@ -1502,6 +1584,21 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
         .unwrap()
         .0;
     assert_eq!(direct.matches("database.begin_write()").count(), 1);
+    assert_eq!(
+        direct
+            .matches("letdirect_predecessor=self.shared.begin_composite_operational_read()?")
+            .count(),
+        1
+    );
+    let capture = direct.find("letdirect_predecessor=").unwrap();
+    let take = direct
+        .find("take_published_journal_suffix_locked(true)?")
+        .unwrap();
+    assert!(capture < take);
+    assert!(take < direct.find("database.begin_write()").unwrap());
+    assert!(direct.contains(
+        "ownership:Some(RedbWriteOwnership::Direct{_lease:lease,predecessor:direct_predecessor,})"
+    ));
     assert!(
         direct
             .find("apply_published_journal_suffix_with_limits(")
@@ -1525,11 +1622,21 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
         .0;
     assert!(
         commit.find("transaction.finish()").unwrap()
-            < commit.find("prepared.commit(&self.shared)").unwrap()
+            < commit
+                .find("prepared.commit_with_locator(&self.shared,capability)")
+                .unwrap()
+    );
+    assert!(commit.contains("prepared.commit_pending_metadata(&self.shared)"));
+    assert!(
+        commit
+            .find("indexes.prepare_locator_delta(delta,locator_class)?")
+            .unwrap()
+            < commit.find("transaction.finish()").unwrap()
     );
     assert!(commit.contains("refresh_durable_read_frontier()"));
     assert!(commit.contains("finish_journal_checkpoint(runtime)"));
-    assert!(commit.contains("state.apply_delta(delta)"));
+    assert!(commit.contains("state.install_locator_generation(generation)?"));
+    assert!(commit.contains("state.apply_disposable_delta(delta)?"));
     let capture = without_whitespace(&production_source(
         crate_root().join("src/changelog_v3_capture.rs"),
     ));
@@ -1730,15 +1837,24 @@ fn administration_writes_preserve_a_startup_proof_without_history_rescans() {
 #[test]
 fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
     let source_dir = crate_root().join("src");
-    let store = without_whitespace(&production_source(
-        source_dir.join("store/transient_access.rs"),
-    ));
-    let lookup = store
-        .split_once("pub(crate)fncommand_audit_record(")
-        .expect("command audit lookup")
-        .1;
-    assert!(lookup.contains("unpublished_command_indexes"));
-    assert!(lookup.contains(".command_audit_record(sequence)"));
+    let store = production_source(source_dir.join("store/transient_access.rs"));
+    let lookup = compact_function(&store, "command_audit_record");
+    // The old unpublished map is now represented by the captured private
+    // predecessor and this writer's own unsealed deltas, never a process-wide
+    // lookup that can move independently of the transaction's source.
+    assert_eq!(
+        lookup.matches("self.command_locator_generation()?").count(),
+        1
+    );
+    assert!(lookup.contains("generation.capture_command_member("));
+    assert!(lookup.contains("CommandDerivedIndexKindV1::AuditSequence"));
+    assert!(lookup.contains("payload.resolve(|first|{self.read_command_value("));
+    assert!(lookup.contains("fordeltainepoch.transient_deltas.iter().rev()"));
+    assert!(lookup.contains("delta.command_audit_record(sequence)"));
+    assert!(lookup.contains("found.replace(record).is_some()"));
+    assert!(lookup.contains("StorageErrorKind::CorruptData"));
+    assert!(!lookup.contains("unpublished_command_indexes"));
+    assert!(!lookup.contains("transient_indexes"));
 
     let administration =
         without_whitespace(&production_source(source_dir.join("administration.rs")));
@@ -1751,7 +1867,7 @@ fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
         .0;
     let exact = tail
         .find("access.command_audit_record(expected_last)?")
-        .expect("exact unpublished-aware audit lookup");
+        .expect("exact captured-source audit lookup");
     let physical = tail
         .find(".read_command_value(JournalTable::Audit,key.as_slice())?")
         .expect("composite physical audit lookup");
@@ -2096,13 +2212,26 @@ fn source_controls_are_crate_private_closed_barrier_owners_without_application_e
     for owner in [
         "mutation_gate.acquire()",
         "checkpoint_published_journal_suffix_for_barrier()",
-        "shared.commit_durable(raw)",
+        "shared.commit_with_source_footprint_and_locator(",
         "refresh_durable_read_frontier()",
         "validate_retained_history_for_write",
         "CleanCloseState::Clean(_)",
     ] {
         assert!(transaction.contains(owner));
     }
+    let commit = compact_function(&transaction, "commit_published");
+    assert!(commit.contains("letpredecessor=self.barrier.root.locator_capability()"));
+    assert!(commit.contains("ifpredecessor.is_pending()"));
+    assert!(commit.contains("LocatorCapability::try_pending("));
+    assert!(commit.contains("LocatorCapability::try_complete_from_source("));
+    assert!(
+        commit
+            .find("LocatorCapability::try_complete_from_source(")
+            .unwrap()
+            < commit
+                .find("shared.commit_with_source_footprint_and_locator(")
+                .unwrap()
+    );
     assert!(pruning.contains("MAX_RECLAIMED_RECEIPTS: u64 = 256"));
     assert!(pruning.contains("maximum.min(hold.fence().sequence().get())"));
     assert!(!pruning.contains("CapturedImmediateWrite"));
@@ -2268,7 +2397,23 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
         );
     }
     assert!(source.contains("root: Arc<CheckpointRoot>"));
-    assert!(source.contains("mutations: Arc<[CompositeMutationV1]>"));
+    assert!(source.contains("mutations: SharedSourceMutations"));
+    assert!(source.contains("struct SharedSourceMutations(Arc<SourceMutationsHandle>)"));
+    assert!(source.contains("rows: ChargedLocatorAllocation<SourceMutations>"));
+    assert!(source.contains("impl AsRef<[CompositeMutationV1]> for SharedSourceMutations"));
+    assert!(!source.contains("Arc<[CompositeMutationV1]>"));
+    let weak = without_whitespace(&source)
+        .split_once("structWeakSourceMutations{")
+        .unwrap()
+        .1
+        .split_once('}')
+        .unwrap()
+        .0
+        .to_owned();
+    assert_eq!(
+        weak,
+        "weak:Weak<SourceMutationsHandle>,control:SourceControl,"
+    );
     assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
     assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
     assert!(source.contains("Arc::into_inner(node)"));
@@ -2281,10 +2426,16 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     assert_eq!(store.matches("append_changelog_source(").count(), 2);
     assert_eq!(
         store
-            .matches("let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>")
+            .matches(
+                "let checkpoint_mutations = crate::changelog_v3_cursor::SourceMutations::try_new("
+            )
             .count(),
         2
     );
+    let store = without_whitespace(&store);
+    assert_eq!(store.matches("checkpoint_mutations.clone(),").count(), 2);
+    assert_eq!(store.matches("mutations:checkpoint_mutations,").count(), 2);
+    assert!(store.contains("mutations:crate::changelog_v3_cursor::SharedSourceMutations"));
 }
 
 #[test]
@@ -2595,62 +2746,121 @@ fn journal_runtime_rotation_stays_with_the_shared_store_owner() {
     assert!(runtime.contains("impl SharedRedb"));
     assert!(runtime.contains("fn journal_runtime("));
     assert!(runtime.contains("fn maybe_start_async_checkpoint("));
-    assert!(runtime.contains("worker_shared.materialize_checkpoint_batch(&worker_batch)"));
+    let compact = without_whitespace(&runtime);
+    assert!(compact.contains(
+        "worker_shared.materialize_checkpoint_batch_with_locator(&worker_batch,locator_capability)"
+    ));
+    assert!(
+        compact_function(&runtime, "maybe_start_async_checkpoint")
+            .contains("self.start_async_checkpoint(false)")
+    );
+    let checkpoint = compact_function(&runtime, "start_async_checkpoint");
+    assert_eq!(
+        checkpoint
+            .matches("LocatorCapability::try_complete_from_source(")
+            .count(),
+        1
+    );
+    assert!(checkpoint.contains("covered_view.locator_capability().require_complete()?.clone()"));
+    assert!(
+        checkpoint
+            .find("LocatorCapability::try_complete_from_source(")
+            .unwrap()
+            < checkpoint.find(".spawn(move||").unwrap()
+    );
     assert!(!runtime.contains("database.begin_write("));
     assert!(!runtime.contains("transaction.commit("));
     assert!(!runtime.contains("JournalFrame::decode"));
 }
 
-/// Publication moves a command segment out of the unpublished index and into the
-/// published one while holding both locks. Every lookup that consults the two
-/// indexes must therefore keep one continuous transient guard across both
-/// probes; a guard released between them lets a concurrent publication land in
-/// the gap and report a present record as absent, which the administration-tail
-/// proof then classifies as corruption.
+/// Each lookup captures one immutable directory from its exact private source
+/// and combines it only with that access's own unsealed epoch deltas. Looking
+/// up either half through mutable process-current indexes would allow source
+/// publication between probes to manufacture absence or duplicate membership.
 #[test]
 fn paired_command_index_lookups_hold_one_transient_guard_across_both_probes() {
-    let store = read(crate_root().join("src/store.rs"));
-    let access = read(crate_root().join("src/store/transient_access.rs"));
-    let write_access = access
-        .split_once("impl RedbWriteAccess {")
-        .expect("write access")
-        .1;
-    for name in [
-        "fn command_segment_tail",
-        "fn command_derived_member",
-        "fn command_audit_record",
-        "fn service_audit_sequences_for",
+    let store = production_source(crate_root().join("src/store.rs"));
+    let access = production_source(crate_root().join("src/store/transient_access.rs"));
+    let write_access = access.split_once("impl RedbWriteAccess {").unwrap().1;
+    let capture = compact_function(&store, "command_locator_generation");
+    assert!(capture.contains(
+        "Some(RedbWriteOwnership::Direct{predecessor,..})=>{predecessor.locator_capability()}"
+    ));
+    assert!(capture.contains(
+        "Some(RedbWriteOwnership::Epoch(epoch))=>{epoch.composite_predecessor.locator_capability()}"
+    ));
+    assert!(capture.contains(
+        "Some(RedbWriteOwnership::ServiceAudit{..})=>self.composite_predecessor.as_ref()"
+    ));
+    assert!(
+        capture.contains("None=>returnErr(storage_error(StorageErrorKind::InvariantViolation))")
+    );
+    assert_eq!(
+        capture
+            .matches("capability.require_complete()?.clone()")
+            .count(),
+        1
+    );
+    assert!(!capture.contains("capture_checkpoint_root("));
+    assert!(!capture.contains("transient_indexes"));
+    assert!(!capture.contains("unpublished_command_indexes"));
+    for (source, name, inherited, private) in [
+        (
+            store.as_str(),
+            "command_segment_tail",
+            "self.command_locator_generation()?.tail()",
+            ".and_then(TransientIndexDelta::command_segment)",
+        ),
+        (
+            write_access,
+            "command_derived_member",
+            "generation.capture_command_member(kind,exact_key)?",
+            "delta.command_derived_member(kind,exact_key)",
+        ),
+        (
+            write_access,
+            "command_audit_record",
+            "generation.capture_command_member(",
+            "delta.command_audit_record(sequence)",
+        ),
+        (
+            store.as_str(),
+            "service_audit_sequences_for",
+            ".command_audit_sequences_for(request_ids)?",
+            "delta.command_audit_sequences_for(request_ids,&mutderived)?",
+        ),
     ] {
-        let source = if matches!(
-            name,
-            "fn command_derived_member" | "fn command_audit_record"
-        ) {
-            write_access
-        } else {
-            &store
-        };
-        let start = source
-            .find(name)
-            .unwrap_or_else(|| panic!("paired index lookup {name} is present"));
-        let body = &source[start..];
-        let unpublished = body
-            .find("unpublished_command_indexes")
-            .unwrap_or_else(|| panic!("{name} consults the unpublished index"));
-        let released = body
-            .find("drop(transient)")
-            .unwrap_or_else(|| panic!("{name} releases its transient guard explicitly"));
-        assert!(
-            released > unpublished,
-            "{name} must hold its transient guard until after the unpublished probe"
+        let body = compact_function(source, name);
+        assert_eq!(
+            body.matches("command_locator_generation()?").count(),
+            1,
+            "{name} captures one source-bound directory"
         );
-        let published = body
-            .find("transient_indexes")
-            .unwrap_or_else(|| panic!("{name} consults the published index"));
         assert!(
-            published < unpublished,
-            "{name} must acquire the transient guard before the unpublished lock so the \
-             lock order matches publication"
+            body.contains(inherited),
+            "{name} probes its captured generation"
         );
+        assert!(
+            body.contains(private),
+            "{name} probes only its own unsealed delta"
+        );
+        assert!(body.contains("epoch.transient_deltas"));
+        for forbidden in [
+            "transient_indexes",
+            "unpublished_command_indexes",
+            "capture_checkpoint_root(",
+            ".begin_read(",
+            "open_table(",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "{name} must not select another source through {forbidden}"
+            );
+        }
+        if matches!(name, "command_derived_member" | "command_audit_record") {
+            assert!(body.contains("found.replace("));
+            assert!(body.contains("StorageErrorKind::CorruptData"));
+        }
     }
 }
 

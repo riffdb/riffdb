@@ -732,9 +732,12 @@ impl EventServiceApplication for RiffDbService {
     ) -> ServiceFuture<'_, DescribeEventResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DescribeEvent, ingress, async move {
-            describe_event(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DescribeEvent,
+            ingress,
+            async move { describe_event(service, context, request).await },
+        )
     }
 
     fn replay_events(
@@ -744,9 +747,12 @@ impl EventServiceApplication for RiffDbService {
     ) -> ServiceFuture<'_, ReplayEventsResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ReplayEvents, ingress, async move {
-            replay_events(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ReplayEvents,
+            ingress,
+            async move { replay_events(service, context, request).await },
+        )
     }
 
     fn tail_events(
@@ -756,9 +762,12 @@ impl EventServiceApplication for RiffDbService {
     ) -> ServiceFuture<'_, TailEventsResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::TailEvents, ingress, async move {
-            tail_events(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::TailEvents,
+            ingress,
+            async move { tail_events(service, context, request).await },
+        )
     }
 }
 

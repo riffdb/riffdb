@@ -84,6 +84,7 @@ use crate::exact_text_adapter::{
     ExactTextWorkerStartError, RunningExactTextWorker,
 };
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
+use crate::initial_native_dependency::ServerInitialNativeDependencyPort;
 use crate::installation_adapter::ServerApplicationInstallationCoordinator;
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
 use crate::lifecycle_service::LifecycleApplicationService;
@@ -883,6 +884,10 @@ impl ProductionGraphBuilder {
             cursor_tokens,
             cursor_clock,
         )
+        .with_initial_native_dependency(Arc::new(ServerInitialNativeDependencyPort::new(
+            storage.clone(),
+            &blocking,
+        )))
         .with_query_executor(Arc::new(storage.query_executor()))
         .with_contextual_causation(
             riffdb_service::ContextualCausationTokenCodec::from_provider(Arc::clone(

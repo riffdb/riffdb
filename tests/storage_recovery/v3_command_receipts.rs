@@ -68,7 +68,7 @@ fn observed_ports(
     mpsc::Receiver<PublishedFrontierAdvancement>,
 ) {
     let (sender, receiver) = mpsc::sync_channel(32);
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_changelog_publication_port(path, profile, Arc::new(Observer(sender)))
             .unwrap(),
     );
@@ -355,7 +355,7 @@ fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
     drop(receiver);
     drop(ports);
     for _ in 0..2 {
-        let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+        let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
         assert_eq!(reopened.read_entity(&first.target).unwrap(), None);
         for fixture in [&first, &second, &overwritten, &deleted] {
             assert_command_graph(&reopened, fixture);
@@ -469,7 +469,7 @@ fn real_v3_journal_subgroups_share_one_physical_receipt_without_losing_command_i
     drop(pin);
     drop(receiver);
     drop(ports);
-    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     for fixture in [&first, &second] {
         assert_command_graph(&reopened, fixture);
     }
@@ -494,7 +494,7 @@ fn v3_real_command_crash_child() {
     } else {
         RedbTestController::abort_before_commit(operation)
     };
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller_and_commit_profile(
             &path,
             if direct {
@@ -546,7 +546,7 @@ fn real_v3_command_crashes_keep_whole_groups_and_receipts_through_repeated_recov
         let second = command_fixture_at(2);
         let mut exact = None;
         for _ in 0..2 {
-            let ports = open_operational(RedbStore::open(&path.0).unwrap());
+            let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
             for fixture in [&first, &second] {
                 if committed {
                     assert_command_graph(&ports, fixture);

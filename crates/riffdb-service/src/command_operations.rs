@@ -227,15 +227,20 @@ impl CommandApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExecuteCommandResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExecuteCommand, ingress, async move {
-            execute_command(
-                service.as_ref(),
-                &context,
-                &request,
-                CommandInvocationMode::Ordinary,
-            )
-            .await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExecuteCommand,
+            ingress,
+            async move {
+                execute_command(
+                    service.as_ref(),
+                    &context,
+                    &request,
+                    CommandInvocationMode::Ordinary,
+                )
+                .await
+            },
+        )
     }
 
     fn resolve_command_outcome(
@@ -246,6 +251,7 @@ impl CommandApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::ResolveCommandOutcome,
             ingress,
             async move { resolve_command_outcome(service.as_ref(), context, request).await },

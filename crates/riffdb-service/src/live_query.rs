@@ -260,9 +260,12 @@ impl LiveNamedQueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, WatchLiveNamedQueryResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::WatchNamedQuery, ingress, async move {
-            establish_live_query(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::WatchNamedQuery,
+            ingress,
+            async move { establish_live_query(service, context, request).await },
+        )
     }
 }
 

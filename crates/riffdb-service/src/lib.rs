@@ -36,6 +36,7 @@ mod event_operations;
 mod export;
 mod export_operations;
 mod failure;
+mod initial_native_dependency;
 mod installation;
 mod installation_operations;
 mod live_query;
@@ -73,6 +74,7 @@ pub use dto::*;
 pub use event_operations::*;
 pub use export::*;
 pub use failure::*;
+pub use initial_native_dependency::*;
 pub use installation::*;
 pub use live_query::*;
 pub use maintenance_operations::{

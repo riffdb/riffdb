@@ -62,6 +62,20 @@ they do not report an incomplete lookup as absence. Bounded metadata reads remai
 available. The first dependent request cannot trigger a synchronous history walk.
 A full startup completes the directory for its exact source before handoff.
 
+Before an ordinary authenticated request starts work on a live writer service,
+the service checks the exact native source dependency. A complete source enters
+the normal authorization and audit path immediately. A Pending source waits on
+its admitted construction owner using the request's original deadline and
+cancellation signal, without holding a writer lease. After completion, the
+service verifies the current source and runs fresh authorization.
+
+Only a request refused, cancelled or expired during this initial Pending phase,
+before operation or audit work is accepted, can return without a durable service
+audit row. Once work is admitted, the existing audit and failure-containment
+rules apply. Invalid construction fails closed and affects authoritative health.
+Daemon Ready, pre-bootstrap health, recovery-only authority and the recovery
+timing limits retain their existing boundaries. See [ADR-0315](../../adr/0315-request-scoped-native-dependency-admission-before-durable-audit.md).
+
 Restore normalizes retained event-consumer leases to the restored incarnation
 before readiness. This metadata recovery can commit while command locators are
 pending. It preserves the refusal of incomplete command lookups and requests

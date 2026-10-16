@@ -145,8 +145,9 @@ fn archive_sink_failure_crash_preserves_source_and_only_durable_archive_prefix()
             // Repeated ordinary source startup preserves acknowledged commands,
             // even though commands 2/3 never received collector confirmation.
             for _ in 0..2 {
-                let ports =
-                    open_operational(RedbStore::open(scope.path().join("source.redb")).unwrap());
+                let ports = open_operational_completed_fixture(
+                    RedbStore::open(scope.path().join("source.redb")).unwrap(),
+                );
                 for ordinal in 1..=3 {
                     let fixture = command_fixture_at(ordinal);
                     assert_command_graph(&ports, &fixture);

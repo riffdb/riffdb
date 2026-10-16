@@ -182,6 +182,7 @@ impl fmt::Debug for ServiceExecutors {
 /// Consumer-owned semantic and process capabilities required by the service.
 #[derive(Clone)]
 pub struct ServiceProviders {
+    pub(crate) initial_native_dependency: Option<Arc<dyn crate::InitialNativeDependencyPort>>,
     pub(crate) catalog: Arc<dyn CatalogReadPort>,
     pub(crate) policy: Arc<dyn CurrentPolicyPort>,
     pub(crate) authoritative: Arc<dyn AuthoritativeReadPort>,
@@ -220,6 +221,16 @@ pub struct ServiceProviders {
 }
 
 impl ServiceProviders {
+    /// Installs the mandatory first-party gate when composing a live native writer source.
+    #[must_use]
+    pub fn with_initial_native_dependency(
+        mut self,
+        port: Arc<dyn crate::InitialNativeDependencyPort>,
+    ) -> Self {
+        self.initial_native_dependency = Some(port);
+        self
+    }
+
     /// Groups disjoint consumer capabilities without exposing their implementation.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -241,6 +252,7 @@ impl ServiceProviders {
         cursor_clock: Arc<dyn CursorMonotonicClock>,
     ) -> Self {
         Self {
+            initial_native_dependency: None,
             catalog,
             policy,
             authoritative,
@@ -604,6 +616,22 @@ impl RiffDbService {
 
     pub(crate) fn spawn_operation<T, F>(
         &self,
+        control: crate::RequestControl,
+        operation: ServiceOperationV1,
+        ingress: riffdb_types::ServiceIngressKindV1,
+        future: F,
+    ) -> ServiceFuture<'static, T>
+    where
+        T: ServiceResponseCharge + Send + 'static,
+        F: Future<Output = ServiceResult<T>> + Send + 'static,
+    {
+        self.spawn_operation_with_initial_dependency(Some(control), operation, ingress, future)
+    }
+
+    /// The principal-less bootstrap branch alone retains its original entry boundary.
+    pub(crate) fn spawn_operation_with_initial_dependency<T, F>(
+        &self,
+        control: Option<crate::RequestControl>,
         operation: ServiceOperationV1,
         ingress: riffdb_types::ServiceIngressKindV1,
         future: F,
@@ -617,9 +645,17 @@ impl RiffDbService {
         }
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
-        let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
         let spawn_submitted_at = Instant::now();
         let job = Box::pin(async move {
+            if let Some(control) = control
+                && let Err(failure) = job_inner
+                    .admit_initial_native_dependency(&control, Some(operation))
+                    .await
+            {
+                sender.complete(Err(failure));
+                return;
+            }
+            let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
             let result = observe_operation(
                 job_inner.as_ref(),
                 operation,
@@ -637,12 +673,17 @@ impl RiffDbService {
         Box::pin(trusted_service_job_completion(receipt))
     }
 
-    pub(crate) fn spawn_maintenance_operation<T, F>(&self, future: F) -> ServiceFuture<'static, T>
+    pub(crate) fn spawn_maintenance_operation<T, F>(
+        &self,
+        control: crate::RequestControl,
+        future: F,
+    ) -> ServiceFuture<'static, T>
     where
         T: ServiceResponseCharge + Send + 'static,
         F: Future<Output = ServiceResult<T>> + Send + 'static,
     {
         self.spawn_tracked_maintenance_operation(
+            control,
             Arc::new(MaintenanceSubmissionState::new()),
             future,
         )
@@ -650,6 +691,7 @@ impl RiffDbService {
 
     pub(crate) fn spawn_tracked_maintenance_operation<T, F>(
         &self,
+        control: crate::RequestControl,
         submission: Arc<MaintenanceSubmissionState>,
         future: F,
     ) -> ServiceFuture<'static, T>
@@ -663,6 +705,13 @@ impl RiffDbService {
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let job = Box::pin(async move {
+            if let Err(failure) = job_inner
+                .admit_initial_native_dependency(&control, None)
+                .await
+            {
+                sender.complete(Err(failure));
+                return;
+            }
             let result = match catch_maintenance_future_panic(future).await {
                 Ok(result) => result,
                 Err(()) if submission.may_have_been_submitted() => {
@@ -689,6 +738,8 @@ pub(crate) async fn observe_inline_operation<T, F>(
 where
     F: Future<Output = ServiceResult<T>>,
 {
+    // This contextual child runs only inside an already-admitted outer operation.
+    // A later dependency failure must retain ordinary terminal audit containment.
     service.executors.admit_operation(operation)?;
     observe_operation(
         service,

@@ -45,9 +45,12 @@ impl CommitApplication for RiffDbService {
     ) -> ServiceFuture<'_, GetCommitResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::GetCommit, ingress, async move {
-            get_commit(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::GetCommit,
+            ingress,
+            async move { get_commit(service, context, request).await },
+        )
     }
 
     fn scan_commits(
@@ -57,9 +60,12 @@ impl CommitApplication for RiffDbService {
     ) -> ServiceFuture<'_, ScanCommitsResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ScanCommits, ingress, async move {
-            scan_commits(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ScanCommits,
+            ingress,
+            async move { scan_commits(service, context, request).await },
+        )
     }
 
     fn subscribe_to_commits(
@@ -70,6 +76,7 @@ impl CommitApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::SubscribeToCommits,
             ingress,
             async move { subscribe_to_commits(service, context, request).await },
@@ -83,9 +90,12 @@ impl CommitApplication for RiffDbService {
     ) -> ServiceFuture<'_, TraceProvenanceResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::TraceProvenance, ingress, async move {
-            trace_provenance(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::TraceProvenance,
+            ingress,
+            async move { trace_provenance(service, context, request).await },
+        )
     }
 }
 

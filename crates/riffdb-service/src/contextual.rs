@@ -374,6 +374,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             riffdb_types::ServiceOperationV1::ConsumeContextualSubscription,
             ingress,
             async move {
@@ -398,6 +399,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             riffdb_types::ServiceOperationV1::AcknowledgeContextualSubscription,
             ingress,
             async move {
@@ -418,6 +420,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             riffdb_types::ServiceOperationV1::NegativeAcknowledgeContextualSubscription,
             ingress,
             async move {
@@ -443,6 +446,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             riffdb_types::ServiceOperationV1::GetContextualSubscriptionStatus,
             ingress,
             async move {
@@ -460,6 +464,7 @@ impl ContextualSubscriptionApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             riffdb_types::ServiceOperationV1::ExecuteContextualReaction,
             ingress,
             async move {

@@ -40,7 +40,9 @@ fn assert_committed(ports: &RedbOperationalPorts, ordinal: u64) {
 pub(super) fn prepare_two_sealed_commands(path: &Path) -> PathBuf {
     prepare_command_database(path);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(RedbStore::open_with_test_controller(path, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(path, controller).unwrap(),
+    );
     assert!(command_audit_phases(&ports).is_empty());
     seal(&ports, 1).wait().unwrap();
     seal(&ports, 2).wait().unwrap();
@@ -75,7 +77,7 @@ fn sealed_extent_retirement_waits_for_receipts_and_pinned_readers() {
 
     let path = TestDatabasePath::new("sealed-retirement-references");
     let extent_path = prepare_two_sealed_commands(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     commit_command_group(&ports, &[command_fixture_at(3)]);
     let lane = ports.online_retention_lane();
     let retain = NonZeroU64::new(1).unwrap();
@@ -132,7 +134,7 @@ fn sealed_extent_retirement_waits_for_receipts_and_pinned_readers() {
     drop(source);
     drop(lane);
     drop(ports);
-    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     assert_committed(&reopened, 3);
     assert_committed(&reopened, 4);
     assert!(matches!(
@@ -152,8 +154,9 @@ fn production_retention_lane_releases_receipts_then_retires_extent_after_reader_
     let path = TestDatabasePath::new("composed-receipt-retirement");
     let extent = prepare_two_sealed_commands(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports =
-        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(&path.0, controller).unwrap(),
+    );
     seal(&ports, 3).wait().unwrap();
     complete_checkpoint(&ports, &schedule);
     let lane = ports.online_retention_lane();
@@ -343,8 +346,9 @@ fn production_receipt_continuation_survives_command_audit_materialization() {
     let path = TestDatabasePath::new("receipt-continuation-command-audit");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports =
-        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(&path.0, controller).unwrap(),
+    );
     for ordinal in 1..=600 {
         seal(&ports, ordinal).wait().unwrap();
     }
@@ -358,8 +362,9 @@ fn production_receipt_continuation_survives_command_audit_materialization() {
         }
     }
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports =
-        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(&path.0, controller).unwrap(),
+    );
     let lane = ports.online_retention_lane();
     let mut removed = 0;
     let mut pruned = 0;
@@ -406,8 +411,9 @@ fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {
     let path = TestDatabasePath::new("sealed-large-bounded-prune");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports =
-        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(&path.0, controller).unwrap(),
+    );
     assert!(command_audit_phases(&ports).is_empty());
     for ordinal in 1..=257 {
         seal(&ports, ordinal).wait().unwrap();
@@ -430,7 +436,7 @@ fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {
             retention_deliver_outbox_status_at(&database, sequence);
         }
     }
-    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     commit_command_group(&ports, &[command_fixture_at(258)]);
     let lane = ports.online_retention_lane();
     for (through, sequences) in [(127, 127), (254, 127), (257, 3)] {
@@ -450,7 +456,7 @@ fn logical_pruning_crosses_a_large_sealed_extent_in_bounded_steps() {
     assert_committed(&ports, 258);
     drop(lane);
     drop(ports);
-    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     assert_committed(&reopened, 258);
     assert_eq!(
         reopened
@@ -493,7 +499,7 @@ fn an_installed_checkpoint_extent_is_sealed_with_a_footer_over_its_frames() {
     let path = TestDatabasePath::new("retained-extent-seal");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty()); // warm before the mutation lease
@@ -544,7 +550,8 @@ fn an_installed_checkpoint_extent_is_sealed_with_a_footer_over_its_frames() {
     );
 
     for _ in 0..2 {
-        let reopened = open_operational(RedbStore::open(&path.0).expect("restart"));
+        let reopened =
+            open_operational_completed_fixture(RedbStore::open(&path.0).expect("restart"));
         assert_committed(&reopened, 1);
         assert_committed(&reopened, 2);
         drop(reopened);
@@ -561,7 +568,7 @@ fn a_backup_carries_sealed_extents_so_a_restored_copy_resolves_its_history() {
     let path = TestDatabasePath::new("retained-extent-backup");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty());
@@ -622,7 +629,8 @@ fn a_backup_carries_sealed_extents_so_a_restored_copy_resolves_its_history() {
         sealed_journal_extents_fixture(&restored).expect("restored extents"),
         sealed
     );
-    let reopened = open_operational(RedbStore::open(&restored).expect("open restored"));
+    let reopened =
+        open_operational_completed_fixture(RedbStore::open(&restored).expect("open restored"));
     assert_committed(&reopened, 1);
     assert_committed(&reopened, 2);
     drop(reopened);
@@ -663,7 +671,7 @@ fn a_graceful_close_drains_journaled_history_as_history_stubs() {
     let path = TestDatabasePath::new("retained-extent-drain");
     prepare_command_database(&path.0);
     let baseline = history_stub_census_fixture(&path.0).expect("baseline census");
-    let ports = open_operational(RedbStore::open(&path.0).expect("open"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open"));
     seal(&ports, 1).wait().expect("publish first group");
     seal(&ports, 2).wait().expect("publish second group");
     // The graceful close barrier drains the published suffix synchronously.
@@ -687,7 +695,7 @@ fn a_graceful_close_drains_journaled_history_as_history_stubs() {
         baseline.journaled_full_receipts
     );
 
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
     assert_committed(&reopened, 1);
     assert_committed(&reopened, 2);
     drop(reopened);
@@ -708,7 +716,7 @@ fn crash_recovery_replays_journaled_history_as_history_stubs() {
     let baseline = history_stub_census_fixture(&path.0).expect("census after crash");
     assert_eq!(baseline.commits, (0, 0));
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("recover"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("recover"));
     assert_postcommit_command_state(&ports, &command_fixture());
     drop(ports);
     let census = history_stub_census_fixture(&path.0).expect("census after recovery");
@@ -725,7 +733,8 @@ fn crash_recovery_replays_journaled_history_as_history_stubs() {
         baseline.journaled_full_receipts
     );
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("repeat recovery"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("repeat recovery"));
     assert_postcommit_command_state(&ports, &command_fixture());
     drop(ports);
     let findings = collect_structural_findings(RedbStore::open(&path.0).expect("validate"));
@@ -762,7 +771,7 @@ fn a_crash_between_rotation_renames_recovers_to_fresh_extent_generations() {
     let path = TestDatabasePath::new("retained-extent-rotation-crash");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty());
@@ -782,7 +791,7 @@ fn a_crash_between_rotation_renames_recovers_to_fresh_extent_generations() {
     .expect("leave only the checkpoint name");
 
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("recover"),
     );
     let _ = command_audit_phases(&ports); // warm before the mutation lease
@@ -801,7 +810,7 @@ fn a_crash_between_rotation_renames_recovers_to_fresh_extent_generations() {
         sealed.len() >= 3 && generations.windows(2).all(|pair| pair[0] < pair[1]),
         "every retired extent seals under its own generation: {sealed:?}"
     );
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
     for ordinal in 1..=4 {
         assert_committed(&reopened, ordinal);
     }
@@ -815,7 +824,7 @@ fn a_crash_between_rotation_renames_recovers_to_fresh_extent_generations() {
 fn hydration_rewrites_every_history_stub_as_its_exact_value() {
     let path = TestDatabasePath::new("retained-extent-hydrate");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open"));
     seal(&ports, 1).wait().expect("publish first group");
     seal(&ports, 2).wait().expect("publish second group");
     assert_eq!(
@@ -842,7 +851,7 @@ fn hydration_rewrites_every_history_stub_as_its_exact_value() {
         );
     }
     // The hydrated values are exactly what the stubs resolved to.
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
     assert_committed(&reopened, 1);
     assert_committed(&reopened, 2);
     drop(reopened);
@@ -859,7 +868,7 @@ fn the_uncheckpointed_overlay_holds_history_stubs_not_segments() {
     let path = TestDatabasePath::new("retained-extent-overlay");
     prepare_command_database(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller).expect("controlled open"),
     );
     assert!(command_audit_phases(&ports).is_empty());
@@ -879,7 +888,7 @@ fn the_uncheckpointed_overlay_holds_history_stubs_not_segments() {
     assert_committed(&ports, 2);
     drop(ports);
     drop(schedule);
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
     assert_committed(&reopened, 1);
     assert_committed(&reopened, 2);
 }
@@ -989,14 +998,14 @@ fn history_readers_resolve_through_the_history_index() {
     );
     // Reopened, 1 and 2 resolve from the sealed extent, 3 from the live one.
     for _ in 0..2 {
-        let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+        let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
         for ordinal in 1..=3 {
             assert_history_readers(&ports, ordinal);
         }
         // A new command's stub resolves from the uncheckpointed frame in memory.
         drop(ports);
     }
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen"));
     let _ = command_audit_phases(&ports);
     seal(&ports, 4).wait().expect("publish fourth group");
     for ordinal in 1..=4 {
@@ -1029,7 +1038,7 @@ fn sealed_extent_crash_windows_recover_to_a_consistent_history_index() {
         );
 
         for _ in 0..2 {
-            let ports = open_operational(
+            let ports = open_operational_completed_fixture(
                 RedbStore::open(&path.0)
                     .unwrap_or_else(|error| panic!("recover {window}: {error:?}")),
             );
@@ -1150,7 +1159,7 @@ fn interference_seed_delivery_resolves_stopped_retained_history() {
         retention_tombstones(&path.0).is_empty(),
         "benchmark setup cannot prune authority"
     );
-    let ports = open_operational(RedbStore::open(&path.0).unwrap());
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     assert_committed(&ports, 1);
     assert_committed(&ports, 2);
 }
@@ -1226,8 +1235,9 @@ fn live_prefix_refresh_preserves_the_next_native_journal_allocation() {
     let path = TestDatabasePath::new("live-prefix-source-allocation");
     prepare_two_sealed_commands(&path.0);
     let (controller, schedule) = RedbTestController::checkpoint_schedule();
-    let ports =
-        open_operational(RedbStore::open_with_test_controller(&path.0, controller).unwrap());
+    let ports = open_operational_completed_fixture(
+        RedbStore::open_with_test_controller(&path.0, controller).unwrap(),
+    );
     seal(&ports, 3).wait().unwrap();
     complete_checkpoint(&ports, &schedule);
     let lane = ports.online_retention_lane();
@@ -1254,7 +1264,7 @@ fn live_prefix_refresh_preserves_the_next_native_journal_allocation() {
     drop(lane);
     drop(ports);
     drop(schedule);
-    let reopened = open_operational(RedbStore::open(&path.0).unwrap());
+    let reopened = open_operational_completed_fixture(RedbStore::open(&path.0).unwrap());
     assert_committed(&reopened, 5);
     assert!(matches!(
         reopened
@@ -1323,7 +1333,7 @@ fn pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged() {
     for (label, predecessor_marker) in [("writer-0", None), ("writer-1", Some(writer_1))] {
         let path = TestDatabasePath::new(&format!("pre-adr-0263-upgrade-{label}"));
         prepare_command_database(&path.0);
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open_with_commit_profile(&path.0, RedbCommitProfile::Hardened)
                 .expect("open hardened store"),
         );
@@ -1445,7 +1455,7 @@ fn pre_adr_0263_database_upgrades_offline_with_redb_history_unchanged() {
         drop(session);
 
         let (controller, schedule) = RedbTestController::checkpoint_schedule();
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open_with_test_controller(&path.0, controller).expect("open operational"),
         );
         let _ = command_audit_phases(&ports);

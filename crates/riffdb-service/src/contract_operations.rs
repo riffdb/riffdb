@@ -44,9 +44,12 @@ impl ContractApplication for RiffDbService {
     ) -> ServiceFuture<'_, ContractValidationResult> {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ValidateContract, ingress, async move {
-            validate_contract(&inner, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ValidateContract,
+            ingress,
+            async move { validate_contract(&inner, context, request).await },
+        )
     }
 
     fn explain_command(
@@ -56,9 +59,12 @@ impl ContractApplication for RiffDbService {
     ) -> ServiceFuture<'_, ExplainCommandResult> {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ExplainCommand, ingress, async move {
-            explain_command(&inner, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ExplainCommand,
+            ingress,
+            async move { explain_command(&inner, context, request).await },
+        )
     }
 
     fn deploy_contract(
@@ -68,9 +74,12 @@ impl ContractApplication for RiffDbService {
     ) -> ServiceFuture<'_, DeployContractResult> {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DeployContract, ingress, async move {
-            deploy_contract(&inner, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DeployContract,
+            ingress,
+            async move { deploy_contract(&inner, context, request).await },
+        )
     }
 
     fn get_active_contract(
@@ -80,9 +89,12 @@ impl ContractApplication for RiffDbService {
     ) -> ServiceFuture<'_, GetActiveContractResult> {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::GetActiveContract, ingress, async move {
-            get_active_contract(&inner, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::GetActiveContract,
+            ingress,
+            async move { get_active_contract(&inner, context, request).await },
+        )
     }
 
     fn get_contract_version(
@@ -93,6 +105,7 @@ impl ContractApplication for RiffDbService {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetContractVersion,
             ingress,
             async move { get_contract_version(&inner, context, request).await },

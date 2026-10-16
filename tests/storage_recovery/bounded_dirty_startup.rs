@@ -64,6 +64,7 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
             ports.clean_close_fast_startup(),
             "the bounded dirty path leaves population caches cold like the clean path"
         );
+        complete_fixture_locators(&ports);
         drop(ports);
         let snapshot = riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(path)
             .expect("read authority snapshot");
@@ -100,11 +101,14 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
         // rows, index rows, events, provenance, audit, and idempotency rows that
         // the old complete path would have enumerated before readiness.
         {
-            let ports = open_operational(RedbStore::open(&path.0).expect("open populated source"));
+            let ports = open_operational_completed_fixture(
+                RedbStore::open(&path.0).expect("open populated source"),
+            );
             for ordinal in 1..=24 {
                 let fixture = command_fixture_at(ordinal);
                 commit_command_fixture(&ports, &fixture);
             }
+            complete_fixture_locators(&ports);
             drop(ports);
         }
         let authority_before =
@@ -115,11 +119,13 @@ fn dirty_startup_reaches_readiness_without_a_population_walk() {
             authority_before.same_authority(&authority_after),
             "a bounded dirty restart must create no command, event, outcome, provenance, audit, projection, outbox, or allocator advance"
         );
+        complete_fixture_locators(&ports);
         drop(ports);
 
         // A second dirty restart repeats the same bounded shape and again
         // advances nothing.
         let (ports, second_walk_total, authority_final) = bounded_dirty_open(&path.0);
+        complete_fixture_locators(&ports);
         drop(ports);
         assert_eq!(
             second_walk_total, walk_total,
@@ -401,7 +407,8 @@ fn planted_population_corruption_fails_closed_on_every_first_touch_and_both_scru
         prepare_command_database(&path.0);
         let fixtures = (1..=4).map(command_fixture_at).collect::<Vec<_>>();
         {
-            let ports = open_operational(RedbStore::open(&path.0).expect("open source"));
+            let ports =
+                open_operational_completed_fixture(RedbStore::open(&path.0).expect("open source"));
             for fixture in &fixtures {
                 commit_command_fixture(&ports, fixture);
             }
@@ -431,6 +438,7 @@ fn planted_population_corruption_fails_closed_on_every_first_touch_and_both_scru
                 .into_operational_after_catalog_validation()
                 .expect("readiness despite the planted population defect")
         };
+        terminal_fixture_locators(&ports);
         let limit = StorageScanLimit::new(64).expect("scan limit");
         match defect {
             PlantedDefect::Entity => {

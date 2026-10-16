@@ -115,6 +115,18 @@ pub(crate) struct SharedRedbOperationalPorts {
 }
 
 impl SharedRedbOperationalPorts {
+    /// Captures one admitted dependency waiter without retaining this bridge's
+    /// synchronous port lock across construction completion or request waiting.
+    pub(crate) fn initial_native_dependency(
+        &self,
+    ) -> Result<Option<riffdb_storage_redb::OwnedNativeDependencyWait>, StorageError> {
+        // Distinguish refusal by a known Pending native owner from failure to
+        // access the bridge at all. The latter established no healthy Pending
+        // state and must retain systemic integrity handling at this boundary.
+        self.cell
+            .probe_initial_native_dependency(|ports| ports.initial_native_dependency())
+    }
+
     fn with_consumer<R>(
         &self,
         operation: impl FnOnce(&mut RedbEventConsumerPorts) -> Result<R, StorageError>,
@@ -462,6 +474,14 @@ impl<T> SharedStorageCell<T> {
         let _poison = StorageBridgePoisonGuard(&self.poison);
         operation(&mut guard)
     }
+
+    fn probe_initial_native_dependency<R>(
+        &self,
+        operation: impl FnOnce(&mut T) -> Result<R, StorageError>,
+    ) -> Result<R, StorageError> {
+        self.with_mut(|ports| Ok(operation(ports)))
+            .map_err(initial_dependency_bridge_error)?
+    }
 }
 
 impl<T> Clone for SharedStorageCell<T> {
@@ -479,6 +499,14 @@ impl<T> Clone for SharedStorageCell<T> {
 )]
 fn poisoned_storage_bridge() -> StorageError {
     StorageError::new(StorageErrorKind::InvariantViolation, None)
+}
+
+fn initial_dependency_bridge_error(error: StorageError) -> StorageError {
+    if error.kind() == StorageErrorKind::Unavailable {
+        StorageError::new(StorageErrorKind::InvariantViolation, error.incident_id())
+    } else {
+        error
+    }
 }
 
 #[derive(Default)]
@@ -2930,6 +2958,42 @@ mod tests {
             .with_mut(|()| Ok(()))
             .expect_err("poisoned cell must fail closed");
         assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+    }
+
+    #[test]
+    // req: API-001, REC-001, SEC-005
+    fn initial_dependency_probe_preserves_known_pending_refusal_and_bridge_integrity() {
+        let cell = SharedStorageCell::new(());
+        let error = cell
+            .probe_initial_native_dependency(|()| {
+                Err::<(), _>(StorageError::new(StorageErrorKind::Unavailable, None))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        let error = cell
+            .probe_initial_native_dependency(|()| {
+                Err::<(), _>(StorageError::new(StorageErrorKind::CorruptData, None))
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+
+        cell.poison.store(true, Ordering::Release);
+        let mut probed = false;
+        let error = cell
+            .probe_initial_native_dependency(|()| {
+                probed = true;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+        assert!(!probed, "a failed bridge cannot identify healthy Pending");
+        assert_eq!(
+            initial_dependency_bridge_error(
+                StorageError::new(StorageErrorKind::Unavailable, None,)
+            )
+            .kind(),
+            StorageErrorKind::InvariantViolation,
+        );
     }
 
     #[test]

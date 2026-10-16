@@ -1,11 +1,13 @@
 # WP-825: Initial native dependency admission review
 
 Status: ADR-0315, SPEC section 13.5 and the package registration were accepted
-in session on 2026-10-16. Implementation is in progress. The original service
-replay regression passes on the required host (receipt
-`a70791567eb180c6114b4fbe58b7a57d28791cfa13212ba43fa548c569f1d137`).
-Native edge checks and the unchanged public restore gate remain required;
-this note claims no completed source qualification or rehearsal.
+in session on 2026-10-16. The implementation passes the original service
+replay regression, all 10 service admission checks, the server bridge check,
+13 native admission/cancellation checks, and scoped Clippy on the required host.
+The final native check receipt is
+`549c58eba096e2ebc88822ea99574ee17af9b4a1a9d9e8b7227e8a9b4ec01fc9`.
+The unchanged public restore gate and complete source qualification remain
+required; this note claims no successful rehearsal.
 
 ## Problem and authority
 

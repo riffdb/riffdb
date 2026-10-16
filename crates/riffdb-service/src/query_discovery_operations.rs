@@ -122,9 +122,12 @@ impl QueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, GetEntityResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::GetEntity, ingress, async move {
-            get_entity(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::GetEntity,
+            ingress,
+            async move { get_entity(service, context, request).await },
+        )
     }
 
     fn scan_index(
@@ -134,9 +137,12 @@ impl QueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, ScanIndexResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::ScanIndex, ingress, async move {
-            scan_index(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::ScanIndex,
+            ingress,
+            async move { scan_index(service, context, request).await },
+        )
     }
 
     fn query_projection(
@@ -146,9 +152,12 @@ impl QueryApplication for RiffDbService {
     ) -> ServiceFuture<'_, QueryProjectionResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::QueryProjection, ingress, async move {
-            query_projection(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::QueryProjection,
+            ingress,
+            async move { query_projection(service, context, request).await },
+        )
     }
 
     fn get_projection_status(
@@ -159,6 +168,7 @@ impl QueryApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetProjectionStatus,
             ingress,
             async move { get_projection_status(service, context, request).await },
@@ -173,6 +183,7 @@ impl QueryApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::InspectVectorState,
             ingress,
             async move { inspect_vector_state(service, context, request).await },
@@ -189,6 +200,7 @@ impl crate::DiscoveryApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::DiscoverCommandTools,
             ingress,
             async move { discover_command_tools(service, context, request).await },
@@ -202,9 +214,12 @@ impl crate::DiscoveryApplication for RiffDbService {
     ) -> ServiceFuture<'_, DiscoverResourcesResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::DiscoverResources, ingress, async move {
-            discover_resources(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::DiscoverResources,
+            ingress,
+            async move { discover_resources(service, context, request).await },
+        )
     }
 
     fn get_reactive_wakeup(
@@ -213,9 +228,12 @@ impl crate::DiscoveryApplication for RiffDbService {
     ) -> ServiceFuture<'_, GetReactiveWakeupResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::GetReactiveWakeup, ingress, async move {
-            get_reactive_wakeup(service, context).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::GetReactiveWakeup,
+            ingress,
+            async move { get_reactive_wakeup(service, context).await },
+        )
     }
 }
 

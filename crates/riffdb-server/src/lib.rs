@@ -38,6 +38,7 @@ mod exact_text_adapter;
 mod exact_text_probe;
 mod hosted_mcp;
 mod identifiers;
+mod initial_native_dependency;
 mod installation_adapter;
 mod lifecycle;
 mod lifecycle_service;

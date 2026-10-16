@@ -334,6 +334,7 @@
             RedbStore::open_with_test_controller(&before_path.0, controller)
                 .expect("open with before-commit failure"),
         );
+        finish_locator_builder_before_uncertified_drop(&ports);
         let checkpoint_before = checkpoint_storage_bytes(&ports);
         let authority_before = allocator_bytes(&ports);
         let receipt = ports.complete_graceful_close();
@@ -375,6 +376,7 @@
             RedbStore::open_with_test_controller(&after_path.0, controller)
                 .expect("open with after-commit uncertainty"),
         );
+        finish_locator_builder_before_uncertified_drop(&ports);
         let checkpoint_before = checkpoint_storage_bytes(&ports);
         let authority_before = allocator_bytes(&ports);
         let receipt = ports.complete_graceful_close();

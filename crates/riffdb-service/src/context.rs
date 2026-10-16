@@ -170,7 +170,8 @@ impl RequestControl {
         Ok(control)
     }
 
-    fn fork(&self) -> Self {
+    /// Shares this invocation signal and absolute deadline for its one initial phase.
+    pub(crate) fn fork(&self) -> Self {
         Self {
             deadline: self.deadline,
             cancellation: Arc::clone(&self.cancellation),

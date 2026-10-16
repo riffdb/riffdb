@@ -82,6 +82,7 @@ impl ProjectedQueryApplication for RiffDbService {
         let inner = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::ExecuteProjectedQuery,
             ingress,
             async move { execute_projected_query(&inner, context, request).await },

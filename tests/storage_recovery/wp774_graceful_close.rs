@@ -4,7 +4,7 @@ fn crash_before_graceful_clean_commit_preserves_checkpoint_and_dirty_fallback() 
     let path = TestDatabasePath::new("before-graceful-clean-commit");
     prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open to seed CLEAN"));
     assert_eq!(
         ports.complete_graceful_close().lifecycle(),
         riffdb_storage_redb::GracefulLifecycleOutcomeV1::CleanCommitted
@@ -41,7 +41,7 @@ fn crash_after_graceful_clean_commit_preserves_checkpoint_and_atomic_clean() {
     let path = TestDatabasePath::new("after-graceful-clean-commit");
     prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open to seed CLEAN"));
     assert_eq!(
         ports.complete_graceful_close().lifecycle(),
         riffdb_storage_redb::GracefulLifecycleOutcomeV1::CleanCommitted
@@ -81,7 +81,7 @@ fn segmented_command_checkpoint_is_exact_current_without_decoding_audit_populati
     let path = TestDatabasePath::new("graceful-segmented-command-exact-current");
     prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("checkpoint command history"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("checkpoint command history"));
     drop(ports);
     let database = Database::create(&path.0).expect("open bounded metadata view");
     let read = database.begin_read().expect("read bounded metadata");
@@ -120,7 +120,7 @@ fn segmented_command_checkpoint_is_exact_current_without_decoding_audit_populati
     // Strip the checkpoint so this reopen validates completely and republishes
     // it over the same segmented history.
     strip_checkpoint_meta(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen segmented history"));
+    let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen segmented history"));
     assert_eq!(
         ports.complete_graceful_close().disposition(),
         riffdb_storage_redb::GracefulCheckpointDispositionV1::RetainedExactCurrent
@@ -143,7 +143,7 @@ fn process_graceful_checkpoint_close_crash_matrix_reaches_exact_dirty_ends() {
         let path = TestDatabasePath::new(&format!("graceful-stage-crash-{ordinal}"));
         prepare_legacy_clean_start_fixture(&path.0);
         let _ = prepare_committed_command_database(&path.0);
-        let ports = open_operational(RedbStore::open(&path.0).expect("open to seed CLEAN"));
+        let ports = open_operational_completed_fixture(RedbStore::open(&path.0).expect("open to seed CLEAN"));
         assert_eq!(
             ports.complete_graceful_close().lifecycle(),
             riffdb_storage_redb::GracefulLifecycleOutcomeV1::CleanCommitted
@@ -198,7 +198,7 @@ fn process_graceful_checkpoint_close_crash_matrix_reaches_exact_dirty_ends() {
             "dirty recovery must advance neither allocator"
         );
         if mode == "during-graceful-close-barrier" {
-            let ports = open_operational(
+            let ports = open_operational_completed_fixture(
                 RedbStore::open(&path.0).expect("reopen acknowledged deferred suffix"),
             );
             let fixture = command_fixture_at(2);

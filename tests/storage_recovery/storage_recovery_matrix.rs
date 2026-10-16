@@ -622,6 +622,34 @@ fn open_operational(store: RedbStore) -> RedbOperationalPorts {
         .expect("activate storage fixture; WP-130 owns catalog-proof composition")
 }
 
+/// Opt-in synchronization for fixtures whose NEXT step needs exact command
+/// locators or exclusive raw-engine access. Cold-start tests keep the original
+/// opener and assert readiness/zero population work before calling this.
+fn complete_fixture_locators(ports: &RedbOperationalPorts) {
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("finish the exact captured fixture source and release its builder");
+}
+
+/// Corruption fixtures retain their original first-touch assertions. The exact
+/// builder may itself discover corruption; temporary unavailability is never
+/// accepted as the required corruption outcome or retried.
+fn terminal_fixture_locators(ports: &RedbOperationalPorts) {
+    if let Err(error) = ports.wait_for_exact_locator_fixture_completion() {
+        assert_eq!(
+            error.kind(),
+            riffdb_storage_api::StorageErrorKind::CorruptData,
+            "the exact corrupt fixture must terminate with corruption, never Pending"
+        );
+    }
+}
+
+fn open_operational_completed_fixture(store: RedbStore) -> RedbOperationalPorts {
+    let ports = open_operational(store);
+    complete_fixture_locators(&ports);
+    ports
+}
+
 /// Which durable admission state the committing writer expects to find.
 ///
 /// The two shapes are not interchangeable durable histories: the fused shape
@@ -1182,7 +1210,7 @@ fn prepare_v1_command_database(path: &Path) {
 }
 
 fn activate_command_catalog(store: RedbStore) {
-    let mut ports = open_operational(store);
+    let mut ports = open_operational_completed_fixture(store);
     let bundle = contract_bundle();
     let result = ports
         .activate_catalog(&CatalogActivationIntentV1::new(
@@ -1266,7 +1294,7 @@ fn prepare_protected_command_database(
     store
         .initialize_database(database_id())
         .expect("initialize protected command database");
-    let mut ports = open_operational(store);
+    let mut ports = open_operational_completed_fixture(store);
     let intent = protected_event_capability_intent();
     assert!(matches!(
         ports
@@ -1635,7 +1663,9 @@ fn committed_index_entry(fixture: &CommandFixture) -> StoredIndexEntryV2 {
 fn prepare_committed_command_database(path: &Path) -> (CommandFixture, StoredIndexEntryV2) {
     prepare_command_database(path);
     let fixture = command_fixture();
-    let ports = open_operational(RedbStore::open(path).expect("reopen command fixture database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(path).expect("reopen command fixture database"),
+    );
     commit_command_fixture(&ports, &fixture);
     let index_entry = committed_index_entry(&fixture);
     drop(ports);
@@ -1648,7 +1678,9 @@ fn prepare_two_command_database(path: &Path) -> (CommandFixture, CommandFixture)
     prepare_command_database(path);
     let first = command_fixture_at(1);
     let second = command_fixture_at(2);
-    let ports = open_operational(RedbStore::open(path).expect("reopen command fixture database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(path).expect("reopen command fixture database"),
+    );
     commit_command_fixture(&ports, &first);
     commit_command_fixture(&ports, &second);
     drop(ports);
@@ -2220,11 +2252,11 @@ fn process_recovery_child() {
         "before-command-batch-commit"
         | "external-before-command-batch-commit"
         | "after-command-batch-commit" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             commit_command_fixture(&ports, &command_fixture());
         }
         "before-fresh-locator-publication" | "after-fresh-locator-publication" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             let fixture = two_phase_command_fixture_at(1);
             let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
                 .expect("fresh crash-child admission request");
@@ -2237,11 +2269,11 @@ fn process_recovery_child() {
             commit_command_fixture(&ports, &fixture);
         }
         "before-cross-aggregate-commit" | "after-cross-aggregate-commit" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             commit_cross_aggregate_fixture(&ports, &cross_aggregate_fixture());
         }
         "before-command-group-commit" | "after-command-group-commit" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
                 .map(|ordinal| {
                     command_fixture_at(u64::try_from(ordinal).expect("bounded fixture ordinal"))
@@ -2252,7 +2284,7 @@ fn process_recovery_child() {
         "before-deferred-command-commit"
         | "after-deferred-command-commit"
         | "after-command-epoch-tail" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             let epoch = ports
                 .begin_deferred_command_epoch()
                 .expect("begin child durability epoch");
@@ -2275,7 +2307,7 @@ fn process_recovery_child() {
             let _ = complete_startup_pass(store);
         }
         "during-graceful-close-barrier" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             let epoch = ports
                 .begin_deferred_command_epoch()
                 .expect("begin acknowledged deferred suffix");
@@ -2291,7 +2323,7 @@ fn process_recovery_child() {
         | "after-graceful-checkpoint-classification"
         | "before-graceful-clean-commit"
         | "after-graceful-clean-commit" => {
-            let ports = open_operational(store);
+            let ports = open_operational_completed_fixture(store);
             let _ = ports.complete_graceful_close();
         }
         _ => unreachable!("controller match rejects unknown modes"),
@@ -2353,19 +2385,25 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
     let fixture = command_fixture();
 
     prepare_command_database(&absent_twin.0);
-    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("open absent twin"));
+    let absent = open_operational_completed_fixture(
+        RedbStore::open(&absent_twin.0).expect("open absent twin"),
+    );
     assert_precommit_command_state(&absent, &fixture);
     absent
         .write_clean_close_lifecycle()
         .expect("certify absent twin");
     drop(absent);
     let absent_started = std::time::Instant::now();
-    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("reopen absent twin"));
+    let absent = open_operational_completed_fixture(
+        RedbStore::open(&absent_twin.0).expect("reopen absent twin"),
+    );
     let absent_open_us = absent_started.elapsed().as_micros().max(1);
     // Model the killed writer's completed activation without a CLEAN close.
     // V3 receipts retain this lifecycle transition even when no command commits.
     drop(absent);
-    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("recover absent twin"));
+    let absent = open_operational_completed_fixture(
+        RedbStore::open(&absent_twin.0).expect("recover absent twin"),
+    );
     absent
         .write_clean_close_lifecycle()
         .expect("recertify absent twin");
@@ -2374,23 +2412,26 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
         riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&absent_twin.0)
             .expect("snapshot absent clean twin");
     prepare_command_database(&committed_twin.0);
-    let committed =
-        open_operational(RedbStore::open(&committed_twin.0).expect("open committed twin"));
+    let committed = open_operational_completed_fixture(
+        RedbStore::open(&committed_twin.0).expect("open committed twin"),
+    );
     committed
         .write_clean_close_lifecycle()
         .expect("certify committed twin");
     drop(committed);
     let committed_started = std::time::Instant::now();
-    let committed =
-        open_operational(RedbStore::open(&committed_twin.0).expect("reopen committed twin"));
+    let committed = open_operational_completed_fixture(
+        RedbStore::open(&committed_twin.0).expect("reopen committed twin"),
+    );
     let committed_open_us = committed_started.elapsed().as_micros().max(1);
     // The committed oracle places the command at the same lifecycle position
     // as the child, not before its initial CLEAN certificate.
     commit_command_fixture(&committed, &fixture);
     assert_postcommit_command_state(&committed, &fixture);
     drop(committed);
-    let committed =
-        open_operational(RedbStore::open(&committed_twin.0).expect("recover committed twin"));
+    let committed = open_operational_completed_fixture(
+        RedbStore::open(&committed_twin.0).expect("recover committed twin"),
+    );
     committed
         .write_clean_close_lifecycle()
         .expect("recertify committed twin");
@@ -2399,7 +2440,9 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
         riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&committed_twin.0)
             .expect("snapshot committed clean twin");
     prepare_command_database(&path.0);
-    let clean = open_operational(RedbStore::open(&path.0).expect("open clean-close fixture"));
+    let clean = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open clean-close fixture"),
+    );
     clean
         .write_clean_close_lifecycle()
         .expect("write a matching clean-close certificate");
@@ -2407,7 +2450,7 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
     run_externally_killed_command_child(&path.0);
     riffdb_storage_redb::reset_last_repair_progress_for_tests();
     let repair_started = std::time::Instant::now();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open(&path.0).expect("ordinary reopen of externally killed redb writer"),
     );
     let repair_open_us = repair_started.elapsed().as_micros().max(1);
@@ -2457,7 +2500,9 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
 fn uncapsulated_then_audited_entity_history_refuses_before_mutation_and_reopens_clean() {
     let path = TestDatabasePath::new("uncapsulated-then-audited");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open command database"),
+    );
     let fixture = command_fixture();
 
     let error = try_commit_uncapsulated_command_fixture(&ports, &fixture)
@@ -2472,7 +2517,9 @@ fn uncapsulated_then_audited_entity_history_refuses_before_mutation_and_reopens_
     assert_postcommit_command_state(&ports, &fixture);
     drop(ports);
 
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen audited history"));
+    let reopened = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen audited history"),
+    );
     assert_postcommit_command_state(&reopened, &fixture);
 }
 
@@ -2480,7 +2527,9 @@ fn uncapsulated_then_audited_entity_history_refuses_before_mutation_and_reopens_
 fn audited_then_uncapsulated_entity_history_refuses_before_mutation_and_reopens_clean() {
     let path = TestDatabasePath::new("audited-then-uncapsulated");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open command database"),
+    );
     let first = command_fixture();
     commit_command_fixture(&ports, &first);
     let second = superseding_command_fixture_at(2, 1, &first);
@@ -2505,7 +2554,9 @@ fn audited_then_uncapsulated_entity_history_refuses_before_mutation_and_reopens_
     );
     drop(ports);
 
-    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen audited history"));
+    let reopened = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen audited history"),
+    );
     assert_postcommit_command_state(&reopened, &first);
     assert_eq!(
         reopened
@@ -2898,7 +2949,7 @@ fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_
         prepare_command_database(&path.0);
         run_crashing_child(mode, &path.0);
 
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open(&path.0).expect("recover killed fresh-locator publication"),
         );
         let prior = two_phase_command_fixture_at(1);
@@ -2915,7 +2966,7 @@ fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_
         );
         let _clean = ports.complete_graceful_close();
         drop(ports);
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open(&path.0).expect("clean reopen after killed publication recovery"),
         );
 
@@ -3316,7 +3367,7 @@ fn unknown_tail_status_keeps_the_predecessor_frontier_and_fences_writes() {
     prepare_command_database(&path.0);
     let controller =
         RedbTestController::return_unknown_after_commit(RedbTestOperation::CommandEpochTail);
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller)
             .expect("reopen controlled command database"),
     );
@@ -3346,8 +3397,9 @@ fn unknown_tail_status_keeps_the_predecessor_frontier_and_fences_writes() {
     );
     drop(ports);
 
-    let reopened =
-        open_operational(RedbStore::open(&path.0).expect("reopen known-committed epoch"));
+    let reopened = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen known-committed epoch"),
+    );
     assert_postcommit_command_state(&reopened, &fixture);
 }
 
@@ -3903,11 +3955,15 @@ fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
         prepare_command_database(&path.0);
         run_crashing_child_with_profile("after-command-batch-commit", &path.0, profile);
 
-        let ports = open_operational(RedbStore::open(&path.0).expect("recover postcommit crash"));
+        let ports = open_operational_completed_fixture(
+            RedbStore::open(&path.0).expect("recover postcommit crash"),
+        );
         assert_postcommit_command_state(&ports, &command_fixture());
         drop(ports);
 
-        let ports = open_operational(RedbStore::open(&path.0).expect("repeat postcommit recovery"));
+        let ports = open_operational_completed_fixture(
+            RedbStore::open(&path.0).expect("repeat postcommit recovery"),
+        );
         assert_postcommit_command_state(&ports, &command_fixture());
     }
 }
@@ -3935,8 +3991,9 @@ fn crash_after_epoch_tail_preserves_the_complete_reciprocal_graph() {
     prepare_command_database(&path.0);
     run_crashing_child("after-command-epoch-tail", &path.0);
 
-    let ports =
-        open_operational(RedbStore::open(&path.0).expect("recover known-durable epoch tail crash"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("recover known-durable epoch tail crash"),
+    );
     assert_postcommit_command_state(&ports, &command_fixture());
 }
 
@@ -3977,13 +4034,17 @@ fn serial_group_crash_before_commit_leaves_every_command_absent() {
 fn segmented_group_commits_and_reopens_without_a_failpoint() {
     let path = TestDatabasePath::new("segmented-command-group");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open grouped database"),
+    );
     let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
         .map(|ordinal| command_fixture_at(u64::try_from(ordinal).expect("bounded ordinal")))
         .collect::<Vec<_>>();
     commit_command_group(&ports, &fixtures);
     drop(ports);
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen grouped database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen grouped database"),
+    );
     for fixture in fixtures {
         assert_eq!(
             ports
@@ -4012,7 +4073,9 @@ fn segmented_group_commits_and_reopens_without_a_failpoint() {
 fn independent_command_audit_links_resolve_every_member_of_one_segment() {
     let path = TestDatabasePath::new("independent-command-link-segment");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open grouped database"),
+    );
     let fixtures = (1..=4_u64).map(command_fixture_at).collect::<Vec<_>>();
     commit_command_group(&ports, &fixtures);
     drop(ports);
@@ -4033,7 +4096,9 @@ fn independent_command_audit_links_resolve_every_member_of_one_segment() {
     drop(read);
     drop(database);
 
-    let mut ports = open_operational(RedbStore::open(&path.0).expect("reopen for replay audits"));
+    let mut ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen for replay audits"),
+    );
     for (index, fixture) in fixtures.iter().enumerate() {
         let request = RequestId::from_bytes(uuid_bytes(
             0xa0_u8.wrapping_add(u8::try_from(index).expect("bounded fixture index")),
@@ -4129,7 +4194,9 @@ fn independent_command_audit_links_resolve_every_member_of_one_segment() {
 fn retention_splits_a_segment_and_rechains_the_retained_suffix() {
     let path = TestDatabasePath::new("retention-split-command-segment");
     prepare_command_database(&path.0);
-    let ports = open_operational(RedbStore::open(&path.0).expect("open grouped database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open grouped database"),
+    );
     let fixtures = (1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS)
         .map(|ordinal| command_fixture_at(u64::try_from(ordinal).expect("bounded ordinal")))
         .collect::<Vec<_>>();
@@ -4159,7 +4226,8 @@ fn retention_splits_a_segment_and_rechains_the_retained_suffix() {
         findings.is_empty(),
         "split segment must reopen clean: {findings:?}"
     );
-    let ports = open_operational(RedbStore::open(&path.0).expect("open split database"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("open split database"));
     assert_eq!(
         ports
             .read_commit(CommitSequence::new(33).expect("retained sequence"))
@@ -4185,7 +4253,9 @@ fn serial_group_crash_after_commit_preserves_every_complete_command() {
         RedbCommitProfile::Standard,
     );
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("recover group postcommit crash"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("recover group postcommit crash"),
+    );
     for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
         let fixture = command_fixture_at(u64::try_from(ordinal).expect("bounded fixture ordinal"));
         let AdmissionLookupResultV1::Found(admission) = ports
@@ -4985,8 +5055,8 @@ fn durable_locators_are_written_without_populating_the_counted_tables() {
 }
 
 /// ADR-0244's central guarantee: a durably committed command is recognised as
-/// already admitted after a bounded startup by warming the transient
-/// command-derived index before admission proceeds.
+/// already admitted after a bounded startup by completing its captured
+/// background command-derived index before admission proceeds.
 #[test]
 // req: REC-004
 fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
@@ -4995,7 +5065,8 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     let (fixture, _) = prepare_committed_command_database(&path.0);
 
     // Certify a clean close so the next open takes the bounded path.
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen to certify"));
     ports
         .write_clean_close_lifecycle()
         .expect("write clean-close certificate");
@@ -5009,7 +5080,17 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     assert_eq!(
         ports.transient_index_rebuilds(),
         0,
-        "the bounded path must leave the population caches cold"
+        "the bounded handoff must not synchronously rebuild population indexes"
+    );
+    assert_eq!(ports.transient_index_commit_rows(), 0);
+
+    complete_fixture_locators(&ports);
+    assert!(
+        ports
+            .initial_native_dependency()
+            .expect("completed fixture retains its bound current-source proof")
+            .is_none(),
+        "the exact background proof is complete before command admission"
     );
 
     // Re-admit the same idempotency identity. Proceeding would mean the writer
@@ -5020,15 +5101,17 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
         .begin_candidate(Box::new(fixture.intent.clone()))
         .expect("begin candidate");
     let outcome = candidate.recheck_admission().expect("recheck admission");
-    assert!(
-        !matches!(outcome, CandidateAdmissionResult::Proceed(_)),
-        "a durably committed command must not be admitted again after a bounded start"
-    );
+    let CandidateAdmissionResult::StoredOutcome { prior, outcome } = outcome else {
+        panic!("the durably committed command must resolve to its original stored outcome");
+    };
+    assert_eq!(&outcome, fixture.records.stored_outcome());
+    drop(prior);
     assert_eq!(
         ports.transient_index_rebuilds(),
-        1,
-        "recognising it warms the transient command-derived index once"
+        0,
+        "admission must not synchronously rebuild the already completed captured source"
     );
+    assert_eq!(ports.transient_index_commit_rows(), 0);
 }
 
 /// A write on a bounded (index-dormant) start must validate the administration
@@ -5039,7 +5122,8 @@ fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
     prepare_legacy_clean_start_fixture(&path.0);
     let _ = prepare_committed_command_database(&path.0);
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen to certify"));
     ports
         .write_clean_close_lifecycle()
         .expect("write clean-close certificate");
@@ -5051,6 +5135,8 @@ fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
         "the certified database must take the bounded path"
     );
     assert_eq!(ports.transient_index_rebuilds(), 0);
+
+    complete_fixture_locators(&ports);
 
     // Committing a second command validates the administration tail, which
     // reads the AUDIT row written for the first command's audits.
@@ -5123,9 +5209,11 @@ fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
     prepare_legacy_clean_start_fixture(&path.0);
     let (first, second) = prepare_two_command_database(&path.0);
 
-    // 1. Bounded open leaves population index dormant; command-derived lookups
-    // warm the transient index and never report absence for committed commands.
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    // 1. Bounded open performs no synchronous population construction. Complete
+    // its admitted captured builder before reads; committed commands never
+    // become absent, and the reads themselves perform no population rebuild.
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("reopen to certify"));
     ports
         .write_clean_close_lifecycle()
         .expect("write clean-close certificate");
@@ -5134,6 +5222,15 @@ fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
     let ports = open_operational(RedbStore::open(&path.0).expect("bounded reopen"));
     assert!(ports.clean_close_fast_startup());
     assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(ports.transient_index_commit_rows(), 0);
+    complete_fixture_locators(&ports);
+    assert!(
+        ports
+            .initial_native_dependency()
+            .expect("completed fixture retains its bound current-source proof")
+            .is_none(),
+        "the exact background proof is complete before locator-dependent reads"
+    );
     assert_eq!(
         ports
             .read_stored_outcome(first.pending.identity())
@@ -5141,7 +5238,8 @@ fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
             .as_ref(),
         Some(first.records.stored_outcome())
     );
-    assert_eq!(ports.transient_index_rebuilds(), 1);
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(ports.transient_index_commit_rows(), 0);
     assert_eq!(
         ports
             .read_provenance(second.records.provenance().provenance_id())
@@ -5149,6 +5247,8 @@ fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
             .as_ref(),
         Some(second.records.provenance())
     );
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(ports.transient_index_commit_rows(), 0);
     drop(ports);
 
     // 2. A CommandLocator in IDEMPOTENCY or PROVENANCE whose target segment is
@@ -5186,6 +5286,9 @@ fn a_missing_or_mismatched_locator_is_corruption_not_absence() {
     );
 
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen with bad locators"));
+    // Complete only this captured construction before exercising the planted
+    // locator faults. Pending is not the corruption outcome under test.
+    terminal_fixture_locators(&ports);
     assert_eq!(
         ports
             .read_stored_outcome(third.pending.identity())
@@ -5233,6 +5336,7 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
     let ports = open_operational(RedbStore::open(&prior_path.0).expect("bounded reopen"));
     assert!(ports.clean_close_fast_startup());
     assert_eq!(ports.transient_index_rebuilds(), 0);
+    complete_fixture_locators(&ports);
     for fixture in [&first, &second] {
         let AdmissionLookupResultV1::Found(state) = ports
             .lookup_admission(fixture.candidates.clone())
@@ -5348,18 +5452,21 @@ fn insert_raw_row(path: &Path, table_name: &str, key: &[u8], value: &[u8]) {
 /// Re-admits the fixture over a bounded (index-dormant) open and reports
 /// whether the writer failed closed rather than treating the command as absent.
 fn readmission_is_corrupt(path: &Path, fixture: &CommandFixture) -> bool {
-    let ports = open_operational(RedbStore::open(path).expect("reopen to certify"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(path).expect("reopen to certify"));
     ports
         .write_clean_close_lifecycle()
         .expect("write clean-close certificate");
     drop(ports);
-    let ports = open_operational(RedbStore::open(path).expect("bounded reopen"));
+    let ports = open_operational_completed_fixture(RedbStore::open(path).expect("bounded reopen"));
     assert!(ports.clean_close_fast_startup());
-    let Ok(batch) = ports.begin_empty_batch() else {
-        return true;
+    let batch = match ports.begin_empty_batch() {
+        Ok(batch) => batch,
+        Err(error) => return error.kind() == riffdb_storage_api::StorageErrorKind::CorruptData,
     };
-    let Ok(candidate) = batch.begin_candidate(Box::new(fixture.intent.clone())) else {
-        return true;
+    let candidate = match batch.begin_candidate(Box::new(fixture.intent.clone())) {
+        Ok(candidate) => candidate,
+        Err(error) => return error.kind() == riffdb_storage_api::StorageErrorKind::CorruptData,
     };
     match candidate.recheck_admission() {
         Err(error) => error.kind() == riffdb_storage_api::StorageErrorKind::CorruptData,
@@ -5834,7 +5941,8 @@ fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
     retention_deliver_outbox_status_raw(&path.0, 1);
     retention_deliver_outbox_status_raw(&path.0, 2);
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("certification open"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("certification open"));
     ports
         .write_clean_close_lifecycle()
         .expect("certify pre-retention lifecycle");
@@ -5927,7 +6035,8 @@ fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
     );
 
     // Reads above the watermark are unchanged; reads below are typed pruned.
-    let ports = open_operational(RedbStore::open(&path.0).expect("operational reopen"));
+    let ports =
+        open_operational_completed_fixture(RedbStore::open(&path.0).expect("operational reopen"));
     let retained = ports
         .read_commit(second.records.commit().commit_sequence())
         .expect("read retained commit")
@@ -6092,7 +6201,9 @@ fn retention_stale_checkpoint_bound_to_wrong_watermark_is_ignored() {
     };
     // Commit sequence 2 so the retained head stays above the pruned prefix.
     let second = command_fixture_at(2);
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen for second commit"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen for second commit"),
+    );
     commit_command_fixture(&ports, &second);
     drop(ports);
     retention_deliver_outbox_status_raw(&path.0, 1);
@@ -7748,7 +7859,9 @@ fn overwrite_raw_administration_allocator(path: &Path, allocator: Administration
 fn prepare_two_phase_admitted_command(path: &Path) -> (CommandFixture, AdministrationSequence) {
     prepare_command_database(path);
     let fixture = two_phase_command_fixture_at(1);
-    let ports = open_operational(RedbStore::open(path).expect("reopen for audited admission"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(path).expect("reopen for audited admission"),
+    );
     let admitted = admit_audited_command(&ports, &fixture);
     let started_sequence = admitted.started().administration_sequence();
     commit_two_phase_command_fixture(&ports, &fixture);
@@ -7790,7 +7903,9 @@ fn two_phase_admitted_command_reopens_clean() {
          discontinuity: {findings:?}"
     );
 
-    let ports = open_operational(RedbStore::open(&path.0).expect("open after two-phase commit"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open after two-phase commit"),
+    );
     assert_eq!(
         command_audit_phases(&ports),
         vec![ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
@@ -7844,7 +7959,9 @@ fn clean_close_fast_startup_resolves_command_owned_audit_members() {
     prepare_legacy_clean_start_fixture(&path.0);
     prepare_command_database(&path.0);
     let fixture = command_fixture();
-    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open command database"),
+    );
     commit_command_fixture(&ports, &fixture);
     assert_eq!(
         command_audit_phases(&ports),
@@ -7856,8 +7973,9 @@ fn clean_close_fast_startup_resolves_command_owned_audit_members() {
         .expect("write the final clean-close certificate");
     drop(ports);
 
-    let ports =
-        open_operational(RedbStore::open(&path.0).expect("reopen the cleanly closed database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen the cleanly closed database"),
+    );
     assert!(
         ports.clean_close_fast_startup(),
         "the certificate must select the fast path; without it this arm would \
@@ -7892,15 +8010,18 @@ fn clean_close_fast_startup_warms_under_a_live_catalog_read() {
     prepare_legacy_clean_start_fixture(&path.0);
     prepare_command_database(&path.0);
     let fixture = command_fixture();
-    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("open command database"),
+    );
     commit_command_fixture(&ports, &fixture);
     ports
         .write_clean_close_lifecycle()
         .expect("write the final clean-close certificate");
     drop(ports);
 
-    let ports =
-        open_operational(RedbStore::open(&path.0).expect("reopen the cleanly closed database"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&path.0).expect("reopen the cleanly closed database"),
+    );
     assert!(
         ports.clean_close_fast_startup(),
         "the certificate must select the fast path, leaving the index cold"
@@ -7969,6 +8090,8 @@ fn conflicting_physical_and_derived_audit_records_refuse_open() {
         .3
         .into_operational_after_catalog_validation()
         .expect("the bounded dirty path reaches readiness");
+
+    terminal_fixture_locators(&ports);
 
     let first_access = ports.scan_administration_audit(AdministrationAuditScanRequest::new(
         None,
@@ -9402,7 +9525,7 @@ fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
         run_crashing_child_with_profile("after-cross-aggregate-commit", &path.0, profile);
 
         let fixture = cross_aggregate_fixture();
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open(&path.0).expect("recover postcommit cross-aggregate crash"),
         );
         assert_cross_aggregate_present(&ports, &fixture);
@@ -9410,7 +9533,7 @@ fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
 
         // Recovery is idempotent: a second open must not complete a partially
         // observed write differently from the first.
-        let ports = open_operational(
+        let ports = open_operational_completed_fixture(
             RedbStore::open(&path.0).expect("repeat postcommit cross-aggregate recovery"),
         );
         assert_cross_aggregate_present(&ports, &fixture);
@@ -9533,7 +9656,7 @@ fn absence_answers_are_unchanged_without_fresh_locator_coverage() {
     let path = TestDatabasePath::new("adr-0236-absence-answers");
     prepare_command_database(&path.0);
     let controller = RedbTestController::observe_index_migration();
-    let ports = open_operational(
+    let ports = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, controller.clone())
             .expect("open fresh database"),
     );
@@ -9594,7 +9717,7 @@ fn absence_answers_are_unchanged_without_fresh_locator_coverage() {
     let _clean = ports.complete_graceful_close();
     drop(ports);
     let reopened_controller = RedbTestController::observe_index_migration();
-    let reopened = open_operational(
+    let reopened = open_operational_completed_fixture(
         RedbStore::open_with_test_controller(&path.0, reopened_controller.clone())
             .expect("reopen after a clean close"),
     );
@@ -9966,6 +10089,7 @@ fn planted_row_corruption_fails_closed_on_first_access_after_dirty_startup() {
         failure_again.kind(),
         riffdb_storage_api::StorageErrorKind::CorruptData
     );
+    terminal_fixture_locators(&ports);
     drop(ports);
     let authority_after =
         riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)

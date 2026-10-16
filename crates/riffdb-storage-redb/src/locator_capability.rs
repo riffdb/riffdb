@@ -23,6 +23,21 @@ use riffdb_types::{DatabaseId, SchemaHash};
 
 static NATIVE_PROVIDER_ADMISSION: Mutex<()> = Mutex::new(());
 
+fn initial_dependency_proof_error(kind: StorageErrorKind) -> StorageError {
+    // The existing worker contains a panic by invalidating its proof with
+    // Unavailable. It is not healthy Pending capacity backpressure. Keep the
+    // generic storage policy unchanged while initial admission signals the
+    // existing systemic integrity handling for that invalidated proof.
+    StorageError::new(
+        if kind == StorageErrorKind::Unavailable {
+            StorageErrorKind::InvariantViolation
+        } else {
+            kind
+        },
+        None,
+    )
+}
+
 /// One bounded numerical plan covers both provider discovery and future
 /// completion. Lock order is global admission, stable sharing-family guards,
 /// then capability/engine attachment guards and provider accounting.
@@ -62,7 +77,6 @@ struct Completion {
     build_started: AtomicBool,
     binding: OnceLock<(DatabaseId, u64, SchemaHash)>,
     provider: Mutex<Option<ProviderBinding>>,
-    #[cfg(test)]
     changed: std::sync::Condvar,
     // Release roots before the reserved final-owner retirement barrier.
     _owner: LocatorOwner,
@@ -88,7 +102,6 @@ impl LocatorRetireContents for Completion {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take(),
             ),
-            #[cfg(test)]
             changed: std::sync::Condvar::new(),
         }
     }
@@ -134,7 +147,6 @@ impl LocatorCapability {
                     build_started: AtomicBool::new(false),
                     binding: OnceLock::new(),
                     provider: Mutex::new(None),
-                    #[cfg(test)]
                     changed: std::sync::Condvar::new(),
                 })
             },
@@ -182,18 +194,16 @@ impl LocatorCapability {
         if let Some(state) = &self.completion {
             // Completion waiters observe the complete process_job handoff,
             // including ancillary Ready, rather than only its OnceLock write.
-            #[cfg(test)]
             let _predicate = state
                 .provider
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.build_started.store(false, Ordering::Release);
-            #[cfg(test)]
             state.changed.notify_all();
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(crate) fn wait_for_builder_for_test(&self) -> Result<(), StorageError> {
         let state = self
             .completion
@@ -352,6 +362,21 @@ impl LocatorCapability {
         Ok(generation)
     }
 
+    /// Initial admission distinguishes an invalidated proof from an attempt
+    /// that ended under ordinary capacity pressure and remained Pending.
+    pub(crate) fn require_complete_initial_dependency(
+        &self,
+    ) -> Result<&LocatorGeneration, StorageError> {
+        if let Some(Err(kind)) = self
+            .completion
+            .as_ref()
+            .and_then(|state| state.generation.get())
+        {
+            return Err(initial_dependency_proof_error(*kind));
+        }
+        self.require_complete()
+    }
+
     pub(crate) fn install_generation(
         &self,
         generation: LocatorGeneration,
@@ -401,14 +426,74 @@ impl LocatorCapability {
             .generation
             .set(Ok(generation))
             .map_err(|_| StorageError::new(StorageErrorKind::InvariantViolation, None))?;
-        #[cfg(test)]
         state.changed.notify_all();
         Ok(())
     }
 
     pub(crate) fn invalidate(&self, kind: StorageErrorKind) {
         if let Some(state) = &self.completion {
+            let _predicate = state
+                .provider
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let _ = state.generation.set(Err(kind));
+            state.changed.notify_all();
+        }
+    }
+
+    /// Cancellation and completion share the predicate mutex so a wake cannot
+    /// fall between checking the request flag and entering the condition wait.
+    pub(crate) fn wake_initial_dependency_waiters(&self) {
+        if let Some(state) = &self.completion {
+            let _predicate = state
+                .provider
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.changed.notify_all();
+        }
+    }
+
+    pub(crate) fn wait_for_initial_dependency(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<(), StorageError> {
+        self.wait_for_initial_dependency_with(cancelled, || {})
+    }
+
+    pub(crate) fn wait_for_initial_dependency_with(
+        &self,
+        cancelled: &AtomicBool,
+        mut before_wait: impl FnMut(),
+    ) -> Result<(), StorageError> {
+        let state = self
+            .completion
+            .as_ref()
+            .ok_or_else(|| StorageError::new(StorageErrorKind::InvariantViolation, None))?;
+        let mut predicate = state
+            .provider
+            .lock()
+            .map_err(|_| StorageError::new(StorageErrorKind::InvariantViolation, None))?;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(StorageError::new(StorageErrorKind::Unavailable, None));
+            }
+            match state.generation.get() {
+                Some(Err(kind)) => return Err(initial_dependency_proof_error(*kind)),
+                Some(Ok(_)) if !state.build_started.load(Ordering::Acquire) => {
+                    return self.require_complete().map(|_| ());
+                }
+                None if !state.build_started.load(Ordering::Acquire) => {
+                    // This exact attempt ended without a complete directory.
+                    // A dependency wait never restarts an unchanged owner.
+                    return Err(StorageError::new(StorageErrorKind::Unavailable, None));
+                }
+                _ => {}
+            }
+            before_wait();
+            predicate = state
+                .changed
+                .wait(predicate)
+                .map_err(|_| StorageError::new(StorageErrorKind::InvariantViolation, None))?;
         }
     }
 
@@ -429,6 +514,35 @@ impl LocatorCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: SEC-005, STO-032, REC-001
+    #[test]
+    fn initial_dependency_predicate_poison_is_integrity_and_cleanup_still_wakes() {
+        let pending = bound_pending();
+        assert!(pending.request_build());
+        let state = pending.completion.as_ref().unwrap();
+        let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _predicate = state.provider.lock().unwrap();
+            panic!("deterministic initial completion predicate poison");
+        }));
+        assert!(poison.is_err());
+        assert_eq!(
+            pending
+                .wait_for_initial_dependency(&AtomicBool::new(false))
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::InvariantViolation,
+        );
+        // Final cleanup must notify and release ownership even after poison;
+        // it does not grant an incomplete generation membership authority.
+        pending.wake_initial_dependency_waiters();
+        pending.release_build_request();
+        assert!(pending.is_pending());
+        assert_eq!(
+            pending.require_complete().err().unwrap().kind(),
+            StorageErrorKind::Unavailable
+        );
+    }
 
     fn bound_pending() -> LocatorCapability {
         let pending = LocatorCapability::try_pending(LocatorAllocationClass::Ordinary).unwrap();

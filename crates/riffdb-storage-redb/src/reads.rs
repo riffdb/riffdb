@@ -284,13 +284,10 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         sequence: CommitSequence,
     ) -> Result<Option<StoredCommitRecordV1>, StorageError> {
-        if let Some(command) = self.indexed_command_at(sequence)? {
-            if command.commit_sequence() != sequence {
-                return Err(corrupt());
-            }
-            return Ok(Some(command.base().commit().clone()));
-        }
         let transaction = self.begin_composite_read()?;
+        // A sequence directly addresses one bounded authority row. It does not
+        // depend on a complete population locator proof: damaged unrelated
+        // history must not prevent reading this captured healthy sequence.
         // Verified at open and raised by each online retention step before
         // its deletion becomes visible, so loading it after capturing the
         // snapshot classifies an absent pruned row as HistoryPruned.
@@ -355,50 +352,29 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         &self,
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
-        if let Some(command) = self.indexed_command_at(event_id.commit_sequence())? {
+        let transaction = self.begin_composite_read()?;
+        // Verified at open and raised by online retention (see read_commit).
+        let watermark = self.shared.retention_watermark();
+        // Event ids carry their owning sequence. Resolve its one captured
+        // authority row directly, independently of unrelated locator failures.
+        if let Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(capsule)) =
+            command_member_at_access(&transaction, event_id.commit_sequence())?
+        {
+            if capsule.base().commit_sequence() != event_id.commit_sequence() {
+                return Err(corrupt());
+            }
             let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
-            let event = command.events().get(ordinal).ok_or_else(corrupt)?;
+            let event = capsule.events().get(ordinal).ok_or_else(corrupt)?;
             if event.event_id() != event_id {
                 return Err(corrupt());
             }
             return Ok(Some(event.clone()));
         }
-        let transaction = self.begin_composite_read()?;
-        // Verified at open and raised by online retention (see read_commit).
-        let watermark = self.shared.retention_watermark();
         let encoded_key = encode_event_key(event_id);
         let Some(encoded) = transaction.read_value(JournalTable::Events, &encoded_key)? else {
-            // Segment-owned events have no physical EVENTS row, so an index miss
-            // plus an empty table is NOT absence. `EVENTS` holds zero rows in
-            // the current layout, which made this the whole answer whenever the
-            // transient index was dormant: a durable event read as absent
-            // (ADR-0156 §5 forbids converting cold state into absence).
-            //
-            // Unlike the idempotency and provenance keys, an event id carries
-            // its commit sequence, so the owning segment is directly addressable
-            // in `COMMITS` and needs no durable locator row. This is the same
-            // fallback `read_commit` already performs.
-            // Only a V2 capsule embeds its events; a historical V1 row always
-            // has its own physical EVENTS row, so its absence here is genuine.
-            if let Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(capsule)) =
-                crate::command_authority::command_member_at_access(
-                    &transaction,
-                    event_id.commit_sequence(),
-                )?
-            {
-                if capsule.base().commit_sequence() != event_id.commit_sequence() {
-                    return Err(corrupt());
-                }
-                let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
-                // Fail closed, never absent: the segment owning this sequence is
-                // present, so a missing ordinal or mismatched identity is
-                // corruption, not a missing event.
-                let event = capsule.events().get(ordinal).ok_or_else(corrupt)?;
-                if event.event_id() != event_id {
-                    return Err(corrupt());
-                }
-                return Ok(Some(event.clone()));
-            }
+            // Modern segment-owned events were resolved above, including
+            // ordinal/identity refusal. Historical rows own physical EVENTS;
+            // absence here cannot be manufactured by a cold population index.
             if crate::retention::sequence_covered_by_watermark(
                 event_id.commit_sequence().get(),
                 watermark,

@@ -572,16 +572,11 @@ pub(crate) struct SharedRedb {
     /// false, so a caller that skips normalization on the strength of this flag
     /// can only do so on proof.
     outbox_delivering_proven_absent: AtomicBool,
-    /// Transient population-index rebuilds performed on this handle, and the
-    /// `COMMITS` rows each one walked.
-    ///
-    /// The rebuild decodes every command segment, re-derives every manifest
-    /// key, and retains every segment, so it is the most expensive thing this
-    /// adapter does at open. Bounded clean-close startup deliberately skips it
-    /// and leaves the caches cold, but `ensure_transient_indexes_ready` will
-    /// still build them on the first derived read — which can be before
-    /// readiness. Counted so a "bounded" start that paid for it anyway is
-    /// visible rather than inferred from wall clock.
+    /// Synchronous population-index rebuilds and their walked `COMMITS` rows.
+    /// Full source/follower activation records this work; a bounded handoff
+    /// and its subsequent request paths must not synchronously scan population
+    /// authority. The separately admitted background locator builder does not
+    /// increment these counters, whether it finishes before or after Ready.
     transient_index_rebuilds: AtomicU64,
     transient_index_commit_rows: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
@@ -2029,9 +2024,16 @@ impl Drop for DerivedWriteAccess {
 }
 
 enum RedbWriteOwnership {
-    Direct { _lease: ExclusiveLease },
+    Direct {
+        _lease: ExclusiveLease,
+        // The exact logical state drained into this access's transaction. It
+        // can include acknowledged commands absent from the physical root.
+        predecessor: RedbReadAccess,
+    },
     Epoch(Box<RedbDurabilityEpoch>),
-    ServiceAudit { _lease: ExclusiveLease },
+    ServiceAudit {
+        _lease: ExclusiveLease,
+    },
 }
 
 /// Closed standard-profile durability epoch.
@@ -5949,18 +5951,20 @@ impl RedbOperationalPorts {
         self.shared.outbox_delivering_proven_absent()
     }
 
-    /// Transient population-index rebuilds performed on this database.
+    /// Synchronous population-index rebuilds performed on startup/read paths.
     ///
     /// Expected to be zero for the whole life of a handle that reached
     /// readiness through bounded clean-close startup. A nonzero value means the
-    /// bounded path's saving was given back by a later derived read.
+    /// bounded path's saving was given back by a later derived read. Admitted
+    /// background locator construction is independent and is not counted here.
     #[doc(hidden)]
     #[must_use]
     pub fn transient_index_rebuilds(&self) -> u64 {
         self.shared.transient_index_rebuilds()
     }
 
-    /// `COMMITS` rows walked by transient population-index rebuilds.
+    /// `COMMITS` rows walked by those synchronous population-index rebuilds.
+    /// Admitted background locator construction is not counted here.
     #[doc(hidden)]
     #[must_use]
     pub fn transient_index_commit_rows(&self) -> u64 {
@@ -6221,6 +6225,11 @@ impl RedbOperationalPorts {
         let checkpoint_span = stage(Stage::CheckpointWait);
         self.shared.poll_async_checkpoint_locked(true)?;
         drop(checkpoint_span);
+        // Publication and checkpoint installation are complete under this
+        // mutation lease. Pin that exact logical predecessor before taking
+        // its runtime suffix and materializing it in the private transaction.
+        // A later physical-root capture would omit commands in that drain.
+        let direct_predecessor = self.shared.begin_composite_operational_read()?;
         let take_span = stage(Stage::JournalTake);
         let journal_checkpoint = self.shared.take_published_journal_suffix_locked(true)?;
         drop(take_span);
@@ -6278,7 +6287,10 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
             direct_changelog_attribution: Some(source),
-            ownership: Some(RedbWriteOwnership::Direct { _lease: lease }),
+            ownership: Some(RedbWriteOwnership::Direct {
+                _lease: lease,
+                predecessor: direct_predecessor,
+            }),
             journal_mutations: None,
             journal_mutation_start: 0,
             journal_checkpoint,
@@ -6552,22 +6564,22 @@ impl RedbWriteAccess {
     /// frames belong to its immutable directory; unsealed commands remain in
     /// this epoch's explicit deltas until their admitted successor is sealed.
     pub(crate) fn command_locator_generation(&self) -> Result<LocatorGeneration, StorageError> {
-        if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
-            return Ok(epoch
+        let capability = match self.ownership.as_ref() {
+            Some(RedbWriteOwnership::Direct { predecessor, .. }) => {
+                predecessor.locator_capability()
+            }
+            Some(RedbWriteOwnership::Epoch(epoch)) => {
+                epoch.composite_predecessor.locator_capability()
+            }
+            Some(RedbWriteOwnership::ServiceAudit { .. }) => self
                 .composite_predecessor
-                .locator_capability()
-                .require_complete()?
-                .clone());
-        }
-        if let Some(predecessor) = &self.composite_predecessor {
-            return Ok(predecessor.locator_capability().require_complete()?.clone());
-        }
-        Ok(self
-            .shared
-            .capture_checkpoint_root()?
-            .locator_capability()
-            .require_complete()?
-            .clone())
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .locator_capability(),
+            None => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        };
+        // Pending refuses; it cannot establish absence for the drained source.
+        Ok(capability.require_complete()?.clone())
     }
 
     pub(crate) fn command_segment_tail(

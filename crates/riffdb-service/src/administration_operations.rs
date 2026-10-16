@@ -50,6 +50,7 @@ impl AdministrationApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::FenceReplicationPrimary,
             ingress,
             async move {
@@ -71,15 +72,21 @@ impl AdministrationApplication for RiffDbService {
     ) -> ServiceFuture<'_, crate::RegisterFollowerResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::RegisterFollower, ingress, async move {
-            let request = riffdb_auth::ReplicationAdministrationRequestV1::register(
-                context.request_id(),
-                request.target(),
-                request.budget(),
-                request.expires_at(),
-            );
-            crate::replication_administration_operations::execute(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::RegisterFollower,
+            ingress,
+            async move {
+                let request = riffdb_auth::ReplicationAdministrationRequestV1::register(
+                    context.request_id(),
+                    request.target(),
+                    request.budget(),
+                    request.expires_at(),
+                );
+                crate::replication_administration_operations::execute(service, context, request)
+                    .await
+            },
+        )
     }
     fn retire_follower(
         &self,
@@ -88,14 +95,20 @@ impl AdministrationApplication for RiffDbService {
     ) -> ServiceFuture<'_, crate::RetireFollowerResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::RetireFollower, ingress, async move {
-            let request = riffdb_auth::ReplicationAdministrationRequestV1::retire(
-                context.request_id(),
-                request.target(),
-                request.generation(),
-            );
-            crate::replication_administration_operations::execute(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::RetireFollower,
+            ingress,
+            async move {
+                let request = riffdb_auth::ReplicationAdministrationRequestV1::retire(
+                    context.request_id(),
+                    request.target(),
+                    request.generation(),
+                );
+                crate::replication_administration_operations::execute(service, context, request)
+                    .await
+            },
+        )
     }
 
     fn health(
@@ -110,9 +123,12 @@ impl AdministrationApplication for RiffDbService {
             HealthContext::Authenticated(context) => {
                 let service = Arc::clone(&self.inner);
                 let ingress = context.ingress();
-                self.spawn_operation(ServiceOperationV1::GetHealth, ingress, async move {
-                    authenticated_health(service, *context).await
-                })
+                self.spawn_operation(
+                    context.control().fork(),
+                    ServiceOperationV1::GetHealth,
+                    ingress,
+                    async move { authenticated_health(service, *context).await },
+                )
             }
         }
     }
@@ -124,9 +140,12 @@ impl AdministrationApplication for RiffDbService {
     ) -> ServiceFuture<'_, StatisticsResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::GetStatistics, ingress, async move {
-            statistics(service, context).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::GetStatistics,
+            ingress,
+            async move { statistics(service, context).await },
+        )
     }
 
     fn create_capability(
@@ -134,20 +153,27 @@ impl AdministrationApplication for RiffDbService {
         invocation: CreateCapabilityInvocation,
     ) -> ServiceFuture<'_, CreateCapabilityResult> {
         let service = Arc::clone(&self.inner);
-        let ingress = match &invocation {
-            CreateCapabilityInvocation::Normal { context, .. } => context.ingress(),
-            CreateCapabilityInvocation::Bootstrap { context, .. } => context.ingress(),
-        };
-        self.spawn_operation(ServiceOperationV1::CreateCapability, ingress, async move {
-            match invocation {
-                CreateCapabilityInvocation::Normal { context, request } => {
-                    create_capability_normal(service, context, request).await
-                }
-                CreateCapabilityInvocation::Bootstrap { context, request } => {
-                    create_capability_bootstrap(service, context, request).await
-                }
+        let (ingress, control) = match &invocation {
+            CreateCapabilityInvocation::Normal { context, .. } => {
+                (context.ingress(), Some(context.control().fork()))
             }
-        })
+            CreateCapabilityInvocation::Bootstrap { context, .. } => (context.ingress(), None),
+        };
+        self.spawn_operation_with_initial_dependency(
+            control,
+            ServiceOperationV1::CreateCapability,
+            ingress,
+            async move {
+                match invocation {
+                    CreateCapabilityInvocation::Normal { context, request } => {
+                        create_capability_normal(service, context, request).await
+                    }
+                    CreateCapabilityInvocation::Bootstrap { context, request } => {
+                        create_capability_bootstrap(service, context, request).await
+                    }
+                }
+            },
+        )
     }
 
     fn revoke_capability(
@@ -157,9 +183,12 @@ impl AdministrationApplication for RiffDbService {
     ) -> ServiceFuture<'_, RevokeCapabilityResult> {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
-        self.spawn_operation(ServiceOperationV1::RevokeCapability, ingress, async move {
-            revoke_capability(service, context, request).await
-        })
+        self.spawn_operation(
+            context.control().fork(),
+            ServiceOperationV1::RevokeCapability,
+            ingress,
+            async move { revoke_capability(service, context, request).await },
+        )
     }
 
     fn list_pending_outbox_deliveries(
@@ -170,6 +199,7 @@ impl AdministrationApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::ListPendingOutboxDeliveries,
             ingress,
             async move { list_pending_outbox_deliveries(service, context, request).await },

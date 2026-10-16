@@ -51,7 +51,7 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let submission = Arc::new(MaintenanceSubmissionState::new());
         let operation_submission = Arc::clone(&submission);
-        self.spawn_tracked_maintenance_operation(submission, async move {
+        self.spawn_tracked_maintenance_operation(context.control().fork(), submission, async move {
             start_create_backup(service, context, request, operation_submission).await
         })
     }
@@ -64,7 +64,7 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let (context, request, credential) = invocation.into_parts();
         let submission = Arc::new(MaintenanceSubmissionState::new());
         let operation_submission = Arc::clone(&submission);
-        self.spawn_tracked_maintenance_operation(submission, async move {
+        self.spawn_tracked_maintenance_operation(context.control().fork(), submission, async move {
             start_restore_backup(service, context, request, credential, operation_submission).await
         })
     }
@@ -77,7 +77,7 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let (context, request, credential) = invocation.into_parts();
         let submission = Arc::new(MaintenanceSubmissionState::new());
         let operation_submission = Arc::clone(&submission);
-        self.spawn_tracked_maintenance_operation(submission, async move {
+        self.spawn_tracked_maintenance_operation(context.control().fork(), submission, async move {
             archive::start_restore(service, context, request, credential, operation_submission)
                 .await
         })
@@ -91,7 +91,7 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let submission = Arc::new(MaintenanceSubmissionState::new());
         let operation_submission = Arc::clone(&submission);
-        self.spawn_tracked_maintenance_operation(submission, async move {
+        self.spawn_tracked_maintenance_operation(context.control().fork(), submission, async move {
             start_retire_backup(service, context, request, operation_submission).await
         })
     }
@@ -104,7 +104,7 @@ impl OfflineMaintenanceApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let submission = Arc::new(MaintenanceSubmissionState::new());
         let operation_submission = Arc::clone(&submission);
-        self.spawn_tracked_maintenance_operation(submission, async move {
+        self.spawn_tracked_maintenance_operation(context.control().fork(), submission, async move {
             start_storage_scrub(service, context, request, operation_submission).await
         })
     }
@@ -115,9 +115,9 @@ impl OfflineMaintenanceApplication for RiffDbService {
         request: GetOfflineMaintenanceOperationRequest,
     ) -> ServiceFuture<'_, GetOfflineMaintenanceOperationResult> {
         let service = Arc::clone(&self.inner);
-        self.spawn_maintenance_operation(
-            async move { get_operation(service, context, request).await },
-        )
+        self.spawn_maintenance_operation(context.control().fork(), async move {
+            get_operation(service, context, request).await
+        })
     }
 }
 

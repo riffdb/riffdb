@@ -49,6 +49,7 @@ impl ApplicationReimportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::StartApplicationReimport,
             ingress,
             async move { start_reimport(service, context, request_id, request).await },
@@ -64,6 +65,7 @@ impl ApplicationReimportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::ApplyApplicationReimportPage,
             ingress,
             async move { apply_page(service, context, request_id, request).await },
@@ -79,6 +81,7 @@ impl ApplicationReimportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::GetApplicationReimport,
             ingress,
             async move { observe_or_cancel(service, context, request_id, request, false).await },
@@ -94,6 +97,7 @@ impl ApplicationReimportApplication for RiffDbService {
         let service = Arc::clone(&self.inner);
         let ingress = context.ingress();
         self.spawn_operation(
+            context.control().fork(),
             ServiceOperationV1::CancelApplicationReimport,
             ingress,
             async move { observe_or_cancel(service, context, request_id, request, true).await },

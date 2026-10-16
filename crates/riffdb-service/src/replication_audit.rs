@@ -9,14 +9,18 @@ use riffdb_types::{ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1};
 
 pub(super) fn submit<T: Send + 'static>(
     owner: &RiffDbService,
+    control: crate::RequestControl,
     ingress: riffdb_types::ServiceIngressKindV1,
     future: impl Future<Output = Result<T, ReplicationFailure>> + Send + 'static,
 ) -> ReplicationFuture<'static, T> {
     // Keep the specialized closed refusal on an existing one-shot receipt.
     // Supervision observes an ordinary ServiceResult, including real failures.
     let (sender, receipt) = port_completion_channel();
-    let completion =
-        owner.spawn_operation(ServiceOperationV1::StreamChangelog, ingress, async move {
+    let completion = owner.spawn_operation(
+        control,
+        ServiceOperationV1::StreamChangelog,
+        ingress,
+        async move {
             let result = future.await;
             let status = match &result {
                 Ok(_) => Ok(()),
@@ -27,7 +31,8 @@ pub(super) fn submit<T: Send + 'static>(
             };
             sender.complete(result);
             status
-        });
+        },
+    );
     Box::pin(async move {
         let status = completion.await;
         let result = receipt.await.map_err(|_| ReplicationFailure::Unavailable)?;
