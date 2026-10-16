@@ -40,9 +40,37 @@ A second deterministic regression used one real non-Clone 64-KiB value with
 construction; the single-value representation passes and verifies alias contents,
 deferred physical destruction, provider/quota lifetime and cancellation cleanup.
 The focused run also passed 99 native ownership/source tests, two server tests
-and 59 architecture checks. Scoped acceptance, including formatting, clippy, handbook, path and panic
-checks, also passes. Production-size confirmation remains outstanding; no
-campaign qualification is claimed here.
+and 59 architecture checks. Scoped acceptance, including formatting, clippy,
+handbook, path and panic checks, also passes. These checks cover the single-value
+repair; no campaign qualification is claimed here.
+
+## Typed node-allocation correction
+
+An independent cold open of the next failed preparation reproduced ordinary
+locator-budget refusal on its unpruned command population. Native AVL nodes
+moved already-admitted key, value and child handles into fixed fields, but the
+generic bound still reserved a third allocation allowance. Their closed
+constructor makes only the Arc owner and boxed retirement task. The corrected
+node bound retains both existing 64-byte allocation allowances; all other
+payload-owning types retain the original third allowance. Queue backing and
+member ownership remain separately admitted. No compiled ceiling changes.
+
+A deterministic pressure test fails on the old bound and passes on the
+correction. It also proves that payload-owning keys still refuse without their
+full allowance, pinned predecessor and successor membership remain exact, and
+charges survive queued destruction until physical release. A private release
+build then completed construction for the failed database's original captured
+source in 15.2 seconds and verified acknowledged sequence 63,935 and its
+provenance. This internal diagnostic proves neither public authorization nor
+the recovery timing gate. The original failure media remained unchanged.
+
+The corrected files also pass 46 existing and new native tree, ownership,
+provider-family and segment-pressure tests, scoped Clippy and repository
+path/size guards on the qualification host.
+
+The separate retention CorruptData refusal remains unlocalized. The cold
+capacity reproduction does not establish its cause. Fresh full preparation and
+public recovery checks remain required.
 
 ## Compatibility and operator documentation
 
@@ -67,5 +95,5 @@ consumer continuation and durable scanned-through evidence. A collector-only
 filter or an invented checkpoint at an unrelated event would break current
 recovery semantics. That decision remains separate from these repairs.
 
-Production-size native construction, fresh full preparation, public restore,
+Public daemon confirmation, fresh full preparation, public restore,
 full source CI, the eight-hour rehearsal and the 24-hour campaign remain required.

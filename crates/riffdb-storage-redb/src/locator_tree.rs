@@ -46,6 +46,11 @@ struct Node<K: LocatorFamilyMember, V: LocatorFamilyMember> {
     right: Link<K, V>,
 }
 impl<K: LocatorFamilyMember, V: LocatorFamilyMember> LocatorRetireContents for Node<K, V> {
+    // The constructor moves already-admitted key/value/child ownership handles
+    // into fixed fields. Only Arc<AllocationOwner> and Box<AllocationTask> are
+    // allocated; queue backing and every heap-owning member are admitted apart.
+    const ADDITIONAL_ALLOCATION_ALLOWANCE: usize = 0;
+
     fn retire_one(&mut self) -> bool {
         // Each handle's final destruction only enqueues a preadmitted descriptor.
         self.left.take();

@@ -160,6 +160,11 @@ impl ProviderOnlyFamilyMember {
 }
 
 pub(crate) trait LocatorRetireContents: Send + Sync + 'static {
+    /// Extra heap-allocation header allowance beyond the common Arc owner and
+    /// boxed retirement task. Payload-owning values retain the original third
+    /// allowance unless their closed constructor proves no extra allocation.
+    const ADDITIONAL_ALLOCATION_ALLOWANCE: usize = ALLOCATION_OVERHEAD;
+
     /// Destroy at most one bounded ownership item. Return true only when no
     /// population-sized destruction remains in this value's ordinary Drop.
     fn retire_one(&mut self) -> bool;
@@ -758,11 +763,20 @@ impl<T: LocatorRetireContents> Deref for ChargedLocatorAllocation<T> {
     }
 }
 impl<T: LocatorRetireContents> ChargedLocatorAllocation<T> {
+    /// Independent test allowance for exactly the two wrapper allocations.
+    #[cfg(test)]
+    pub(crate) fn two_allocation_bound_for_tests() -> usize {
+        std::mem::size_of::<AllocationOwner<T>>()
+            + std::mem::size_of::<AllocationTask<T>>()
+            + 2 * ALLOCATION_OVERHEAD
+    }
+
     pub(crate) fn allocation_charge_bound(content_bytes: usize) -> Option<usize> {
         content_bytes
             .checked_add(std::mem::size_of::<AllocationOwner<T>>())
             .and_then(|n| n.checked_add(std::mem::size_of::<AllocationTask<T>>()))
-            .and_then(|n| n.checked_add(3 * ALLOCATION_OVERHEAD))
+            .and_then(|n| n.checked_add(2 * ALLOCATION_OVERHEAD))
+            .and_then(|n| n.checked_add(T::ADDITIONAL_ALLOCATION_ALLOWANCE))
     }
 
     /// Conservative attribution of one reserved queue descriptor, independent

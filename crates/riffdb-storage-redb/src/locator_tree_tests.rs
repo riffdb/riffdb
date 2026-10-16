@@ -318,3 +318,85 @@ fn locator_tree_rejects_foreign_physical_keys_and_children_before_publication() 
     drop(original);
     drain(&infrastructure);
 }
+
+#[test]
+fn locator_heap_closed_node_fits_two_allocations_without_relaxing_key_payload_admission() {
+    use crate::locator_memory::{ChargedLocatorKey, LOCATOR_RETIRE_QUOTA};
+    let pool = NativeLocatorPool::isolated_for_tests();
+    // Warm the actual reserved queue chunk independently of the tested nodes.
+    let warm = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+        .try_insert(9_u64, 90_u64)
+        .unwrap();
+    drop(warm);
+    drain(&pool);
+    let infrastructure_bytes = pool.charged_bytes();
+    let original = LocatorTree::empty(Arc::clone(&pool), LocatorAllocationClass::Ordinary)
+        .try_insert(1_u64, 10_u64)
+        .unwrap();
+    let original_pin = original.clone();
+    // This test-only helper independently counts the actual ArcOwner+BoxTask.
+    // Payload-owning keys still require their separately retained Box buffer.
+    let room = ChargedLocatorAllocation::<Node<u64, u64>>::two_allocation_bound_for_tests();
+    let all_available = pool.exhaust_ordinary_for_tests();
+    let available_bytes = all_available.bytes();
+    drop(all_available);
+    let pressure = pool
+        .admit(available_bytes - room, LocatorAllocationClass::Ordinary)
+        .unwrap();
+    let pressure_bytes = pressure.bytes();
+    let before = pool.charged_bytes();
+    assert_eq!(
+        ChargedLocatorKey::try_new(&pool, LocatorAllocationClass::Ordinary, &[7; 64])
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert_eq!(pool.charged_bytes(), before);
+    assert_eq!(original_pin.get(&1), Some(&10));
+    assert_eq!(original_pin.get(&2), None);
+    // Actual closed node construction adds one predecessor handle, not another
+    // heap payload. Its two wrapper allocations must fit the admitted room.
+    let root = original
+        .node(2_u64, 20_u64, original.root.clone(), None)
+        .expect("heap-closed node must fit its two actual wrapper allocations");
+    let successor = LocatorTree {
+        root: Some(root),
+        pool: Arc::clone(&pool),
+        class: LocatorAllocationClass::Ordinary,
+        len: 2,
+    };
+    assert_matches(&successor, &BTreeMap::from([(1, 10), (2, 20)]));
+    assert_matches(&original_pin, &BTreeMap::from([(1, 10)]));
+    let successor_pin = successor.clone();
+    let retained = pool.charged_bytes();
+    drop(original);
+    drop(successor);
+    assert_eq!(pool.charged_bytes(), retained);
+    assert_eq!(successor_pin.get(&2), Some(&20));
+    drop(original_pin);
+    // The successor still physically owns its predecessor node.
+    assert_eq!(pool.charged_bytes(), retained);
+    assert_eq!(successor_pin.get(&1), Some(&10));
+    drop(successor_pin);
+    assert_eq!(
+        pool.charged_bytes(),
+        retained,
+        "final reference queues without early uncharge"
+    );
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        let more = pool.drain_retired_step();
+        assert!(
+            steps <= 2,
+            "two nodes retire within the existing {LOCATOR_RETIRE_QUOTA}-item steps"
+        );
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(pool.charged_bytes(), infrastructure_bytes + pressure_bytes);
+    drop(pressure);
+    assert_eq!(pool.charged_bytes(), infrastructure_bytes);
+}
