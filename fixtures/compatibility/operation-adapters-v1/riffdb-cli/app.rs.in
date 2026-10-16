@@ -5484,7 +5484,9 @@ fn parse_order_spec(raw: &str) -> Result<ProjectedOrder, ()> {
     })
 }
 
-/// Parses `OP:FIELD` for sum/min/max, or the bare word `count`.
+/// Parses `OP:FIELD` for `count_present`, `count_distinct`,
+/// `count_distinct_present`, `sum`, `mean`, `min`, `max`, `any`, or `all`, or
+/// the bare word `count`.
 ///
 /// `count` reads no column, so `count:anything` is refused rather than
 /// silently ignoring the column the caller named.
@@ -5497,13 +5499,31 @@ fn parse_aggregate_spec(raw: &str) -> Result<ProjectedAggregate, ()> {
         return Err(());
     }
     match op {
+        "count_present" => Ok(ProjectedAggregate::CountPresent {
+            field: field.to_owned(),
+        }),
+        "count_distinct" => Ok(ProjectedAggregate::CountDistinct {
+            field: field.to_owned(),
+        }),
+        "count_distinct_present" => Ok(ProjectedAggregate::CountDistinctPresent {
+            field: field.to_owned(),
+        }),
         "sum" => Ok(ProjectedAggregate::Sum {
+            field: field.to_owned(),
+        }),
+        "mean" => Ok(ProjectedAggregate::Mean {
             field: field.to_owned(),
         }),
         "min" => Ok(ProjectedAggregate::Min {
             field: field.to_owned(),
         }),
         "max" => Ok(ProjectedAggregate::Max {
+            field: field.to_owned(),
+        }),
+        "any" => Ok(ProjectedAggregate::Any {
+            field: field.to_owned(),
+        }),
+        "all" => Ok(ProjectedAggregate::All {
             field: field.to_owned(),
         }),
         _ => Err(()),
@@ -5697,9 +5717,21 @@ fn render_projected_outcome(
 fn projected_aggregate_json(aggregate: &ProjectedAggregate) -> serde_json::Value {
     match aggregate {
         ProjectedAggregate::Count => serde_json::json!({"op": "count"}),
+        ProjectedAggregate::CountPresent { field } => {
+            serde_json::json!({"op": "count_present", "field": field})
+        }
+        ProjectedAggregate::CountDistinct { field } => {
+            serde_json::json!({"op": "count_distinct", "field": field})
+        }
+        ProjectedAggregate::CountDistinctPresent { field } => {
+            serde_json::json!({"op": "count_distinct_present", "field": field})
+        }
         ProjectedAggregate::Sum { field } => serde_json::json!({"op": "sum", "field": field}),
+        ProjectedAggregate::Mean { field } => serde_json::json!({"op": "mean", "field": field}),
         ProjectedAggregate::Min { field } => serde_json::json!({"op": "min", "field": field}),
         ProjectedAggregate::Max { field } => serde_json::json!({"op": "max", "field": field}),
+        ProjectedAggregate::Any { field } => serde_json::json!({"op": "any", "field": field}),
+        ProjectedAggregate::All { field } => serde_json::json!({"op": "all", "field": field}),
     }
 }
 
@@ -5713,11 +5745,20 @@ fn projected_aggregate_value_json(value: &ProjectedAggregateValue) -> serde_json
         ProjectedAggregateValue::Sum(sum) => {
             serde_json::json!({"type": "sum", "value": sum.to_string()})
         }
+        ProjectedAggregateValue::ExactMean { total, count } => serde_json::json!({
+            "type": "exact_mean",
+            "total": total.to_string(),
+            "count": count.to_string(),
+        }),
         // `value: null` means no row contributed; a real NULL extreme renders
         // as the ordinary `{"type": "null"}` canonical value.
         ProjectedAggregateValue::Scalar(scalar) => serde_json::json!({
             "type": "scalar",
             "value": scalar.as_ref().map(canonical_value_json),
+        }),
+        ProjectedAggregateValue::Bool(value) => serde_json::json!({
+            "type": "bool",
+            "value": value,
         }),
     }
 }
@@ -17052,6 +17093,7 @@ query GetDocument(
         assert!(parse_hash(&"a".repeat(64)).is_ok());
     }
 
+    // req: PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014
     #[test]
     fn aggregate_spec_parser_accepts_the_documented_forms_only() {
         assert_eq!(
@@ -17059,8 +17101,33 @@ query GetDocument(
             ProjectedAggregate::Count
         );
         assert_eq!(
+            parse_aggregate_spec("count_present:assignee").expect("count_present"),
+            ProjectedAggregate::CountPresent {
+                field: "assignee".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("count_distinct:status").expect("count_distinct"),
+            ProjectedAggregate::CountDistinct {
+                field: "status".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("count_distinct_present:assignee")
+                .expect("count_distinct_present"),
+            ProjectedAggregate::CountDistinctPresent {
+                field: "assignee".to_owned()
+            }
+        );
+        assert_eq!(
             parse_aggregate_spec("sum:story_points").expect("sum"),
             ProjectedAggregate::Sum {
+                field: "story_points".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("mean:story_points").expect("mean"),
+            ProjectedAggregate::Mean {
                 field: "story_points".to_owned()
             }
         );
@@ -17076,6 +17143,18 @@ query GetDocument(
                 field: "title".to_owned()
             }
         );
+        assert_eq!(
+            parse_aggregate_spec("any:is_open").expect("any"),
+            ProjectedAggregate::Any {
+                field: "is_open".to_owned()
+            }
+        );
+        assert_eq!(
+            parse_aggregate_spec("all:is_open").expect("all"),
+            ProjectedAggregate::All {
+                field: "is_open".to_owned()
+            }
+        );
 
         for raw in [
             // count reads no column: naming one would be silently ignored.
@@ -17084,9 +17163,17 @@ query GetDocument(
             "avg:story_points",
             // Missing column.
             "sum:",
+            "mean:",
             "min:",
+            "any:",
+            "all:",
+            "count_present:",
+            "count_distinct:",
+            "count_distinct_present:",
             // Missing separator.
             "sum",
+            "mean",
+            "count_present",
             // Empty and separator-only.
             "",
             ":",
@@ -17100,6 +17187,7 @@ query GetDocument(
         }
     }
 
+    // req: PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014
     #[test]
     fn aggregate_outcome_renders_groups_values_and_scalar_absence() {
         let outcome = ProjectedQueryOutcome::ReadyAggregates {
@@ -17111,6 +17199,12 @@ query GetDocument(
                 },
                 ProjectedAggregate::Min {
                     field: "title".to_owned(),
+                },
+                ProjectedAggregate::Mean {
+                    field: "story_points".to_owned(),
+                },
+                ProjectedAggregate::Any {
+                    field: "is_open".to_owned(),
                 },
             ],
             groups: vec![
@@ -17124,6 +17218,11 @@ query GetDocument(
                         ProjectedAggregateValue::Scalar(Some(
                             CanonicalValue::string("a").expect("s"),
                         )),
+                        ProjectedAggregateValue::ExactMean {
+                            total: i128::from(i64::MAX) + 1,
+                            count: 2,
+                        },
+                        ProjectedAggregateValue::Bool(true),
                     ],
                 },
                 riffdb_client_rust::ProjectedAggregateGroup {
@@ -17132,6 +17231,8 @@ query GetDocument(
                         ProjectedAggregateValue::Count(0),
                         ProjectedAggregateValue::Sum(0),
                         ProjectedAggregateValue::Scalar(None),
+                        ProjectedAggregateValue::ExactMean { total: 0, count: 0 },
+                        ProjectedAggregateValue::Bool(false),
                     ],
                 },
             ],
@@ -17173,6 +17274,14 @@ query GetDocument(
             result.pointer("/aggregates/1/field"),
             Some(&serde_json::Value::String("story_points".to_owned()))
         );
+        assert_eq!(
+            result.pointer("/aggregates/3/op"),
+            Some(&serde_json::Value::String("mean".to_owned()))
+        );
+        assert_eq!(
+            result.pointer("/aggregates/4/op"),
+            Some(&serde_json::Value::String("any".to_owned()))
+        );
         // Server order is preserved: "open" before "closed".
         assert_eq!(
             result.pointer("/groups/0/keys/0/value"),
@@ -17195,6 +17304,18 @@ query GetDocument(
         assert_eq!(
             result.pointer("/groups/0/values/2/value/value"),
             Some(&serde_json::Value::String("a".to_owned()))
+        );
+        assert_eq!(
+            result.pointer("/groups/0/values/3"),
+            Some(&serde_json::json!({
+                "type": "exact_mean",
+                "total": "9223372036854775808",
+                "count": "2"
+            }))
+        );
+        assert_eq!(
+            result.pointer("/groups/0/values/4"),
+            Some(&serde_json::json!({"type": "bool", "value": true}))
         );
     }
 

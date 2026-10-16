@@ -31592,6 +31592,15 @@ work_packages:
     scale: Distinct and arithmetic folds remain bounded by MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, and MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1.
   human_review_triggers:
   - Wire aggregate conversion accepts mismatched descriptor/value arms or unbounded distinct state.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [PRJ-002, OQ-045, OQ-046, OQ-047, OQ-048, DX-014]
+    evidence: cargo nextest run -p riffdb-columnar -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-cli --lib -E 'test(aggregate)'
+    decision: Extended proto/riffdb/app/v1/application.proto, riffdb-columnar, riffdb-service, riffdb-api-grpc, riffdb-client-rust, and riffdb-cli to support count_present, count_distinct, count_distinct_present, mean, any, all, and uniform-scale Decimal/Money sum and mean, and updated docs/known-limitations.md and docs/reference/CLI.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-867
   name: Locked idempotent Codex MCP registration and source convenience uninstall
   tier: guarantee

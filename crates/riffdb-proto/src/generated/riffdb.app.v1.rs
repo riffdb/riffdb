@@ -578,9 +578,16 @@ pub struct ProjectedAggregateScalar {
     #[prost(message, optional, tag = "1")]
     pub value: ::core::option::Option<super::super::v1::Value>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProjectedAggregateExactMean {
+    #[prost(message, optional, tag = "1")]
+    pub total: ::core::option::Option<super::super::v1::Decimal>,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProjectedAggregateValue {
-    #[prost(oneof = "projected_aggregate_value::Value", tags = "1, 2, 3")]
+    #[prost(oneof = "projected_aggregate_value::Value", tags = "1, 2, 3, 4, 5")]
     pub value: ::core::option::Option<projected_aggregate_value::Value>,
 }
 /// Nested message and enum types in `ProjectedAggregateValue`.
@@ -593,6 +600,10 @@ pub mod projected_aggregate_value {
         Sum(super::super::super::v1::Decimal),
         #[prost(message, tag = "3")]
         Scalar(super::ProjectedAggregateScalar),
+        #[prost(message, tag = "4")]
+        ExactMean(super::ProjectedAggregateExactMean),
+        #[prost(bool, tag = "5")]
+        Boolean(bool),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1509,6 +1520,12 @@ pub enum ProjectedAggregateOp {
     Sum = 2,
     Min = 3,
     Max = 4,
+    Mean = 5,
+    Any = 6,
+    All = 7,
+    CountPresent = 8,
+    CountDistinct = 9,
+    CountDistinctPresent = 10,
 }
 impl ProjectedAggregateOp {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1522,6 +1539,12 @@ impl ProjectedAggregateOp {
             Self::Sum => "PROJECTED_AGGREGATE_OP_SUM",
             Self::Min => "PROJECTED_AGGREGATE_OP_MIN",
             Self::Max => "PROJECTED_AGGREGATE_OP_MAX",
+            Self::Mean => "PROJECTED_AGGREGATE_OP_MEAN",
+            Self::Any => "PROJECTED_AGGREGATE_OP_ANY",
+            Self::All => "PROJECTED_AGGREGATE_OP_ALL",
+            Self::CountPresent => "PROJECTED_AGGREGATE_OP_COUNT_PRESENT",
+            Self::CountDistinct => "PROJECTED_AGGREGATE_OP_COUNT_DISTINCT",
+            Self::CountDistinctPresent => "PROJECTED_AGGREGATE_OP_COUNT_DISTINCT_PRESENT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1532,6 +1555,14 @@ impl ProjectedAggregateOp {
             "PROJECTED_AGGREGATE_OP_SUM" => Some(Self::Sum),
             "PROJECTED_AGGREGATE_OP_MIN" => Some(Self::Min),
             "PROJECTED_AGGREGATE_OP_MAX" => Some(Self::Max),
+            "PROJECTED_AGGREGATE_OP_MEAN" => Some(Self::Mean),
+            "PROJECTED_AGGREGATE_OP_ANY" => Some(Self::Any),
+            "PROJECTED_AGGREGATE_OP_ALL" => Some(Self::All),
+            "PROJECTED_AGGREGATE_OP_COUNT_PRESENT" => Some(Self::CountPresent),
+            "PROJECTED_AGGREGATE_OP_COUNT_DISTINCT" => Some(Self::CountDistinct),
+            "PROJECTED_AGGREGATE_OP_COUNT_DISTINCT_PRESENT" => {
+                Some(Self::CountDistinctPresent)
+            }
             _ => None,
         }
     }

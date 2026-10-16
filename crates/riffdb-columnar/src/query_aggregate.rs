@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct Accumulator {
     semantic: AggregateSemanticIdentityV1,
     index: Option<usize>,
+    numeric_domain: Option<NumericFoldDomain>,
     count: u64,
     total: i128,
     scalar: Option<CanonicalValue>,
@@ -29,6 +30,7 @@ impl Accumulator {
         Ok(Self {
             semantic,
             index,
+            numeric_domain: None,
             count: 0,
             total: 0,
             scalar: None,
@@ -56,9 +58,19 @@ impl Accumulator {
                 }
             }
             S::Sum | S::Mean => {
+                let (domain, term) = numeric_as_i128(value.expect("resolved input"))?;
+                if let Some(expected) = self.numeric_domain {
+                    if expected != domain {
+                        return Err(QueryError::InvalidAggregate(
+                            "sum/mean requires uniform numeric domain and scale",
+                        ));
+                    }
+                } else {
+                    self.numeric_domain = Some(domain);
+                }
                 self.total = self
                     .total
-                    .checked_add(numeric_as_i128(value.expect("resolved input"))?)
+                    .checked_add(term)
                     .ok_or(QueryError::InvalidAggregate(if self.semantic == S::Sum {
                         "sum overflow"
                     } else {
@@ -177,11 +189,16 @@ impl Accumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use riffdb_types::{CurrencyCode, Decimal, DecimalSpec, Money};
 
-    fn fold(semantic: AggregateSemanticIdentityV1, values: &[CanonicalValue]) -> AggregateValue {
+    fn fold_checked(
+        semantic: AggregateSemanticIdentityV1,
+        values: &[CanonicalValue],
+    ) -> Result<AggregateValue, QueryError> {
         let mut state = Accumulator {
             semantic,
             index: Some(0),
+            numeric_domain: None,
             count: 0,
             total: 0,
             scalar: None,
@@ -192,17 +209,19 @@ mod tests {
         let mut fuel = ColumnarAggregateFuel::new();
         for value in values {
             let cells = [value.clone()];
-            state
-                .push(
-                    &MergedRowRef {
-                        entity_version: EntityVersion::new(1).unwrap(),
-                        cells: &cells,
-                    },
-                    &mut fuel,
-                )
-                .unwrap();
+            state.push(
+                &MergedRowRef {
+                    entity_version: EntityVersion::new(1).unwrap(),
+                    cells: &cells,
+                },
+                &mut fuel,
+            )?;
         }
-        state.finish(&mut fuel).unwrap()
+        state.finish(&mut fuel)
+    }
+
+    fn fold(semantic: AggregateSemanticIdentityV1, values: &[CanonicalValue]) -> AggregateValue {
+        fold_checked(semantic, values).unwrap()
     }
 
     // req: OQ-045, OQ-046, OQ-047, OQ-048
@@ -253,5 +272,41 @@ mod tests {
         );
         assert_eq!(fold(S::Any, &[]), AggregateValue::Bool(false));
         assert_eq!(fold(S::All, &[]), AggregateValue::Bool(true));
+
+        let spec2 = DecimalSpec::new(10, 2).unwrap();
+        let spec4 = DecimalSpec::new(10, 4).unwrap();
+        let d1 = CanonicalValue::Decimal(Decimal::new(spec2, 125).unwrap());
+        let d2 = CanonicalValue::Decimal(Decimal::new(spec2, 275).unwrap());
+        let d_mixed = CanonicalValue::Decimal(Decimal::new(spec4, 12500).unwrap());
+        assert_eq!(
+            fold(S::Sum, &[d1.clone(), d2.clone()]),
+            AggregateValue::Sum(400)
+        );
+        assert_eq!(
+            fold(S::Mean, &[d1.clone(), d2]),
+            AggregateValue::ExactMean {
+                total: 400,
+                count: 2
+            }
+        );
+        assert!(fold_checked(S::Sum, &[d1, d_mixed]).is_err());
+
+        let usd = CurrencyCode::new("USD").unwrap();
+        let eur = CurrencyCode::new("EUR").unwrap();
+        let m1 = CanonicalValue::Money(Money::new(usd, Decimal::new(spec4, 10_0000).unwrap()));
+        let m2 = CanonicalValue::Money(Money::new(usd, Decimal::new(spec4, 25_5000).unwrap()));
+        let m_eur = CanonicalValue::Money(Money::new(eur, Decimal::new(spec4, 10_0000).unwrap()));
+        assert_eq!(
+            fold(S::Sum, &[m1.clone(), m2.clone()]),
+            AggregateValue::Sum(355_000)
+        );
+        assert_eq!(
+            fold(S::Mean, &[m1.clone(), m2]),
+            AggregateValue::ExactMean {
+                total: 355_000,
+                count: 2
+            }
+        );
+        assert!(fold_checked(S::Sum, &[m1, m_eur]).is_err());
     }
 }

@@ -912,8 +912,9 @@ pub(crate) enum QueryCommand {
         /// Order key as `FIELD` or `FIELD:desc` (repeatable).
         #[arg(long = "order", value_name = "FIELD[:desc]")]
         order: Vec<String>,
-        /// Aggregate as `OP:FIELD` where OP is `sum`, `min`, or `max`, or the
-        /// bare word `count` (repeatable). Any aggregate returns groups
+        /// Aggregate as `OP:FIELD` where OP is `count_present`, `count_distinct`,
+        /// `count_distinct_present`, `sum`, `mean`, `min`, `max`, `any`, or `all`,
+        /// or the bare word `count` (repeatable). Any aggregate returns groups
         /// instead of rows; more than one requires `--group-by`.
         #[arg(long = "aggregate", value_name = "OP:FIELD|count")]
         aggregate: Vec<String>,

@@ -317,9 +317,29 @@ pub struct ProjectedOrderSpec {
 pub enum ProjectedAggregateOp {
     /// Count of matching rows.
     Count,
+    /// Count of matching rows with a non-null column value.
+    CountPresent {
+        /// Field name to inspect.
+        field: String,
+    },
+    /// Count of distinct column values (including NULL).
+    CountDistinct {
+        /// Field name to deduplicate.
+        field: String,
+    },
+    /// Count of distinct non-null column values.
+    CountDistinctPresent {
+        /// Field name to deduplicate.
+        field: String,
+    },
     /// Sum of a numeric column.
     Sum {
         /// Field name to sum.
+        field: String,
+    },
+    /// Exact mean (total coefficient and count) of a numeric column.
+    Mean {
+        /// Field name to average.
         field: String,
     },
     /// Minimum of a column.
@@ -330,6 +350,16 @@ pub enum ProjectedAggregateOp {
     /// Maximum of a column.
     Max {
         /// Field name to maximize.
+        field: String,
+    },
+    /// Boolean disjunction of a boolean column.
+    Any {
+        /// Field name to fold.
+        field: String,
+    },
+    /// Boolean conjunction of a boolean column.
+    All {
+        /// Field name to fold.
         field: String,
     },
 }
@@ -1244,31 +1274,18 @@ fn resolve_body_fields(
         });
     }
 
-    let aggregate = match body.aggregate() {
-        None => None,
-        Some(ProjectedAggregateOp::Count) => Some(AggregateOp::Count),
-        Some(ProjectedAggregateOp::Sum { field }) => {
-            let field_id = resolve_field_name(entity, field)?;
-            ensure_projected(definition, field_id)?;
-            authz_fields.push(field_id);
-            plan_shape_fields.push(field_id);
-            Some(AggregateOp::Sum { field: field_id })
-        }
-        Some(ProjectedAggregateOp::Min { field }) => {
-            let field_id = resolve_field_name(entity, field)?;
-            ensure_projected(definition, field_id)?;
-            authz_fields.push(field_id);
-            plan_shape_fields.push(field_id);
-            Some(AggregateOp::Min { field: field_id })
-        }
-        Some(ProjectedAggregateOp::Max { field }) => {
-            let field_id = resolve_field_name(entity, field)?;
-            ensure_projected(definition, field_id)?;
-            authz_fields.push(field_id);
-            plan_shape_fields.push(field_id);
-            Some(AggregateOp::Max { field: field_id })
-        }
-    };
+    let aggregate = body
+        .aggregate()
+        .map(|op| {
+            resolve_aggregate_op(
+                entity,
+                definition,
+                op,
+                &mut authz_fields,
+                &mut plan_shape_fields,
+            )
+        })
+        .transpose()?;
 
     let group_by = match body.group_by() {
         None => None,
@@ -1283,30 +1300,13 @@ fn resolve_body_fields(
             }
             let mut aggregates = Vec::with_capacity(spec.aggregates.len());
             for op in &spec.aggregates {
-                match op {
-                    ProjectedAggregateOp::Count => aggregates.push(AggregateOp::Count),
-                    ProjectedAggregateOp::Sum { field } => {
-                        let field_id = resolve_field_name(entity, field)?;
-                        ensure_projected(definition, field_id)?;
-                        authz_fields.push(field_id);
-                        plan_shape_fields.push(field_id);
-                        aggregates.push(AggregateOp::Sum { field: field_id });
-                    }
-                    ProjectedAggregateOp::Min { field } => {
-                        let field_id = resolve_field_name(entity, field)?;
-                        ensure_projected(definition, field_id)?;
-                        authz_fields.push(field_id);
-                        plan_shape_fields.push(field_id);
-                        aggregates.push(AggregateOp::Min { field: field_id });
-                    }
-                    ProjectedAggregateOp::Max { field } => {
-                        let field_id = resolve_field_name(entity, field)?;
-                        ensure_projected(definition, field_id)?;
-                        authz_fields.push(field_id);
-                        plan_shape_fields.push(field_id);
-                        aggregates.push(AggregateOp::Max { field: field_id });
-                    }
-                }
+                aggregates.push(resolve_aggregate_op(
+                    entity,
+                    definition,
+                    op,
+                    &mut authz_fields,
+                    &mut plan_shape_fields,
+                )?);
             }
             Some(GroupBySpec { keys, aggregates })
         }
@@ -1326,6 +1326,52 @@ fn resolve_body_fields(
         aggregate,
         plan_shape_fields,
         authz_fields,
+    })
+}
+
+fn resolve_aggregate_op(
+    entity: &riffdb_contract_ir::EntitySchema,
+    definition: &riffdb_columnar::RegisteredDefinition,
+    op: &ProjectedAggregateOp,
+    authz_fields: &mut Vec<FieldId>,
+    plan_shape_fields: &mut Vec<FieldId>,
+) -> ServiceResult<AggregateOp> {
+    let mut resolve_column = |field: &str| -> ServiceResult<FieldId> {
+        let field_id = resolve_field_name(entity, field)?;
+        ensure_projected(definition, field_id)?;
+        authz_fields.push(field_id);
+        plan_shape_fields.push(field_id);
+        Ok(field_id)
+    };
+    Ok(match op {
+        ProjectedAggregateOp::Count => AggregateOp::Count,
+        ProjectedAggregateOp::CountPresent { field } => AggregateOp::CountPresent {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::CountDistinct { field } => AggregateOp::CountDistinct {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::CountDistinctPresent { field } => AggregateOp::CountDistinctPresent {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Sum { field } => AggregateOp::Sum {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Mean { field } => AggregateOp::Mean {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Min { field } => AggregateOp::Min {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Max { field } => AggregateOp::Max {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Any { field } => AggregateOp::Any {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::All { field } => AggregateOp::All {
+            field: resolve_column(field)?,
+        },
     })
 }
 

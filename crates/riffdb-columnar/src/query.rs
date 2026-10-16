@@ -1479,11 +1479,38 @@ fn org_value_matches_type(value: &CanonicalValue, expected: &ValueType) -> bool 
     }
 }
 
-fn numeric_as_i128(value: &CanonicalValue) -> Result<i128, QueryError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NumericFoldDomain {
+    Integer,
+    Decimal {
+        scale: u8,
+    },
+    Money {
+        currency: riffdb_types::CurrencyCode,
+        scale: u8,
+    },
+}
+
+fn numeric_as_i128(value: &CanonicalValue) -> Result<(NumericFoldDomain, i128), QueryError> {
     match value {
-        CanonicalValue::I64(v) => Ok(i128::from(*v)),
-        CanonicalValue::U64(v) => Ok(i128::from(*v)),
-        _ => Err(QueryError::InvalidAggregate("sum requires i64/u64 column")),
+        CanonicalValue::I64(v) => Ok((NumericFoldDomain::Integer, i128::from(*v))),
+        CanonicalValue::U64(v) => Ok((NumericFoldDomain::Integer, i128::from(*v))),
+        CanonicalValue::Decimal(d) => Ok((
+            NumericFoldDomain::Decimal {
+                scale: d.spec().scale(),
+            },
+            d.coefficient(),
+        )),
+        CanonicalValue::Money(m) => Ok((
+            NumericFoldDomain::Money {
+                currency: m.currency(),
+                scale: m.amount().spec().scale(),
+            },
+            m.amount().coefficient(),
+        )),
+        _ => Err(QueryError::InvalidAggregate(
+            "sum/mean requires i64/u64/decimal/money column",
+        )),
     }
 }
 
