@@ -49,6 +49,7 @@ async fn production_statistics_report_committed_events_without_delivery_or_popul
         )
         .expect("reopen native publication source"),
     );
+    let fixture_source = ports.shared_ports();
     let shared = SharedRedbOperationalPorts::new(ports, None).expect("shared native source");
     let driver = BlockingPortDriver::new(runtime.clone()).expect("read workers");
     let projection = ProjectionWorkerStatus::new();
@@ -81,6 +82,9 @@ async fn production_statistics_report_committed_events_without_delivery_or_popul
         shared.pending_outbox_delivery_count().unwrap_err().kind(),
         riffdb_storage_api::StorageErrorKind::Unavailable
     );
+    fixture_source
+        .wait_for_exact_locator_fixture_completion()
+        .expect("finish the original native construction after the cold assertions");
     // This is the existing production graph/worker recovery observation, not
     // part of a statistics request. It validates the disposable membership.
     outbox.refresh(&shared);

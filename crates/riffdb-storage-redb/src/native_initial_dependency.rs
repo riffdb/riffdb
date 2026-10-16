@@ -232,6 +232,17 @@ impl RedbOperationalPorts {
     }
 }
 
+#[cfg(feature = "test-fixtures")]
+impl crate::RedbSharedPorts {
+    /// Synchronizes only a test fixture's captured native construction, using
+    /// the same bounded helper as its operational ports.
+    #[doc(hidden)]
+    pub fn wait_for_exact_locator_fixture_completion(&self) -> Result<(), StorageError> {
+        self.operational()
+            .wait_for_exact_locator_fixture_completion()
+    }
+}
+
 #[cfg(test)]
 #[path = "native_initial_dependency_tests.rs"]
 mod tests;

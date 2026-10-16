@@ -204,6 +204,9 @@ fn allocation_selects_first_then_persists_empty_and_replays_it_after_release() {
     drop(executor);
     coordinator.shutdown().expect("drain");
     let ports = database.open();
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     for outcome in outcomes {
         assert_eq!(
             ports
@@ -302,6 +305,9 @@ fn uncertain_selection_commit_resolves_identity_before_another_allocation() {
         riffdb_storage_redb::RedbTestOperation::CommandBatch,
     );
     let ports = database.open_with_controller(controller.clone());
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let preparation = prepare(&database, &ports, "Allocate", 101, 101, 0, 1);
     let coordinator = start_coordinator(
         ports,
@@ -319,6 +325,9 @@ fn uncertain_selection_commit_resolves_identity_before_another_allocation() {
     drop(executor);
     coordinator.shutdown().expect("drain");
     let ports = database.open();
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let preparation = prepare(&database, &ports, "Allocate", 101, 102, 0, 1);
     let next = prepare(&database, &ports, "Allocate", 103, 103, 0, 2);
     let coordinator = start_coordinator(
@@ -417,6 +426,9 @@ fn concurrent_selection_has_bounded_work_in_shared_and_independent_pools() {
                 seed(&database, population, independent);
                 let controller = RedbTestController::observe_index_migration();
                 let ports = database.open_with_controller(controller.clone());
+                ports
+                    .wait_for_exact_locator_fixture_completion()
+                    .expect("complete the exact reopened fixture source");
                 let mut work: Vec<Vec<_>> = (0..clients).map(|_| Vec::new()).collect();
                 for n in 0..32_u8 {
                     work[usize::from(n) % clients].push(prepare_in_pool(
@@ -582,6 +594,9 @@ fn selection_process_crash_recovers_atomic_effects_and_exact_replay() {
             )
         };
         let ports = database.open_with_controller(controller);
+        ports
+            .wait_for_exact_locator_fixture_completion()
+            .expect("complete the exact reopened fixture source");
         let preparation = prepare(&database, &ports, "Allocate", 101, 101, 0, 1);
         let coordinator = start_coordinator(
             ports,
@@ -612,6 +627,9 @@ fn selection_process_crash_recovers_atomic_effects_and_exact_replay() {
             assert_eq!(status.signal(), Some(6), "closed failpoint must abort");
         }
         let ports = database.open();
+        ports
+            .wait_for_exact_locator_fixture_completion()
+            .expect("complete the exact reopened fixture source");
         let first = prepare(&database, &ports, "Allocate", 101, 102, 0, 1);
         let next = prepare(&database, &ports, "Allocate", 103, 103, 0, 2);
         let coordinator = start_coordinator(
@@ -637,6 +655,9 @@ fn selection_process_crash_recovers_atomic_effects_and_exact_replay() {
         drop(executor);
         coordinator.shutdown().expect("drain");
         let ports = database.open();
+        ports
+            .wait_for_exact_locator_fixture_completion()
+            .expect("complete the exact reopened fixture source");
         for outcome in [first, next] {
             let stored = outcome.stored_outcome();
             assert_eq!(

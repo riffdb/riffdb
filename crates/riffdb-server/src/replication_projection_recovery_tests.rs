@@ -13,6 +13,9 @@ use command_support::{
 
 fn execute(database: &BudgetDatabase, allocate: bool) {
     let ports = database.open();
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let preparation = if allocate {
         database.prepare_allocation(&ports, 2500, 0x35)
     } else {
@@ -179,6 +182,9 @@ fn exercise_recovery(crash: Option<&str>, mode: ReplayMode) {
     execute(&database, false);
     execute(&database, true);
     let mut ports = database.open();
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let resolved = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
         .unwrap()
         .unwrap()

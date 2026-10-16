@@ -220,3 +220,9 @@ does not imply that an uncertain cutover failed.
 Follower projection generation and lifecycle remain locally owned derived
 state; authoritative commit/entity zero-RPO claims do not extend
 to derived state.
+
+Replaying local projection rows and markers preserves the exact native command
+directory capability of the captured authoritative source. A completed directory
+stays usable across that derived-only write. A Pending directory remains Pending
+and cannot establish command absence; replay does not manufacture completion or
+replace the required startup validation.

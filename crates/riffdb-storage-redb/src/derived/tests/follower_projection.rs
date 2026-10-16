@@ -1,11 +1,12 @@
 //! Isolated follower derived-write boundary; these typed fixtures grant no readiness.
-// req: REP-002, PRJ-001, REC-001, PERF-007
+// req: REP-002, PRJ-001, REC-001, PERF-007, TXN-042, STO-032
 use super::*;
 use redb::ReadableDatabase;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, ChangelogHistoryStateV3, ChangelogLineageV3, LeadershipEpochV1,
-    ProjectionApplyRowObservation, ProjectionApplySnapshotReader, ProjectionGenerationPosition,
-    ReplicationFollowerStateV3,
+    AuthoritativeNamespaceV1 as N, AuthoritativeScanReader, ChangelogHistoryStateV3,
+    ChangelogLineageV3, CommitScanRequest, LeadershipEpochV1, ProjectionApplyRowObservation,
+    ProjectionApplySnapshotReader, ProjectionGenerationPosition, ReplicationFollowerStateV3,
+    StorageScanLimit,
 };
 
 fn setup(path: &std::path::Path) -> (ChangelogHistoryStateV3, StoredProjectionControlV1) {
@@ -177,6 +178,18 @@ fn follower_projection_replay_is_durable_idempotent_and_preserves_source_authori
     let mut applier = open(&path.0);
     observe(&applier, 0, 0);
     assert_eq!(applier.local_commit_epoch_for_test(), 0);
+    let (original_history, original) = applier.capture_read_snapshot().unwrap();
+    let original_capability = original
+        .complete_logical_access_for_test()
+        .locator_capability()
+        .clone();
+    assert!(
+        original_capability.is_pending(),
+        "the isolated fixture grants no readiness"
+    );
+    let original_binding = original_capability.source_binding().unwrap();
+    let command_request = CommitScanRequest::initial(StorageScanLimit::new(2).unwrap());
+    let commands_before = applier.scan_commits(command_request).unwrap();
     let first = applier
         .rebuild_projection_commit(&control, &request(1, 1))
         .unwrap();
@@ -188,6 +201,37 @@ fn follower_projection_replay_is_durable_idempotent_and_preserves_source_authori
     );
     assert_eq!(applier.local_commit_epoch_for_test(), 1);
     assert_eq!(applier.durable_history().unwrap(), history);
+    let (successor_history, successor) = applier.capture_read_snapshot().unwrap();
+    let successor_capability = successor
+        .complete_logical_access_for_test()
+        .locator_capability();
+    assert_eq!(successor_history, original_history);
+    assert!(
+        successor_capability.same_construction(&original_capability),
+        "derived replay preserves the exact original construction owner"
+    );
+    assert!(successor_capability.is_pending());
+    assert!(original_capability.is_pending());
+    assert_eq!(
+        successor_capability.source_binding().unwrap(),
+        original_binding
+    );
+    assert_eq!(
+        successor_capability
+            .require_complete()
+            .err()
+            .map(|error| error.kind()),
+        Some(StorageErrorKind::Unavailable),
+        "pending membership never proves absence"
+    );
+    assert!(
+        applier.scan_commits(command_request).unwrap() == commands_before,
+        "derived replay preserves every authoritative command and its head"
+    );
+    observe(&applier, 1, 1);
+    drop(successor);
+    drop(original);
+    drop(original_capability);
     drop(applier);
     assert_eq!(authority(&path.0), before);
     let mut applier = open(&path.0);
@@ -204,13 +248,31 @@ fn follower_projection_replay_is_durable_idempotent_and_preserves_source_authori
 
 #[test]
 fn follower_projection_refusals_preserve_rows_and_fuse_the_writer() {
-    for violation in ["gap", "control", "retry", "frontier", "prior", "generation"] {
+    for violation in [
+        "gap",
+        "control",
+        "retry",
+        "frontier",
+        "prior",
+        "generation",
+        "capability",
+    ] {
         let path = TestDatabasePath::new("follower-projection-refusal");
         let (_, expected) = setup(&path.0);
         let before = authority(&path.0);
         let mut applier = open(&path.0);
         let mut wrong = request(1, 1);
         let mut control = expected.clone();
+        let invalid_source = if violation == "capability" {
+            let (_, snapshot) = applier.capture_read_snapshot().unwrap();
+            snapshot
+                .complete_logical_access_for_test()
+                .locator_capability()
+                .invalidate(StorageErrorKind::CorruptData);
+            Some(snapshot)
+        } else {
+            None
+        };
         let already_applied = matches!(violation, "retry" | "prior");
         if already_applied {
             applier
@@ -264,6 +326,7 @@ fn follower_projection_refusals_preserve_rows_and_fuse_the_writer() {
                 )
                 .unwrap();
             }
+            "capability" => {}
             _ => unreachable!(),
         }
         let epoch = applier.local_commit_epoch_for_test();
@@ -289,6 +352,7 @@ fn follower_projection_refusals_preserve_rows_and_fuse_the_writer() {
         )
         .unwrap();
         assert!(applier.read_apply_snapshot(&snapshot_request).is_err());
+        drop(invalid_source);
         drop(applier);
         assert_eq!(authority(&path.0), before, "{violation}");
         let mut applier = open(&path.0);

@@ -203,6 +203,9 @@ fn verify_retry_audit(fixture: &Fixture, receipt: &v1::FollowerPromotionReceipt)
         )
         .unwrap();
     let ports = validate_primary_store(store);
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let AdministrationAuditScan::ExactEnd { records } = ports
         .scan_administration_audit(AdministrationAuditScanRequest::new(
             None,

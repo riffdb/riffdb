@@ -235,6 +235,9 @@ fn write_evidence_preserves_stale_refusal_replay_provenance_and_explicit_replace
     drop(executor);
     coordinator.shutdown().expect("drain");
     let ports = database.open();
+    ports
+        .wait_for_exact_locator_fixture_completion()
+        .expect("complete the exact reopened fixture source");
     let entity = ports
         .read_entity(&database.entity_target())
         .expect("entity read")

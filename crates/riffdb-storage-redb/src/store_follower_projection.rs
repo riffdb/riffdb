@@ -118,6 +118,16 @@ impl RedbFollowerApplier {
         }
         self.failed = true;
         let _lease = self.shared.mutation_gate.acquire()?;
+        // This fresh closed transaction changes only local projection rows
+        // and markers. Retain its exact predecessor capability: validated
+        // membership stays complete, and prevalidation membership stays pending.
+        // Database, incarnation, registry, commands and authoritative head are
+        // unchanged; no population proof or new completeness is manufactured.
+        let predecessor = self.shared.capture_checkpoint_root()?;
+        let locator = predecessor.locator_capability().clone();
+        if !locator.is_pending() {
+            locator.require_complete()?;
+        }
         let mut write = self
             .shared
             .database
@@ -134,7 +144,11 @@ impl RedbFollowerApplier {
             }
             ProjectionReplayStage::Staged(marker) => {
                 crash_edge("projection-staged");
-                self.shared.commit_durable(write)?;
+                self.shared.commit_with_source_footprint_and_locator(
+                    write,
+                    crate::source_continuation::SourceContinuationFootprint::unknown(),
+                    locator,
+                )?;
                 crash_edge("projection-committed");
                 marker
             }
