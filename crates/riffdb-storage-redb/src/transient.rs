@@ -54,6 +54,10 @@ use crate::layout::{COMMITS, EVENT_ROUTES, OUTBOX, OUTBOX_STATUS};
 
 pub(crate) struct TransientIndexes {
     event_routes: Option<BTreeMap<Vec<u8>, StoredEventRouteV1>>,
+    // A failed ancillary population scan never invalidates exact command
+    // membership. Its own readers retain the original typed failure instead
+    // of treating a partial route map as complete or empty.
+    event_route_failure: Option<StorageErrorKind>,
     outbox_intents: Option<BTreeSet<EventId>>,
     pending_outbox: Option<BTreeSet<EventId>>,
     undelivered_outbox: Option<BTreeSet<EventId>>,
@@ -704,6 +708,7 @@ impl TransientIndexes {
     ) -> Result<Self, StorageError> {
         Ok(Self {
             event_routes: Some(BTreeMap::new()),
+            event_route_failure: None,
             outbox_intents: Some(BTreeSet::new()),
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),
@@ -718,6 +723,7 @@ impl TransientIndexes {
     pub(crate) fn try_empty(class: LocatorAllocationClass) -> Result<Self, StorageError> {
         Ok(Self {
             event_routes: Some(BTreeMap::new()),
+            event_route_failure: None,
             outbox_intents: Some(BTreeSet::new()),
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),
@@ -783,28 +789,55 @@ impl TransientIndexes {
                 }
             }
         }
-        visit_captured_locator_rows(
+        let mut decoded_route_failure = None;
+        let route_scan = visit_captured_locator_rows(
             access,
             crate::journal::JournalTable::EventRoutes,
             &mut cancelled,
             |key, bytes| {
-                let (partition, id) =
-                    crate::keys::decode_event_route_key(key).map_err(|_| corrupt())?;
-                let route = decode_event_route_v1(bytes)?.into_parts().0;
-                if route.event_id() != id {
-                    return Err(corrupt());
+                let decoded = (|| {
+                    let (partition, id) =
+                        crate::keys::decode_event_route_key(key).map_err(|_| corrupt())?;
+                    let route = decode_event_route_v1(bytes)?.into_parts().0;
+                    if route.event_id() != id {
+                        return Err(corrupt());
+                    }
+                    let encoded = encode_event_route_key(partition, id).to_vec();
+                    if routes
+                        .get(&encoded)
+                        .is_some_and(|previous| previous != &route)
+                    {
+                        return Err(corrupt());
+                    }
+                    Ok((encoded, route))
+                })();
+                match decoded {
+                    Ok((encoded, route)) => {
+                        routes.insert(encoded, route);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        // Only decoded ancillary-record corruption is isolated.
+                        // A source/page traversal error never sets this witness.
+                        decoded_route_failure = Some(error.kind());
+                        Err(error)
+                    }
                 }
-                let encoded = encode_event_route_key(partition, id).to_vec();
-                if routes
-                    .get(&encoded)
-                    .is_some_and(|previous| previous != &route)
-                {
-                    return Err(corrupt());
-                }
-                routes.insert(encoded, route);
-                Ok(())
             },
-        )?;
+        );
+        let (event_routes, event_route_failure) = match route_scan {
+            Ok(()) => (Some(routes), None),
+            Err(error)
+                if error.kind() == StorageErrorKind::CorruptData
+                    && decoded_route_failure == Some(StorageErrorKind::CorruptData) =>
+            {
+                // Drop the whole private accelerator. The generation above was
+                // independently validated against canonical command authority;
+                // no route-prefix result may establish completeness or absence.
+                (None, Some(error.kind()))
+            }
+            Err(error) => return Err(error),
+        };
         visit_captured_locator_rows(
             access,
             crate::journal::JournalTable::Outbox,
@@ -852,7 +885,8 @@ impl TransientIndexes {
         }
         Ok((
             Self {
-                event_routes: Some(routes),
+                event_routes,
+                event_route_failure,
                 outbox_intents: outbox_valid.then_some(intents),
                 pending_outbox: outbox_valid.then_some(pending),
                 undelivered_outbox: outbox_valid.then_some(undelivered),
@@ -881,6 +915,7 @@ impl TransientIndexes {
             rebuild_outbox_indexes(transaction, command_derived.as_ref(), cancellation)?;
         Ok(Self {
             event_routes,
+            event_route_failure: None,
             outbox_intents: rebuilt_outbox.intents,
             pending_outbox: rebuilt_outbox.pending,
             undelivered_outbox: rebuilt_outbox.undelivered,
@@ -936,6 +971,9 @@ impl TransientIndexes {
         requested_upper: Option<EventId>,
         limit: usize,
     ) -> Option<EventRoutePage> {
+        if let Some(kind) = self.event_route_failure {
+            return Some(Err(StorageError::new(kind, None)));
+        }
         let routes = self.event_routes.as_ref()?;
         let mut lower = [0_u8; 44];
         lower[..32].copy_from_slice(partition_hash.as_bytes());
@@ -1224,24 +1262,25 @@ impl TransientIndexes {
                     // immutable locator directory already published with source.
                     let _ = command_derived.seed_payload(&segment, canonical);
                 }
-                let Some(routes) = self.event_routes.as_mut() else {
-                    return;
-                };
-                for command in segment.commands() {
-                    for event in command.events() {
-                        let key = encode_event_route_key(
-                            command.base().commit().partition_hash(),
-                            event.event_id(),
-                        );
-                        let route = StoredEventRouteV1::new(
-                            event.event_id(),
-                            event.event_type_id(),
-                            event.event_hash(),
-                        );
-                        if routes.insert(key.to_vec(), route).is_some() {
-                            self.event_routes = None;
-                            self.invalidate_outbox();
-                            return;
+                // Route degradation must not leave otherwise valid outbox
+                // membership stale when a later command publishes more events.
+                if let Some(routes) = self.event_routes.as_mut() {
+                    for command in segment.commands() {
+                        for event in command.events() {
+                            let key = encode_event_route_key(
+                                command.base().commit().partition_hash(),
+                                event.event_id(),
+                            );
+                            let route = StoredEventRouteV1::new(
+                                event.event_id(),
+                                event.event_type_id(),
+                                event.event_hash(),
+                            );
+                            if routes.insert(key.to_vec(), route).is_some() {
+                                self.event_routes = None;
+                                self.invalidate_outbox();
+                                return;
+                            }
                         }
                     }
                 }
@@ -1367,6 +1406,7 @@ impl Default for TransientIndexes {
     fn default() -> Self {
         Self {
             event_routes: Some(BTreeMap::new()),
+            event_route_failure: None,
             outbox_intents: Some(BTreeSet::new()),
             pending_outbox: Some(BTreeSet::new()),
             undelivered_outbox: Some(BTreeSet::new()),

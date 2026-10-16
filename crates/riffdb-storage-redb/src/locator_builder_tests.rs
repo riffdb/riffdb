@@ -395,3 +395,186 @@ fn locator_builder_enqueue_wakes_predicate_wait_without_lost_notification() {
     });
     assert_eq!(lock(&queue.state).len, 0);
 }
+
+// req: STO-032, REC-001
+#[test]
+fn valid_command_directory_survives_typed_ancillary_route_corruption() {
+    let (_scope, store, _old, first) = populated_source();
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut routes = write.open_table(crate::layout::EVENT_ROUTES).unwrap();
+        routes
+            .insert(
+                b"malformed-route-key".as_slice(),
+                b"malformed-route-value".as_slice(),
+            )
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let access = pending_source(&store, 2);
+    let (mut indexes, rows) = TransientIndexes::rebuild_from_access_with_owner(
+        &access,
+        access.locator_capability().construction_owner().unwrap(),
+        LocatorAllocationClass::Ordinary,
+        || false,
+    )
+    .expect("unrelated event routing corruption must not discard valid command membership");
+    assert_eq!(rows, 1);
+    let generation = indexes.locator_generation().unwrap();
+    generation.validate_source(&access).unwrap();
+    assert!(generation.has_command_at(CommitSequence::first()).unwrap());
+    let first_command = &first.commands()[0];
+    let identity = first_command
+        .base()
+        .outcome()
+        .identity()
+        .storage_key()
+        .unwrap();
+    assert!(
+        generation
+            .has_command_member(
+                riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency,
+                crate::keys::encode_idempotency_key(&identity),
+            )
+            .unwrap()
+    );
+    let partition = first_command.base().commit().partition_hash();
+    let route_error = indexes
+        .partition_event_route_page(partition, None, None, 8)
+        .expect("known route corruption must not become an unavailable or empty accelerator")
+        .expect_err("corrupt route scan cannot return routes");
+    assert_eq!(route_error.kind(), StorageErrorKind::CorruptData);
+    let two = CommitSequence::first().checked_next().unwrap();
+    let second = append_segment(&store, two, Some(first.segment_digest()));
+    let original_event = first.commands()[0].events()[0].event_id();
+    let new_event = second.commands()[0].events()[0].event_id();
+    indexes.apply(
+        crate::transient::TransientIndexDelta::CommandSegmentPublished(Arc::new(second), None),
+    );
+    let (events, more) = indexes.pending_outbox_page(None, 8).unwrap();
+    assert!(!more);
+    assert_eq!(events.len(), 2);
+    assert!(events.contains(&original_event));
+    assert!(
+        events.contains(&new_event),
+        "route degradation must not drop new outbox membership"
+    );
+    assert_eq!(
+        indexes
+            .partition_event_route_page(partition, None, None, 8)
+            .unwrap()
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert!(
+        indexes
+            .locator_generation()
+            .unwrap()
+            .has_command_at(two)
+            .unwrap()
+    );
+}
+
+// req: STO-032, REC-001
+#[test]
+fn genuine_command_corruption_never_completes_a_directory() {
+    let (_scope, store, original, _first) = populated_source();
+    let original_work = job(original.clone());
+    process_job(&original_work).unwrap();
+    let original_generation = original.locator_capability().require_complete().unwrap();
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut commands = write.open_table(crate::layout::COMMITS).unwrap();
+        commands
+            .insert(
+                crate::keys::encode_application_sequence_key(CommitSequence::first()).as_slice(),
+                b"invalid-canonical-command-segment".as_slice(),
+            )
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let damaged = pending_source(&store, 2);
+    let result = TransientIndexes::rebuild_from_access_with_owner(
+        &damaged,
+        damaged.locator_capability().construction_owner().unwrap(),
+        LocatorAllocationClass::Ordinary,
+        || false,
+    );
+    assert_eq!(
+        result
+            .err()
+            .expect("genuine command corruption must refuse")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert!(damaged.locator_capability().is_pending());
+    assert_eq!(
+        damaged
+            .locator_capability()
+            .require_complete()
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert!(
+        original_generation
+            .has_command_at(CommitSequence::first())
+            .unwrap()
+    );
+    assert!(
+        original
+            .locator_capability()
+            .require_complete()
+            .unwrap()
+            .has_command_at(CommitSequence::first())
+            .unwrap()
+    );
+}
+
+// req: STO-032, REC-001
+#[test]
+fn ancillary_traversal_corruption_does_not_become_a_completed_directory() {
+    let (_scope, store, original, _first) = populated_source();
+    let work = job(original.clone());
+    process_job(&work).unwrap();
+    let protected = original.locator_capability().require_complete().unwrap();
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut routes = write.open_table(crate::layout::EVENT_ROUTES).unwrap();
+        // This violates the shared native visitor's source-key bound before
+        // any ancillary decoder is called. It is not a decoded-route finding.
+        let oversized = vec![0x5a; riffdb_types::MAX_KEY_BYTES + 1];
+        routes
+            .insert(oversized.as_slice(), b"irrelevant-row-value".as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let damaged = pending_source(&store, 2);
+    let result = TransientIndexes::rebuild_from_access_with_owner(
+        &damaged,
+        damaged.locator_capability().construction_owner().unwrap(),
+        LocatorAllocationClass::Ordinary,
+        || false,
+    );
+    assert_eq!(
+        result
+            .err()
+            .expect("generic ancillary traversal corruption must remain a construction failure")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert!(damaged.locator_capability().is_pending());
+    assert_eq!(
+        damaged
+            .locator_capability()
+            .require_complete()
+            .err()
+            .unwrap()
+            .kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert!(protected.has_command_at(CommitSequence::first()).unwrap());
+}

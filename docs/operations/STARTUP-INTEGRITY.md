@@ -69,6 +69,12 @@ its admitted construction owner using the request's original deadline and
 cancellation signal, without holding a writer lease. After completion, the
 service verifies the current source and runs fresh authorization.
 
+Exact command-directory construction is independent of standalone event-route
+row decoding. Damaged routing rows still return typed corruption on routing
+reads, while the public offline scrub can be admitted to report that damage.
+Command-directory corruption and source traversal failures still refuse native
+admission; no incomplete routing map can prove an empty result.
+
 Only a request refused, cancelled or expired during this initial Pending phase,
 before operation or audit work is accepted, can return without a durable service
 audit row. Once work is admitted, the existing audit and failure-containment
