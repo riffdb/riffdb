@@ -37,11 +37,15 @@ fn open_registered(store: RedbStore) -> RedbOperationalPorts {
     let StructuralOpenOutcome::Clean(opened) = session.finish(end, historical).unwrap() else {
         panic!("current fixture needs no migration");
     };
-    opened
+    let ports = opened
         .into_parts()
         .3
         .into_operational_after_catalog_validation()
-        .unwrap()
+        .unwrap();
+    // This positive fixture immediately enters maintenance and raw exclusive
+    // reopen checks. Finish its original captured builder before those steps.
+    complete_fixture_locators(&ports);
+    ports
 }
 
 fn register(ports: &RedbOperationalPorts, capability: &StoredCapabilityRecordV1, expiry: bool) {

@@ -5328,7 +5328,9 @@ fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() 
     let prior_path = TestDatabasePath::new("fresh-locator-prior-identity");
     prepare_legacy_clean_start_fixture(&prior_path.0);
     let (first, second) = prepare_two_command_database(&prior_path.0);
-    let ports = open_operational(RedbStore::open(&prior_path.0).expect("reopen two-command store"));
+    let ports = open_operational_completed_fixture(
+        RedbStore::open(&prior_path.0).expect("reopen two-command store"),
+    );
     ports
         .write_clean_close_lifecycle()
         .expect("certify bounded locator-only reopen");
