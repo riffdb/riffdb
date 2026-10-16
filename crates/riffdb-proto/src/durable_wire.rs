@@ -43,6 +43,7 @@ const RECORD_REGISTRY_V2: Shape = Shape::new(&RECORD_REGISTRY_V2_RULES);
 struct Shape {
     rules: &'static [Rule],
     rule_slots: [u8; MAX_SHAPE_FIELD_NUMBER + 1],
+    locator_wire_bytes: Option<usize>,
 }
 
 impl Shape {
@@ -57,7 +58,16 @@ impl Shape {
             rule_slots[number] = (index + 1) as u8;
             index += 1;
         }
-        Self { rules, rule_slots }
+        Self {
+            rules,
+            rule_slots,
+            locator_wire_bytes: None,
+        }
+    }
+
+    const fn with_locator_wire_type<T>(mut self) -> Self {
+        self.locator_wire_bytes = Some(std::mem::size_of::<T>());
+        self
     }
 
     fn rule(&self, number: u32) -> Option<(usize, &Rule)> {
@@ -154,36 +164,40 @@ const fn packed_varints(number: u32, maximum_items: usize) -> Rule {
 }
 
 macro_rules! shape {
+    ($name:ident : $wire:ident [$($rule:expr),* $(,)?]) => {
+        static $name: Shape = Shape::new(&[$($rule),*])
+            .with_locator_wire_type::<crate::storage::v1::$wire>();
+    };
     ($name:ident [$($rule:expr),* $(,)?]) => {
         static $name: Shape = Shape::new(&[$($rule),*]);
     };
 }
 
-shape!(UNIT []);
-shape!(TIMESTAMP []);
-shape!(EVENT_ID []);
-shape!(TENANT_SCOPE [message(1, &UNIT), string(2, MAX_TEXT_ID_BYTES)]);
-shape!(ADMITTED_ACTOR [
+shape!(UNIT: UnitV1 []);
+shape!(TIMESTAMP: TimestampV1 []);
+shape!(EVENT_ID: EventIdV1 []);
+shape!(TENANT_SCOPE: TenantScopeV1 [message(1, &UNIT), string(2, MAX_TEXT_ID_BYTES)]);
+shape!(ADMITTED_ACTOR: AdmittedActorContextV1 [
     string(1, MAX_TEXT_ID_BYTES),
     message(3, &TENANT_SCOPE),
     fixed_bytes(4, 16),
 ]);
-shape!(AUDIT_PRINCIPAL [
+shape!(AUDIT_PRINCIPAL: AuditPrincipalV1 [
     string(1, MAX_TEXT_ID_BYTES),
     fixed_bytes(3, 16),
 ]);
 
-shape!(PLAN [
+shape!(PLAN: ExecutablePlanRefV1 [
     string(1, MAX_TEXT_ID_BYTES),
     fixed_bytes(3, 32),
     fixed_bytes(5, 32),
 ]);
-shape!(SCHEMA_BINDING [
+shape!(SCHEMA_BINDING: DurableKeySchemaBindingV1 [
     string(1, MAX_TEXT_ID_BYTES),
     fixed_bytes(3, 32),
 ]);
-shape!(IDEMPOTENCY_DIGEST[fixed_bytes(3, 32)]);
-shape!(IDEMPOTENCY_IDENTITY [
+shape!(IDEMPOTENCY_DIGEST: IdempotencyKeyDigestV1 [fixed_bytes(3, 32)]);
+shape!(IDEMPOTENCY_IDENTITY: IdempotencyIdentityV1 [
     fixed_bytes(1, 16),
     string(2, MAX_ENVIRONMENT_BYTES),
     message(3, &TENANT_SCOPE),
@@ -191,29 +205,29 @@ shape!(IDEMPOTENCY_IDENTITY [
     string(5, MAX_TEXT_ID_BYTES),
     message(7, &IDEMPOTENCY_DIGEST),
 ]);
-shape!(PROVENANCE_CLAIMS [
+shape!(PROVENANCE_CLAIMS: StoredAdmittedProvenanceClaimsV1 [
     string(1, 512),
     string(2, 128),
     string(3, 1_024),
     string(4, MAX_TEXT_ID_BYTES),
 ]);
-shape!(ENTITY_TARGET[bytes(2, MAX_KEY_BYTES)]);
-shape!(EXPECTED_ENTITY_STATE[message(1, &UNIT)]);
-shape!(INDEX_EPOCH_POSITION[message(1, &UNIT)]);
-shape!(ENTITY_READ_DEPENDENCY [
+shape!(ENTITY_TARGET: EntityTargetV1 [bytes(2, MAX_KEY_BYTES)]);
+shape!(EXPECTED_ENTITY_STATE: ExpectedEntityStateV1 [message(1, &UNIT)]);
+shape!(INDEX_EPOCH_POSITION: IndexEpochPositionV1 [message(1, &UNIT)]);
+shape!(ENTITY_READ_DEPENDENCY: EntityReadDependencyV1 [
     message(1, &ENTITY_TARGET),
     message(2, &EXPECTED_ENTITY_STATE),
 ]);
-shape!(INDEX_RANGE_DEPENDENCY [
+shape!(INDEX_RANGE_DEPENDENCY: IndexRangeReadDependencyV1 [
     bytes(1, MAX_KEY_BYTES),
     message(2, &INDEX_EPOCH_POSITION),
 ]);
-shape!(READ_DEPENDENCY [
+shape!(READ_DEPENDENCY: StoredReadDependencyV1 [
     message(1, &ENTITY_READ_DEPENDENCY),
     message(2, &INDEX_RANGE_DEPENDENCY),
 ]);
-shape!(READ_DEPENDENCIES[repeated_message(1, MAX_COMMAND_ITEMS, &READ_DEPENDENCY,)]);
-shape!(DECLARED_OUTCOME[bytes(2, MAX_DOCUMENT_BYTES)]);
+shape!(READ_DEPENDENCIES: StoredReadDependenciesV1 [repeated_message(1, MAX_COMMAND_ITEMS, &READ_DEPENDENCY,)]);
+shape!(DECLARED_OUTCOME: DeclaredOutcomeV1 [bytes(2, MAX_DOCUMENT_BYTES)]);
 shape!(ENTITY_RECORD [
     message(1, &ENTITY_TARGET),
     message(4, &SCHEMA_BINDING),
@@ -234,7 +248,7 @@ shape!(INDEX_EPOCH [
     bytes(1, MAX_KEY_BYTES),
     message(2, &SCHEMA_BINDING),
 ]);
-shape!(INDEX_GENERATION_V2 [
+shape!(INDEX_GENERATION_V2: StoredIndexGenerationV2 [
     bytes(1, MAX_KEY_BYTES),
     message(3, &SCHEMA_BINDING),
 ]);
@@ -263,23 +277,23 @@ shape!(OUTCOME [
     fixed_bytes(12, 16),
     bytes(14, MAX_KEY_BYTES),
 ]);
-shape!(DURABLE_EVENT [
+shape!(DURABLE_EVENT: StoredDurableEventV1 [
     message(1, &EVENT_ID),
     bytes(3, MAX_DOCUMENT_BYTES),
     fixed_bytes(4, 32),
 ]);
-shape!(EVENT_POLICY_ANCHOR [
+shape!(EVENT_POLICY_ANCHOR: StoredEventPolicyAnchorV1 [
     message(1, &SCHEMA_BINDING),
     message(3, &ENTITY_TARGET),
     string(4, MAX_TEXT_ID_BYTES),
 ]);
-shape!(DURABLE_EVENT_V2 [
+shape!(DURABLE_EVENT_V2: StoredDurableEventV2 [
     message(1, &EVENT_ID),
     bytes(3, MAX_DOCUMENT_BYTES),
     fixed_bytes(4, 32),
     message(5, &EVENT_POLICY_ANCHOR),
 ]);
-shape!(DURABLE_EVENT_VARIANT_V1 [
+shape!(DURABLE_EVENT_VARIANT_V1: StoredDurableEventVariantV1 [
     message(1, &DURABLE_EVENT),
     message(2, &DURABLE_EVENT_V2),
 ]);
@@ -298,7 +312,7 @@ shape!(PROVENANCE [
     repeated_message(13, MAX_COMMAND_ITEMS, &EVENT_ID),
     message(14, &PROVENANCE_CLAIMS),
 ]);
-shape!(COMMAND_CAUSATION [
+shape!(COMMAND_CAUSATION: StoredCommandCausationV1 [
     message(1, &EVENT_ID),
     fixed_bytes(2, 16),
 ]);
@@ -324,7 +338,7 @@ shape!(OUTCOME_V3 [
     message(1, &OUTCOME_V2),
     bytes(2, MAX_DOCUMENT_BYTES),
 ]);
-shape!(COMMAND_AUDIT_INVOCATION_V1 [
+shape!(COMMAND_AUDIT_INVOCATION_V1: StoredCommandAuditInvocationV1 [
     fixed_bytes(1, 16),
     message(3, &AUDIT_PRINCIPAL),
     repeated_message(5, 16, &SERVICE_AUDIT_TARGET_V2),
@@ -332,7 +346,7 @@ shape!(COMMAND_AUDIT_INVOCATION_V1 [
     message(8, &TIMESTAMP),
     message(10, &TIMESTAMP),
 ]);
-shape!(COMMAND_CAPSULE_V1 [
+shape!(COMMAND_CAPSULE_V1: StoredCommandCapsuleV1 [
     message(1, &IDEMPOTENCY_IDENTITY),
     fixed_bytes(3, 16),
     message(4, &PLAN),
@@ -352,14 +366,14 @@ shape!(COMMAND_CAPSULE_V1 [
     repeated_message(19, MAX_COMMAND_ITEMS, &EVENT_ID),
     message(20, &COMMAND_AUDIT_INVOCATION_V1),
 ]);
-shape!(INDEX_GENERATION_TRANSITION_V1[message(1, &INDEX_GENERATION_V2)]);
-shape!(COMMAND_CAPSULE_V2 [
+shape!(INDEX_GENERATION_TRANSITION_V1: StoredIndexGenerationTransitionV1 [message(1, &INDEX_GENERATION_V2)]);
+shape!(COMMAND_CAPSULE_V2: StoredCommandCapsuleV2 [
     message(1, &COMMAND_CAPSULE_V1),
     repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT),
     repeated_message(3, MAX_COMMAND_ITEMS, &INDEX_GENERATION_TRANSITION_V1),
 ]);
-shape!(COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1[bytes(3, MAX_KEY_BYTES)]);
-shape!(COMMAND_SEGMENT_MANIFEST_V1 [
+shape!(COMMAND_DERIVED_INDEX_MANIFEST_ENTRY_V1: CommandDerivedIndexManifestEntryV1 [bytes(3, MAX_KEY_BYTES)]);
+shape!(COMMAND_SEGMENT_MANIFEST_V1: CommandSegmentManifestV1 [
     repeated_message(
         1,
         MAX_COMMAND_SEGMENT_INDEX_ENTRIES,
@@ -367,13 +381,13 @@ shape!(COMMAND_SEGMENT_MANIFEST_V1 [
     ),
     fixed_bytes(2, 32),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V1 [
+shape!(COMMAND_SEGMENT_BODY_V1: StoredCommandSegmentBodyV1 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V2),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V1 [
+shape!(COMMAND_SEGMENT_V1: StoredCommandSegmentV1 [
     message(1, &COMMAND_SEGMENT_BODY_V1),
     fixed_bytes(2, 32),
 ]);
@@ -388,22 +402,22 @@ shape!(COMMAND_DERIVED_INDEX_CHECKPOINT_V1 [
     ),
     fixed_bytes(7, 32),
 ]);
-shape!(COMMAND_CAPSULE_V3 [
+shape!(COMMAND_CAPSULE_V3: StoredCommandCapsuleV3 [
     message(1, &COMMAND_CAPSULE_V2),
     bytes(2, MAX_DOCUMENT_BYTES),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V2 [
+shape!(COMMAND_SEGMENT_BODY_V2: StoredCommandSegmentBodyV2 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V3),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V2 [
+shape!(COMMAND_SEGMENT_V2: StoredCommandSegmentV2 [
     message(1, &COMMAND_SEGMENT_BODY_V2),
     fixed_bytes(2, 32),
 ]);
-shape!(ENTITY_CHAIN_STATE_V1[fixed_bytes(3, 32)]);
-shape!(COMMITTED_ENTITY_TRANSITION_V1 [
+shape!(ENTITY_CHAIN_STATE_V1: StoredEntityChainStateV1 [fixed_bytes(3, 32)]);
+shape!(COMMITTED_ENTITY_TRANSITION_V1: StoredCommittedEntityTransitionV1 [
     message(3, &ENTITY_TARGET),
     message(4, &ENTITY_CHAIN_STATE_V1),
     fixed_bytes(6, 32),
@@ -421,55 +435,55 @@ shape!(CHANGELOG_V2_ROTATION_RECEIPT_V1 [
     fixed_bytes(6, 32),
     fixed_bytes(7, 32),
 ]);
-shape!(COMMAND_CAPSULE_V4 [
+shape!(COMMAND_CAPSULE_V4: StoredCommandCapsuleV4 [
     message(1, &COMMAND_CAPSULE_V3),
     repeated_message(2, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V3 [
+shape!(COMMAND_SEGMENT_BODY_V3: StoredCommandSegmentBodyV3 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V4),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V3 [
+shape!(COMMAND_SEGMENT_V3: StoredCommandSegmentV3 [
     message(1, &COMMAND_SEGMENT_BODY_V3),
     fixed_bytes(2, 32),
 ]);
-shape!(COMMAND_CAPSULE_V5 [
+shape!(COMMAND_CAPSULE_V5: StoredCommandCapsuleV5 [
     message(1, &COMMAND_CAPSULE_V1),
     repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT_VARIANT_V1),
     repeated_message(3, MAX_COMMAND_ITEMS, &INDEX_GENERATION_TRANSITION_V1),
     bytes(4, MAX_DOCUMENT_BYTES),
     repeated_message(5, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V4 [
+shape!(COMMAND_SEGMENT_BODY_V4: StoredCommandSegmentBodyV4 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V5),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V4 [
+shape!(COMMAND_SEGMENT_V4: StoredCommandSegmentV4 [
     message(1, &COMMAND_SEGMENT_BODY_V4),
     fixed_bytes(2, 32),
 ]);
-shape!(COMMAND_CAPSULE_V6 [
+shape!(COMMAND_CAPSULE_V6: StoredCommandCapsuleV6 [
     message(1, &COMMAND_CAPSULE_V1),
     repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT_VARIANT_V1),
     repeated_message(3, MAX_COMMAND_INDEX_TRANSITIONS, &INDEX_GENERATION_TRANSITION_V1),
     bytes(4, MAX_DOCUMENT_BYTES),
     repeated_message(5, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V5 [
+shape!(COMMAND_SEGMENT_BODY_V5: StoredCommandSegmentBodyV5 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V6),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V5 [
+shape!(COMMAND_SEGMENT_V5: StoredCommandSegmentV5 [
     message(1, &COMMAND_SEGMENT_BODY_V5),
     fixed_bytes(2, 32),
 ]);
-shape!(COMMAND_CAPSULE_V7 [
+shape!(COMMAND_CAPSULE_V7: StoredCommandCapsuleV7 [
     message(1, &COMMAND_CAPSULE_V1),
     repeated_message(2, MAX_COMMAND_ITEMS, &DURABLE_EVENT_VARIANT_V1),
     repeated_message(3, MAX_COMMAND_INDEX_TRANSITIONS, &INDEX_GENERATION_TRANSITION_V1),
@@ -477,13 +491,13 @@ shape!(COMMAND_CAPSULE_V7 [
     repeated_message(5, MAX_COMMAND_ITEMS, &COMMITTED_ENTITY_TRANSITION_V1),
     bytes(6, MAX_COMMAND_PREFIX_BYTES),
 ]);
-shape!(COMMAND_SEGMENT_BODY_V6 [
+shape!(COMMAND_SEGMENT_BODY_V6: StoredCommandSegmentBodyV6 [
     fixed_bytes(1, 16),
     fixed_bytes(3, 32),
     repeated_message(8, MAX_COMMAND_SEGMENT_COMMANDS, &COMMAND_CAPSULE_V7),
     message(9, &COMMAND_SEGMENT_MANIFEST_V1),
 ]);
-shape!(COMMAND_SEGMENT_V6 [
+shape!(COMMAND_SEGMENT_V6: StoredCommandSegmentV6 [
     message(1, &COMMAND_SEGMENT_BODY_V6),
     fixed_bytes(2, 32),
 ]);
@@ -496,11 +510,11 @@ shape!(COMMITTED_MUTATION [
     message(1, &EXPECTED_ENTITY_STATE),
     message(2, &ENTITY_RECORD),
 ]);
-shape!(EVENT_REFERENCE_V2 [
+shape!(EVENT_REFERENCE_V2: EventReferenceV2 [
     message(1, &EVENT_ID),
     fixed_bytes(2, 32),
 ]);
-shape!(COMMITTED_ENTITY_REFERENCE_V2 [
+shape!(COMMITTED_ENTITY_REFERENCE_V2: CommittedEntityReferenceV2 [
     message(1, &ENTITY_TARGET),
     fixed_bytes(3, 32),
 ]);
@@ -731,11 +745,11 @@ shape!(CAPABILITY_ADMINISTRATION [
     string(8, MAX_TEXT_ID_BYTES),
 ]);
 
-shape!(CONTRACT_VERSION_TARGET[string(1, MAX_TEXT_ID_BYTES)]);
-shape!(ENTITY_TYPE_TARGET[string(1, MAX_TEXT_ID_BYTES)]);
-shape!(COMMAND_TARGET[string(1, MAX_TEXT_ID_BYTES)]);
-shape!(PROJECTION_TARGET[string(1, MAX_TEXT_ID_BYTES)]);
-shape!(INDEX_TARGET[string(1, MAX_TEXT_ID_BYTES)]);
+shape!(CONTRACT_VERSION_TARGET: ContractVersionAuditTargetV1 [string(1, MAX_TEXT_ID_BYTES)]);
+shape!(ENTITY_TYPE_TARGET: EntityTypeAuditTargetV1 [string(1, MAX_TEXT_ID_BYTES)]);
+shape!(COMMAND_TARGET: CommandAuditTargetV1 [string(1, MAX_TEXT_ID_BYTES)]);
+shape!(PROJECTION_TARGET: ProjectionAuditTargetV1 [string(1, MAX_TEXT_ID_BYTES)]);
+shape!(INDEX_TARGET: IndexAuditTargetV1 [string(1, MAX_TEXT_ID_BYTES)]);
 shape!(SERVICE_AUDIT_TARGET [
     string(1, MAX_TEXT_ID_BYTES),
     message(2, &CONTRACT_VERSION_TARGET),
@@ -746,13 +760,13 @@ shape!(SERVICE_AUDIT_TARGET [
     fixed_bytes(8, 16),
     fixed_bytes(9, 16),
 ]);
-shape!(EVENT_CONSUMER_AUDIT_TARGET [
+shape!(EVENT_CONSUMER_AUDIT_TARGET: EventConsumerAuditTargetV2 [
     string(1, MAX_TEXT_ID_BYTES),
     fixed_bytes(2, 32),
     string(3, MAX_TEXT_ID_BYTES),
     fixed_bytes(4, 32),
 ]);
-shape!(SERVICE_AUDIT_TARGET_V2 [
+shape!(SERVICE_AUDIT_TARGET_V2: ServiceAuditTargetV2 [
     string(1, MAX_TEXT_ID_BYTES),
     message(2, &CONTRACT_VERSION_TARGET),
     message(3, &ENTITY_TYPE_TARGET),
@@ -1364,6 +1378,16 @@ fn preflight(
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LocatorAllocationShape {
     pub(crate) messages: u64,
+    pub(crate) wire_inline_bytes: u64,
+    pub(crate) semantic_events: u64,
+    pub(crate) semantic_read_dependencies: u64,
+    pub(crate) semantic_entity_references: u64,
+    pub(crate) semantic_event_references: u64,
+    pub(crate) semantic_event_ids: u64,
+    pub(crate) semantic_index_transitions: u64,
+    pub(crate) semantic_entity_transitions: u64,
+    pub(crate) semantic_audit_targets: u64,
+    pub(crate) semantic_conflict_hashes: u64,
     pub(crate) buffers: u64,
     pub(crate) packed_items: u64,
     pub(crate) capsules: u64,
@@ -1412,7 +1436,40 @@ fn inspect_locator_allocations(
             .ok_or(DurablePreflightError::LimitExceeded)?;
         Ok::<(), DurablePreflightError>(())
     };
+    let wire_bytes = shape
+        .locator_wire_bytes
+        .ok_or(DurablePreflightError::Malformed)?;
+    add(
+        &mut result.wire_inline_bytes,
+        u64::try_from(wire_bytes).map_err(|_| DurablePreflightError::LimitExceeded)?,
+    )?;
     add(&mut result.messages, 1)?;
+    // Semantic fixed children live inside their containing capsule. Count the
+    // repeated element kinds whose buffers exist outside that inline storage.
+    if std::ptr::eq(shape, &READ_DEPENDENCY) {
+        add(&mut result.semantic_read_dependencies, 1)?;
+    }
+    if std::ptr::eq(shape, &COMMITTED_ENTITY_REFERENCE_V2) {
+        add(&mut result.semantic_entity_references, 1)?;
+    }
+    if std::ptr::eq(shape, &EVENT_REFERENCE_V2) {
+        add(&mut result.semantic_event_references, 1)?;
+    }
+    if std::ptr::eq(shape, &EVENT_ID) {
+        add(&mut result.semantic_event_ids, 1)?;
+    }
+    if std::ptr::eq(shape, &INDEX_GENERATION_TRANSITION_V1) {
+        add(&mut result.semantic_index_transitions, 1)?;
+    }
+    if std::ptr::eq(shape, &COMMITTED_ENTITY_TRANSITION_V1) {
+        add(&mut result.semantic_entity_transitions, 1)?;
+    }
+    if std::ptr::eq(shape, &SERVICE_AUDIT_TARGET_V2) {
+        add(&mut result.semantic_audit_targets, 1)?;
+    }
+    if std::ptr::eq(shape, &DURABLE_EVENT) || std::ptr::eq(shape, &DURABLE_EVENT_V2) {
+        add(&mut result.semantic_events, 1)?;
+    }
     if std::ptr::eq(shape, &COMMAND_CAPSULE_V1) {
         add(&mut result.capsules, 1)?;
     }
@@ -1430,6 +1487,9 @@ fn inspect_locator_allocations(
             }
             Kind::Opaque { .. } => {
                 add(&mut result.buffers, 1)?;
+                if std::ptr::eq(shape, &COMMAND_CAPSULE_V1) && field.number == 9 {
+                    add(&mut result.semantic_conflict_hashes, 1)?;
+                }
                 let canonical = (std::ptr::eq(shape, &DECLARED_OUTCOME) && field.number == 2)
                     || ((std::ptr::eq(shape, &DURABLE_EVENT)
                         || std::ptr::eq(shape, &DURABLE_EVENT_V2))
@@ -1466,6 +1526,185 @@ mod tests {
 
     use super::*;
     use crate::storage::v1;
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn locator_wire_footprints_cover_all_readable_segment_shapes() {
+        fn visit(shape: &'static Shape, seen: &mut Vec<&'static Shape>, depth: usize) {
+            assert!(depth <= MAX_PREFLIGHT_DEPTH);
+            if seen.iter().any(|known| std::ptr::eq(*known, shape)) {
+                return;
+            }
+            assert!(shape.locator_wire_bytes.is_some());
+            seen.push(shape);
+            for rule in shape.rules {
+                if let Kind::Message(child) = rule.kind {
+                    visit(child, seen, depth + 1);
+                }
+            }
+        }
+        let mut seen = Vec::new();
+        for root in [
+            &COMMAND_SEGMENT_V1,
+            &COMMAND_SEGMENT_V2,
+            &COMMAND_SEGMENT_V3,
+            &COMMAND_SEGMENT_V4,
+            &COMMAND_SEGMENT_V5,
+            &COMMAND_SEGMENT_V6,
+        ] {
+            visit(root, &mut seen, 0);
+        }
+        // Includes every closed message arm, not just variants in a fixture.
+        assert_eq!(seen.len(), 59);
+        assert_eq!(UNIT.locator_wire_bytes, Some(0));
+    }
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn locator_wire_footprint_refuses_a_new_unbound_nested_shape() {
+        static UNBOUND: Shape = Shape::new(&[]);
+        static PARENT: Shape =
+            Shape::new(&[message(1, &UNBOUND)]).with_locator_wire_type::<v1::TenantScopeV1>();
+        let mut result = LocatorAllocationShape::default();
+        assert_eq!(
+            inspect_locator_allocations(&[0x0a, 0], &PARENT, 0, &mut result, &mut |_| Ok(0)),
+            Err(DurablePreflightError::Malformed)
+        );
+    }
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn locator_wire_footprints_cover_every_audit_target_variant() {
+        use v1::service_audit_target_v2::Target;
+        let variants = [
+            Target::ContractLineage("lineage".to_owned()),
+            Target::ContractVersion(v1::ContractVersionAuditTargetV1 {
+                contract_lineage: "lineage".to_owned(),
+                contract_version: 1,
+            }),
+            Target::EntityType(v1::EntityTypeAuditTargetV1 {
+                contract_lineage: "lineage".to_owned(),
+                entity_type_id: 1,
+            }),
+            Target::Command(v1::CommandAuditTargetV1 {
+                contract_lineage: "lineage".to_owned(),
+                command_id: 1,
+            }),
+            Target::Projection(v1::ProjectionAuditTargetV1 {
+                contract_lineage: "lineage".to_owned(),
+                projection_id: 1,
+            }),
+            Target::Index(v1::IndexAuditTargetV1 {
+                contract_lineage: "lineage".to_owned(),
+                index_id: 1,
+            }),
+            Target::CommitSequence(1),
+            Target::ProvenanceId(vec![1; 16]),
+            Target::CapabilityId(vec![2; 16]),
+            Target::EventConsumer(v1::EventConsumerAuditTargetV2 {
+                contract_lineage: "lineage".to_owned(),
+                reactive_module_hash: vec![3; 32],
+                operation_name: "operation".to_owned(),
+                consumer_identity_hash: vec![4; 32],
+            }),
+        ];
+        for variant in variants {
+            let message = v1::ServiceAuditTargetV2 {
+                target: Some(variant),
+            };
+            let encoded = message.encode_to_vec();
+            let decoded = v1::ServiceAuditTargetV2::decode(encoded.as_slice()).unwrap();
+            assert_eq!(decoded, message);
+            let mut result = LocatorAllocationShape::default();
+            inspect_locator_allocations(
+                &encoded,
+                &SERVICE_AUDIT_TARGET_V2,
+                0,
+                &mut result,
+                &mut |_| Ok(0),
+            )
+            .unwrap();
+            assert!(result.wire_inline_bytes >= std::mem::size_of_val(&decoded) as u64);
+            // The oneof's actual enum storage is already included in its DTO.
+            // Message arms also account their actual nested DTO, unlike scalar arms.
+            assert!(result.messages == 1 || result.messages == 2);
+            assert_eq!(result.semantic_audit_targets, 1);
+            assert!(
+                result.wire_inline_bytes < std::mem::size_of::<v1::StoredCommandCapsuleV7>() as u64
+            );
+        }
+    }
+
+    // req: TXN-042, STO-032
+    #[test]
+    fn locator_wire_and_semantic_slots_cover_both_dependency_variants() {
+        use v1::stored_read_dependency_v1::Dependency;
+        let message = v1::StoredReadDependenciesV1 {
+            dependencies: vec![
+                v1::StoredReadDependencyV1 {
+                    dependency: Some(Dependency::EntityObservation(v1::EntityReadDependencyV1 {
+                        target: Some(v1::EntityTargetV1 {
+                            entity_type_id: 1,
+                            entity_key: vec![1; 32],
+                        }),
+                        expected: Some(v1::ExpectedEntityStateV1 {
+                            state: Some(v1::expected_entity_state_v1::State::Absent(v1::UnitV1 {})),
+                        }),
+                    })),
+                },
+                v1::StoredReadDependencyV1 {
+                    dependency: Some(Dependency::EntityObservation(v1::EntityReadDependencyV1 {
+                        target: Some(v1::EntityTargetV1 {
+                            entity_type_id: 1,
+                            entity_key: vec![2; 32],
+                        }),
+                        expected: Some(v1::ExpectedEntityStateV1 {
+                            state: Some(v1::expected_entity_state_v1::State::PresentEntityVersion(
+                                1,
+                            )),
+                        }),
+                    })),
+                },
+                v1::StoredReadDependencyV1 {
+                    dependency: Some(Dependency::IndexRangeEpoch(
+                        v1::IndexRangeReadDependencyV1 {
+                            canonical_index_range_prefix: vec![3; 32],
+                            expected: Some(v1::IndexEpochPositionV1 {
+                                position: Some(v1::index_epoch_position_v1::Position::BeforeFirst(
+                                    v1::UnitV1 {},
+                                )),
+                            }),
+                        },
+                    )),
+                },
+                v1::StoredReadDependencyV1 {
+                    dependency: Some(Dependency::IndexRangeEpoch(
+                        v1::IndexRangeReadDependencyV1 {
+                            canonical_index_range_prefix: vec![4; 32],
+                            expected: Some(v1::IndexEpochPositionV1 {
+                                position: Some(v1::index_epoch_position_v1::Position::Epoch(1)),
+                            }),
+                        },
+                    )),
+                },
+            ],
+        };
+        let encoded = message.encode_to_vec();
+        let decoded = v1::StoredReadDependenciesV1::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded, message);
+        let mut result = LocatorAllocationShape::default();
+        inspect_locator_allocations(&encoded, &READ_DEPENDENCIES, 0, &mut result, &mut |_| Ok(0))
+            .unwrap();
+        assert_eq!(
+            result.semantic_read_dependencies,
+            decoded.dependencies.len() as u64
+        );
+        // Measure the independent generated decoder's actual vector capacity,
+        // including the oneof enum's inline storage, rather than wire length.
+        let observed = std::mem::size_of_val(&decoded)
+            + decoded.dependencies.capacity() * std::mem::size_of::<v1::StoredReadDependencyV1>();
+        assert!(result.wire_inline_bytes * 4 >= observed as u64);
+    }
 
     fn assert_exact_rule_dispatch(shape: &Shape, depth: usize) {
         assert!(depth <= MAX_PREFLIGHT_DEPTH);

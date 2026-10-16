@@ -330,3 +330,87 @@ fn exact_manifest_metadata_fits_retained_pressure_and_retires_after_its_physical
         recycled.bytes() > crate::locator_memory::LOCATOR_ORDINARY_BYTES - RETAINED_METADATA_WINDOW
     );
 }
+
+// req: TXN-042, STO-032, REC-001
+#[test]
+fn typed_locator_allowance_covers_independently_decoded_semantic_collections() {
+    use std::mem::size_of_val;
+    let cases = [
+        vec![crate::derived::follower_indexes::capsule(
+            CommitSequence::first(),
+        )],
+        (1..=4)
+            .map(|n| seed_capsule(CommitSequence::new(n).unwrap()))
+            .collect(),
+    ];
+    for commands in cases {
+        let (expected, encoded) = crate::derived::follower_indexes::segment(commands, None);
+        let shape = riffdb_proto::envelope::inspect_locator_segment_decode_shape_v1(
+            encoded.as_bytes(),
+            |_| Ok(0),
+        )
+        .unwrap()
+        .unwrap();
+        let work = riffdb_storage_api::locator_segment_decode_work_bound_v1(encoded.as_bytes())
+            .unwrap()
+            .unwrap();
+        let pool = NativeLocatorPool::isolated_for_tests();
+        let baseline = pool.charged_bytes();
+        let decoded = decode_native_locator_construction_segment_in_pool(
+            &pool,
+            encoded.as_bytes(),
+            None,
+            LocatorAllocationClass::Ordinary,
+            Some(crate::startup::MAX_RECOVERY_OWNED_STATE_BYTES),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(*decoded, expected);
+        // This is an independently decoded semantic-content floor, not the
+        // admission formula or a second wire counter. These occupied slices
+        // necessarily have backing allocations; capacities may be larger.
+        let mut observed =
+            size_of_val(decoded.commands()) + size_of_val(decoded.manifest().entries());
+        let mut dependency_elements = 0usize;
+        let mut event_elements = 0usize;
+        let mut transition_elements = 0usize;
+        for command in decoded.commands() {
+            let base = command.base();
+            let commit = base.commit();
+            dependency_elements += commit.read_dependencies().as_slice().len();
+            event_elements += command.events().len();
+            transition_elements += command.entity_transitions().len();
+            observed += size_of_val(commit.read_dependencies().as_slice())
+                + size_of_val(commit.entity_references())
+                + size_of_val(command.events())
+                + size_of_val(commit.outbox_event_ids())
+                + size_of_val(base.outcome().conflict_hashes())
+                + size_of_val(base.provenance().conflict_hashes())
+                + size_of_val(commit.conflict_hashes())
+                + size_of_val(base.provenance().affected_entities())
+                + size_of_val(base.provenance().event_ids())
+                + size_of_val(base.started_audit().targets().as_slice())
+                + size_of_val(base.terminal_audit().targets().as_slice())
+                + size_of_val(command.index_generation_transitions())
+                + size_of_val(command.entity_transitions());
+            for event in command.events() {
+                observed += event.payload_encoded().len();
+            }
+            if let Some(prefix) = command.prefix_evidence() {
+                observed += size_of_val(prefix.mutations());
+                for mutation in prefix.mutations() {
+                    observed += mutation.key().len() + mutation.value().map_or(0, <[u8]>::len);
+                }
+            }
+        }
+        assert!(shape.semantic_read_dependencies >= dependency_elements as u64);
+        assert!(shape.semantic_events >= event_elements as u64);
+        assert!(shape.semantic_entity_transitions >= transition_elements as u64);
+        assert!(
+            work >= (observed as u64) * 8,
+            "retained semantic collections and mapper copies must be admitted"
+        );
+        drop(decoded);
+        assert_eq!(pool.charged_bytes(), baseline);
+    }
+}

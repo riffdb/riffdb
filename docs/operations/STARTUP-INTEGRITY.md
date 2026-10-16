@@ -62,6 +62,11 @@ they do not report an incomplete lookup as absence. Bounded metadata reads remai
 available. The first dependent request cannot trigger a synchronous history walk.
 A full startup completes the directory for its exact source before handoff.
 
+Native directory admission accounts for the decoded shapes and collections in a
+command group before allocation. The existing 256-command group limit and native
+memory ceilings remain unchanged. A legitimate group whose complete ownership
+exceeds its available window still receives a typed capacity refusal.
+
 Before an ordinary authenticated request starts work on a live writer service,
 the service checks the exact native source dependency. A complete source enters
 the normal authorization and audit path immediately. A Pending source waits on

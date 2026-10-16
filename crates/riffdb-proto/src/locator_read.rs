@@ -13,6 +13,26 @@ use crate::durable_wire::DurablePreflightError;
 pub struct LocatorSegmentDecodeShapeV1 {
     /// Number of generated nested message instances, including the root.
     pub messages: u64,
+    /// Sum of actual generated message inline sizes; includes containing children.
+    pub wire_inline_bytes: u64,
+    /// Durable event elements mapped into semantic vectors.
+    pub semantic_events: u64,
+    /// Read dependency elements.
+    pub semantic_read_dependencies: u64,
+    /// Committed entity-reference elements.
+    pub semantic_entity_references: u64,
+    /// Event-reference elements.
+    pub semantic_event_references: u64,
+    /// Semantic event identities, including inline occurrences.
+    pub semantic_event_ids: u64,
+    /// Index-generation transition elements.
+    pub semantic_index_transitions: u64,
+    /// Entity-transition elements.
+    pub semantic_entity_transitions: u64,
+    /// Audit target elements before the two audit views.
+    pub semantic_audit_targets: u64,
+    /// Conflict hashes expanded into outcome, commit and provenance.
+    pub semantic_conflict_hashes: u64,
     /// Number of generated opaque string/byte buffer instances.
     pub buffers: u64,
     /// Number of packed scalar elements.
@@ -67,6 +87,16 @@ pub fn inspect_locator_segment_decode_shape_v1(
         })?;
     Ok(result.map(|shape| LocatorSegmentDecodeShapeV1 {
         messages: shape.messages,
+        wire_inline_bytes: shape.wire_inline_bytes,
+        semantic_events: shape.semantic_events,
+        semantic_read_dependencies: shape.semantic_read_dependencies,
+        semantic_entity_references: shape.semantic_entity_references,
+        semantic_event_references: shape.semantic_event_references,
+        semantic_event_ids: shape.semantic_event_ids,
+        semantic_index_transitions: shape.semantic_index_transitions,
+        semantic_entity_transitions: shape.semantic_entity_transitions,
+        semantic_audit_targets: shape.semantic_audit_targets,
+        semantic_conflict_hashes: shape.semantic_conflict_hashes,
         buffers: shape.buffers,
         packed_items: shape.packed_items,
         capsules: shape.capsules,
