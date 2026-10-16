@@ -52,7 +52,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Named vector search selects exact scan at or below the declared per-organization `ann_threshold` (up to 500 rows when undeclared or 65,536 rows when declared) and first-party in-memory HNSW on the primary above that threshold when a warm graph is available, refusing larger organizations with `ScanBudgetExceeded`.
 - Vector staleness uses v1 count semantics (`stale_count > threshold`) rather than duration-based thresholds.
 - Production `nearest()` requires one explicit compiler-owned projected source with `available`, causal, or duration-bounded freshness and refuses multi-source vector queries, vector joins, or row-store fallbacks.
-- Columnar artifacts are demand-activated on their first semantic query, returning `Building` while activation is running and remaining unavailable for the process generation if activation fails.
+- Columnar artifacts are demand-activated on their first semantic query, returning `Building` while activation is running, retrying transient control-read unavailability on the next worker pass, and allocating a replacement candidate rebuild when a published artifact fails validation.
 - Projection state is derived and rebuildable, so projections may report degraded or building status while authoritative commits remain available.
 - Tokenized-text search supports conjunction, capped disjunction, phrase, and bounded ordered proximity with fixed `riff_bm25_v1` ranking across eight retained provider epochs, without wildcards, regular expressions, fuzzy matching, stemming, snippets, caller boosts, or hybrid vector/text queries.
 
@@ -67,12 +67,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 ## Retention
 
 Online retention (see [Configuration](configuration.md#online-retention)) never
-passes a fence, and in this POC three fences bind more than an operator may
-expect:
+passes a fence, and in this POC two fences and one checkpoint interaction bind
+more than an operator may expect:
 
 - Because this POC composes no production outbox delivery destination, an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward.
-- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (or at the beginning of history if never populated) until a query activates it.
-- The first online retention step invalidates the validated-prefix startup checkpoint so the next restart performs complete startup validation proportional to the live population; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
+- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
+- Online retention invalidates the optional validated-prefix startup checkpoint when logical pruning commits and refreshes it off the commit gate once a retention batch drains, while a `Completed` startup registry binding preserves bounded restart even before that refresh finishes; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
 - Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation; see the [retention design review](architecture/WP-815-DESIGN-REVIEW.md).
 
 ## Storage reclamation
