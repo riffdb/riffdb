@@ -5,6 +5,7 @@
 //! other locator handles: their destructors enqueue, rather than recurse.
 
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
@@ -21,6 +22,10 @@ const MAX_CHUNKS: usize = 8192;
 const ALLOCATION_OVERHEAD: usize = 64;
 const WORKER_STACK_BYTES: usize = 256 * 1024;
 const WORKER_CONTROL_BYTES: usize = 64 * 1024;
+// Each outstanding owner can close at most one epoch, and admission counts
+// owners through physical retirement. One additional epoch stays open for new
+// independent work. Its fixed storage is included in the queue's early charge.
+const RETIREMENT_EPOCHS: usize = LOCATOR_MAX_OWNERS + 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LocatorAllocationClass {
@@ -80,6 +85,8 @@ pub(crate) trait LocatorRetireContents: Send + Sync + 'static {
     fn retire_one(&mut self) -> bool;
     /// Move population ownership without allocation, leaving a bounded empty value.
     fn take_for_retirement(&mut self) -> Self;
+    /// Only a final generation owner may close an epoch: its existing quota
+    /// reservation bounds the fixed epoch ring through physical retirement.
     fn is_retirement_barrier(&self) -> bool {
         false
     }
@@ -93,6 +100,7 @@ struct Slot {
     task: Option<Box<dyn RetirementTask>>,
     next: Option<usize>,
     barrier: bool,
+    epoch: usize,
 }
 struct SlotChunk {
     slots: Box<[Slot; SLOT_CHUNK]>,
@@ -105,6 +113,9 @@ struct RetirementState {
     queued_tail: Option<usize>,
     queued_count: usize,
     non_barrier_count: usize,
+    epoch_outstanding: [usize; RETIREMENT_EPOCHS],
+    open_epoch: usize,
+    oldest_epoch: usize,
     // Both queue storage and its admission have process lifetime.
     _directory_charge: LocatorCharge,
 }
@@ -117,6 +128,43 @@ impl RetirementState {
 struct RetirementQueue {
     state: Mutex<RetirementState>,
     ready: Condvar,
+}
+
+#[derive(Clone, Copy)]
+struct RetirementContext {
+    queue: &'static RetirementQueue,
+    epoch: usize,
+}
+thread_local! {
+    static RETIRING: Cell<Option<RetirementContext>> = const { Cell::new(None) };
+    #[cfg(test)]
+    static OWNER_QUOTA_RELEASE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+struct RetirementContextGuard(Option<RetirementContext>);
+impl RetirementContextGuard {
+    fn enter(queue: &'static RetirementQueue, epoch: usize) -> Self {
+        Self(RETIRING.with(|context| context.replace(Some(RetirementContext { queue, epoch }))))
+    }
+}
+impl Drop for RetirementContextGuard {
+    fn drop(&mut self) {
+        // This Cell has no destructor or heap state. Restoration also runs
+        // during unwinding, before any later independent release on this thread.
+        let _ = RETIRING.try_with(|context| context.set(self.0));
+    }
+}
+struct ActiveRetirementEpoch {
+    queue: &'static RetirementQueue,
+    epoch: usize,
+    armed: bool,
+}
+impl Drop for ActiveRetirementEpoch {
+    fn drop(&mut self) {
+        if self.armed {
+            lock(&self.queue.state).epoch_outstanding[self.epoch] -= 1;
+        }
+    }
 }
 
 pub(crate) struct NativeLocatorPool {
@@ -178,6 +226,9 @@ impl NativeLocatorPool {
                 queued_tail: None,
                 queued_count: 0,
                 non_barrier_count: 0,
+                epoch_outstanding: [0; RETIREMENT_EPOCHS],
+                open_epoch: 0,
+                oldest_epoch: 0,
                 _directory_charge: directory_charge,
             }),
             ready: Condvar::new(),
@@ -272,6 +323,7 @@ impl NativeLocatorPool {
             let slots = Box::new(std::array::from_fn(|offset| Slot {
                 task: None,
                 barrier: false,
+                epoch: 0,
                 next: if offset + 1 < SLOT_CHUNK {
                     Some(start + offset + 1)
                 } else {
@@ -309,6 +361,9 @@ impl NativeLocatorPool {
                 }
                 state.queued_count -= 1;
                 let barrier = state.slot(index).barrier;
+                let epoch = state.slot(index).epoch;
+                let eligible = !barrier
+                    || (epoch == state.oldest_epoch && state.epoch_outstanding[epoch] == 0);
                 if !barrier {
                     state.non_barrier_count -= 1;
                 }
@@ -316,14 +371,31 @@ impl NativeLocatorPool {
                     .slot(index)
                     .task
                     .take()
-                    .map(|task| (index, task, barrier))
+                    .map(|task| (index, task, barrier, epoch, eligible))
             };
-            let Some((index, mut task, barrier)) = next else {
+            let Some((index, task, barrier, epoch, eligible)) = next else {
                 continue;
             };
-            let complete = task.retire_one();
+            // A child's final Drop inherits its parent's closed epoch even if
+            // the child first enters the queue after that owner's barrier.
+            // Keep the active task counted until its physical Drop finishes.
+            let context = (!barrier).then(|| RetirementContextGuard::enter(self.retirement, epoch));
+            let mut active_epoch = (!barrier).then_some(ActiveRetirementEpoch {
+                queue: self.retirement,
+                epoch,
+                armed: !barrier,
+            });
+            // Initialize the owning local after the context: on unwinding its
+            // physical Drop and descendant enqueue run before TLS restoration.
+            let mut task = task;
+            let complete = eligible && task.retire_one();
             let mut state = lock(&self.retirement.state);
             if complete {
+                if barrier {
+                    // Make the closed epoch reusable before physical Owner
+                    // Drop makes its quota available to another constructor.
+                    state.oldest_epoch = (state.oldest_epoch + 1) % RETIREMENT_EPOCHS;
+                }
                 // Drop task before descriptor reuse. Its children only enqueue.
                 drop(state);
                 drop(task);
@@ -333,6 +405,10 @@ impl NativeLocatorPool {
                 state.free = Some(index);
             } else {
                 state.slot(index).task = Some(task);
+                if let Some(active) = &mut active_epoch {
+                    // Requeued work still owns its outstanding count.
+                    active.armed = false;
+                }
                 state.slot(index).next = None;
                 if let Some(tail) = state.queued_tail {
                     state.slot(tail).next = Some(index);
@@ -345,6 +421,9 @@ impl NativeLocatorPool {
                     state.non_barrier_count += 1;
                 }
             }
+            drop(state);
+            drop(active_epoch);
+            drop(context);
         }
         lock(&self.retirement.state).queued.is_some()
     }
@@ -386,10 +465,28 @@ impl RetirementSlot {
         self.armed = false;
         let mut state = lock(&self.retirement.state);
         let barrier = task.is_retirement_barrier();
+        let epoch = if barrier {
+            let closed = state.open_epoch;
+            state.open_epoch = (closed + 1) % RETIREMENT_EPOCHS;
+            closed
+        } else {
+            let inherited = RETIRING
+                .try_with(|context| {
+                    context.get().and_then(|context| {
+                        std::ptr::eq(context.queue, self.retirement).then_some(context.epoch)
+                    })
+                })
+                .ok()
+                .flatten();
+            let epoch = inherited.unwrap_or(state.open_epoch);
+            state.epoch_outstanding[epoch] += 1;
+            epoch
+        };
         let slot = state.slot(self.index);
         slot.task = Some(task);
         slot.next = None;
         slot.barrier = barrier;
+        slot.epoch = epoch;
         if let Some(tail) = state.queued_tail {
             state.slot(tail).next = Some(self.index);
         } else {
@@ -579,27 +676,14 @@ struct OwnerContents {
     budget: Arc<Budget>,
     class: LocatorAllocationClass,
     released: bool,
-    retirement: &'static RetirementQueue,
     provider_charge: Mutex<Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>>,
     provider_control_charge:
         Mutex<Option<Arc<riffdb_types::exact_provider_budget_v1::OwnershipCharge>>>,
 }
 impl LocatorRetireContents for OwnerContents {
     fn retire_one(&mut self) -> bool {
-        let provider_attached = self.is_retirement_barrier();
-        if provider_attached && lock(&self.retirement.state).non_barrier_count != 0 {
-            return false;
-        }
-        lock(&self.provider_charge).take();
-        lock(&self.provider_control_charge).take();
-        if !self.released {
-            let mut state = lock(&self.budget.state);
-            state.owners -= 1;
-            if self.class == LocatorAllocationClass::Ordinary {
-                state.ordinary_owners -= 1;
-            }
-            self.released = true;
-        }
+        // The reaper first removes this epoch's barrier, then physically drops
+        // the task. Quota and provider ownership remain until that Drop.
         true
     }
     fn take_for_retirement(&mut self) -> Self {
@@ -607,7 +691,6 @@ impl LocatorRetireContents for OwnerContents {
             budget: Arc::clone(&self.budget),
             class: self.class,
             released: self.released,
-            retirement: self.retirement,
             provider_charge: Mutex::new(lock(&self.provider_charge).take()),
             provider_control_charge: Mutex::new(lock(&self.provider_control_charge).take()),
         };
@@ -615,7 +698,37 @@ impl LocatorRetireContents for OwnerContents {
         result
     }
     fn is_retirement_barrier(&self) -> bool {
-        lock(&self.provider_charge).is_some() || lock(&self.provider_control_charge).is_some()
+        // The generation quota, as well as any provider charge, follows all
+        // queued descendants through physical destruction.
+        true
+    }
+}
+impl Drop for OwnerContents {
+    fn drop(&mut self) {
+        if !self.released {
+            self.provider_charge
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            self.provider_control_charge
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let mut state = lock(&self.budget.state);
+            state.owners -= 1;
+            if self.class == LocatorAllocationClass::Ordinary {
+                state.ordinary_owners -= 1;
+            }
+            self.released = true;
+            drop(state);
+            #[cfg(test)]
+            OWNER_QUOTA_RELEASE_HOOK.with(|hook| {
+                let callback = hook.borrow_mut().take();
+                if let Some(callback) = callback {
+                    callback();
+                }
+            });
+        }
     }
 }
 pub(crate) struct LocatorOwner(ChargedLocatorAllocation<OwnerContents>);
@@ -716,7 +829,6 @@ impl LocatorOwner {
                 budget: Arc::clone(&pool.budget),
                 class,
                 released: false,
-                retirement: pool.retirement,
                 provider_charge: Mutex::new(None),
                 provider_control_charge: Mutex::new(None),
             })

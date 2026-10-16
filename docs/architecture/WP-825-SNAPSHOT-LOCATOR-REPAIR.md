@@ -42,6 +42,21 @@ snapshot negative control, nine migration cases and 34 owned-backup cases.
 Scoped Clippy, handbook and allowed-path checks pass; final complete CI remains open.
 Combined-source native tests and complete CI remain open.
 
+Fresh preparation 1391 failed during seeding with `AuditUnavailable`, before the
+measured load. Deterministic regression 1392 reproduces a native retirement
+fairness defect: a dead generation's owner and provider charges wait for the
+entire cleanup queue to become empty, so later independent work can indefinitely
+prevent their release. The regression includes a child first queued while its
+parent is being retired and checks the unchanged 256-item step limit. The repair
+must distinguish that generation's physical descendants from later independent
+work while retaining all owner and byte charges until physical retirement.
+Focused check 1395 passes the original regression, all 18 retirement cases,
+five persistent-tree cases and nine provider cases. A separate seed reproduction
+1393 reports ordinary byte pressure: 382,903,734 bytes charged and an additional
+87,353,040-byte reservation refused, with one generation owner. Thus the fairness
+repair does not yet establish the cause of preparation 1391; the reservation and
+standing ownership need further investigation. Complete qualification remains open.
+
 At the failed revision, `RedbOwnedSnapshot` consults the current mutable locator directory.
 A current miss cannot prove absence in an earlier generation. Reading a newer
 retained record as an advisory hint does not supply a complete as-of directory,

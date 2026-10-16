@@ -21,6 +21,30 @@ impl LocatorRetireContents for Entries {
         }
     }
 }
+struct DeferredChild {
+    child: Option<ChargedLocatorAllocation<Entries>>,
+}
+impl LocatorRetireContents for DeferredChild {
+    fn retire_one(&mut self) -> bool {
+        // Its bounded handle releases only during physical task Drop, after
+        // retire_one returns and after the owner's barrier was enqueued.
+        true
+    }
+    fn take_for_retirement(&mut self) -> Self {
+        Self {
+            child: self.child.take(),
+        }
+    }
+}
+fn deferred_child(
+    pool: &Arc<NativeLocatorPool>,
+    child: ChargedLocatorAllocation<Entries>,
+) -> ChargedLocatorAllocation<DeferredChild> {
+    ChargedLocatorAllocation::try_new(pool, LocatorAllocationClass::Ordinary, 0, || {
+        Ok(DeferredChild { child: Some(child) })
+    })
+    .unwrap()
+}
 fn entries(
     pool: &Arc<NativeLocatorPool>,
     count: usize,
@@ -298,10 +322,10 @@ fn locator_provider_charge_survives_all_queued_child_destruction() {
     let retired = Arc::new(AtomicUsize::new(0));
     let children = entries(&pool, 1000, &retired);
     drop(charge);
-    // Deliberately put the barrier before its children. FIFO and nonbarrier
-    // accounting must still make progress without premature numerical release.
-    drop(owner);
+    // Match the production owner-last invariant. Descendants enqueued later
+    // by these roots must continue to hold the same physical retirement fence.
     drop(children);
+    drop(owner);
     assert_eq!(budget.observation().unwrap().owned_bytes, 1024 * 1024);
     assert!(pool.drain_retired_step());
     assert!(retired.load(AtomicOrdering::SeqCst) <= LOCATOR_RETIRE_QUOTA);
@@ -327,8 +351,8 @@ fn locator_multiple_provider_barriers_never_wait_on_each_other() {
         .unwrap();
     let retired = Arc::new(AtomicUsize::new(0));
     let children = entries(&pool, 600, &retired);
-    drop(first);
     drop(children);
+    drop(first);
     drop(second);
     assert_eq!(budget.observation().unwrap().owned_bytes, 3072);
     assert!(pool.drain_retired_step());
@@ -345,6 +369,178 @@ fn locator_multiple_provider_barriers_never_wait_on_each_other() {
 }
 
 #[test]
+fn locator_provider_owner_retires_without_waiting_for_later_independent_work() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    owner
+        .attach_provider_charge(budget.reserve(1024).unwrap().commit().unwrap())
+        .unwrap();
+    let old_retired = Arc::new(AtomicUsize::new(0));
+    let old_children = deferred_child(&pool, entries(&pool, 1000, &old_retired));
+    let later_retired = Arc::new(AtomicUsize::new(0));
+    let later_independent = entries(&pool, 100_000, &later_retired);
+    // Generation roots release before their final owner. Later independent
+    // releases must not prolong this generation's already finite retirement.
+    drop(old_children);
+    drop(owner);
+    drop(later_independent);
+    for _ in 0..20 {
+        let before =
+            old_retired.load(AtomicOrdering::SeqCst) + later_retired.load(AtomicOrdering::SeqCst);
+        assert!(pool.drain_retired_step());
+        let after =
+            old_retired.load(AtomicOrdering::SeqCst) + later_retired.load(AtomicOrdering::SeqCst);
+        assert!(after - before <= LOCATOR_RETIRE_QUOTA);
+    }
+    assert_eq!(old_retired.load(AtomicOrdering::SeqCst), 1000);
+    assert!(later_retired.load(AtomicOrdering::SeqCst) < 100_000);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+    drain(&pool);
+}
+
+#[test]
+fn locator_retirement_progress_survives_continuous_independent_enqueue() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    let retired = Arc::new(AtomicUsize::new(0));
+    drop(deferred_child(&pool, entries(&pool, 100, &retired)));
+    drop(owner);
+    let independent_retired = Arc::new(AtomicUsize::new(0));
+    for _ in 0..16 {
+        // New work arrives before every bounded reaper turn; the queue never
+        // becomes globally empty during this schedule.
+        drop(entries(&pool, 512, &independent_retired));
+        assert!(pool.drain_retired_step());
+    }
+    assert_eq!(retired.load(AtomicOrdering::SeqCst), 100);
+    assert!(lock(&pool.retirement.state).non_barrier_count > 0);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    drain(&pool);
+}
+
+#[test]
+fn locator_shared_descendant_keeps_its_remaining_generation_charge() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let old_owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    let current_owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    old_owner
+        .attach_provider_charge(budget.reserve(1024).unwrap().commit().unwrap())
+        .unwrap();
+    current_owner
+        .attach_provider_charge(budget.reserve(2048).unwrap().commit().unwrap())
+        .unwrap();
+    let retired = Arc::new(AtomicUsize::new(0));
+    let shared = entries(&pool, 600, &retired);
+    let old_root = deferred_child(&pool, shared.clone());
+    let current_root = deferred_child(&pool, shared);
+    drop(old_root);
+    drop(old_owner);
+    drain(&pool);
+    assert_eq!(retired.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(lock(&pool.budget.state).owners, 1);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 2048);
+
+    drop(current_root);
+    drop(current_owner);
+    assert!(pool.drain_retired_step());
+    assert!(retired.load(AtomicOrdering::SeqCst) < 600);
+    assert_eq!(lock(&pool.budget.state).owners, 1);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 2048);
+    drain(&pool);
+    assert_eq!(retired.load(AtomicOrdering::SeqCst), 600);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
+
+#[test]
+fn locator_epoch_is_reusable_before_owner_quota_release_admits_a_replacement() {
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let ordinary: Vec<_> = (0..LOCATOR_MAX_OWNERS - 1)
+        .map(|_| LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap())
+        .collect();
+    let maintenance = LocatorOwner::try_new(&pool, LocatorAllocationClass::Maintenance).unwrap();
+    drop(ordinary);
+    drop(maintenance);
+    assert_eq!(lock(&pool.budget.state).owners, LOCATOR_MAX_OWNERS);
+    assert_eq!(lock(&pool.retirement.state).open_epoch, LOCATOR_MAX_OWNERS);
+    let callback_pool = Arc::clone(&pool);
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let callback_count = Arc::clone(&callbacks);
+    OWNER_QUOTA_RELEASE_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            // Exact interleaving: a new constructor observes the first quota
+            // release before that old task's Box or descriptor is reused.
+            assert_eq!(lock(&callback_pool.retirement.state).oldest_epoch, 1);
+            let replacement =
+                LocatorOwner::try_new(&callback_pool, LocatorAllocationClass::Ordinary).unwrap();
+            drop(replacement);
+            let state = lock(&callback_pool.retirement.state);
+            assert_eq!(state.open_epoch, 0);
+            assert_eq!(state.oldest_epoch, 1);
+            callback_count.fetch_add(1, AtomicOrdering::SeqCst);
+        }));
+    });
+    assert!(pool.drain_retired_step());
+    assert_eq!(callbacks.load(AtomicOrdering::SeqCst), 1);
+    drain(&pool);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    let state = lock(&pool.retirement.state);
+    assert_eq!(state.open_epoch, state.oldest_epoch);
+    assert!(state.epoch_outstanding.iter().all(|count| *count == 0));
+}
+
+#[test]
+fn locator_unwinding_task_keeps_descendants_reclaimable_and_restores_context() {
+    struct UnwindingParent {
+        child: Option<ChargedLocatorAllocation<Entries>>,
+    }
+    impl LocatorRetireContents for UnwindingParent {
+        fn retire_one(&mut self) -> bool {
+            panic!("deterministic internal retirement failure");
+        }
+        fn take_for_retirement(&mut self) -> Self {
+            Self {
+                child: self.child.take(),
+            }
+        }
+    }
+    let pool = NativeLocatorPool::isolated_for_tests();
+    let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
+    let owner = LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).unwrap();
+    owner
+        .attach_provider_charge(budget.reserve(1024).unwrap().commit().unwrap())
+        .unwrap();
+    let retired = Arc::new(AtomicUsize::new(0));
+    let parent =
+        ChargedLocatorAllocation::try_new(&pool, LocatorAllocationClass::Ordinary, 0, || {
+            Ok(UnwindingParent {
+                child: Some(entries(&pool, 600, &retired)),
+            })
+        })
+        .unwrap();
+    drop(parent);
+    drop(owner);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _admission_guard = WorkerAdmissionGuard(Arc::clone(&pool));
+        pool.drain_retired_step();
+    }));
+    assert!(outcome.is_err());
+    RETIRING.with(|context| assert!(context.get().is_none()));
+    assert!(LocatorOwner::try_new(&pool, LocatorAllocationClass::Ordinary).is_err());
+    assert_eq!(retired.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 1024);
+    // A poisoned worker remains fail closed, but admitted physical ownership
+    // can still be reclaimed by bounded cleanup instead of leaking its epoch.
+    drain(&pool);
+    assert_eq!(retired.load(AtomicOrdering::SeqCst), 600);
+    assert_eq!(lock(&pool.budget.state).owners, 0);
+    assert_eq!(budget.observation().unwrap().owned_bytes, 0);
+}
+
+#[test]
 fn locator_pending_provider_marker_and_generation_charge_share_final_retirement_barrier() {
     let pool = NativeLocatorPool::isolated_for_tests();
     let budget = riffdb_types::exact_provider_budget_v1::ProviderBudget::new();
@@ -357,8 +553,8 @@ fn locator_pending_provider_marker_and_generation_charge_share_final_retirement_
         .unwrap();
     let retired = Arc::new(AtomicUsize::new(0));
     let children = entries(&pool, 600, &retired);
-    drop(owner);
     drop(children);
+    drop(owner);
     assert_eq!(budget.observation().unwrap().owned_bytes, 1536);
     assert!(pool.drain_retired_step());
     assert_eq!(budget.observation().unwrap().owned_bytes, 1536);
