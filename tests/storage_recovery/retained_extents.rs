@@ -254,6 +254,9 @@ fn production_retention_lane_releases_receipts_then_retires_extent_after_reader_
     };
     let (_, _, _, dormant) = opened.into_parts();
     let ports = dormant.into_operational_after_catalog_validation().unwrap();
+    // Bounded readiness above returns before exact locator construction. This
+    // raw native write fixture now needs that same source's completed builder.
+    complete_fixture_locators(&ports);
     commit_command_group(&ports, &[command_fixture_at(6)]);
     assert_committed(&ports, 6);
     assert!(matches!(
