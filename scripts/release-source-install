@@ -6,13 +6,19 @@ umask 077
 usage() {
     printf '%s\n' \
         'usage: cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]' \
-        '       cargo riffdb install (--user|--system) --add-database ALIAS [--no-start]' >&2
+        '       cargo riffdb install (--user|--system) --add-database ALIAS [--no-start]' \
+        '       cargo riffdb uninstall (--user|--system) [--no-stop]' >&2
 }
 
 fail() {
     printf 'riffdb source install: %s\n' "$1" >&2
     exit 1
 }
+
+if [[ $# -ge 1 && "$1" == "uninstall" ]]; then
+    script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    exec "$script_root/release-source-uninstall" "$@"
+fi
 
 if [[ $# -lt 2 || "$1" != "install" ]]; then
     usage
@@ -24,6 +30,9 @@ for install_argument in "$@"; do
     if [[ "$install_argument" == --add-database ]]; then
         script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         exec "$script_root/release-source-add-database" install "$@"
+    elif [[ "$install_argument" == --uninstall ]]; then
+        script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        exec "$script_root/release-source-uninstall" install "$@"
     fi
 done
 

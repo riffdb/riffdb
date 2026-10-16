@@ -20,9 +20,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - The POC authorization model uses opaque local capability tokens rather than a production identity provider or OAuth authorization server.
 - Generic bootstrap deploys no application and grants its MCP developer no wildcard application-data authority until an administrator binds a compiled role or lineage-scoped capability.
 - Convenience bootstrap capabilities expire after at most 30 days with no automatic renewal.
-- Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and does not perform configuration migration, key rotation, uninstall, or format upgrades.
+- Re-running the source installer updates the three binaries while preserving existing keys, configuration, and unit files, and `cargo riffdb uninstall` removes only installed binaries and unit files without performing configuration migration, key rotation, data deletion, or format upgrades.
 - Individual binary replacement is atomic, but replacing all three binaries is not transactional across an interrupted install.
-- Optional Codex MCP registration provides no atomic create-if-absent operation and must not run concurrently with another writer to the same user's Codex MCP configuration.
+- Optional Codex MCP registration serializes bootstrap callers through `$XDG_CONFIG_HOME/riffdb/.codex-mcp.lock` and treats an identical existing server entry as idempotent, while external writers to the same user's Codex MCP configuration outside that lockfile remain uncoordinated.
 - Metrics are exposed only over an optional literal-loopback HTTP listener (`GET /metrics` and `GET /v1/metrics`) or periodic local NDJSON flight-recorder files (`riffdb telemetry summarize <PATH>`), with no non-loopback network metrics listener or push exporter.
 - Neither a clean restart nor a bounded dirty restart performs a full population scrub, and `riffdb storage scrub` takes the database offline for the entire pass with no partial scope, resume, or repair option.
 - Restart after an abrupt stop pays a storage-engine repair proportional to the database file size, and the first write after any restart rebuilds the in-memory command indexes once before admitting writes.

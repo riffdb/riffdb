@@ -31627,3 +31627,12 @@ work_packages:
     scale: Lock acquisition and uninstall operate on fixed local paths with O(1) work.
   human_review_triggers:
   - Uninstall deletes database files, backups, digest keys, or credentials.
+  closure:
+    status: complete
+    completed_at: '2026-10-15'
+    requirements_satisfied: [DX-002, DX-014]
+    evidence: ./scripts/release-source-install-smoke && ./scripts/release-source-bootstrap-smoke
+    decision: Added exclusive flock serialization ($config_dir/.codex-mcp.lock) and idempotent same-target verification to scripts/release-source-bootstrap --register-codex, added scripts/release-source-uninstall and cargo riffdb uninstall (--user|--system) [--no-stop] to remove only installed binaries and units while preserving databases, backups, keys, configuration, and credentials, and updated smoke suites and handbook pages.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

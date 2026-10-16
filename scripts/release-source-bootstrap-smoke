@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: DX-002, DX-014
 set -euo pipefail
 export LC_ALL=C
 umask 077
@@ -537,6 +538,57 @@ done
 if grep -F -- "$operator_token" "$register_output" "$register_stderr" >/dev/null \
    || grep -F -- "$mcp_token" "$register_output" "$register_stderr" >/dev/null; then
     fail "Codex registration output exposed a bearer credential"
+fi
+require_regular_mode "$config_root/.codex-mcp.lock" 0600
+
+: >"$codex_call_counts"
+: >"$codex_arguments"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "%s\n" "$#" >>"${RIFFDB_TEST_CODEX_CALL_COUNTS:?}"' \
+    'printf "%s\0" "$@" >>"${RIFFDB_TEST_CODEX_ARGUMENTS:?}"' \
+    'if [[ $# -eq 3 && "$1" == mcp && "$2" == list && "$3" == --json ]]' \
+    'then' \
+    '    jq -cn --arg cmd "${RIFFDB_TEST_CODEX_EXPECTED_CMD:?}" --arg cfg "${RIFFDB_TEST_CODEX_EXPECTED_CFG:?}" '\''[{name:"riffdb",command:$cmd,args:["--config",$cfg]}]'\''' \
+    '    exit 0' \
+    'fi' \
+    'exit 95' \
+    >"$shim_dir/codex"
+chmod 0755 "$shim_dir/codex"
+idempotent_register_output="$work_root/idempotent-register-bootstrap.stdout"
+idempotent_register_stderr="$work_root/idempotent-register-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" \
+    RIFFDB_CODEX="$shim_dir/codex" \
+    RIFFDB_TEST_CODEX_EXPECTED_CMD="$bin_root/riffdb-mcp" \
+    RIFFDB_TEST_CODEX_EXPECTED_CFG="$mcp_config" \
+    cargo riffdb bootstrap --user --register-codex \
+    >"$idempotent_register_output" 2>"$idempotent_register_stderr"
+then
+    sed 's/^/idempotent registration: /' "$idempotent_register_stderr" >&2
+    fail "idempotent repeat Codex registration failed"
+fi
+if [[ "$(<"$codex_call_counts")" != "3" ]]; then
+    fail "idempotent repeat Codex registration invoked codex mcp add again"
+fi
+
+: >"$codex_call_counts"
+: >"$codex_arguments"
+conflict_register_output="$work_root/conflict-register-bootstrap.stdout"
+conflict_register_stderr="$work_root/conflict-register-bootstrap.stderr"
+if RIFFDB_ENDPOINT="$endpoint" \
+    RIFFDB_CODEX="$shim_dir/codex" \
+    RIFFDB_TEST_CODEX_EXPECTED_CMD="/usr/bin/conflicting-mcp" \
+    RIFFDB_TEST_CODEX_EXPECTED_CFG="$mcp_config" \
+    cargo riffdb bootstrap --user --register-codex \
+    >"$conflict_register_output" 2>"$conflict_register_stderr"
+then
+    fail "conflicting Codex registration was unexpectedly accepted"
+fi
+if [[ "$(<"$codex_call_counts")" != "3" ]] \
+   || ! grep -F 'Codex already has an MCP server named riffdb; registration was not changed' \
+        "$conflict_register_stderr" >/dev/null; then
+    fail "conflicting Codex registration did not fail closed with the expected diagnostic"
 fi
 
 mcp_input="$work_root/mcp-input.jsonl"

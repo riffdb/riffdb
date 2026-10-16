@@ -97,7 +97,9 @@ instead of forcing the installer to overwrite them.
 
 ## Removal
 
-Removal is intentionally not part of `cargo riffdb install`. Before deleting
+`cargo riffdb uninstall (--user|--system) [--no-stop]` removes only the
+installed binaries and systemd unit files while preserving databases, backups,
+digest keys, configuration, and credentials. Before deleting
 any state, configuration, digest key, or credential, decide whether a retained
 backup is intended to be restorable and verify it. Capability revocation is
 part of the authoritative snapshot: revoking a capability after a backup does
@@ -178,31 +180,16 @@ Close the active Codex session and any other client-spawned `riffdb-mcp`
 process. Removing the client entry prevents future launches but does not
 terminate an already-running stdio bridge.
 
-When a live user manager exists, stop and disable the user service:
+Stop and disable the user service and remove only the installed binaries and
+unit (pass `--no-stop` if the service was installed with `--no-start` and no
+user manager is running after confirming no `riffdbd` process is using the
+database):
 
 ```bash
-systemctl --user disable --now riffdbd.service
+cargo riffdb uninstall --user
 ```
 
-If the service was installed with `--no-start` and no user manager exists,
-skip that command only after independently confirming that no `riffdbd`
-process is using the database. An unavailable user bus is not evidence that
-the process is stopped.
-
-Remove only the installed binaries and unit:
-
-```bash
-config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
-rm -f -- "$HOME/.local/bin/riffdbd"
-rm -f -- "$HOME/.local/bin/riffdb"
-rm -f -- "$HOME/.local/bin/riffdb-mcp"
-rm -f -- "$config_home/systemd/user/riffdbd.service"
-```
-
-Run `systemctl --user daemon-reload` immediately when a manager is available,
-or at the beginning of the next manager-backed login session.
-
-The installer deliberately leaves the database, backups, keys, server/client
+The uninstaller deliberately leaves the database, backups, keys, server/client
 configuration, credentials, and recovery state. Archive and verify these roots
 before any explicit deletion:
 
@@ -232,22 +219,11 @@ codex mcp remove riffdb
 
 Close that Codex session and every other client-spawned `riffdb-mcp` process
 before deleting binaries; removing the entry does not terminate an existing
-stdio bridge. Then stop the system service:
+stdio bridge. Then stop the system service and remove the source convenience
+binaries, unit, sysusers, and tmpfiles definitions:
 
 ```bash
-sudo systemctl disable --now riffdbd.service
-```
-
-Remove the source convenience paths and reload systemd:
-
-```bash
-sudo rm -f -- /usr/local/bin/riffdbd
-sudo rm -f -- /usr/local/bin/riffdb
-sudo rm -f -- /usr/local/bin/riffdb-mcp
-sudo rm -f -- /etc/systemd/system/riffdbd.service
-sudo rm -f -- /usr/local/lib/sysusers.d/riffdb.conf
-sudo rm -f -- /usr/local/lib/tmpfiles.d/riffdb.conf
-sudo systemctl daemon-reload
+cargo riffdb uninstall --system
 ```
 
 The database, backups, digest keys, server configuration, `riffdb` and

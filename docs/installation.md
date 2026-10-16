@@ -194,11 +194,12 @@ after owner bootstrap may leave the database successfully bootstrapped even
 when later MCP-capability creation or Codex registration failed. Rerun the same
 bootstrap command: it preserves retained bootstrap material and pending
 capability identity so uncertainty is resolved rather than assigned a new
-identity. It refuses to replace changed credential/config files or an existing
-Codex MCP entry named `riffdb`. Codex currently exposes replacement-capable
-`mcp add`, not an atomic create-if-absent operation, so use
-`--register-codex` only while no other process is changing that user's Codex
-MCP configuration.
+identity. It refuses to replace changed credential/config files or a
+conflicting Codex MCP entry named `riffdb` (or `riffdb_<alias>`), while
+treating an identical existing registration as an idempotent success. Bootstrap
+serializes `--register-codex` across RiffDB callers with an exclusive lock on
+`${XDG_CONFIG_HOME:-$HOME/.config}/riffdb/.codex-mcp.lock`; avoid concurrent
+non-RiffDB edits to that user's Codex MCP configuration.
 
 The MCP developer can author, validate, and deploy an application contract
 without installation choosing an application. Because application permissions

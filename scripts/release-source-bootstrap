@@ -66,7 +66,7 @@ script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_root/.." && pwd -P)"
 cd "$repo_root"
 
-for tool in chmod cmp id install jq ln mktemp mv rm stat sync tr uname uuidgen; do
+for tool in chmod cmp flock id install jq ln mktemp mv rm stat sync tr uname uuidgen; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         printf 'required RiffDB bootstrap tool is missing: %s\n' "$tool" >&2
         exit 1
@@ -635,9 +635,15 @@ if "$register_codex"; then
         printf '%s\n' 'Codex is unavailable; MCP registration was not changed' >&2
         exit 1
     fi
+    codex_lock="$config_dir/.codex-mcp.lock"
+    require_safe_destination "$codex_lock"
+    exec {codex_lock_fd}>>"$codex_lock"
+    require_private_file "$codex_lock"
+    flock -x "$codex_lock_fd"
     codex_list="$(mktemp "$state_dir/.codex-mcp-list.XXXXXX")"
     if ! "$codex_command" mcp list --json >"$codex_list"; then
         rm -f "$codex_list"
+        exec {codex_lock_fd}>&-
         printf '%s\n' \
             'Codex MCP configuration could not be inspected; registration was not changed' >&2
         exit 1
@@ -647,20 +653,39 @@ if "$register_codex"; then
         and all(.[]; (.name | type) == "string")
     ' "$codex_list" >/dev/null; then
         rm -f "$codex_list"
+        exec {codex_lock_fd}>&-
         printf '%s\n' \
             'Codex returned an invalid MCP inventory; registration was not changed' >&2
         exit 1
     fi
-    if jq -e --arg name "$codex_name" 'any(.[]; .name == $name)' \
+    if jq -e \
+        --arg name "$codex_name" \
+        --arg cmd "$riffdb_mcp" \
+        --arg cfg "$mcp_config" '
+        any(.[]; .name == $name)
+        and all(
+            .[] | select(.name == $name);
+            (
+                (.command == $cmd and .args == ["--config", $cfg])
+                or (.transport.command == $cmd and .transport.args == ["--config", $cfg])
+            )
+        )
+    ' "$codex_list" >/dev/null; then
+        rm -f "$codex_list"
+        exec {codex_lock_fd}>&-
+    elif jq -e --arg name "$codex_name" 'any(.[]; .name == $name)' \
         "$codex_list" >/dev/null; then
         rm -f "$codex_list"
+        exec {codex_lock_fd}>&-
         printf '%s\n' \
             "Codex already has an MCP server named $codex_name; registration was not changed" >&2
         exit 1
+    else
+        rm -f "$codex_list"
+        "$codex_command" mcp add "$codex_name" -- \
+            "$riffdb_mcp" --config "$mcp_config"
+        exec {codex_lock_fd}>&-
     fi
-    rm -f "$codex_list"
-    "$codex_command" mcp add "$codex_name" -- \
-        "$riffdb_mcp" --config "$mcp_config"
 fi
 
 printf '%s\n' \

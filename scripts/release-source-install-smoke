@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# req: DX-002, POC-001, POC-002, POC-003, POC-004, POC-005, POC-006, POC-007, POC-008, POC-009, POC-010, PERF-001, PERF-002
+# req: DX-002, DX-014, POC-001, POC-002, POC-003, POC-004, POC-005, POC-006, POC-007, POC-008, POC-009, POC-010, PERF-001, PERF-002
 set -euo pipefail
 export LC_ALL=C
 umask 077
@@ -913,5 +913,77 @@ if [[ ! -f "$system_data_root/backups/default/retained-system-backup" \
     fail "simulated system migration lost a backup or retained private phase state"
 fi
 require_regular_mode "$system_config_root/riffdbd.toml" 0640
+
+uninstall_root="$work_root/user uninstall preservation"
+set_isolated_user_roots "$uninstall_root"
+cargo riffdb install --user \
+    --from-binaries "$fixture_bin" \
+    --no-start \
+    >/dev/null
+printf '%s\n' retained-user-db >"$XDG_DATA_HOME/riffdb/data/riffdb.redb"
+printf '%s\n' retained-user-backup >"$XDG_DATA_HOME/riffdb/backups/retained-backup"
+printf '%s\n' retained-user-state >"$XDG_STATE_HOME/riffdb/operator-capability.id"
+chmod 0600 \
+    "$XDG_DATA_HOME/riffdb/data/riffdb.redb" \
+    "$XDG_DATA_HOME/riffdb/backups/retained-backup" \
+    "$XDG_STATE_HOME/riffdb/operator-capability.id"
+cargo riffdb uninstall --user --no-stop >/dev/null
+for removed_path in \
+    "$HOME/.local/bin/riffdbd" \
+    "$HOME/.local/bin/riffdb" \
+    "$HOME/.local/bin/riffdb-mcp" \
+    "$XDG_CONFIG_HOME/systemd/user/riffdbd.service"
+do
+    if [[ -e "$removed_path" || -L "$removed_path" ]]; then
+        fail "user uninstall left an installed binary or unit: $removed_path"
+    fi
+done
+for preserved_path in \
+    "$XDG_CONFIG_HOME/riffdb/riffdbd.toml" \
+    "$XDG_CONFIG_HOME/riffdb/capability.keys" \
+    "$XDG_CONFIG_HOME/riffdb/idempotency.keys" \
+    "$XDG_DATA_HOME/riffdb/data/riffdb.redb" \
+    "$XDG_DATA_HOME/riffdb/backups/retained-backup" \
+    "$XDG_STATE_HOME/riffdb/operator-capability.id"
+do
+    require_regular_mode "$preserved_path" 0600
+done
+cargo riffdb install --user --uninstall --no-stop >/dev/null
+
+mkdir -p \
+    "$system_add_root/usr/local/bin" \
+    "$system_add_root/etc/systemd/system" \
+    "$system_add_root/usr/local/lib/sysusers.d" \
+    "$system_add_root/usr/local/lib/tmpfiles.d"
+for binary in riffdb riffdb-mcp riffdbd; do
+    cp "$fixture_bin/$binary" "$system_add_root/usr/local/bin/$binary"
+    chmod 0755 "$system_add_root/usr/local/bin/$binary"
+done
+printf '%s\n' '[Unit]' >"$system_add_root/etc/systemd/system/riffdbd.service"
+printf '%s\n' 'u riffdb -' >"$system_add_root/usr/local/lib/sysusers.d/riffdb.conf"
+printf '%s\n' 'd /var/lib/riffdb 0700 riffdb riffdb -' >"$system_add_root/usr/local/lib/tmpfiles.d/riffdb.conf"
+chmod 0644 \
+    "$system_add_root/etc/systemd/system/riffdbd.service" \
+    "$system_add_root/usr/local/lib/sysusers.d/riffdb.conf" \
+    "$system_add_root/usr/local/lib/tmpfiles.d/riffdb.conf"
+RIFFDB_INSTALL_TEST_MODE=1 \
+    RIFFDB_INSTALL_TEST_SYSTEM_ROOT="$system_add_root" \
+    cargo riffdb uninstall --system --no-stop >/dev/null
+for removed_system_path in \
+    "$system_add_root/usr/local/bin/riffdbd" \
+    "$system_add_root/usr/local/bin/riffdb" \
+    "$system_add_root/usr/local/bin/riffdb-mcp" \
+    "$system_add_root/etc/systemd/system/riffdbd.service" \
+    "$system_add_root/usr/local/lib/sysusers.d/riffdb.conf" \
+    "$system_add_root/usr/local/lib/tmpfiles.d/riffdb.conf"
+do
+    if [[ -e "$removed_system_path" || -L "$removed_system_path" ]]; then
+        fail "simulated system uninstall left an installed path: $removed_system_path"
+    fi
+done
+require_regular_mode "$system_config_root/riffdbd.toml" 0640
+if [[ ! -f "$system_data_root/backups/default/retained-system-backup" ]]; then
+    fail "simulated system uninstall removed preserved backup state"
+fi
 
 printf '%s\n' 'riffdb-release-source-install-smoke-v1: verified'
