@@ -205,6 +205,10 @@ larger than the budget is removed alone, never more than 256 sequences.
 A crash at any point in a step reopens with the watermark either before or after
 that step, and the restarted lane resumes.
 
+Offline pruning releases its owned primary and projection-sidecar handles
+before reading back the committed watermark for its result. This preserves the
+same projection fences and sub-range deletion semantics.
+
 The lane never passes a fence: projection frontiers, durable event-consumer
 checkpoints, undelivered outbox events, a staged contract migration, operator
 holds, and registered followers' acknowledged frontiers. An unreadable fencing

@@ -23,8 +23,10 @@ fn run(
     preparation: riffdb_commit::CommandExecutionPreparation,
     seed: u8,
 ) {
+    let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let coordinator = start_coordinator(
-        database.open(),
+        ports,
         Arc::new(FixedAdmissionClock::new(command_timestamp())),
         Arc::new(IncrementingProvenanceSource::new(seed)),
     );
@@ -50,6 +52,7 @@ fn run(
 
 fn apply_through(database: &BudgetDatabase, schema: &CheckedProjectionSchema, through: u64) {
     let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let resolved = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
         .unwrap()
         .unwrap()
@@ -129,11 +132,13 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     let database = BudgetDatabase::create_with_setup("archive-projection-interior", bootstrap);
     for seed in [0x61, 0x62] {
         let ports = database.open();
+        ports.wait_for_exact_locator_fixture_completion().unwrap();
         let command = database.prepare_budget_for(&ports, [seed; 16], seed);
         drop(ports);
         run(&database, command, seed);
     }
     let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let command = database.prepare_allocation_for(&ports, [0x61; 16], 1000, 0x63);
     drop(ports);
     run(&database, command, 0x63);
@@ -147,6 +152,7 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
             .unwrap(),
     );
     let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let ProjectionControlResult::Updated(control) = ports
         .transition_projection_control(ProjectionControlOperation::CreateInitial {
             schema: schema.clone(),
@@ -166,6 +172,7 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     drop(ports);
     apply_through(&database, &schema, 3);
     let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let current = self::control(&ports);
     let ProjectionControlResult::Updated(control) = ports
         .transition_projection_control(ProjectionControlOperation::PublishCandidate {
@@ -214,6 +221,7 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     // Hold storage admission while a separate command enters the coordinator.
     // Both allocations are then queued before release, with disjoint conflicts.
     let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let blocker_command = database.prepare_budget_for(&ports, [0x64; 16], 0x64);
     let first = database.prepare_allocation_for(&ports, [0x61; 16], 500, 0x65);
     let second = database.prepare_allocation_for(&ports, [0x62; 16], 700, 0x66);
@@ -261,6 +269,7 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     coordinator.shutdown().unwrap();
     apply_through(&database, &schema, 6);
     let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
     let source_at_six = ports.query_projection(&query).unwrap();
     assert_projection(&source_at_six, 6, &[1500, 700]);
     let included_commit = ports
@@ -483,4 +492,116 @@ fn archive_interior_stop_rebuilds_projection_without_later_rows_or_control_advan
     let _ = source_at_six;
     // ADR-0248: do not pin restored control bytes or a Ready query, which
     // reads stored FRONTIER. Convergence is the apply-snapshot rows above.
+}
+
+// req: PRJ-001, REC-001, END-007
+#[test]
+fn offline_prune_releases_derived_engine_before_its_status_readback() {
+    let database = BudgetDatabase::create_with_setup("pruned-projection-recovery", bootstrap);
+    for seed in [0x91, 0x92] {
+        let ports = database.open();
+        ports.wait_for_exact_locator_fixture_completion().unwrap();
+        let command = database.prepare_budget_for(&ports, [seed; 16], seed);
+        drop(ports);
+        run(&database, command, seed);
+    }
+    let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let command = database.prepare_allocation_for(&ports, [0x91; 16], 1000, 0x93);
+    drop(ports);
+    run(&database, command, 0x93);
+    let schema = CheckedProjectionSchema::new(
+        database
+            .bundle()
+            .bundle()
+            .bound_projection_group_schema(
+                database.bundle().bundle().projections()[0].projection_id(),
+            )
+            .unwrap(),
+    );
+    let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let ProjectionControlResult::Updated(initial) = ports
+        .transition_projection_control(ProjectionControlOperation::CreateInitial {
+            schema: schema.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("create initial projection");
+    };
+    let ProjectionControlResult::Updated(_) = ports
+        .transition_projection_control(ProjectionControlOperation::StartInitialScan {
+            expected: initial,
+        })
+        .unwrap()
+    else {
+        panic!("start initial scan");
+    };
+    drop(ports);
+    apply_through(&database, &schema, 3);
+    let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let current = control(&ports);
+    let ProjectionControlResult::Updated(expected) = ports
+        .transition_projection_control(ProjectionControlOperation::PublishCandidate {
+            expected: current,
+        })
+        .unwrap()
+    else {
+        panic!("publish exact projection");
+    };
+    let resolved = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
+        .unwrap()
+        .unwrap()
+        .resolve_projection(schema.identity())
+        .unwrap();
+    let head = FrontierPosition::AppliedThrough(CommitSequence::new(3).unwrap());
+    let limit = ProjectionRecoveryPageLimit::new(NonZeroU16::new(8).unwrap()).unwrap();
+    let before = validate_projection_generation(
+        &ports,
+        &resolved,
+        schema.clone(),
+        &expected,
+        head,
+        ProjectionGeneration::first(),
+        limit,
+    )
+    .unwrap();
+    assert!(matches!(
+        before,
+        riffdb_projection::ProjectionGenerationValidationOutcome::Clean(_)
+    ));
+    let query = ProjectionQueryRequest::new(
+        ProjectionQuerySelector::new(schema.clone(), vec![]).unwrap(),
+        NonZeroU16::new(8).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_projection(&ports.query_projection(&query).unwrap(), 3, &[1000]);
+    drop(ports);
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(database.path());
+    let first_attempt = maintenance.prune_to(1);
+    // One read-only inspection after the original operation returns. This is
+    // not a mutation retry: its watermark proves whether that attempt committed.
+    let inspected = maintenance
+        .status()
+        .expect("inspect original prune disposition");
+    let first_kind = match &first_attempt {
+        Ok(_) => 0,
+        Err(error) if error.kind() == StorageErrorKind::Unavailable => 1,
+        Err(_) => 2,
+    };
+    eprintln!(
+        "RIFFDB_PRIVATE_OFFLINE_PRUNE_READBACK first_kind={} watermark={} tombstones={}",
+        first_kind, inspected.watermark_sequence, inspected.tombstone_count
+    );
+    assert_eq!(
+        inspected.watermark_sequence, 1,
+        "original prune must have committed its exact watermark"
+    );
+    let reported = first_attempt
+        .expect("offline prune must release its derived engine before status readback");
+    assert_eq!(reported.watermark_sequence, inspected.watermark_sequence);
+    assert_eq!(reported.history_incarnation, inspected.history_incarnation);
+    assert_eq!(reported.tombstone_count, inspected.tombstone_count);
 }

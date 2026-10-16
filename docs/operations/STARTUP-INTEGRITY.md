@@ -244,6 +244,13 @@ any registered columnar source remains cold or is activating; this derived
 health signal does not withdraw authoritative storage, catalog, or command
 readiness.
 
+History-dependent row projections need their complete authoritative input for
+recovery. The current pre-alpha implementation can fail generation validation
+after legitimate history pruning, and an empty restored sidecar cannot recreate
+the missing prefix. Authoritative readiness and a successful write do not prove
+projection recovery. This open limitation and its genuine regression are
+recorded in the [WP-825 recovery review](../architecture/WP-825-RETENTION-PROJECTION-RECOVERY-REVIEW.md).
+
 The first semantic projected read requests activation from the single
 server-owned columnar worker and immediately receives the existing typed
 `Building` result with no rows. Concurrent first reads coalesce onto that same

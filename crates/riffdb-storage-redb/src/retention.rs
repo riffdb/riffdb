@@ -529,6 +529,9 @@ impl RedbOfflineRetention {
         }
         // The RedbStore remains the sole owner for the entire prune. Its
         // preparation borrow ends after the final write above.
+        // Status reopens both files. Release the exclusive derived engine as
+        // well as the primary before that read-only post-commit observation.
+        drop(derived);
         drop(store);
         self.status()
     }
