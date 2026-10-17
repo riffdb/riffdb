@@ -20,6 +20,11 @@ class GoPackageArrival(unittest.TestCase):
             root = Path(temporary)
             distribution = root / 'distribution'
             BUILD['go_proxy'](distribution, 1735689600)
+            conformance = distribution / 'conformance'
+            conformance.mkdir(parents=True, exist_ok=True)
+            (conformance / 'go-v1.json').write_bytes(
+                (ROOT / 'fixtures/driver/manifests/go-v1.json').read_bytes()
+            )
             current = root / 'current'
             current.mkdir()
             ARRIVAL['smoke_go'](distribution, current)

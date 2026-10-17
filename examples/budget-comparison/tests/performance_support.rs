@@ -12,15 +12,15 @@ use riffdb_budget_comparison_core::{
 };
 use riffdb_commit::CoordinatorDurability;
 use riffdb_projection::{
-    ProjectionController, ProjectionInitializationResult, ProjectionNotifier,
-    ProjectionBatchBuilder, ProjectionSchemaRegistry, evaluate_projection_commit,
+    ProjectionBatchBuilder, ProjectionController, ProjectionInitializationResult,
+    ProjectionNotifier, ProjectionSchemaRegistry, evaluate_projection_commit,
 };
 use riffdb_service::{CommandDurability, JournaledCompletion};
 use riffdb_storage_api::{
     AuthoritativeScanReader, CheckedProjectionSchema, CommitScanPageV1, CommitScanRequest,
     DurabilityMode, ProjectionApplyBatchResult, ProjectionApplySnapshotReader,
-    ProjectionControlResult, ProjectionGenerationPosition,
-    ProjectionLifecycleV1, ProjectionQueryReader, StorageScanLimit,
+    ProjectionControlResult, ProjectionGenerationPosition, ProjectionLifecycleV1,
+    ProjectionQueryReader, StorageScanLimit,
 };
 use riffdb_types::{CommitSequence, FrontierPosition, ProjectionGeneration};
 use serde_json::{Value, json};
@@ -720,8 +720,7 @@ fn apply_projection_log(
                 controller
                     .apply_batch(&batch_request)
                     .expect("apply projection batch"),
-                ProjectionApplyBatchResult::Applied(_)
-                    | ProjectionApplyBatchResult::AlreadyApplied
+                ProjectionApplyBatchResult::Applied(_) | ProjectionApplyBatchResult::AlreadyApplied
             ));
         }
         match page {

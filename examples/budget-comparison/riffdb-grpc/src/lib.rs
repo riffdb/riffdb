@@ -623,7 +623,8 @@ impl RiffDbPublicBudgetAdapter {
             && notified_declared_outcome.outcome_name == replay_response.outcome_type;
         let same_plan_hash = replay.metadata.plan_hash.as_slice() == notified_commit.plan_hash;
         let same_provenance_uri = replay.metadata.provenance_uri == notified_commit.provenance_uri;
-        let same_commit_metadata = commit_matches_response_metadata(&notified_commit, &replay.metadata);
+        let same_commit_metadata =
+            commit_matches_response_metadata(&notified_commit, &replay.metadata);
         let outcome_lookup_matches = lookup_response == replay_response;
         if replay.metadata.completion != PublicCommandCompletion::Replayed
             || !same_commit_sequence
@@ -723,9 +724,7 @@ impl RiffDbPublicBudgetAdapter {
             .execute_generated(&generated, one_attempt(), &self.metadata)
             .await
         {
-            Err(GeneratedExecutionError::Client(error)) => {
-                checked_idempotency_reuse_error(error)?
-            }
+            Err(GeneratedExecutionError::Client(error)) => checked_idempotency_reuse_error(error)?,
             Err(GeneratedExecutionError::CommandShape(_)) | Ok(_) => {
                 return Err(RiffDbPublicAdapterError::InvalidResponse);
             }
@@ -744,11 +743,9 @@ impl RiffDbPublicBudgetAdapter {
             mismatch.matter_id.to_string(),
             mismatch.amount.to_string(),
         ];
-        let public_error_canary_absent = public_input_canaries
-            .iter()
-            .all(|canary| {
-                !mismatch_error.display.contains(canary) && !mismatch_error.debug.contains(canary)
-            });
+        let public_error_canary_absent = public_input_canaries.iter().all(|canary| {
+            !mismatch_error.display.contains(canary) && !mismatch_error.debug.contains(canary)
+        });
         if !public_error_canary_absent {
             return Err(RiffDbPublicAdapterError::InvalidResponse);
         }
@@ -1843,11 +1840,8 @@ mod tests {
             ("sync", PublicCommandDurability::Synchronous),
             ("group", PublicCommandDurability::Group),
         ] {
-            let metadata = response_metadata(
-                command_response(spelling),
-                &CREATE_BUDGET_PLAN_HASH,
-            )
-            .expect("closed production durability is accepted");
+            let metadata = response_metadata(command_response(spelling), &CREATE_BUDGET_PLAN_HASH)
+                .expect("closed production durability is accepted");
             assert_eq!(metadata.durability, expected);
             assert_eq!(metadata.durability.as_str(), spelling);
         }

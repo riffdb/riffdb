@@ -572,6 +572,7 @@ fn verify_materialized_frame_with_roots(
     )
     .map_err(value_error)?
     .point();
+    drop(materialized);
     if sequence == history.minimum_resume().sequence() {
         if point != history.minimum_resume() {
             return Err(storage_error(StorageErrorKind::CorruptData));

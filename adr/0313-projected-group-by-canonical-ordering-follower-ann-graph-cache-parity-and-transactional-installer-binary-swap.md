@@ -86,7 +86,7 @@ After `ADR-0312` (`WP-865`–`WP-867`), four actionable items remain in
      `[databases.<alias>.outbox]`), while databases with no configured outbox
      destination retain undelivered events from the first emitted event onward.
 
-## Options and consequences
+## Consequences
 
 - Keeping `BTreeMap<Vec<u8>, ...>` for O(log G) group lookup during scan and
   sorting the bounded output vector (`<= max_group_cardinality`) at the end of
