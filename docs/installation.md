@@ -320,8 +320,9 @@ private client filenames collide.
 
 The generated owner capability requests 30 days and the MCP developer
 capability requests less than 30 days. The POC does not renew either
-automatically. Create replacement capabilities through the authenticated
-public service before the current administrative capability expires.
+in the background; run `cargo riffdb bootstrap (--user|--system) [--database ALIAS] --renew`
+or `riffdb capability rotate <CAPABILITY_UUIDV7> --credential-output <PATH> --revoke-old`
+before the current administrative capability expires.
 
 ### Rerun and Update Limits
 

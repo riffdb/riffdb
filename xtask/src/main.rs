@@ -62,12 +62,12 @@ RiffDB source installation
 Usage:
   cargo riffdb install (--user|--system) [--database ALIAS]... [--from-binaries DIR] [--no-start]
   cargo riffdb uninstall (--user|--system) [--no-stop]
-  cargo riffdb bootstrap (--user|--system) [--database ALIAS] [--register-codex]
+  cargo riffdb bootstrap (--user|--system) [--database ALIAS] [--register-codex] [--renew]
 
 Commands:
   install    Build and install the three binaries, configuration, and systemd unit
   uninstall  Remove installed binaries and systemd unit while preserving data and keys
-  bootstrap  Create generic operator authority and an MCP developer capability
+  bootstrap  Create or renew generic operator authority and an MCP developer capability
 "
     );
 }

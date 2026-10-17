@@ -31747,7 +31747,7 @@ work_packages:
     follow_ups: []
 - id: WP-871
   name: Operator capability rotation CLI and bootstrap credential renewal
-  tier: surface
+  tier: guarantee
   depends_on: [WP-870]
   objective: Implement ADR-0314 Decision 3. Add riffdb capability rotate to mint
     a replacement capability with identical grants, re-apply role bindings,
@@ -31771,9 +31771,18 @@ work_packages:
     scale: Rotation performs a bounded sequence of unary administrative RPCs for one capability and its bounded role bindings.
   human_review_triggers:
   - Capability rotation or bootstrap renewal exposes raw bearer tokens in logs/inventory files or deletes authoritative database/key state.
+  closure:
+    status: complete
+    completed_at: '2026-10-16'
+    requirements_satisfied: [SEC-001, SEC-002, SEC-003, DX-002, DX-014]
+    evidence: cargo nextest run -p riffdb-cli --lib capability_rotate_cli_mints_replacement_rebinds_roles_and_revokes_superseded && ./scripts/generate-operation-adapters --check && ./scripts/handbook check
+    decision: Added riffdb capability rotate to mint replacement capabilities from request/inventory/quiescent-storage metadata, rebind roles, atomically replace 0600 credential files, and optionally revoke superseded capabilities, and added --renew and post-deployment health compatibility to scripts/release-source-bootstrap and cargo riffdb bootstrap.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-872
   name: Online retention telemetry and fence observability in metrics and flight recorder
-  tier: surface
+  tier: guarantee
   depends_on: [WP-871]
   objective: Implement ADR-0314 Decision 4. Export redaction-safe online
     retention state, active binding fence, step count, pruned sequence count, and

@@ -618,6 +618,7 @@ Commands:
   revoke
   list       Lists non-secret capability summaries from a quiescent database path or local operator inventory file
   show       Shows non-secret capability details from a quiescent database path or local operator inventory file
+  rotate     Rotates an active capability into a replacement capability with identical grants, atomically writes the replacement credential file, and optionally revokes the superseded capability
 
 Options:
       --config <PATH>
@@ -2508,6 +2509,47 @@ Options:
 
       --credential-file <PATH>
 
+  -h, --help
+          Print help
+```
+
+#### `riffdb capability rotate`
+
+```text
+Rotates an active capability into a replacement capability with identical grants, atomically writes the replacement credential file, and optionally revokes the superseded capability
+
+Usage: riffdb capability rotate [OPTIONS] --credential-output <PATH> <CAPABILITY_UUIDV7>
+
+Arguments:
+  <CAPABILITY_UUIDV7>  Existing capability UUIDv7 to rotate
+
+Options:
+      --config <PATH>
+
+      --credential-output <PATH>
+          Destination path for the newly issued bearer credential
+      --capability-id <NEW_CAPABILITY_UUIDV7>
+          Optional explicit UUIDv7 for the replacement capability
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --database <DATABASE>
+
+      --ttl-ms <MILLISECONDS>
+          Optional lifetime override in milliseconds (rounded up to whole seconds)
+      --output <human|json>
+          [possible values: human, json]
+      --revoke-old
+          Revoke the superseded capability (`reason = replaced`) after retaining the new credential
+      --max-attempts <1..10>
+
+      --request <JSON_REQUEST>
+          Optional JSON capability-create request template supplying the grant to preserve
+      --credential-file <PATH>
+
+      --inventory-file <PATH>
+          Non-secret operator capability inventory JSON file to read and update
+      --database-path <PATH>
+          Quiescent local Redb database path to read the source capability grant from
   -h, --help
           Print help
 ```
