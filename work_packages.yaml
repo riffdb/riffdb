@@ -31675,3 +31675,106 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-869
+  name: Automatic client and MCP observed_history_incarnation tracking across destructive restores
+  tier: guarantee
+  depends_on: [WP-868]
+  objective: Implement ADR-0314 Decision 1. Automatically populate unset
+    observed_history_incarnation fields and remember returned history_incarnation
+    values across RiffDbClient commit/event RPCs and McpStdioBackend sessions so
+    stateful clients and MCP sessions fail closed with RDB-HISTORY-0101 after a
+    destructive restore without manual caller plumbing.
+  requirements: [REC-002, STO-001, DX-014]
+  required_adrs: [ADR-0314, ADR-0072]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-client-rust/**, crates/riffdb-mcp-stdio/**, fixtures/**, docs/**]
+  deliverables:
+  - Automatic observed_history_incarnation application and response remembering in RiffDbClient get_commit, scan_commits, subscribe_commits, replay_events, and tail_events
+  - Session-scoped observed_history_incarnation tracking in McpStdioBackend across commit resource reads and commit tools
+  - Updated fixtures/compatibility/operation-adapters-v1/riffdb-client-rust/client.rs.in and public-adapter-freeze-v1.tsv
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-869
+  exit_gate: RiffDbClient and McpStdioBackend remember history_incarnation from
+    commit/event responses, populate unset request fields automatically, preserve
+    explicit caller overrides, and pass unit and adapter checks.
+  standing_design_tests:
+    interface_safety: Explicit per-request observed_history_incarnation values always take precedence over client-remembered state.
+    scale: Incarnation tracking stores one Option<u64> / AtomicU64 per client or MCP session with O(1) overhead.
+  human_review_triggers:
+  - Client or MCP history-incarnation tracking overrides an explicit caller-supplied observed_history_incarnation or weakens RDB-HISTORY-0101 validation.
+- id: WP-870
+  name: Ad-hoc projected group-by ordering, top-N limit, and aggregate limitations reconciliation
+  tier: guarantee
+  depends_on: [WP-869]
+  objective: Implement ADR-0314 Decision 2. Honor request.order over group-by
+    key columns with canonical ascending group-key tie-breaking and post-sort
+    top-N request.limit truncation in riffdb-columnar and riffdb-service, and
+    reconcile docs/known-limitations.md and docs/reference/CLI.md with ADR-0309
+    and multi-column projected group-by capabilities.
+  requirements: [PRJ-002, PRJ-005, OQ-045, DX-014]
+  required_adrs: [ADR-0314, ADR-0086, ADR-0087, ADR-0309, ADR-0312, ADR-0313]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-cli/**, crates/riffdb-client-rust/**, crates/riffdb-mcp-stdio/**, fixtures/**, docs/**]
+  deliverables:
+  - Group-key order validation, custom direction sorting with canonical tie-breaking, and post-sort limit truncation in execute_group_by in crates/riffdb-columnar/src/query.rs
+  - Plan-shape hash and group cardinality clamping updates for ordered group-by queries in crates/riffdb-service/src/projected_query.rs
+  - Updated docs/known-limitations.md and docs/reference/CLI.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-870
+  exit_gate: Ad-hoc projected group-by queries honor --order over group keys and
+    top-N --limit truncation, reject non-group-key order fields, and pass
+    columnar, service, and handbook checks.
+  standing_design_tests:
+    interface_safety: Grouped projected queries reject order specifications that reference fields outside the declared group_by keys and never return more groups than the authorized row bound.
+    scale: Group accumulation remains bounded by max_group_cardinality (<= 10,000) and MAX_AGGREGATE_STATE_BYTES_V1 (1 MiB).
+  human_review_triggers:
+  - Projected group-by ordering accepts sort fields outside the declared group keys or exceeds max_group_cardinality during group accumulation.
+- id: WP-871
+  name: Operator capability rotation CLI and bootstrap credential renewal
+  tier: surface
+  depends_on: [WP-870]
+  objective: Implement ADR-0314 Decision 3. Add riffdb capability rotate to mint
+    a replacement capability with identical grants, re-apply role bindings,
+    atomically write the new credential file, and optionally revoke the
+    superseded capability, and add --renew to scripts/release-source-bootstrap
+    and cargo riffdb bootstrap.
+  requirements: [SEC-001, SEC-002, SEC-003, DX-002, DX-014]
+  required_adrs: [ADR-0314, ADR-0052, ADR-0092, ADR-0311, ADR-0312]
+  allowed_paths: [work_packages.yaml, adr/**, xtask/**, scripts/**, crates/riffdb-cli/**, crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-client-rust/**, crates/riffdb-mcp-stdio/**, fixtures/**, clients/**, docs/**]
+  deliverables:
+  - riffdb capability rotate subcommand in crates/riffdb-cli and fixtures/compatibility/operation-adapters-v1/riffdb-cli/app.rs.in
+  - --renew flag and post-deployment health compatibility in scripts/release-source-bootstrap and xtask
+  - Smoke coverage in scripts/release-source-bootstrap-smoke and handbook updates
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-871
+  exit_gate: riffdb capability rotate and cargo riffdb bootstrap --renew
+    atomically rotate credentials, preserve role bindings, optionally revoke
+    superseded capabilities, and pass CLI and bootstrap smoke tests.
+  standing_design_tests:
+    interface_safety: Capability rotation never writes raw bearer tokens to stdout/stderr or inventory files and revokes the old capability only after the replacement credential and role bindings succeed.
+    scale: Rotation performs a bounded sequence of unary administrative RPCs for one capability and its bounded role bindings.
+  human_review_triggers:
+  - Capability rotation or bootstrap renewal exposes raw bearer tokens in logs/inventory files or deletes authoritative database/key state.
+- id: WP-872
+  name: Online retention telemetry and fence observability in metrics and flight recorder
+  tier: surface
+  depends_on: [WP-871]
+  objective: Implement ADR-0314 Decision 4. Export redaction-safe online
+    retention state, active binding fence, step count, pruned sequence count, and
+    watermark sequence through riffdb-observability into /metrics, /v1/metrics,
+    the periodic NDJSON flight recorder, and riffdb telemetry summarize.
+  requirements: [STO-030, STO-031, ID-005, PERF-001, END-007, END-008, DX-014]
+  required_adrs: [ADR-0314, ADR-0182, ADR-0306]
+  allowed_paths: [work_packages.yaml, adr/**, xtask/**, scripts/**, crates/riffdb-observability/**, crates/riffdb-server/**, crates/riffdb-cli/**, crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-client-rust/**, crates/riffdb-mcp-stdio/**, fixtures/**, clients/**, docs/**]
+  deliverables:
+  - Atomic online retention telemetry state, fence, step, sequence, and watermark counters in crates/riffdb-observability
+  - Live telemetry updates in crates/riffdb-server/src/retention_worker.rs
+  - Prometheus, OTLP JSON, NDJSON flight-recorder, and riffdb telemetry summarize exposition plus handbook updates
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-872
+  exit_gate: Online retention state, active fence, steps, pruned sequences, and
+    watermark are exposed in Prometheus, OTLP JSON, flight-recorder NDJSON, and
+    riffdb telemetry summarize, and all acceptance and handbook checks pass.
+  standing_design_tests:
+    interface_safety: Online retention telemetry emits only closed enum codes/labels and numeric counters (ID-005) and does not alter public gRPC Health membership (ADR-0182).
+    scale: Telemetry updates use O(1) atomic stores without extra storage transactions or heap allocations.
+  human_review_triggers:
+  - Online retention telemetry exposes raw tenant, principal, entity, or request identifiers or alters public gRPC Health membership.
