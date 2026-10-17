@@ -352,6 +352,7 @@ record with no front matter.
 | [0315](0315-request-scoped-native-dependency-admission-before-durable-audit.md) | Request-Scoped Native Dependency Admission Before Durable Audit | Accepted | guarantee |
 | [0316](0316-native-authoritative-replay-checkpoints-and-projection-generation-rollover.md) | Native Authoritative Replay Checkpoints And Projection Generation Rollover | Accepted | guarantee |
 | [0317](0317-explicit-catalog-binding-for-primary-fencing-and-promotion.md) | Explicit Catalog Binding For Primary Fencing And Promotion | Accepted | guarantee |
+| [0318](0318-native-catalog-cutover-and-source-inheritance-evidence.md) | Native Catalog Cutover And Source Inheritance Evidence | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

@@ -6061,6 +6061,42 @@ absence retains version 2. The configured authenticated peer, checked local
 lineage and exact registration must agree. Configuration or serialized
 receipts alone never authorize source writes or promotion.
 
+### Native catalog cut and inherited source evidence
+
+ADR-0318 qualifies ADR-0317's original-history preservation
+boundary. Ordinary Active V2-to-V3 upgrade uses one exact same-incarnation and
+same-epoch cut on the existing receipt hash chain, preserving predecessor
+HISTORY bytes under their original catalog until fenced reclamation. Require
+complete predecessor validation, no live source holds/jobs and complete
+projection source closure; a cache cannot certify upgrade authority.
+
+Two new versioned records live in the existing authoritative Audit namespace:
+CatalogTransition (complete envelope at most 2 KiB), and SourceInheritance
+(complete envelope at most 16 KiB). The former binds FreshV3 or the exact
+predecessor cut. A closed streaming commitment preserves the original retained
+V1 replication/fence/promotion control facts and their legacy historical
+interpretation, granting no current authority. Current V3 streams and
+bootstrap fences begin at or after the cut; older positions require bootstrap.
+
+Destructive restore/promotion and bootstrap retain ADR-0186's source-local
+history reset/exclusion while preserving original retained administration
+bindings and source identities/origins. A canonical attributed inheritance
+fact binds exact predecessor preimages, successor anchor and required source
+references, transfers with authoritative state and permits exact reconstruction
+after the original receipt is pruned. A decoded value or older incarnation
+number never supplies checkpoint or mutation authority. NEW transition
+admission limit: at most 128 distinct required inherited references; otherwise
+refuse before publication without dropping a valid base or changing predecessor.
+
+V3 RestoreAnchor attributes its inheritance fact and actual new-incarnation
+allocator/stamp changes. V3 promotion atomically allocates inheritance followed
+by start/control/success, with actual four-item administration ordering and
+exact typed result/service-success links. Legacy V2 empty restore anchors and
+three-item promotion bytes remain unchanged. Preserve authorization, fencing,
+complete closure, memory/scan/write bounds, pacing, exact crash/retry behavior
+and 45/60-second recovery gates. No application bypass or generic migration
+callback is added. Concrete fixtures and integrated activation require review.
+
 ### Accepted amendment: durable primary fencing and audited promotion
 
 Maintainer, in session, 2026-09-16: "Approve exact text", referring to
