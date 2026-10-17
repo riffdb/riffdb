@@ -211,6 +211,7 @@ fn assert_authoritatively_ready(report: &v1::AuthenticatedHealth) -> TestResult<
         v1::HealthComponentKind::CommitCoordinator,
         v1::HealthComponentKind::Projection,
         v1::HealthComponentKind::Outbox,
+        v1::HealthComponentKind::Replication,
     ];
     let actual_kinds = report
         .components

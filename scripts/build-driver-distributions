@@ -417,11 +417,36 @@ def stage_generator_templates(workspace: Path) -> None:
     source.write_text(content, encoding="utf-8")
 
 
+def stage_mcp_service_schemas(workspace: Path) -> None:
+    """Keep compile-time service schema inputs inside the published api-mcp crate."""
+    crate = workspace / "crates/riffdb-api-mcp"
+    source = crate / "src/registry.rs"
+    content = source.read_text(encoding="utf-8")
+    pattern = r'include_str!\(\s*"\.\./\.\./riffdb-service/schema/([^"\n]+)"\s*\)'
+    names = re.findall(pattern, content)
+    schemas = workspace / "crates/riffdb-service/schema"
+    expected = [
+        "riffdb.command-get-outcome-result-v1.schema.json",
+        "riffdb.command-operation-envelope-v1.schema.json",
+    ]
+    if sorted(names) != expected or len(set(names)) != len(names):
+        fail("MCP service schema includes do not match the exact canonical inventory")
+    for name in names:
+        relative = safe_relative(name)
+        schema = schemas / relative
+        if schema.is_symlink() or not schema.is_file() or schema.stat().st_size > MAX_ARTIFACT_BYTES:
+            fail("MCP service schema is not a bounded regular file")
+        write(crate / "assets/service-schema" / relative, schema.read_bytes())
+    content = re.sub(pattern, lambda match: f'include_str!("../assets/service-schema/{match[1]}")', content)
+    source.write_text(content, encoding="utf-8")
+
+
 def rust_packages(output: Path, scratch: Path) -> None:
     order, manifests = rust_closure()
     staged = scratch / "rust-workspace"
     copy_repository(staged)
     stage_generator_templates(staged)
+    stage_mcp_service_schemas(staged)
     write(
         staged / "crates/riffdb-client-rust/conformance-manifest-v1.json",
         (ROOT / "fixtures/driver/manifests/rust-v1.json").read_bytes(),
