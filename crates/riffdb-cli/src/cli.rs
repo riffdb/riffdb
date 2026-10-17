@@ -909,7 +909,8 @@ pub(crate) enum QueryCommand {
         /// (inclusive low, exclusive high; at least one bound; repeatable).
         #[arg(long = "range", value_name = "FIELD=[LOW,HIGH]")]
         range: Vec<String>,
-        /// Order key as `FIELD` or `FIELD:desc` (repeatable).
+        /// Order key as `FIELD` or `FIELD:desc` (repeatable). With `--group-by`,
+        /// every ordered field must be a group-by key.
         #[arg(long = "order", value_name = "FIELD[:desc]")]
         order: Vec<String>,
         /// Aggregate as `OP:FIELD` where OP is `count_present`, `count_distinct`,
@@ -921,9 +922,10 @@ pub(crate) enum QueryCommand {
         /// Group-by key field name (repeatable).
         #[arg(long = "group-by", value_name = "FIELD")]
         group_by: Vec<String>,
-        /// Post-sort row limit. With `--group-by` this is the maximum number
-        /// of groups instead, and exceeding it is rejected rather than
-        /// truncated; it does not apply to an aggregate without `--group-by`.
+        /// Post-sort row or group limit. With unordered `--group-by` this is the
+        /// maximum number of groups (exceeding it is rejected); with `--group-by`
+        /// and `--order` it truncates to the top N ordered groups; it does not
+        /// apply to an aggregate without `--group-by`.
         #[arg(long, value_name = "ROWS")]
         limit: Option<String>,
         /// Freshness policy: `available`, `bounded:N`, or `causal` (requires token).

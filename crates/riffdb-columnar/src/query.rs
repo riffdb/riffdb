@@ -911,6 +911,13 @@ pub(crate) fn execute_query(
         for key in &group.keys {
             projected_field_index(definition, *key)?;
         }
+        for spec in &request.order {
+            if !group.keys.contains(&spec.field) {
+                return Err(QueryError::InvalidAggregate(
+                    "group order field must be a group-by key",
+                ));
+            }
+        }
         for agg in &group.aggregates {
             validate_aggregate_field(definition, agg)?;
         }
@@ -979,7 +986,14 @@ pub(crate) fn execute_query(
     }
 
     if let Some(group) = &request.group_by {
-        return execute_group_by(definition, &matched, group, &request.budget);
+        return execute_group_by(
+            definition,
+            &matched,
+            group,
+            &request.order,
+            request.limit,
+            &request.budget,
+        );
     }
     if let Some(agg) = &request.aggregate {
         let mut fuel = ColumnarAggregateFuel::new();
@@ -1096,12 +1110,27 @@ fn execute_group_by(
     definition: &RegisteredDefinition,
     matched: &[row_order::MatchedRow<'_>],
     group: &GroupBySpec,
+    order: &[OrderSpec],
+    limit: Option<usize>,
     budget: &QueryBudget,
 ) -> Result<QueryResult, QueryError> {
     let key_indexes: Vec<usize> = group
         .keys
         .iter()
         .map(|field| projected_field_index(definition, *field))
+        .collect::<Result<_, _>>()?;
+    let order_positions: Vec<(usize, SortDirection)> = order
+        .iter()
+        .map(|spec| {
+            group
+                .keys
+                .iter()
+                .position(|key| *key == spec.field)
+                .map(|pos| (pos, spec.direction))
+                .ok_or(QueryError::InvalidAggregate(
+                    "group order field must be a group-by key",
+                ))
+        })
         .collect::<Result<_, _>>()?;
 
     let mut groups =
@@ -1157,6 +1186,16 @@ fn execute_group_by(
         out.push((key_cells, aggregates));
     }
     out.sort_by(|(left_keys, _), (right_keys, _)| {
+        for (pos, direction) in &order_positions {
+            let cmp = compare_values(&left_keys[*pos], &right_keys[*pos]);
+            let cmp = match direction {
+                SortDirection::Asc => cmp,
+                SortDirection::Desc => cmp.reverse(),
+            };
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        }
         for (left, right) in left_keys.iter().zip(right_keys.iter()) {
             let cmp = compare_values(left, right);
             if cmp != Ordering::Equal {
@@ -1165,6 +1204,9 @@ fn execute_group_by(
         }
         left_keys.len().cmp(&right_keys.len())
     });
+    if let Some(limit) = limit {
+        out.truncate(limit);
+    }
     Ok(QueryResult::Groups {
         key_fields: group.keys.clone(),
         groups: out,

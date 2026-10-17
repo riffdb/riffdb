@@ -2242,3 +2242,109 @@ fn projected_group_by_orders_groups_by_canonical_value_order() {
         other => panic!("expected groups: {other:?}"),
     }
 }
+
+#[test]
+// req: PRJ-002, PRJ-005, OQ-045, DX-014, OQ-019, QRY-003
+fn projected_group_by_honors_custom_order_and_top_n_limit() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let mut engine = open_engine(definition, "group_by_custom_order_limit");
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x7a);
+    for (id, status, title, prio) in [
+        (1u64, 1u64, "b", 256i64),
+        (2, 1, "aa", 10),
+        (3, 2, "b", -5),
+        (4, 2, "aa", -1),
+        (5, 1, "aa", 256),
+    ] {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            id,
+            org,
+            id,
+            status,
+            title,
+            prio,
+        );
+    }
+    engine.apply_available(&source).expect("apply");
+
+    let priority = field_id(&bundle, "Ticket", "priority");
+    let title = field_id(&bundle, "Ticket", "title");
+    let status = field_id(&bundle, "Ticket", "status");
+
+    // Order by priority DESC, breaking ties by canonical ascending key order ("aa" before "b"),
+    // and truncate to the top 3 groups.
+    let top_three = engine
+        .query(&ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(org),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: vec![OrderSpec {
+                field: priority,
+                direction: SortDirection::Desc,
+            }],
+            limit: Some(3),
+            group_by: Some(GroupBySpec {
+                keys: vec![title, priority],
+                aggregates: vec![AggregateOp::Count],
+            }),
+            aggregate: None,
+            budget: QueryBudget::default(),
+        })
+        .expect("group by title, priority ordered by priority desc limit 3");
+    match top_three {
+        QueryResult::Groups { groups, .. } => {
+            let keys: Vec<Vec<CanonicalValue>> = groups.into_iter().map(|(key, _)| key).collect();
+            assert_eq!(
+                keys,
+                vec![
+                    vec![
+                        CanonicalValue::string("aa").unwrap(),
+                        CanonicalValue::I64(256),
+                    ],
+                    vec![
+                        CanonicalValue::string("b").unwrap(),
+                        CanonicalValue::I64(256),
+                    ],
+                    vec![
+                        CanonicalValue::string("aa").unwrap(),
+                        CanonicalValue::I64(10),
+                    ],
+                ]
+            );
+        }
+        other => panic!("expected groups: {other:?}"),
+    }
+
+    // Ordering a grouped query by a field outside group_by.keys fails closed.
+    let non_group_order = engine.query(&ColumnarQueryRequest {
+        org_scope: CanonicalValue::Uuid(org),
+        select: Vec::new(),
+        predicates: Vec::new(),
+        order: vec![OrderSpec {
+            field: status,
+            direction: SortDirection::Asc,
+        }],
+        limit: None,
+        group_by: Some(GroupBySpec {
+            keys: vec![title],
+            aggregates: vec![AggregateOp::Count],
+        }),
+        aggregate: None,
+        budget: QueryBudget::default(),
+    });
+    assert!(
+        matches!(
+            non_group_order,
+            Err(ColumnarError::Query(QueryError::InvalidAggregate(
+                "group order field must be a group-by key"
+            )))
+        ),
+        "expected non-group order rejection, got {non_group_order:?}"
+    );
+}

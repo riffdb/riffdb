@@ -494,7 +494,7 @@ async fn execute_projected_query(
             )
         })?;
 
-    let resolved = resolve_body_fields(entity, &definition, request.body())?;
+    let mut resolved = resolve_body_fields(entity, &definition, request.body())?;
 
     // B7 value-level shared derivation: partition authz and engine org_scope
     // both derive from this single CanonicalValue. Codecs are distinct framings
@@ -564,6 +564,7 @@ async fn execute_projected_query(
         &resolved.plan_shape_fields,
         resolved.group_by.as_ref(),
         resolved.aggregate.as_ref(),
+        &resolved.order,
     );
     let target = ApplicationQueryTarget::new(
         bundle.lineage().clone(),
@@ -607,20 +608,21 @@ async fn execute_projected_query(
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
 
     // The declared row bound must bound what the caller actually receives.
-    // The engine ignores `limit` on the grouped path (it returns before the
-    // sort/truncate), so without this clamp a request declaring `limit = 1` —
-    // which satisfies every grant this system can issue — could still receive
-    // up to `max_group_cardinality` group rows of raw key-column values.
-    // Clamping the grouping budget to the authorized row count keeps the
-    // volume bound the authorization decision was made against. Server-side
-    // only: no engine change and no wire budget vocabulary (R8), and an
-    // overrun stays the typed GroupCardinalityExceeded rejection rather than a
-    // truncated answer.
+    // On unordered grouped queries (`order.is_empty()`), clamping
+    // `max_group_cardinality` to the authorized row count keeps an overrun as
+    // the typed `GroupCardinalityExceeded` rejection rather than a partial fold.
+    // When explicit group ordering is requested (`!order.is_empty()`), the
+    // engine accumulates up to `max_group_cardinality` groups, sorts by the
+    // requested group-key order, and truncates to the authorized row bound.
     let mut budget = request.body().budget();
     if resolved.group_by.is_some() {
-        budget.max_group_cardinality = budget
-            .max_group_cardinality
-            .min(usize::from(maximum_rows.get()));
+        let max_rows = usize::from(maximum_rows.get());
+        if resolved.order.is_empty() {
+            budget.max_group_cardinality = budget.max_group_cardinality.min(max_rows);
+            resolved.limit = None;
+        } else {
+            resolved.limit = Some(resolved.limit.map_or(max_rows, |limit| limit.min(max_rows)));
+        }
     }
     let engine_request = resolved.into_engine_request(org_scope, budget);
     let outcome = match request.freshness() {
@@ -1298,6 +1300,14 @@ fn resolve_body_fields(
                 plan_shape_fields.push(field_id);
                 keys.push(field_id);
             }
+            for order_spec in &order {
+                if !keys.contains(&order_spec.field) {
+                    return Err(application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::QueryInvalid,
+                    ));
+                }
+            }
             let mut aggregates = Vec::with_capacity(spec.aggregates.len());
             for op in &spec.aggregates {
                 aggregates.push(resolve_aggregate_op(
@@ -1455,6 +1465,7 @@ fn projected_plan_hash(
     fields: &[FieldId],
     group_by: Option<&GroupBySpec>,
     aggregate: Option<&AggregateOp>,
+    order: &[OrderSpec],
 ) -> QueryPlanHash {
     let mut payload = Vec::with_capacity(8 + projection_name.len() + fields.len() * 4);
     payload.extend_from_slice(b"cp2b-projected\0");
@@ -1486,6 +1497,17 @@ fn projected_plan_hash(
         Some(op) => {
             payload.push(1);
             extend_with_aggregate_shape(&mut payload, op);
+        }
+    }
+    if group_by.is_some() && !order.is_empty() {
+        payload.extend_from_slice(b"\0group_order\0");
+        payload.extend_from_slice(&(order.len() as u32).to_be_bytes());
+        for spec in order {
+            payload.extend_from_slice(&spec.field.get().to_be_bytes());
+            payload.push(match spec.direction {
+                riffdb_columnar::SortDirection::Asc => 0,
+                riffdb_columnar::SortDirection::Desc => 1,
+            });
         }
     }
     hash_query_plan(&payload)
@@ -1661,9 +1683,9 @@ mod tests {
 
     #[test]
     fn projected_plan_hash_is_stable_for_same_shape() {
-        let a = projected_plan_hash("board", &[FieldId::first()], None, None);
-        let b = projected_plan_hash("board", &[FieldId::first()], None, None);
-        let c = projected_plan_hash("other", &[FieldId::first()], None, None);
+        let a = projected_plan_hash("board", &[FieldId::first()], None, None, &[]);
+        let b = projected_plan_hash("board", &[FieldId::first()], None, None, &[]);
+        let c = projected_plan_hash("other", &[FieldId::first()], None, None, &[]);
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1691,12 +1713,12 @@ mod tests {
             FieldId::new(9).expect("field id"),
         ];
         assert_eq!(
-            hex_plan_hash(projected_plan_hash("board", &fields, None, None)),
+            hex_plan_hash(projected_plan_hash("board", &fields, None, None, &[])),
             "ed07880b5ed67c801ce42129f8e16366de6800eabd2bb77ddaa27df6bfeca977",
             "row plan hash for (board, [2,5,9]) moved"
         );
         assert_eq!(
-            hex_plan_hash(projected_plan_hash("board", &[], None, None)),
+            hex_plan_hash(projected_plan_hash("board", &[], None, None, &[])),
             "dd7fde99353b0c1dc474fae3c21249088412e7076a319b78c6e228177642e29f",
             "row plan hash for (board, []) moved"
         );
@@ -1710,11 +1732,29 @@ mod tests {
         let field = FieldId::new(2).expect("field id");
         let other = FieldId::new(5).expect("field id");
         let shapes: Vec<QueryPlanHash> = vec![
-            projected_plan_hash("board", &[field], None, None),
-            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Count)),
-            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Sum { field })),
-            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Min { field })),
-            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Max { field })),
+            projected_plan_hash("board", &[field], None, None, &[]),
+            projected_plan_hash("board", &[field], None, Some(&AggregateOp::Count), &[]),
+            projected_plan_hash(
+                "board",
+                &[field],
+                None,
+                Some(&AggregateOp::Sum { field }),
+                &[],
+            ),
+            projected_plan_hash(
+                "board",
+                &[field],
+                None,
+                Some(&AggregateOp::Min { field }),
+                &[],
+            ),
+            projected_plan_hash(
+                "board",
+                &[field],
+                None,
+                Some(&AggregateOp::Max { field }),
+                &[],
+            ),
             projected_plan_hash(
                 "board",
                 &[field],
@@ -1723,6 +1763,7 @@ mod tests {
                     aggregates: vec![AggregateOp::Count],
                 }),
                 None,
+                &[],
             ),
             projected_plan_hash(
                 "board",
@@ -1732,6 +1773,7 @@ mod tests {
                     aggregates: vec![AggregateOp::Count],
                 }),
                 None,
+                &[],
             ),
             projected_plan_hash(
                 "board",
@@ -1741,6 +1783,7 @@ mod tests {
                     aggregates: vec![AggregateOp::Sum { field }, AggregateOp::Count],
                 }),
                 None,
+                &[],
             ),
             // Same aggregate multiset, different requested order: the response
             // column order differs, so the plan differs.
@@ -1752,6 +1795,20 @@ mod tests {
                     aggregates: vec![AggregateOp::Count, AggregateOp::Sum { field }],
                 }),
                 None,
+                &[],
+            ),
+            projected_plan_hash(
+                "board",
+                &[field],
+                Some(&GroupBySpec {
+                    keys: vec![field],
+                    aggregates: vec![AggregateOp::Count],
+                }),
+                None,
+                &[OrderSpec {
+                    field,
+                    direction: riffdb_columnar::SortDirection::Desc,
+                }],
             ),
         ];
         for (left_index, left) in shapes.iter().enumerate() {

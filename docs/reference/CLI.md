@@ -2237,7 +2237,7 @@ Options:
       --max-attempts <1..10>
 
       --order <FIELD[:desc]>
-          Order key as `FIELD` or `FIELD:desc` (repeatable)
+          Order key as `FIELD` or `FIELD:desc` (repeatable). With `--group-by`, every ordered field must be a group-by key
       --aggregate <OP:FIELD|count>
           Aggregate as `OP:FIELD` where OP is `count_present`, `count_distinct`, `count_distinct_present`, `sum`, `mean`, `min`, `max`, `any`, or `all`, or the bare word `count` (repeatable). Any aggregate returns groups instead of rows; more than one requires `--group-by`
       --credential-file <PATH>
@@ -2245,7 +2245,7 @@ Options:
       --group-by <FIELD>
           Group-by key field name (repeatable)
       --limit <ROWS>
-          Post-sort row limit. With `--group-by` this is the maximum number of groups instead, and exceeding it is rejected rather than truncated; it does not apply to an aggregate without `--group-by`
+          Post-sort row or group limit. With unordered `--group-by` this is the maximum number of groups (exceeding it is rejected); with `--group-by` and `--order` it truncates to the top N ordered groups; it does not apply to an aggregate without `--group-by`
       --freshness <POLICY>
           Freshness policy: `available`, `bounded:N`, or `causal` (requires token) [default: available]
       --token-hex <HEX>

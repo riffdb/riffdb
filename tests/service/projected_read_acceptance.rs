@@ -1372,10 +1372,9 @@ fn engine_aggregates_equal_client_side_folds_of_the_same_rows() {
     });
 }
 
-/// One aggregate result can carry two different orders, and conflating them
-/// silently reports the wrong extreme. MIN/MAX compare typed values; group
-/// emission compares length-prefixed encoded keys. The seeded titles separate
-/// the two: lexicographic min is "alpha", encoded-byte min is the shortest.
+/// Both MIN/MAX and default group emission compare canonical values rather than
+/// length-prefixed encoded keys. The seeded titles separate the two:
+/// lexicographic min is "alpha", whereas encoded-byte min is the shortest ("z").
 #[test]
 fn min_max_use_typed_order_not_group_key_byte_order() {
     run_async_threads(4, async move {
@@ -1428,11 +1427,11 @@ fn min_max_use_typed_order_not_group_key_byte_order() {
             .expect("min title serves");
         assert_eq!(
             whole_set_value(&min),
-            AggregateValue::Scalar(Some(typed_min)),
+            AggregateValue::Scalar(Some(typed_min.clone())),
             "MIN must use typed value order, not encoded-key byte order"
         );
 
-        // The same query grouped by title emits in encoded-key byte order.
+        // The same query grouped by title also emits in canonical value order.
         let (context, _cancellation) = harness.context(0xd9);
         let grouped = harness
             .service
@@ -1444,17 +1443,15 @@ fn min_max_use_typed_order_not_group_key_byte_order() {
             .expect("grouped serves");
         let (_, groups) = grouped_values(&grouped);
         assert_eq!(
-            encode(&groups[0].0[0]),
-            encode(&encoded_min),
-            "the first emitted group is the encoded-byte minimum, not the typed one"
+            groups[0].0[0], typed_min,
+            "the first emitted group is the canonical value minimum, not the length-prefixed byte minimum"
         );
         harness.stop_coordinator();
     });
 }
 
-/// Group emission order is the engine's encoded-key byte order, and the
-/// service reports it untouched. Sorting anywhere downstream would make the
-/// documented ordering contract a lie.
+/// Group emission order is the engine's canonical value order by default, and
+/// honors explicit group-key `--order` and top-N `--limit` truncation.
 #[test]
 fn grouped_results_arrive_in_encoded_group_key_byte_order() {
     run_async_threads(4, async move {
@@ -1476,14 +1473,56 @@ fn grouped_results_arrive_in_encoded_group_key_byte_order() {
             .await
             .expect("grouped serves");
         let (_, groups) = grouped_values(&grouped);
-        let observed: Vec<Vec<u8>> = groups.iter().map(|(keys, _)| encode(&keys[0])).collect();
+        let observed: Vec<String> = groups
+            .iter()
+            .map(|(keys, _)| match &keys[0] {
+                CanonicalValue::String(s) => s.as_str().to_owned(),
+                other => panic!("expected string group key, got {other:?}"),
+            })
+            .collect();
         let mut sorted = observed.clone();
         sorted.sort();
         assert_eq!(
             observed, sorted,
-            "groups must arrive in ascending encoded-key byte order"
+            "groups must arrive in ascending canonical value order"
         );
         assert_eq!(groups.len(), AGGREGATE_SEED.len(), "titles are distinct");
+
+        // Explicit descending order with top-2 limit returns the top 2 groups in descending order.
+        let (context, _cancellation) = harness.context(0xda);
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_group_by(Some(ProjectedGroupBySpec {
+                keys: vec!["title".to_owned()],
+                aggregates: vec![ProjectedAggregateOp::Count],
+            }))
+            .with_order(vec![riffdb_service::ProjectedOrderSpec {
+                field: "title".to_owned(),
+                direction: riffdb_columnar::SortDirection::Desc,
+            }])
+            .with_limit(Some(2));
+        let top_two_desc = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                ),
+            )
+            .await
+            .expect("ordered top-2 grouped query serves");
+        let (_, desc_groups) = grouped_values(&top_two_desc);
+        let desc_titles: Vec<String> = desc_groups
+            .iter()
+            .map(|(keys, _)| match &keys[0] {
+                CanonicalValue::String(s) => s.as_str().to_owned(),
+                other => panic!("expected string group key, got {other:?}"),
+            })
+            .collect();
+        let expected_top_two_desc: Vec<String> = sorted.into_iter().rev().take(2).collect();
+        assert_eq!(desc_titles, expected_top_two_desc);
         harness.stop_coordinator();
     });
 }
@@ -1948,9 +1987,9 @@ fn the_declared_row_limit_bounds_grouped_output_volume() {
     });
 }
 
-/// Summing a money column is a real engine limitation. It must surface as a
-/// typed, actionable rejection naming a wrong *type* — not the generic invalid
-/// value code every other projected rejection uses.
+/// Under ADR-0312, uniform-currency money columns sum their fixed-point
+/// coefficients, whereas non-numeric columns (such as strings) surface a typed,
+/// actionable `TypeMismatch` rejection.
 #[test]
 fn summing_a_money_column_is_a_typed_actionable_rejection() {
     run_async_threads(4, async move {
@@ -1962,8 +2001,8 @@ fn summing_a_money_column_is_a_typed_actionable_rejection() {
             .board_columnar()
             .wait_until_applied(sequence, Duration::from_secs(10));
 
-        let (context, _cancellation) = harness.context(0xa8);
-        let failure = harness
+        let (context, _cancellation) = harness.context(0xa7);
+        let money_sum = harness
             .service
             .execute_projected_query(
                 context,
@@ -1976,7 +2015,24 @@ fn summing_a_money_column_is_a_typed_actionable_rejection() {
                 ),
             )
             .await
-            .expect_err("money columns cannot be summed by the engine");
+            .expect("uniform-currency money columns sum fixed-point coefficients");
+        assert_eq!(whole_set_value(&money_sum), AggregateValue::Sum(1850));
+
+        let (context, _cancellation) = harness.context(0xa8);
+        let failure = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Sum {
+                        field: "title".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect_err("non-numeric string columns cannot be summed by the engine");
         let error = failure
             .public_error()
             .expect("the rejection must be public and typed");
@@ -1992,8 +2048,7 @@ fn summing_a_money_column_is_a_typed_actionable_rejection() {
             "the caller must be told the column type is wrong, not that a value is: {issues:?}"
         );
 
-        // Min and max over the same money column still work: the rejection is
-        // specific to the fold that needs integer arithmetic.
+        // Min and max over the same money column also work.
         let (context, _cancellation) = harness.context(0xa9);
         let min = harness
             .service

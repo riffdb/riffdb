@@ -31736,6 +31736,15 @@ work_packages:
     scale: Group accumulation remains bounded by max_group_cardinality (<= 10,000) and MAX_AGGREGATE_STATE_BYTES_V1 (1 MiB).
   human_review_triggers:
   - Projected group-by ordering accepts sort fields outside the declared group keys or exceeds max_group_cardinality during group accumulation.
+  closure:
+    status: complete
+    completed_at: '2026-10-16'
+    requirements_satisfied: [PRJ-002, PRJ-005, OQ-045, DX-014]
+    evidence: cargo nextest run -p riffdb-columnar --test acceptance projected_group_by_honors_custom_order_and_top_n_limit && cargo nextest run -p riffdb-service --test projected_read_acceptance -E 'test(grouped_results) | test(min_max) | test(summing_a_money)' && ./scripts/handbook check
+    decision: Validated group-by order specifications against group_by.keys, sorted grouped results by requested OrderSpec directions with canonical tie-breaking, applied post-sort limit truncation for ordered group-by queries while preserving GroupCardinalityExceeded clamping for unordered group-by queries, updated client aggregate decoding, and reconciled docs/known-limitations.md and docs/reference/CLI.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-871
   name: Operator capability rotation CLI and bootstrap credential renewal
   tier: surface
