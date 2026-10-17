@@ -16,6 +16,7 @@ pub(crate) struct EngineOwner<T> {
     _control: LocatorCharge,
     provider: SharedPhysicalOwnershipCell,
     locator_build_domain: Arc<crate::locator_build_domain::LocatorBuildDomain>,
+    source_working_domain: crate::source_working_domain::SourceWorkingDomain,
 }
 
 impl<T> EngineOwner<T> {
@@ -36,12 +37,14 @@ impl<T> EngineOwner<T> {
         let control = pool.admit(std::mem::size_of::<Self>() + 128, class)?;
         let locator_build_domain =
             crate::locator_build_domain::LocatorBuildDomain::try_new(pool, class)?;
+        let source_working_domain = crate::source_working_domain::SourceWorkingDomain::try_new()?;
         Ok(Arc::new(Self {
             database,
             cache_bytes,
             _control: control,
             provider: SharedPhysicalOwnershipCell::new(),
             locator_build_domain,
+            source_working_domain,
         }))
     }
 
@@ -50,13 +53,25 @@ impl<T> EngineOwner<T> {
     ) -> &Arc<crate::locator_build_domain::LocatorBuildDomain> {
         &self.locator_build_domain
     }
+    // Heap-bearing authoritative source DTOs use this ledger. Fixed-scalar
+    // command metadata validation must not depend on worker capacity.
+    pub(crate) fn source_working_budget(
+        &self,
+    ) -> &riffdb_types::exact_provider_budget_v1::ProjectionSourceWorkingBudgetV1 {
+        self.source_working_domain.budget()
+    }
     pub(crate) fn database(&self) -> &T {
         &self.database
     }
 
     #[cfg(test)]
     pub(crate) fn provider_charge_bytes(&self) -> u64 {
-        self.provider.owned_bytes().unwrap() + self.locator_build_domain.provider_charge_bytes()
+        self.provider.owned_bytes().unwrap()
+            + self.locator_build_domain.provider_charge_bytes()
+            + self
+                .source_working_budget()
+                .provider_control_owned_bytes()
+                .unwrap()
     }
 
     fn provider_bound(&self) -> Result<u64, StorageError> {
@@ -81,6 +96,13 @@ impl<T> EngineOwner<T> {
                 self.locator_build_domain
                     .provider_ownership_needed(budget)?,
             )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.source_working_budget()
+                        .provider_control_ownership_needed(budget)
+                        .ok()?,
+                )
+            })
             .ok_or_else(unavailable)
     }
 
@@ -106,18 +128,28 @@ impl<T> EngineOwner<T> {
         let domain = self
             .locator_build_domain
             .prepare_provider_ownership_from(work, budget)?;
-        Ok(PreparedEngineProviderOwnership { engine, domain })
+        let source_accountant = self
+            .source_working_budget()
+            .prepare_provider_control_ownership_from(work, budget)
+            .map_err(|_| unavailable())?;
+        Ok(PreparedEngineProviderOwnership {
+            engine,
+            domain,
+            source_accountant,
+        })
     }
 }
 
 pub(crate) struct PreparedEngineProviderOwnership<'a> {
     engine: PreparedSharedPhysicalOwnership<'a>,
     domain: PreparedSharedPhysicalOwnership<'a>,
+    source_accountant: PreparedSharedPhysicalOwnership<'a>,
 }
 impl PreparedEngineProviderOwnership<'_> {
     pub(crate) fn commit(self) {
         self.engine.commit();
         self.domain.commit();
+        self.source_accountant.commit();
     }
 }
 
@@ -299,3 +331,7 @@ mod tests {
         assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 }
+
+#[cfg(test)]
+#[path = "source_working_domain_tests.rs"]
+mod source_working_domain_tests;

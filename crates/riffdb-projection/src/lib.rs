@@ -21,6 +21,7 @@ mod query;
 mod recovery;
 mod registry;
 mod result_set_epoch;
+mod source_row_root;
 mod tokenized_text;
 
 pub use batch::*;
@@ -38,6 +39,7 @@ pub use query::*;
 pub use recovery::*;
 pub use registry::*;
 pub use result_set_epoch::*;
+pub use source_row_root::*;
 pub use tokenized_text::*;
 
 #[cfg(test)]

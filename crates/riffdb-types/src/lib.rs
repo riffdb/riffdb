@@ -20,6 +20,12 @@ mod dual_frontier;
 #[doc(hidden)]
 #[path = "exact_provider_budget.rs"]
 pub mod exact_provider_budget_v1;
+/// Trusted fixed source-worker accounting; no application budget selector.
+#[doc(hidden)]
+pub use exact_provider_budget_v1::{
+    PROJECTION_SOURCE_WORKING_MEMORY_BYTES, ProjectionSourceWorkAllocationV1,
+    ProjectionSourceWorkReservationV1, ProjectionSourceWorkingBudgetV1,
+};
 mod exact_text;
 mod execution;
 mod export;
@@ -38,6 +44,7 @@ mod owned_capacity_tests;
 mod principal_fact;
 mod projection;
 mod projection_provider;
+mod projection_source;
 mod query;
 mod reimport;
 mod replication;
@@ -76,6 +83,7 @@ pub use owned_capacity_lifecycle::{OwnedCapacityLifecycleReferenceV1, OwnedCapac
 pub use principal_fact::*;
 pub use projection::*;
 pub use projection_provider::*;
+pub use projection_source::*;
 pub use query::*;
 pub use reimport::*;
 pub use replication::*;

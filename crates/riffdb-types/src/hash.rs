@@ -138,11 +138,19 @@ pub enum HashDomain {
     ExactResultCheckpoint,
     /// One schema-bound columnar definition or complete projection specification.
     ColumnarProjectionSpec,
+    /// Canonical independently evaluated authoritative projection source rows.
+    ProjectionSourceRows,
+    /// Immutable authoritative projection replay-source descriptor.
+    ProjectionSourceDescriptor,
+    /// Captured authoritative projection source origin commitment.
+    ProjectionSourceOrigin,
+    /// Per-row canonical copy progress of one immutable replay-source candidate.
+    ProjectionSourceCopyProgress,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 57] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -196,6 +204,10 @@ impl HashDomain {
         Self::ApplicationReimportReceipt,
         Self::ExactResultCheckpoint,
         Self::ColumnarProjectionSpec,
+        Self::ProjectionSourceRows,
+        Self::ProjectionSourceDescriptor,
+        Self::ProjectionSourceOrigin,
+        Self::ProjectionSourceCopyProgress,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -254,6 +266,10 @@ impl HashDomain {
             Self::ApplicationReimportReceipt => "riffdb.application-reimport-receipt/v1",
             Self::ExactResultCheckpoint => "riffdb.exact-result-checkpoint/v1",
             Self::ColumnarProjectionSpec => "riffdb.columnar-projection-spec/v1",
+            Self::ProjectionSourceRows => "riffdb.projection-source-rows/v1",
+            Self::ProjectionSourceDescriptor => "riffdb.projection-source-descriptor/v1",
+            Self::ProjectionSourceOrigin => "riffdb.projection-source-origin/v1",
+            Self::ProjectionSourceCopyProgress => "riffdb.projection-source-copy-progress/v1",
         }
     }
 }
@@ -302,6 +318,23 @@ impl ContentDigest {
             domain,
             bytes,
         }
+    }
+
+    /// Reconstructs a supported stored digest representation.
+    ///
+    /// This checks the scheme only. It does not verify a preimage, publication,
+    /// source ancestry, or authority. Callers must check the expected domain and
+    /// independently verify the authoritative bytes before using the digest.
+    #[must_use]
+    pub const fn from_stored_parts(
+        scheme: u8,
+        domain: HashDomain,
+        bytes: [u8; 32],
+    ) -> Option<Self> {
+        if scheme != DIGEST_SCHEME_V1 {
+            return None;
+        }
+        Some(Self::new(domain, bytes))
     }
 
     /// Returns the hash scheme version.

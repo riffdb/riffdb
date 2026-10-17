@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 
 pub const EXACT_PROVIDER_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 
+#[path = "projection_source_budget.rs"]
+mod source_work;
+pub use source_work::*;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BudgetUnavailable;
 
@@ -45,17 +49,33 @@ struct Accounting {
     limit: u64,
     counters: BudgetObservation,
     refused: bool,
+    source_worker_claimed: bool,
+}
+
+// Physical control ownership follows this exact accountant Arc, including
+// reservations, settled allocations and shared identity charges that escape
+// their original engine. The cell contains no data or engine backreference.
+struct BudgetOwner {
+    accounting: Mutex<Accounting>,
+    provider_control: SharedPhysicalOwnershipCell,
+}
+
+impl Deref for BudgetOwner {
+    type Target = Mutex<Accounting>;
+    fn deref(&self) -> &Self::Target {
+        &self.accounting
+    }
 }
 
 const _: () = assert!(
-    2 * (std::mem::size_of::<Mutex<Accounting>>() + 2 * std::mem::size_of::<usize>())
-        + 2 * std::mem::align_of::<Accounting>()
+    2 * (std::mem::size_of::<BudgetOwner>() + 2 * std::mem::size_of::<usize>())
+        + 2 * std::mem::align_of::<BudgetOwner>()
         + 128
         <= 512
 );
 
 #[derive(Clone)]
-pub struct ProviderBudget(Arc<Mutex<Accounting>>);
+pub struct ProviderBudget(Arc<BudgetOwner>);
 
 impl Default for ProviderBudget {
     fn default() -> Self {
@@ -74,14 +94,18 @@ impl ProviderBudget {
     }
 
     fn with_limit_and_owner(limit: u64, fixed_owner_bytes: u64) -> Self {
-        Self(Arc::new(Mutex::new(Accounting {
-            limit,
-            counters: BudgetObservation {
-                fixed_owner_bytes,
-                ..BudgetObservation::default()
-            },
-            refused: false,
-        })))
+        Self(Arc::new(BudgetOwner {
+            accounting: Mutex::new(Accounting {
+                limit,
+                counters: BudgetObservation {
+                    fixed_owner_bytes,
+                    ..BudgetObservation::default()
+                },
+                refused: false,
+                source_worker_claimed: false,
+            }),
+            provider_control: SharedPhysicalOwnershipCell::new(),
+        }))
     }
 
     /// Caller supplies a conservative maximum including allocation capacities
@@ -934,7 +958,7 @@ mod tests {
         assert!(
             fixed
                 >= u64::try_from(
-                    std::mem::size_of::<Mutex<Accounting>>() + 2 * std::mem::size_of::<usize>()
+                    std::mem::size_of::<BudgetOwner>() + 2 * std::mem::size_of::<usize>()
                 )
                 .unwrap()
         );

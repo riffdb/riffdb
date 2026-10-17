@@ -2486,7 +2486,7 @@ fn projection_state_semantic_bytes(
     ])
 }
 
-fn validate_projection_state_structure(
+pub(crate) fn validate_projection_state_structure(
     key: &ProjectionGroupKey,
     measures: &CanonicalRecord,
 ) -> Result<(), StorageValueError> {
@@ -2496,7 +2496,7 @@ fn validate_projection_state_structure(
     )
 }
 
-const fn projection_key_storage_error(error: ProjectionKeyError) -> StorageValueError {
+pub(crate) const fn projection_key_storage_error(error: ProjectionKeyError) -> StorageValueError {
     match error {
         ProjectionKeyError::TooLong { .. } | ProjectionKeyError::TooManyComponents => {
             StorageValueError::LimitExceeded

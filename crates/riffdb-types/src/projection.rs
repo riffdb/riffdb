@@ -212,6 +212,20 @@ impl ProjectionGroupKey {
         self.bytes
     }
 
+    /// Consumes the key without cloning its decoded component allocation.
+    /// The canonical byte buffer is released; callers retain the exact identity
+    /// and generation explicitly rather than extracting values from a foreign key.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        ProjectionIdentity,
+        ProjectionGeneration,
+        Vec<CanonicalValue>,
+    ) {
+        (self.identity, self.generation, self.components)
+    }
+
     /// Returns the projection identity encoded by the key.
     #[must_use]
     pub const fn identity(&self) -> &ProjectionIdentity {
@@ -1198,3 +1212,12 @@ mod tests {
 
 // Exhaustive non-durable ownership inventories for retained provider data.
 crate::inspect_owned_capacity_copy_v1!(ProjectionGeneration);
+
+crate::inspect_owned_capacity_struct_v1!(ProjectionIdentity {
+    owned: [contract_lineage],
+    inline: [projection_id, plan_hash]
+});
+crate::inspect_owned_capacity_struct_v1!(ProjectionGroupKey {
+    owned: [bytes, identity, components],
+    inline: [generation]
+});

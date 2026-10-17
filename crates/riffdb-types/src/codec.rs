@@ -128,6 +128,27 @@ pub fn encode_canonical_record(record: &CanonicalRecord) -> Result<Vec<u8>, Cano
     Ok(encoder.output)
 }
 
+/// Appends one borrowed canonical record without cloning its value graph.
+/// A caller can preflight [`canonical_record_encoded_len`] and admit the output
+/// capacity first. Errors restore the original output length.
+pub fn encode_canonical_record_into(
+    output: &mut Vec<u8>,
+    record: &CanonicalRecord,
+) -> Result<(), CanonicalCodecError> {
+    let document_start = output.len();
+    let mut encoder = Encoder {
+        output: std::mem::take(output),
+        document_start,
+        maximum_document_bytes: MAX_CANONICAL_DOCUMENT_BYTES,
+    };
+    let result = encoder.encode_record_value(record, 0);
+    *output = encoder.output;
+    if result.is_err() {
+        output.truncate(document_start);
+    }
+    result
+}
+
 /// Exact encoded byte length of one canonical atomic-command input record.
 ///
 /// Canonical value encoding remains V1 and every nested scalar retains its

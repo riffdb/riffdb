@@ -77,6 +77,7 @@ mod journal;
 mod keys;
 mod layout;
 mod native_initial_dependency;
+mod source_working_domain;
 pub use native_initial_dependency::{NativeDependencyCancellation, OwnedNativeDependencyWait};
 
 mod locator_build_domain;
