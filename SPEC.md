@@ -6038,6 +6038,29 @@ retry and crash recovery, current authorization, target equality, malformed
 record refusal and retention safety before enabling the public operations.
 These changes do not activate ordinary follower writes or local follower audit.
 
+### Explicit catalog binding for primary fencing and promotion
+
+ADR-0317 qualifies the following amendment for AuthoritativeStateCatalogV3.
+The revision-1 admission, fence and promotion formats retain their exact V2
+meaning and bytes. Distinct revision-2 records explicitly bind catalog V3;
+missing, foreign or contradictory identity fails closed. V3 inherits every
+source-admission, authenticated-fence, promotion, retry and audit requirement.
+Its bounded dirty startup point-validates admission and referenced fence;
+retained-fence scrub failure withdraws source authority under ADR-0260.
+
+Only the explicit offline Active predecessor upgrade and validated transition
+paths in ADR-0317 may establish V3 authority. A Fenced or unresolved-promotion
+predecessor cannot become Active through upgrade. Preserve original historical
+receipts, inherited source identities and complete plan source closure; cache
+contents never certify authority. Publication and recovery require exact old
+or new transition evidence and attributed allocator state, with no inferred
+admission, counter reuse, automatic promotion or change to recovery gates.
+
+Follower configuration may select only closed catalog versions 2 and 3;
+absence retains version 2. The configured authenticated peer, checked local
+lineage and exact registration must agree. Configuration or serialized
+receipts alone never authorize source writes or promotion.
+
 ### Accepted amendment: durable primary fencing and audited promotion
 
 Maintainer, in session, 2026-09-16: "Approve exact text", referring to
