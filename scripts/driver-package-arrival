@@ -314,6 +314,7 @@ def smoke_go(distribution: Path, scratch: Path) -> None:
             "GOPROXY": proxy.as_uri(),
             "GOSUMDB": "off",
             "GOPATH": str(scratch / "go-path"),
+            "GOMODCACHE": str(scratch / "go-path/pkg/mod"),
             "GOCACHE": str(scratch / "go-cache"),
         }
     )

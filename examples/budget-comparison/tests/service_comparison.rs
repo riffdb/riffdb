@@ -89,8 +89,9 @@ use riffdb_types::{
     ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, CommitSequence, ContractLineage,
     ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey, EntityTypeId,
-    EntityVersion, Environment, FieldId, IdempotencyKey, IncidentId, PartitionScopeV1, ProvenanceId,
-    RequestId, ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+    EntityVersion, Environment, FieldId, IdempotencyKey, IncidentId, PartitionScopeV1,
+    ProvenanceId, RequestId, ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantScope, Timestamp,
 };
 
 const BASE_SECONDS: i64 = 1_700_300_000;
@@ -411,7 +412,9 @@ impl BudgetServiceHarness {
                 | StoredAdministrationAuditRecordV1::QueryModule(_)
                 | StoredAdministrationAuditRecordV1::ReactiveModule(_)
                 | StoredAdministrationAuditRecordV1::Retention(_)
-                | StoredAdministrationAuditRecordV1::Replication(_) => None,
+                | StoredAdministrationAuditRecordV1::Replication(_)
+                | StoredAdministrationAuditRecordV1::PrimaryFence(_)
+                | StoredAdministrationAuditRecordV1::Promotion(_) => None,
             })
             .collect()
     }
@@ -902,9 +905,8 @@ impl MirroredEntities {
 #[test]
 fn mirrored_entities_keep_the_newest_post_image_across_response_reordering() {
     let entities = MirroredEntities::default();
-    let mut key = riffdb_types::EntityKeyBuilder::new(
-        EntityTypeId::new(1).expect("nonzero entity type"),
-    );
+    let mut key =
+        riffdb_types::EntityKeyBuilder::new(EntityTypeId::new(1).expect("nonzero entity type"));
     key.push_i64(1).expect("bounded entity key");
     let key = key.finish().expect("canonical entity key");
     let value_field = FieldId::new(1).expect("nonzero field");

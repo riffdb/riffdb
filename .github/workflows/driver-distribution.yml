@@ -53,7 +53,9 @@ jobs:
           go version
           [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
       - name: Build native CLI
-        run: cargo +1.98.1 build --release --locked -p riffdb-cli
+        run: |
+          cargo +1.98.1 build --release --locked -p riffdb-cli
+          cargo +1.98.1 fetch --locked --manifest-path fuzz/Cargo.toml
       - name: Check current and stale Go package protocol admission
         run: python3 scripts/tests/test_go_package_arrival.py
       - name: Build pinned manylinux Python runtime

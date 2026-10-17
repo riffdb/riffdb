@@ -118,6 +118,7 @@ fn every_exact_semantic_has_cross_plane_and_generated_evidence() {
     assert_eq!(aggregate_semantic_registry_v1().len(), 11);
 
     let executor = include_str!("../../riffdb-query-executor/src/lib.rs");
+    let executor_tests = include_str!("../../riffdb-query-executor/src/pipeline_clone_tests.rs");
     let columnar = include_str!("../../riffdb-columnar/tests/acceptance.rs");
     let policy = include_str!("../../riffdb-columnar/tests/cp2a.rs");
     let exact_provider = include_str!("../../riffdb-projection/tests/exact_text_provider.rs");
@@ -129,7 +130,7 @@ fn every_exact_semantic_has_cross_plane_and_generated_evidence() {
         "exact_aggregate_core_freezes_novalue_empty_and_mean_state",
         "distinct_budget_exhaustion_withholds_the_complete_aggregate",
     ] {
-        assert!(executor.contains(required));
+        assert!(executor.contains(required) || executor_tests.contains(required));
     }
     for required in [
         "acceptance_query_range_sort_limit_aggregates_group_by_budgets",

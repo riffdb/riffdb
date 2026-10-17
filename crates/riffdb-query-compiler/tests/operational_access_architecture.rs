@@ -27,8 +27,13 @@ fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
         "operational component eligibility has one compiler owner"
     );
 
-    let executor = fs::read_to_string(root.join("crates/riffdb-query-executor/src/lib.rs"))
-        .expect("executor source");
+    let executor = format!(
+        "{}\n{}",
+        fs::read_to_string(root.join("crates/riffdb-query-executor/src/lib.rs"))
+            .expect("executor source"),
+        fs::read_to_string(root.join("crates/riffdb-query-executor/src/index_range.rs"))
+            .expect("executor index_range source"),
+    );
     assert_eq!(
         executor.matches("fn push_exact_index_prefix_value").count(),
         1,

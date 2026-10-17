@@ -2313,18 +2313,13 @@ contract Blog version 1 {
 query Mixed(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
-    $status: TicketStatus?,
-    $order: TicketStatus
+    $status: TicketStatus?
 ) {
     many tickets from Ticket
         where organization_id == $organization_id
           && project_id == $project_id
-          && when $status { status == $status }
-        order by $order {
-            Open: ticket_id asc;
-            InProgress: ticket_id asc;
-            Closed: ticket_id asc;
-        }
+          && when $status { status == "Open" }
+        order by ticket_id asc
         take 25
     return Found { tickets: tickets { ticket_id } }
     outcomes Found
@@ -2339,7 +2334,7 @@ query Mixed(
             .expect("candidate"),
             &bundle,
         )
-        .expect_err("presence guard and order family cannot mix in one query");
+        .expect_err("presence guard without guarded parameter requires operational family repair");
         let diagnostics = AuthoringDiagnostics::from_query_module(
             AuthoringSourcePath::new("riffdb/queries/mixed.riffq").expect("path"),
             &error,
