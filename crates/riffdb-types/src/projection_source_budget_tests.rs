@@ -325,3 +325,90 @@ fn poisoned_source_worker_cleanup_releases_claim_and_permanently_refuses_new_adm
     assert!(!accounting.source_worker_claimed);
     assert!(accounting.refused);
 }
+
+// req: STO-020, PRJ-004
+#[test]
+fn source_peak_refused_admission_preserves_peak_and_release_observation() {
+    let source = ProjectionSourceWorkingBudgetV1::new();
+    let baseline = source.observation().unwrap();
+    assert_eq!(
+        source.peak_admitted_bytes().unwrap(),
+        baseline.fixed_owner_bytes
+    );
+    let available = PROJECTION_SOURCE_WORKING_MEMORY_BYTES - baseline.fixed_owner_bytes;
+    assert!(source.reserve(available + 1).is_err());
+    assert_eq!(
+        source.peak_admitted_bytes().unwrap(),
+        baseline.fixed_owner_bytes
+    );
+    let work = source.reserve(available).unwrap();
+    assert_eq!(
+        source.peak_admitted_bytes().unwrap(),
+        PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+    );
+    assert!(source.reserve(1).is_err());
+    drop(work);
+    assert_eq!(source.observation().unwrap(), baseline);
+    assert_eq!(
+        source.peak_admitted_bytes().unwrap(),
+        PROJECTION_SOURCE_WORKING_MEMORY_BYTES
+    );
+}
+
+// req: STO-020, PRJ-004
+#[test]
+fn source_peak_shared_handles_track_simultaneous_work_and_absorption() {
+    let source = ProjectionSourceWorkingBudgetV1::new();
+    let capture = source.clone();
+    let mut first = source.reserve(8192).unwrap();
+    let second = capture.reserve(4096).unwrap();
+    let expected = 512 + 8192 + 4096;
+    assert_eq!(source.peak_admitted_bytes().unwrap(), expected);
+    assert_eq!(capture.peak_admitted_bytes().unwrap(), expected);
+    let split = first.split(1024).unwrap();
+    first.absorb(split).unwrap();
+    first.absorb(second).unwrap();
+    assert_eq!(capture.observation().unwrap().reserved_bytes, 8192 + 4096);
+    assert_eq!(capture.peak_admitted_bytes().unwrap(), expected);
+    drop(first);
+    assert_eq!(capture.observation().unwrap().reserved_bytes, 0);
+    assert_eq!(capture.peak_admitted_bytes().unwrap(), expected);
+}
+
+// req: STO-020, PRJ-004
+#[test]
+fn source_peak_settlement_and_final_physical_release_keep_the_admission_high_water() {
+    let source = ProjectionSourceWorkingBudgetV1::new();
+    let admitted = crate::OWNED_CAPACITY_INSPECTION_SCRATCH_BYTES_V1 + 1024 * 1024;
+    let work = source.reserve(admitted).unwrap();
+    let peak = source.peak_admitted_bytes().unwrap();
+    let owned = work.settle_owned_value(vec![7_u8; 4096]).unwrap();
+    let final_reference = owned.clone();
+    assert_eq!(source.observation().unwrap().reserved_bytes, 0);
+    assert!(source.observation().unwrap().owned_bytes > 4096);
+    assert_eq!(source.peak_admitted_bytes().unwrap(), peak);
+    drop(owned);
+    assert_eq!(final_reference.len(), 4096);
+    assert!(source.observation().unwrap().owned_bytes > 0);
+    drop(final_reference);
+    assert_eq!(source.observation().unwrap().owned_bytes, 0);
+    assert_eq!(source.peak_admitted_bytes().unwrap(), 512 + admitted);
+}
+
+// req: STO-020, PRJ-004
+#[test]
+fn source_peak_foreign_ledgers_remain_independent_and_refused_owner_is_not_observed() {
+    let source = ProjectionSourceWorkingBudgetV1::new();
+    let foreign = ProjectionSourceWorkingBudgetV1::new();
+    let work = source.reserve(8192).unwrap();
+    assert_eq!(source.peak_admitted_bytes().unwrap(), 512 + 8192);
+    assert_eq!(foreign.peak_admitted_bytes().unwrap(), 512);
+    drop(work);
+    // An accountant that has refused ownership must not expose a usable peak.
+    // The normal observation and future admission remain equally fail-closed.
+    source.0.0.lock().unwrap().refused = true;
+    assert!(source.peak_admitted_bytes().is_err());
+    assert!(source.observation().is_err());
+    assert!(source.reserve(1).is_err());
+    assert_eq!(foreign.peak_admitted_bytes().unwrap(), 512);
+}

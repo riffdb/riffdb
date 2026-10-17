@@ -50,6 +50,9 @@ struct Accounting {
     counters: BudgetObservation,
     refused: bool,
     source_worker_claimed: bool,
+    // Historical aggregate admission, including the fixed accountant owner.
+    // Kept outside BudgetObservation: releasing all work restores that baseline.
+    peak_admitted_bytes: u64,
 }
 
 // Physical control ownership follows this exact accountant Arc, including
@@ -103,6 +106,7 @@ impl ProviderBudget {
                 },
                 refused: false,
                 source_worker_claimed: false,
+                peak_admitted_bytes: fixed_owner_bytes,
             }),
             provider_control: SharedPhysicalOwnershipCell::new(),
         }))
@@ -133,6 +137,9 @@ impl ProviderBudget {
         }
         accounting.counters.reserved_bytes = reserved;
         accounting.counters.reservations = reservations;
+        // Every other accountant transition only transfers or reduces this
+        // aggregate. Failed admission never changes this historical bound.
+        accounting.peak_admitted_bytes = accounting.peak_admitted_bytes.max(total);
         Ok(Reservation {
             budget: self.clone(),
             bytes,

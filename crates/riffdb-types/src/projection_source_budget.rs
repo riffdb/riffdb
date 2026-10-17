@@ -118,6 +118,18 @@ impl ProjectionSourceWorkingBudgetV1 {
         Arc::ptr_eq(&self.0.0, &other.0.0)
     }
 
+    /// Historical upper bound of simultaneously admitted source memory.
+    /// Includes fixed control, reserved work and settled ownership; not RSS,
+    /// publication authority, or an additional capacity allowance.
+    #[doc(hidden)]
+    pub fn peak_admitted_bytes(&self) -> Result<u64, BudgetUnavailable> {
+        let accounting = self.0.0.lock().map_err(|_| BudgetUnavailable)?;
+        if accounting.refused {
+            return Err(BudgetUnavailable);
+        }
+        Ok(accounting.peak_admitted_bytes)
+    }
+
     /// Bounded counters only; no paths, source keys or payload values.
     pub fn observation(&self) -> Result<BudgetObservation, BudgetUnavailable> {
         self.0.observation()
