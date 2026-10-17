@@ -80,7 +80,14 @@ jobs:
         run: ./scripts/test-python-platform-matrix
       - name: Check reproducible package and receipt toolchain
         if: matrix.arch == 'x86_64'
-        run: ./scripts/check-python-package
+        env:
+          RUSTUP_HOME: ${{ runner.temp }}/riffdb-sdist-rustup
+        shell: bash
+        run: |
+          source scripts/tool-versions
+          python3 -m pip install maturin==1.14.1 uv==0.12.14 mypy
+          cargo +1.98.1 install --locked --version "$RIFFDB_CARGO_DENY_VERSION" cargo-deny
+          ./scripts/check-python-package
       - name: Write artifact receipt
         run: ./scripts/write-python-artifact-receipt dist
       - name: Upload checked artifacts

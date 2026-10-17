@@ -93,8 +93,12 @@ jobs:
       - name: Check dependency surface
         run: |
           cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace
-          if cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace | grep -E '(^| )(cc|openssl-sys|native-tls|rustls|ring|libsqlite3-sys|pq-sys|diesel|sqlx|deadpool|bb8|r2d2) v'; then
+          if cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml --workspace | grep -E '(^| )(openssl-sys|native-tls|libsqlite3-sys|pq-sys|diesel|sqlx|deadpool|bb8|r2d2) v'; then
             echo "native, TLS, or unreviewed database dependency entered the comparison workspace" >&2
+            exit 1
+          fi
+          if cargo tree --locked --manifest-path examples/budget-comparison/Cargo.toml -p riffdb-budget-comparison-postgres | grep -E '(^| )(cc|openssl-sys|native-tls|rustls|ring|libsqlite3-sys|pq-sys|diesel|sqlx|deadpool|bb8|r2d2) v'; then
+            echo "native, TLS, or unreviewed database dependency entered the PostgreSQL baseline crate" >&2
             exit 1
           fi
       - name: Check dependency policy

@@ -412,7 +412,9 @@ impl BudgetServiceHarness {
                 | StoredAdministrationAuditRecordV1::QueryModule(_)
                 | StoredAdministrationAuditRecordV1::ReactiveModule(_)
                 | StoredAdministrationAuditRecordV1::Retention(_)
-                | StoredAdministrationAuditRecordV1::Replication(_) => None,
+                | StoredAdministrationAuditRecordV1::Replication(_)
+                | StoredAdministrationAuditRecordV1::PrimaryFence(_)
+                | StoredAdministrationAuditRecordV1::Promotion(_) => None,
             })
             .collect()
     }

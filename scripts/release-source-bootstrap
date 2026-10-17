@@ -324,7 +324,7 @@ verify_bootstrap_health() {
                 and .result.last_commit_sequence == null
             )
             or (
-                (.result.status == "healthy" or .result.status == "degraded")
+                (.result.status == "ready" or .result.status == "degraded")
                 and (.result.active_contract_version | type) == "string"
                 and (
                     .result.last_commit_sequence == null
