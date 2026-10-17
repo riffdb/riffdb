@@ -8,6 +8,12 @@
 
 mod input_facts;
 
+mod source_evaluation_capacity;
+pub use source_evaluation_capacity::{
+    source_expression_control_work_bound_v1, source_expression_result_clone_work_bound_v1,
+    source_expression_values_work_bound_v1,
+};
+
 pub use input_facts::{
     CommandTargetFacts, InputDerivedCommandFacts, derive_input_command_facts,
     resolve_selected_command_targets,
@@ -23,6 +29,8 @@ use riffdb_contract_ir::{
     RootValidationReadId, UnaryOperator,
 };
 use riffdb_types::{CanonicalValue, Date, EntityTypeId, FieldId, InvariantId, LogicalTime};
+
+type EvaluationCacheCell = Option<Result<Rc<CanonicalValue>, EvaluationError>>;
 
 /// A closed deterministic expression-evaluation failure.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -142,7 +150,7 @@ pub fn evaluate_expression(
 /// retaining stale values.
 pub struct ExpressionEvaluator<'arena> {
     arena: &'arena ExpressionArena,
-    cache: Vec<Option<Result<Rc<CanonicalValue>, EvaluationError>>>,
+    cache: Vec<EvaluationCacheCell>,
     visited: Vec<usize>,
 }
 

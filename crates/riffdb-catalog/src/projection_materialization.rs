@@ -1,5 +1,8 @@
 //! Catalog-resolved, process-local projection event materialization.
 
+#[path = "projection_materialization_capacity.rs"]
+mod capacity;
+
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;

@@ -9,6 +9,10 @@ mod batch;
 mod control;
 mod error;
 mod evaluator;
+mod source_evaluator;
+pub use source_evaluator::{
+    SourceAdmittedProjectionCommitV1, evaluate_projection_commit_source_admitted_v1,
+};
 mod exact_predicate;
 mod exact_text;
 mod hooks;

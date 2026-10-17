@@ -21,17 +21,34 @@ The common allocation formula additionally passed the source-row codec's
 preflight and ownership proofs in receipt
 `4fa8db3b6f85bc145b7bf9334262863100e65efc650daa658a11ac08d1ba8699`.
 
-This is a prerequisite. Complete evaluator admission still needs to count
+The projection crate now uses these bounds to admit pure evaluation before
 catalog event normalization, writer-plan resolution, expression cache controls
-and cached values, group-key construction, per-command grouped deltas and
-staging updates. It must preserve the existing per-command aggregation order
-and checked arithmetic. It does not establish source-worker, source retention,
-full-population restore or rehearsal qualification.
+and cached values, group-key construction and per-command grouped deltas.
+It calls the existing ordinary evaluator with its complete-command aggregation
+order and checked arithmetic. Sizing refusal returns storage unavailable;
+the sizing walk cannot invent an authoritative corruption or semantic limit.
+The move-only result borrows its original plan, schema, command and ledger
+through physical destruction. Evaluated data drops before its reservation.
+
+The composition with the latest merged main passed five semantic proofs on the
+qualification host: pressure refusal with ordinary evaluation independence;
+ordinary group/filter/empty-command parity; complete-command overflow
+association; original shared catalog custody; and sizing-refusal classification.
+The actual borrowed-input compilation proof, catalog/invariant/projection
+all-target Clippy with default and all features, formatting, scope, file-size
+and panic guards also passed. Receipt:
+`46135cf8f5e8a33e41bf5005d2618068e5bf43761887ff30d2910b5779b0f4ec`.
+
+This component grants no native capture, source candidate or publication right.
+Staging updates and the complete reader/evaluator/map working set still need
+composition with the actual native owner. Source retention, full-population
+restore, full CI and rehearsal qualification remain open.
 
 Package: WP-825. Tier: guarantee under accepted ADR-0316. Behavior changed:
-first-party allocation sizing only; applications, encodings and fixtures are
+first-party allocation sizing and admitted pure evaluation; applications,
+encodings and fixtures are
 unchanged. Checks: the focused proofs and guards above; combined acceptance and
 full CI remain pending. Compatibility: no durable or application interface
-change. Handbook: no update is needed for these hidden internal sizing helpers.
-Hazards and follow-ups: wire the bounds into the actual evaluator and retain
-each reservation until its corresponding allocation physically releases.
+change. Handbook: no update is needed for these hidden first-party helpers.
+Hazards and follow-ups: compose evaluation with native capture, staging and
+publication while retaining each reservation until its allocation releases.
