@@ -605,3 +605,142 @@ fn offline_prune_releases_derived_engine_before_its_status_readback() {
     assert_eq!(reported.history_incarnation, inspected.history_incarnation);
     assert_eq!(reported.tombstone_count, inspected.tombstone_count);
 }
+
+// req: PRJ-001, PRJ-003, REC-001
+#[test]
+fn healthy_append_between_recovery_head_capture_and_replay_is_fence_changed() {
+    let database = BudgetDatabase::create_with_setup("projection-head-recovery-fence", bootstrap);
+    for seed in [0xb1, 0xb2] {
+        let ports = database.open();
+        ports.wait_for_exact_locator_fixture_completion().unwrap();
+        let command = database.prepare_budget_for(&ports, [seed; 16], seed);
+        drop(ports);
+        run(&database, command, seed);
+    }
+    let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let command = database.prepare_allocation_for(&ports, [0xb1; 16], 1000, 0xb3);
+    drop(ports);
+    run(&database, command, 0xb3);
+    let schema = CheckedProjectionSchema::new(
+        database
+            .bundle()
+            .bundle()
+            .bound_projection_group_schema(
+                database.bundle().bundle().projections()[0].projection_id(),
+            )
+            .unwrap(),
+    );
+    let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let ProjectionControlResult::Updated(initial) = ports
+        .transition_projection_control(ProjectionControlOperation::CreateInitial {
+            schema: schema.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("create initial projection");
+    };
+    let ProjectionControlResult::Updated(_) = ports
+        .transition_projection_control(ProjectionControlOperation::StartInitialScan {
+            expected: initial,
+        })
+        .unwrap()
+    else {
+        panic!("start initial scan");
+    };
+    drop(ports);
+    apply_through(&database, &schema, 3);
+    let mut ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let current = control(&ports);
+    let ProjectionControlResult::Updated(expected) = ports
+        .transition_projection_control(ProjectionControlOperation::PublishCandidate {
+            expected: current,
+        })
+        .unwrap()
+    else {
+        panic!("publish exact projection");
+    };
+    let resolved = riffdb_catalog::ActiveCatalogSnapshot::read(&ports)
+        .unwrap()
+        .unwrap()
+        .resolve_projection(schema.identity())
+        .unwrap();
+    let head = FrontierPosition::AppliedThrough(CommitSequence::new(3).unwrap());
+    let limit = ProjectionRecoveryPageLimit::new(NonZeroU16::new(8).unwrap()).unwrap();
+    let before = validate_projection_generation(
+        &ports,
+        &resolved,
+        schema.clone(),
+        &expected,
+        head,
+        ProjectionGeneration::first(),
+        limit,
+    )
+    .unwrap();
+    assert!(matches!(
+        before,
+        riffdb_projection::ProjectionGenerationValidationOutcome::Clean(_)
+    ));
+    let query = ProjectionQueryRequest::new(
+        ProjectionQuerySelector::new(schema.clone(), vec![]).unwrap(),
+        NonZeroU16::new(8).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_projection(&ports.query_projection(&query).unwrap(), 3, &[1000]);
+    let expected_rows = ports.query_projection(&query).unwrap();
+    // This is a legal deterministic writer schedule: recovery has captured
+    // head/control3, then a compiled command commits before its first scan.
+    let append = database.prepare_allocation_for(&ports, [0xb1; 16], 250, 0xb4);
+    drop(ports);
+    run(&database, append, 0xb4);
+    let ports = database.open();
+    ports.wait_for_exact_locator_fixture_completion().unwrap();
+    let current_head = FrontierPosition::AppliedThrough(CommitSequence::new(4).unwrap());
+    assert_eq!(
+        ports
+            .read_projection_status(schema.identity())
+            .unwrap()
+            .authoritative_head(),
+        current_head
+    );
+    assert_eq!(control(&ports), expected);
+    assert_eq!(ports.query_projection(&query).unwrap(), expected_rows);
+    let stale = validate_projection_generation(
+        &ports,
+        &resolved,
+        schema.clone(),
+        &expected,
+        head,
+        ProjectionGeneration::first(),
+        limit,
+    );
+    // Even when the old implementation misclassifies the race, independently
+    // prove every original marker/hash/row still matches the authoritative
+    // prefix, and that validation changed neither control nor published rows.
+    assert_eq!(control(&ports), expected);
+    assert_eq!(ports.query_projection(&query).unwrap(), expected_rows);
+    let fresh = validate_projection_generation(
+        &ports,
+        &resolved,
+        schema,
+        &expected,
+        current_head,
+        ProjectionGeneration::first(),
+        limit,
+    )
+    .expect("current-head validation of unchanged original projection evidence");
+    assert!(matches!(
+        fresh,
+        riffdb_projection::ProjectionGenerationValidationOutcome::Clean(_)
+    ));
+    assert!(
+        matches!(
+            stale,
+            Ok(riffdb_projection::ProjectionGenerationValidationOutcome::FenceChanged)
+        ),
+        "healthy append must be FenceChanged rather than recovery integrity: {stale:?}"
+    );
+}

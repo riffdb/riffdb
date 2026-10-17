@@ -11,10 +11,11 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_projection::{
     MAX_PROJECTION_WAITERS, ProjectionController, ProjectionEvaluationErrorKind,
     ProjectionGenerationValidationOutcome, ProjectionInitializationResult, ProjectionNotifier,
-    ProjectionReadOutcome, ProjectionReadSource, ProjectionRecoveryOutcome,
-    ProjectionSchemaRegistry, ProjectionWaitCancellation, ProjectionWaitRegistration,
-    ProjectionWake, evaluate_projection_commit, prepare_projection_apply,
-    validate_and_recover_projection_generation, validate_projection_generation,
+    ProjectionReadOutcome, ProjectionReadSource, ProjectionRecoveryErrorKind,
+    ProjectionRecoveryOutcome, ProjectionSchemaRegistry, ProjectionWaitCancellation,
+    ProjectionWaitRegistration, ProjectionWake, evaluate_projection_commit,
+    prepare_projection_apply, validate_and_recover_projection_generation,
+    validate_projection_generation,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
@@ -101,6 +102,12 @@ contract ProjectionEvaluation version 1 {
 }
 "#;
 
+#[derive(Clone, Copy)]
+enum ReplayScanFault {
+    CorruptInitialPage,
+    ChangedContinuationFence,
+}
+
 #[derive(Clone)]
 struct SemanticRepository {
     head: FrontierPosition,
@@ -108,6 +115,8 @@ struct SemanticRepository {
     rows: BTreeMap<ProjectionGroupKey, StoredProjectionStateV1>,
     markers: BTreeMap<ProjectionApplyKey, StoredProjectionApplyV1>,
     commits: Vec<EncodedPageItem<StoredCommitRecordV1>>,
+    replay_scan_fault: Option<ReplayScanFault>,
+    fault_observations: Cell<u32>,
 }
 
 impl Default for SemanticRepository {
@@ -118,6 +127,8 @@ impl Default for SemanticRepository {
             rows: BTreeMap::new(),
             markers: BTreeMap::new(),
             commits: Vec::new(),
+            replay_scan_fault: None,
+            fault_observations: Cell::new(0),
         }
     }
 }
@@ -418,6 +429,29 @@ impl AuthoritativeScanReader for SemanticRepository {
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
+        if matches!(
+            self.replay_scan_fault,
+            Some(ReplayScanFault::CorruptInitialPage)
+        ) {
+            self.fault_observations
+                .set(self.fault_observations.get() + 1);
+            return Err(StorageError::new(StorageErrorKind::CorruptData, None));
+        }
+        if matches!(
+            self.replay_scan_fault,
+            Some(ReplayScanFault::ChangedContinuationFence)
+        ) && request.inclusive_upper().is_some()
+        {
+            self.fault_observations
+                .set(self.fault_observations.get() + 1);
+            // Deliberately violate the storage port: a continuation cannot
+            // recapture a different upper fence. This remains an integrity
+            // error even though an initial capture may legitimately change.
+            return Ok(CommitScanPageV1::ExactEnd {
+                records: Vec::new(),
+                inclusive_upper: FrontierPosition::AppliedThrough(sequence(4)),
+            });
+        }
         let inclusive_upper = request
             .inclusive_upper()
             .map_or(self.head, FrontierPosition::AppliedThrough);
@@ -428,9 +462,15 @@ impl AuthoritativeScanReader for SemanticRepository {
         let upper_end = self.commits.partition_point(|commit| {
             FrontierPosition::AppliedThrough(commit.value().commit_sequence()) <= inclusive_upper
         });
-        let end = start
-            .saturating_add(usize::from(request.limit().get()))
-            .min(upper_end);
+        let count = if matches!(
+            self.replay_scan_fault,
+            Some(ReplayScanFault::ChangedContinuationFence)
+        ) {
+            1
+        } else {
+            usize::from(request.limit().get())
+        };
+        let end = start.saturating_add(count).min(upper_end);
         let records = self.commits[start..end].to_vec();
         if end < upper_end {
             CommitScanPageV1::page(
@@ -1713,5 +1753,87 @@ fn projection_batch_builder_matches_sequential_catalog_evaluation_and_flushes_at
     assert!(matches!(
         batch.observations(),
         [ProjectionApplyRowObservation::Absent(_)]
+    ));
+}
+
+// req: PRJ-001, PRJ-003, REC-001
+#[test]
+fn corrupt_scan_and_changed_continuation_remain_recovery_errors() {
+    let fixture = evaluator_fixture();
+    let identity = fixture.schema.identity().clone();
+    let commits = vec![
+        evaluator_commit(&fixture, sequence(1), &[(10, 7)]),
+        evaluator_commit(&fixture, sequence(2), &[]),
+        evaluator_commit(&fixture, sequence(3), &[(10, 3)]),
+    ];
+    let mut repository = SemanticRepository::default();
+    repository.install_commits(commits.clone());
+    let registry = ProjectionSchemaRegistry::new([fixture.schema.clone()]).unwrap();
+    let notifier = ProjectionNotifier::from_registry(&registry);
+    let mut controller = ProjectionController::new(repository, notifier);
+    controller.initialize(fixture.schema.clone()).unwrap();
+    controller.start_initial_catch_up(&identity).unwrap();
+    let generation = ProjectionGeneration::first();
+    for commit in &commits {
+        let evaluated = evaluate_projection_commit(
+            &fixture.resolved,
+            fixture.schema.clone(),
+            generation,
+            commit,
+        )
+        .unwrap();
+        let request = prepare_projection_apply(&evaluated, controller.repository()).unwrap();
+        controller.apply(&request).unwrap();
+    }
+    let ProjectionControlResult::Updated(ready) = controller.publish_candidate(&identity).unwrap()
+    else {
+        panic!("ready projection");
+    };
+    let before_rows = controller.repository().rows.clone();
+    let before_markers = controller.repository().markers.clone();
+    let limit = ProjectionRecoveryPageLimit::new(NonZeroU16::new(2).unwrap()).unwrap();
+    for (fault, expected_error) in [
+        (
+            ReplayScanFault::CorruptInitialPage,
+            ProjectionRecoveryErrorKind::Evaluation(
+                ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+            ),
+        ),
+        (
+            ReplayScanFault::ChangedContinuationFence,
+            ProjectionRecoveryErrorKind::Integrity,
+        ),
+    ] {
+        controller.repository_mut().replay_scan_fault = Some(fault);
+        controller.repository().fault_observations.set(0);
+        let error = validate_projection_generation(
+            controller.repository(),
+            &fixture.resolved,
+            fixture.schema.clone(),
+            &ready,
+            FrontierPosition::AppliedThrough(sequence(3)),
+            generation,
+            limit,
+        )
+        .expect_err("bad scan evidence must not become a benign fence race");
+        assert_eq!(error.kind(), expected_error);
+        assert_eq!(controller.repository().fault_observations.get(), 1);
+        assert_eq!(controller.repository().control.as_ref(), Some(&ready));
+        assert_eq!(controller.repository().rows, before_rows);
+        assert_eq!(controller.repository().markers, before_markers);
+    }
+    controller.repository_mut().replay_scan_fault = None;
+    assert!(matches!(
+        validate_projection_generation(
+            controller.repository(),
+            &fixture.resolved,
+            fixture.schema,
+            &ready,
+            FrontierPosition::AppliedThrough(sequence(3)),
+            generation,
+            limit,
+        )
+        .unwrap(),
+        ProjectionGenerationValidationOutcome::Clean(_)
     ));
 }

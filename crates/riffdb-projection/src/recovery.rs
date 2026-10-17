@@ -267,16 +267,19 @@ where
     let mut continuation = None;
     loop {
         let expected_page = match continuation.as_ref() {
-            None | Some(ProjectionRecoveryContinuationV1::Markers { .. }) => {
-                ProjectionRecoveryExpectedPageV1::markers(
-                    replay.marker_page(continuation.as_ref(), marker_page_limit)?,
-                )
+            None | Some(ProjectionRecoveryContinuationV1::Markers { .. }) => replay
+                .marker_page(continuation.as_ref(), marker_page_limit)
+                .map(ProjectionRecoveryExpectedPageV1::markers),
+            Some(ProjectionRecoveryContinuationV1::Rows { after, .. }) => replay
+                .next_state_row(after.as_ref())
+                .map(|row| ProjectionRecoveryExpectedPageV1::rows(row.into_iter().collect())),
+        };
+        let expected_page = match expected_page {
+            Ok(page) => page,
+            Err(ReplayError::InitialFenceChanged) => {
+                return Ok(ProjectionGenerationValidationOutcome::FenceChanged);
             }
-            Some(ProjectionRecoveryContinuationV1::Rows { after, .. }) => {
-                ProjectionRecoveryExpectedPageV1::rows(
-                    replay.next_state_row(after.as_ref())?.into_iter().collect(),
-                )
-            }
+            Err(ReplayError::Recovery(error)) => return Err(error),
         };
         let page_limit = match &expected_page {
             ProjectionRecoveryExpectedPageV1::Markers(markers) => {
@@ -319,6 +322,23 @@ where
     }
 }
 
+enum ReplayError {
+    InitialFenceChanged,
+    Recovery(ProjectionRecoveryError),
+}
+
+impl From<ProjectionRecoveryError> for ReplayError {
+    fn from(error: ProjectionRecoveryError) -> Self {
+        Self::Recovery(error)
+    }
+}
+
+impl From<ProjectionEvaluationError> for ReplayError {
+    fn from(error: ProjectionEvaluationError) -> Self {
+        Self::Recovery(error.into())
+    }
+}
+
 struct FencedReplay<'a, R> {
     repository: &'a R,
     resolved: &'a ResolvedProjectionPlan,
@@ -336,7 +356,7 @@ where
         &self,
         continuation: Option<&ProjectionRecoveryContinuationV1>,
         limit: ProjectionRecoveryPageLimit,
-    ) -> Result<Vec<StoredProjectionApplyV1>, ProjectionRecoveryError> {
+    ) -> Result<Vec<StoredProjectionApplyV1>, ReplayError> {
         let FrontierPosition::AppliedThrough(frontier) = self.retained_frontier else {
             return Ok(Vec::new());
         };
@@ -344,9 +364,9 @@ where
             None => Some(CommitSequence::first()),
             Some(ProjectionRecoveryContinuationV1::Markers { after }) => after.checked_next(),
             Some(ProjectionRecoveryContinuationV1::Rows { .. }) => {
-                return Err(ProjectionRecoveryError::new(
+                return Err(ReplayError::from(ProjectionRecoveryError::new(
                     ProjectionRecoveryErrorKind::Integrity,
-                ));
+                )));
             }
         };
         let maximum = usize::from(limit.get().get());
@@ -368,27 +388,27 @@ where
     fn next_state_row(
         &self,
         after: Option<&ProjectionGroupKey>,
-    ) -> Result<Option<StoredProjectionStateV1>, ProjectionRecoveryError> {
+    ) -> Result<Option<StoredProjectionStateV1>, ReplayError> {
         let Some(next_key) = self.next_group_key(after)? else {
             return Ok(None);
         };
         let Some((measures, last_changed)) =
             self.replay_key_through(&next_key, self.retained_frontier)?
         else {
-            return Err(ProjectionRecoveryError::new(
+            return Err(ReplayError::from(ProjectionRecoveryError::new(
                 ProjectionRecoveryErrorKind::Integrity,
-            ));
+            )));
         };
         StoredProjectionStateV1::new(self.schema, next_key, measures, last_changed)
             .map(Some)
             .map_err(map_storage_value_error)
-            .map_err(ProjectionRecoveryError::from)
+            .map_err(ReplayError::from)
     }
 
     fn next_group_key(
         &self,
         after: Option<&ProjectionGroupKey>,
-    ) -> Result<Option<ProjectionGroupKey>, ProjectionRecoveryError> {
+    ) -> Result<Option<ProjectionGroupKey>, ReplayError> {
         let mut next: Option<ProjectionGroupKey> = None;
         self.scan_through(self.retained_frontier, |commit| {
             let evaluated = self.evaluate(commit)?;
@@ -407,7 +427,7 @@ where
     fn replay_apply_request(
         &self,
         sequence: CommitSequence,
-    ) -> Result<riffdb_storage_api::ProjectionApplyRequestV1, ProjectionRecoveryError> {
+    ) -> Result<riffdb_storage_api::ProjectionApplyRequestV1, ReplayError> {
         let commit = self.find_commit(sequence)?;
         let evaluated = self.evaluate(&commit)?;
         let expected_frontier = predecessor(sequence);
@@ -434,14 +454,14 @@ where
             updates,
         )
         .map_err(map_storage_value_error)
-        .map_err(ProjectionRecoveryError::from)
+        .map_err(ReplayError::from)
     }
 
     fn replay_key_through(
         &self,
         key: &ProjectionGroupKey,
         frontier: FrontierPosition,
-    ) -> Result<Option<(CanonicalRecord, CommitSequence)>, ProjectionRecoveryError> {
+    ) -> Result<Option<(CanonicalRecord, CommitSequence)>, ReplayError> {
         let mut state: Option<(CanonicalRecord, CommitSequence)> = None;
         self.scan_through(frontier, |commit| {
             let evaluated = self.evaluate(commit)?;
@@ -457,10 +477,7 @@ where
         Ok(state)
     }
 
-    fn find_commit(
-        &self,
-        target: CommitSequence,
-    ) -> Result<StoredCommitRecordV1, ProjectionRecoveryError> {
+    fn find_commit(&self, target: CommitSequence) -> Result<StoredCommitRecordV1, ReplayError> {
         let mut found = None;
         self.scan_through(FrontierPosition::AppliedThrough(target), |commit| {
             if commit.commit_sequence() == target {
@@ -471,7 +488,7 @@ where
             }
         })?;
         found.ok_or_else(|| {
-            ProjectionRecoveryError::from(ProjectionEvaluationError::new(
+            ReplayError::from(ProjectionEvaluationError::new(
                 ProjectionEvaluationErrorKind::MissingCommit,
             ))
         })
@@ -480,23 +497,23 @@ where
     fn evaluate(
         &self,
         commit: &StoredCommitRecordV1,
-    ) -> Result<EvaluatedProjectionCommit, ProjectionRecoveryError> {
+    ) -> Result<EvaluatedProjectionCommit, ReplayError> {
         evaluate_projection_commit(self.resolved, self.schema.clone(), self.generation, commit)
-            .map_err(ProjectionRecoveryError::from)
+            .map_err(ReplayError::from)
     }
 
     fn scan_through(
         &self,
         target: FrontierPosition,
-        mut visit: impl FnMut(&StoredCommitRecordV1) -> Result<ScanDirective, ProjectionRecoveryError>,
-    ) -> Result<(), ProjectionRecoveryError> {
+        mut visit: impl FnMut(&StoredCommitRecordV1) -> Result<ScanDirective, ReplayError>,
+    ) -> Result<(), ReplayError> {
         if target == FrontierPosition::BeforeFirst {
             return Ok(());
         }
         if target > self.expected_authoritative_head {
-            return Err(ProjectionRecoveryError::new(
+            return Err(ReplayError::from(ProjectionRecoveryError::new(
                 ProjectionRecoveryErrorKind::Integrity,
-            ));
+            )));
         }
         let limit = StorageScanLimit::new(REPLAY_SCAN_PAGE_ROWS)
             .ok_or_else(|| ProjectionRecoveryError::new(ProjectionRecoveryErrorKind::Integrity))?;
@@ -507,9 +524,16 @@ where
                 .scan_commits(request)
                 .map_err(map_storage_error)?;
             if page.inclusive_upper() != self.expected_authoritative_head {
-                return Err(ProjectionRecoveryError::new(
+                // An initial scan captures the current head. A legal append
+                // after the caller's capture invalidates its fence, not its
+                // retained projection evidence. A continuation already binds
+                // the original head; inconsistent continuation bytes still fail.
+                if request.inclusive_upper().is_none() {
+                    return Err(ReplayError::InitialFenceChanged);
+                }
+                return Err(ReplayError::from(ProjectionRecoveryError::new(
                     ProjectionRecoveryErrorKind::Integrity,
-                ));
+                )));
             }
             for charged in page.records() {
                 let commit = charged.value();
@@ -529,19 +553,17 @@ where
                     ..
                 } => {
                     let FrontierPosition::AppliedThrough(inclusive_upper) = inclusive_upper else {
-                        return Err(ProjectionRecoveryError::new(
+                        return Err(ReplayError::from(ProjectionRecoveryError::new(
                             ProjectionRecoveryErrorKind::Integrity,
-                        ));
+                        )));
                     };
                     request = CommitScanRequest::continuing(next_after, inclusive_upper, limit)
                         .map_err(map_storage_value_error)?;
                 }
                 CommitScanPageV1::ExactEnd { .. } => {
-                    return Err(ProjectionRecoveryError::from(
-                        ProjectionEvaluationError::new(
-                            ProjectionEvaluationErrorKind::MissingCommit,
-                        ),
-                    ));
+                    return Err(ReplayError::from(ProjectionEvaluationError::new(
+                        ProjectionEvaluationErrorKind::MissingCommit,
+                    )));
                 }
             }
         }

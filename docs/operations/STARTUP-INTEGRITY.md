@@ -255,6 +255,11 @@ any registered columnar source remains cold or is activating; this derived
 health signal does not withdraw authoritative storage, catalog, or command
 readiness.
 
+A command committed between row-recovery's head capture and its first replay
+scan changes the recovery fence. Validation returns `FenceChanged` and leaves
+projection rows and control unchanged. Corrupt storage evidence and a changed
+continuation fence still fail validation.
+
 History-dependent row projections need their complete authoritative input for
 recovery. The current pre-alpha implementation can fail generation validation
 after legitimate history pruning, and an empty restored sidecar cannot recreate
