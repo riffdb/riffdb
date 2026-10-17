@@ -1,6 +1,6 @@
 # WP-825 snapshot locator repair
 
-Status: implementation design under accepted ADR-0314, 2026-10-15. The
+Status: implementation design under accepted ADR-0319, 2026-10-15. The
 maintainer accepted its exact text and WP-825 registration in session. Native
 implementation and complete qualification remain open. The attempted
 8-hour rehearsal stopped at additive deployment before the scheduled restore;
@@ -227,7 +227,7 @@ History-stub targets must use the existing stub-aware command decoder.
 
 ## Accepted budget and pending measurements
 
-Accepted ADR-0314 introduces a 512-MiB aggregate native locator-memory pool per
+Accepted ADR-0319 introduces a 512-MiB aggregate native locator-memory pool per
 process across all databases and source constructors. Ordinary ownership and
 construction may consume 448 MiB; 64 MiB is reserved for maintenance progress
 and reclamation. Current, private, pinned, retired and queued ownership all
@@ -292,7 +292,7 @@ captured-source builder tests, workspace formatting and handbook checks pass.
 Public restore timing and the complete rehearsal remain separate gates.
 
 1. Retain the separate failed outcome/provenance regressions and original evidence.
-2. Apply the accepted ADR-0314 budget/readiness policy and registered scope.
+2. Apply the accepted ADR-0319 budget/readiness policy and registered scope.
 3. Prove persistent-map insertion/deletion, balanced bounds, shared-root isolation,
    checked charging, cancellation and final-reference release with deterministic
    tests; cover exhaustion before any durable submission.

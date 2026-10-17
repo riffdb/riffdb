@@ -29,7 +29,7 @@ Baseline receipt:
 
 SPEC section 13.5 and ADR-0007 require audit for structurally valid authenticated
 mutations and administrative reads, including prestart cancellation. ADR-0071's
-unaudited pre-admission exception covers capacity only. ADR-0314 permits Pending
+unaudited pre-admission exception covers capacity only. ADR-0319 permits Pending
 refusal but grants no service-audit exception. The proposal explicitly amends
 these boundaries; it is not an implementation deviation.
 
@@ -63,7 +63,7 @@ with the [SPEC section 13.5](../../SPEC.md) and [WP-825 registration](../../work
 
 The package-owned requirement SEC-005 records the new phase and narrow audit
 exception. WP-825 additionally binds API-001 and SEC-001, retains REC-001 and
-TXN-042, and requires ADR-0007, ADR-0071 and ADR-0315 alongside ADR-0314.
+TXN-042, and requires ADR-0007, ADR-0071 and ADR-0315 alongside ADR-0319.
 Its scope gains SPEC.md, work_packages.yaml, adr/README.md, the new ADR,
 tests/service/** and crates/riffdb-service/Cargo.toml. These last two paths own
 the genuine service regression and its existing test-only commit simulator;

@@ -186,6 +186,53 @@ pub(crate) fn retain_normal_token(path: &OsString, token: String) -> Result<(), 
     Ok(())
 }
 
+pub(crate) fn replace_normal_token(path: &OsString, token: String) -> Result<(), CredentialError> {
+    let target = checked_real_path(path)?;
+    if !target.exists() {
+        return retain_normal_token(path, token);
+    }
+    let metadata = std::fs::symlink_metadata(&target).map_err(|_| CredentialError::Retention)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CredentialError::Retention);
+    }
+    let token = Zeroizing::new(token);
+    if token.len() != TOKEN_BYTES {
+        return Err(CredentialError::Retention);
+    }
+    let expected = BearerCredential::new(token.as_str()).map_err(|_| CredentialError::Retention)?;
+    let mut staging_os = target.as_os_str().to_os_string();
+    staging_os.push(format!(".rotate-{}", std::process::id()));
+    let staging = PathBuf::from(&staging_os);
+    if staging.exists() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    let _reread = retain_and_revalidate(
+        &staging,
+        token.as_bytes(),
+        &mut SystemRetention::default(),
+        || load_protected_bearer_credential(&staging).map_err(|_| CredentialError::Retention),
+        |reread| reread.has_same_presentation(&expected),
+    )?;
+    if std::fs::rename(&staging, &target).is_err() {
+        let _ = std::fs::remove_file(&staging);
+        return Err(CredentialError::Retention);
+    }
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut retention = SystemRetention::default();
+    retention.open_directory(parent)?;
+    retention.sync_directory()?;
+    retention.close_directory()?;
+    let reread =
+        load_protected_bearer_credential(&target).map_err(|_| CredentialError::Retention)?;
+    if !reread.has_same_presentation(&expected) {
+        return Err(CredentialError::Retention);
+    }
+    Ok(())
+}
+
 fn checked_real_path(path: &OsString) -> Result<PathBuf, CredentialError> {
     validate_path(path).map_err(|_| CredentialError::Retention)?;
     if path.as_encoded_bytes() == b"-" {

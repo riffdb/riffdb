@@ -52,6 +52,16 @@ struct FlightRecordSample {
     hot_conflict_key_cardinality: u64,
     outbox_pending: u64,
     outbox_dead_letters: u64,
+    #[serde(default)]
+    online_retention_state: Option<String>,
+    #[serde(default)]
+    online_retention_fence: Option<String>,
+    #[serde(default)]
+    online_retention_steps_total: u64,
+    #[serde(default)]
+    online_retention_sequences_total: u64,
+    #[serde(default)]
+    online_retention_watermark_sequence: u64,
     commit_duration_us: FlightHistogramSummary,
     durable_flush_duration_us: FlightHistogramSummary,
     storage_queue_latency_us: FlightHistogramSummary,
@@ -110,6 +120,12 @@ pub(crate) struct TelemetrySummaryReport {
     pub(crate) peak_hot_conflict_key_cardinality: u64,
     pub(crate) peak_outbox_pending: u64,
     pub(crate) peak_outbox_dead_letters: u64,
+    pub(crate) final_online_retention_state: Option<String>,
+    pub(crate) final_online_retention_fence: Option<String>,
+    pub(crate) online_retention_fenced_samples: u64,
+    pub(crate) online_retention_steps_delta: u64,
+    pub(crate) online_retention_sequences_delta: u64,
+    pub(crate) online_retention_watermark_sequence: u64,
     pub(crate) storage_bytes: ByteGrowthSummary,
     pub(crate) journal_bytes: ByteGrowthSummary,
     pub(crate) commit_duration_us_high_water: LatencyHighWaterSummary,
@@ -183,6 +199,8 @@ fn summarize_reader<R: std::io::Read>(
     let mut prev_telemetry_dropped = 0_u64;
     let mut prev_writer_busy = 0_u64;
     let mut prev_writer_idle = 0_u64;
+    let mut prev_retention_steps = 0_u64;
+    let mut prev_retention_sequences = 0_u64;
 
     let mut commits_delta = 0_u64;
     let mut command_requests_delta = 0_u64;
@@ -192,6 +210,13 @@ fn summarize_reader<R: std::io::Read>(
     let mut telemetry_dropped_delta = 0_u64;
     let mut writer_busy_delta = 0_u64;
     let mut writer_idle_delta = 0_u64;
+    let mut online_retention_steps_delta = 0_u64;
+    let mut online_retention_sequences_delta = 0_u64;
+
+    let mut final_online_retention_state = None;
+    let mut final_online_retention_fence = None;
+    let mut online_retention_fenced_samples = 0_u64;
+    let mut online_retention_watermark_sequence = 0_u64;
 
     let mut peak_queue_delay_estimate_us = 0_u64;
     let mut peak_conflict_queue_depth = 0_u64;
@@ -310,6 +335,14 @@ fn summarize_reader<R: std::io::Read>(
                 .saturating_add(counter_delta(prev_writer_busy, sample.writer_busy_us_total));
             writer_idle_delta = writer_idle_delta
                 .saturating_add(counter_delta(prev_writer_idle, sample.writer_idle_us_total));
+            online_retention_steps_delta = online_retention_steps_delta.saturating_add(
+                counter_delta(prev_retention_steps, sample.online_retention_steps_total),
+            );
+            online_retention_sequences_delta =
+                online_retention_sequences_delta.saturating_add(counter_delta(
+                    prev_retention_sequences,
+                    sample.online_retention_sequences_total,
+                ));
         }
 
         if sample.health_classification == "degraded" {
@@ -320,6 +353,17 @@ fn summarize_reader<R: std::io::Read>(
         if sample.last_commit_sequence.is_some() {
             last_commit_sequence = sample.last_commit_sequence;
         }
+        if sample.online_retention_state.as_deref() == Some("fenced") {
+            online_retention_fenced_samples = online_retention_fenced_samples.saturating_add(1);
+        }
+        if let Some(state) = sample.online_retention_state {
+            final_online_retention_state = Some(state);
+        }
+        if let Some(fence) = sample.online_retention_fence {
+            final_online_retention_fence = Some(fence);
+        }
+        online_retention_watermark_sequence =
+            online_retention_watermark_sequence.max(sample.online_retention_watermark_sequence);
 
         prev_commits = sample.commits_total;
         prev_requests = sample.command_requests_total;
@@ -329,6 +373,8 @@ fn summarize_reader<R: std::io::Read>(
         prev_telemetry_dropped = sample.telemetry_dropped_total;
         prev_writer_busy = sample.writer_busy_us_total;
         prev_writer_idle = sample.writer_idle_us_total;
+        prev_retention_steps = sample.online_retention_steps_total;
+        prev_retention_sequences = sample.online_retention_sequences_total;
 
         peak_queue_delay_estimate_us =
             peak_queue_delay_estimate_us.max(sample.queue_delay_estimate_us);
@@ -380,6 +426,8 @@ fn summarize_reader<R: std::io::Read>(
         telemetry_dropped_delta = prev_telemetry_dropped;
         writer_busy_delta = prev_writer_busy;
         writer_idle_delta = prev_writer_idle;
+        online_retention_steps_delta = prev_retention_steps;
+        online_retention_sequences_delta = prev_retention_sequences;
     }
 
     let writer_total_us = writer_busy_delta.saturating_add(writer_idle_delta);
@@ -416,6 +464,12 @@ fn summarize_reader<R: std::io::Read>(
         peak_hot_conflict_key_cardinality,
         peak_outbox_pending,
         peak_outbox_dead_letters,
+        final_online_retention_state,
+        final_online_retention_fence,
+        online_retention_fenced_samples,
+        online_retention_steps_delta,
+        online_retention_sequences_delta,
+        online_retention_watermark_sequence,
         storage_bytes: ByteGrowthSummary {
             initial_bytes: initial_storage_bytes,
             final_bytes: final_storage_bytes,
@@ -462,13 +516,21 @@ mod tests {
         idle_us: u64,
         commit_p99_us: u64,
     ) -> String {
+        let retention_state = if commits >= 60 { "fenced" } else { "advancing" };
+        let retention_fence = if commits >= 60 {
+            "undelivered_outbox"
+        } else {
+            "none"
+        };
+        let retention_steps = commits / 10;
+        let retention_seqs = commits / 2;
         format!(
-            "{{\"schema\":\"riffdb.telemetry.flight-record.v1\",\"schema_version\":1,\"timestamp_unix_nanos\":{ts_ns},\"health_classification\":\"{health}\",\"authoritative_ready\":true,\"last_commit_sequence\":{commits},\"storage_bytes\":{storage_bytes},\"journal_bytes\":{journal_bytes},\"commits_total\":{commits},\"command_requests_total\":{commits},\"lock_timeouts_total\":0,\"idempotency_hits_total\":2,\"idempotency_mismatches_total\":0,\"telemetry_dropped_total\":0,\"writer_busy_us_total\":{busy_us},\"writer_idle_us_total\":{idle_us},\"queue_delay_estimate_us\":45,\"conflict_queue_depth\":2,\"hot_conflict_key_cardinality\":1,\"outbox_pending\":3,\"outbox_dead_letters\":0,\"commit_duration_us\":{{\"count\":{commits},\"sum\":1000,\"p50\":32,\"p95\":128,\"p99\":{commit_p99_us}}},\"durable_flush_duration_us\":{{\"count\":{commits},\"sum\":800,\"p50\":16,\"p95\":64,\"p99\":128}},\"storage_queue_latency_us\":{{\"count\":{commits},\"sum\":100,\"p50\":4,\"p95\":8,\"p99\":16}},\"lock_wait_us\":{{\"count\":{commits},\"sum\":50,\"p50\":2,\"p95\":4,\"p99\":8}},\"commit_batch_size\":{{\"count\":{commits},\"sum\":{commits},\"p50\":1,\"p95\":2,\"p99\":4}},\"command_stages_us\":{{\"evaluation\":{{\"count\":{commits},\"sum\":500,\"p50\":16,\"p95\":32,\"p99\":64}}}},\"read_stages_us\":{{\"execute\":{{\"count\":{commits},\"sum\":200,\"p50\":8,\"p95\":16,\"p99\":32}}}}}}\n"
+            "{{\"schema\":\"riffdb.telemetry.flight-record.v1\",\"schema_version\":1,\"timestamp_unix_nanos\":{ts_ns},\"health_classification\":\"{health}\",\"authoritative_ready\":true,\"last_commit_sequence\":{commits},\"storage_bytes\":{storage_bytes},\"journal_bytes\":{journal_bytes},\"commits_total\":{commits},\"command_requests_total\":{commits},\"lock_timeouts_total\":0,\"idempotency_hits_total\":2,\"idempotency_mismatches_total\":0,\"telemetry_dropped_total\":0,\"writer_busy_us_total\":{busy_us},\"writer_idle_us_total\":{idle_us},\"queue_delay_estimate_us\":45,\"conflict_queue_depth\":2,\"hot_conflict_key_cardinality\":1,\"outbox_pending\":3,\"outbox_dead_letters\":0,\"online_retention_state\":\"{retention_state}\",\"online_retention_fence\":\"{retention_fence}\",\"online_retention_steps_total\":{retention_steps},\"online_retention_sequences_total\":{retention_seqs},\"online_retention_watermark_sequence\":{retention_seqs},\"commit_duration_us\":{{\"count\":{commits},\"sum\":1000,\"p50\":32,\"p95\":128,\"p99\":{commit_p99_us}}},\"durable_flush_duration_us\":{{\"count\":{commits},\"sum\":800,\"p50\":16,\"p95\":64,\"p99\":128}},\"storage_queue_latency_us\":{{\"count\":{commits},\"sum\":100,\"p50\":4,\"p95\":8,\"p99\":16}},\"lock_wait_us\":{{\"count\":{commits},\"sum\":50,\"p50\":2,\"p95\":4,\"p99\":8}},\"commit_batch_size\":{{\"count\":{commits},\"sum\":{commits},\"p50\":1,\"p95\":2,\"p99\":4}},\"command_stages_us\":{{\"evaluation\":{{\"count\":{commits},\"sum\":500,\"p50\":16,\"p95\":32,\"p99\":64}}}},\"read_stages_us\":{{\"execute\":{{\"count\":{commits},\"sum\":200,\"p50\":8,\"p95\":16,\"p99\":32}}}}}}\n"
         )
     }
 
     #[test]
-    // req: PERF-001, END-007, END-008, DX-014
+    // req: STO-030, STO-031, ID-005, PERF-001, END-007, END-008, DX-014
     fn telemetry_summarize_aggregates_window_deltas_high_water_and_renders_human_and_json() {
         let mut ndjson = String::new();
         ndjson.push_str(&sample_line(
@@ -512,6 +574,18 @@ mod tests {
         assert_eq!(report.commits_delta, 100);
         assert_eq!(report.writer_busy_permille, 500);
         assert_eq!(
+            report.final_online_retention_state.as_deref(),
+            Some("fenced")
+        );
+        assert_eq!(
+            report.final_online_retention_fence.as_deref(),
+            Some("undelivered_outbox")
+        );
+        assert_eq!(report.online_retention_fenced_samples, 2);
+        assert_eq!(report.online_retention_steps_delta, 10);
+        assert_eq!(report.online_retention_sequences_delta, 50);
+        assert_eq!(report.online_retention_watermark_sequence, 55);
+        assert_eq!(
             report.storage_bytes,
             ByteGrowthSummary {
                 initial_bytes: 4096,
@@ -553,6 +627,10 @@ mod tests {
         assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["result"]["samples"], 3);
         assert_eq!(parsed["result"]["commits_delta"], 100);
+        assert_eq!(
+            parsed["result"]["final_online_retention_fence"],
+            "undelivered_outbox"
+        );
         assert_eq!(parsed["result"]["storage_bytes"]["growth_bytes"], 8192);
 
         let terminal_human = summarize(&TelemetryCommand::Summarize {

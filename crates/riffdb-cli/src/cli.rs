@@ -909,7 +909,8 @@ pub(crate) enum QueryCommand {
         /// (inclusive low, exclusive high; at least one bound; repeatable).
         #[arg(long = "range", value_name = "FIELD=[LOW,HIGH]")]
         range: Vec<String>,
-        /// Order key as `FIELD` or `FIELD:desc` (repeatable).
+        /// Order key as `FIELD` or `FIELD:desc` (repeatable). With `--group-by`,
+        /// every ordered field must be a group-by key.
         #[arg(long = "order", value_name = "FIELD[:desc]")]
         order: Vec<String>,
         /// Aggregate as `OP:FIELD` where OP is `count_present`, `count_distinct`,
@@ -921,9 +922,10 @@ pub(crate) enum QueryCommand {
         /// Group-by key field name (repeatable).
         #[arg(long = "group-by", value_name = "FIELD")]
         group_by: Vec<String>,
-        /// Post-sort row limit. With `--group-by` this is the maximum number
-        /// of groups instead, and exceeding it is rejected rather than
-        /// truncated; it does not apply to an aggregate without `--group-by`.
+        /// Post-sort row or group limit. With unordered `--group-by` this is the
+        /// maximum number of groups (exceeding it is rejected); with `--group-by`
+        /// and `--order` it truncates to the top N ordered groups; it does not
+        /// apply to an aggregate without `--group-by`.
         #[arg(long, value_name = "ROWS")]
         limit: Option<String>,
         /// Freshness policy: `available`, `bounded:N`, or `causal` (requires token).
@@ -1366,6 +1368,33 @@ pub(crate) enum CapabilityCommand {
             conflicts_with = "database_path"
         )]
         inventory_file: Option<OsString>,
+    },
+    /// Rotates an active capability into a replacement capability with identical grants, atomically writes the replacement credential file, and optionally revokes the superseded capability.
+    Rotate {
+        /// Existing capability UUIDv7 to rotate.
+        #[arg(value_name = "CAPABILITY_UUIDV7")]
+        capability_id: String,
+        /// Destination path for the newly issued bearer credential.
+        #[arg(long, value_name = "PATH")]
+        credential_output: OsString,
+        /// Optional explicit UUIDv7 for the replacement capability.
+        #[arg(long = "capability-id", value_name = "NEW_CAPABILITY_UUIDV7")]
+        new_capability_id: Option<String>,
+        /// Optional lifetime override in milliseconds (rounded up to whole seconds).
+        #[arg(long, value_name = "MILLISECONDS")]
+        ttl_ms: Option<u64>,
+        /// Revoke the superseded capability (`reason = replaced`) after retaining the new credential.
+        #[arg(long)]
+        revoke_old: bool,
+        /// Optional JSON capability-create request template supplying the grant to preserve.
+        #[arg(long, value_name = "JSON_REQUEST")]
+        request: Option<OsString>,
+        /// Non-secret operator capability inventory JSON file to read and update.
+        #[arg(long, value_name = "PATH", conflicts_with = "database_path")]
+        inventory_file: Option<OsString>,
+        /// Quiescent local Redb database path to read the source capability grant from.
+        #[arg(long, value_name = "PATH", conflicts_with = "inventory_file")]
+        database_path: Option<OsString>,
     },
 }
 

@@ -5,15 +5,18 @@ umask 077
 
 usage() {
     printf '%s\n' \
-        'usage: cargo riffdb bootstrap (--user | --system) [--database ALIAS] [--register-codex]' \
+        'usage: cargo riffdb bootstrap (--user | --system) [--database ALIAS] [--register-codex] [--renew]' \
         '' \
         'Bootstraps one generic local POC database, creates an MCP developer' \
-        'capability, and writes user-owned client configuration. It does not' \
-        'deploy an application. This is an explicit authoritative operation.' >&2
+        'capability, and writes user-owned client configuration. Pass --renew to' \
+        'rotate existing operator and MCP credentials and revoke superseded' \
+        'capabilities. It does not deploy an application. This is an explicit' \
+        'authoritative operation.' >&2
 }
 
 scope=
 register_codex=false
+renew_credentials=false
 database_alias=default
 database_selected=false
 while [[ $# -gt 0 ]]; do
@@ -27,6 +30,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --register-codex)
             register_codex=true
+            ;;
+        --renew)
+            renew_credentials=true
             ;;
         --database)
             if [[ "$database_selected" == true || $# -lt 2 \
@@ -292,6 +298,62 @@ publish_durable_private_state_file() {
     sync -f "$state_dir"
 }
 
+replace_durable_private_state_file() {
+    local source="$1"
+    local destination="$2"
+
+    require_private_file "$source"
+    require_safe_destination "$destination"
+    sync -f "$source"
+    mv -f "$source" "$destination"
+    require_private_file "$destination"
+    sync -f "$destination"
+    sync -f "$state_dir"
+}
+
+verify_bootstrap_health() {
+    local file="$1"
+    jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "server.health"
+        and .ok == true
+        and (
+            (
+                .result.status == "not_ready"
+                and .result.active_contract_version == null
+                and .result.last_commit_sequence == null
+            )
+            or (
+                (.result.status == "healthy" or .result.status == "degraded")
+                and (.result.active_contract_version | type) == "string"
+                and (
+                    .result.last_commit_sequence == null
+                    or (.result.last_commit_sequence | type) == "string"
+                )
+            )
+        )
+        and ([.result.components[].component] | sort) ==
+            ["authoritative_storage", "catalog", "commit_coordinator",
+             "outbox", "projection", "replication"]
+        and all(.result.components[] | select(.component == "replication");
+                .status == "healthy" and .replication.role == "primary"
+                and .replication.registered_followers == 0)
+        and ([.result.components[]
+              | select(.component == "authoritative_storage"
+                       or .component == "catalog"
+                       or .component == "commit_coordinator")]
+             == [
+               {"component": "authoritative_storage", "status": "healthy"},
+               {"component": "catalog", "status": "healthy"},
+               {"component": "commit_coordinator", "status": "healthy"}
+             ])
+        and all(.result.components[]
+                | select(.component == "projection"
+                         or .component == "outbox");
+                .status == "healthy" or .status == "degraded")
+    ' "$file" >/dev/null
+}
+
 sync_private_file_and_directory() {
     local path="$1"
     local directory="$2"
@@ -318,6 +380,93 @@ cleanup() {
         "$owner_id_candidate" "$mcp_id_candidate"
 }
 trap cleanup EXIT INT TERM
+
+if "$renew_credentials"; then
+    if [[ -e "$owner_candidate" || -L "$owner_candidate" \
+       || -e "$mcp_candidate" || -L "$mcp_candidate" \
+       || -e "$bootstrap_credential" || -L "$bootstrap_credential" \
+       || -e "$mcp_pending_id" || -L "$mcp_pending_id" ]]; then
+        printf '%s\n' \
+            'cannot renew credentials while unfinished bootstrap recovery state exists' >&2
+        exit 1
+    fi
+    require_bearer_file "$owner_credential"
+    require_bearer_file "$mcp_credential"
+    old_owner_id="$(read_capability_id_file "$owner_capability_id")"
+    old_mcp_id="$(read_capability_id_file "$mcp_capability_id")"
+
+    client_candidate="$(mktemp "$config_dir/.client.toml.XXXXXX")"
+    {
+        printf '%s\n' '[client]'
+        printf 'endpoint = %s\n' "$(toml_quote "$endpoint")"
+        printf 'database = %s\n' "$(toml_quote "$database_alias")"
+        printf '%s\n' 'output = "human"' 'max_attempts = 3'
+        printf 'credential_file = %s\n' "$(toml_quote "$owner_credential")"
+    } >"$client_candidate"
+    chmod 0600 "$client_candidate"
+    install_exact_private "$client_candidate" "$client_config"
+    rm -f "$client_candidate"
+
+    mcp_id_candidate="$(mktemp "$state_dir/.mcp-capability.id.XXXXXX")"
+    uuidgen --time-v7 >"$mcp_id_candidate"
+    chmod 0600 "$mcp_id_candidate"
+    new_mcp_id="$(read_capability_id_file "$mcp_id_candidate")"
+    : >"$create_result"
+    if ! "$riffdb" --config "$client_config" --output json \
+        capability rotate "$old_mcp_id" \
+        --request "$mcp_request" \
+        --capability-id "$new_mcp_id" \
+        --credential-output "$mcp_credential" \
+        --revoke-old >"$create_result"; then
+        printf '%s\n' 'RiffDB MCP capability renewal failed' >&2
+        exit 1
+    fi
+    if ! jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "capability.rotate"
+        and .ok == true
+        and .result.status == "rotated"
+        and .result.credential_retained == true
+        and .result.old_revoked == true
+    ' "$create_result" >/dev/null; then
+        printf '%s\n' 'RiffDB MCP capability renewal returned an invalid result' >&2
+        exit 1
+    fi
+    require_bearer_file "$mcp_credential"
+    sync_private_file_and_directory "$mcp_credential" "$config_dir"
+    replace_durable_private_state_file "$mcp_id_candidate" "$mcp_capability_id"
+    mcp_id_candidate=
+
+    owner_id_candidate="$(mktemp "$state_dir/.operator-capability.id.XXXXXX")"
+    uuidgen --time-v7 >"$owner_id_candidate"
+    chmod 0600 "$owner_id_candidate"
+    new_owner_id="$(read_capability_id_file "$owner_id_candidate")"
+    : >"$create_result"
+    if ! "$riffdb" --config "$client_config" --output json \
+        capability rotate "$old_owner_id" \
+        --request "$bootstrap_request" \
+        --capability-id "$new_owner_id" \
+        --credential-output "$owner_credential" \
+        --revoke-old >"$create_result"; then
+        printf '%s\n' 'RiffDB operator capability renewal failed' >&2
+        exit 1
+    fi
+    if ! jq -e '
+        .schema == "riffdb.cli.output/v1"
+        and .command == "capability.rotate"
+        and .ok == true
+        and .result.status == "rotated"
+        and .result.credential_retained == true
+        and .result.old_revoked == true
+    ' "$create_result" >/dev/null; then
+        printf '%s\n' 'RiffDB operator capability renewal returned an invalid result' >&2
+        exit 1
+    fi
+    require_bearer_file "$owner_credential"
+    sync_private_file_and_directory "$owner_credential" "$config_dir"
+    replace_durable_private_state_file "$owner_id_candidate" "$owner_capability_id"
+    owner_id_candidate=
+fi
 
 if [[ ! -e "$owner_credential" ]]; then
     require_safe_destination "$owner_credential"
@@ -427,33 +576,7 @@ if ! "$riffdb" --config "$client_config" --output json \
     printf '%s\n' 'authenticated RiffDB health failed after bootstrap' >&2
     exit 1
 fi
-if ! jq -e '
-    .schema == "riffdb.cli.output/v1"
-    and .command == "server.health"
-    and .ok == true
-    and .result.status == "not_ready"
-    and .result.active_contract_version == null
-    and .result.last_commit_sequence == null
-    and ([.result.components[].component] | sort) ==
-        ["authoritative_storage", "catalog", "commit_coordinator",
-         "outbox", "projection", "replication"]
-    and all(.result.components[] | select(.component == "replication");
-            .status == "healthy" and .replication.role == "primary"
-            and .replication.registered_followers == 0)
-    and ([.result.components[]
-          | select(.component == "authoritative_storage"
-                   or .component == "catalog"
-                   or .component == "commit_coordinator")]
-         == [
-           {"component": "authoritative_storage", "status": "healthy"},
-           {"component": "catalog", "status": "healthy"},
-           {"component": "commit_coordinator", "status": "healthy"}
-         ])
-    and all(.result.components[]
-            | select(.component == "projection"
-                     or .component == "outbox");
-            .status == "healthy" or .status == "degraded")
-' "$health_result" >/dev/null; then
+if ! verify_bootstrap_health "$health_result"; then
     printf '%s\n' \
         'RiffDB did not report the exact deployment-required health state' >&2
     exit 1
@@ -597,33 +720,7 @@ rm -f "$mcp_candidate_config"
 
 "$riffdb" --endpoint "$endpoint" --database "$database_alias" --output json \
     --credential-file "$mcp_credential" server health >"$health_result"
-if ! jq -e '
-    .schema == "riffdb.cli.output/v1"
-    and .command == "server.health"
-    and .ok == true
-    and .result.status == "not_ready"
-    and .result.active_contract_version == null
-    and .result.last_commit_sequence == null
-    and ([.result.components[].component] | sort) ==
-        ["authoritative_storage", "catalog", "commit_coordinator",
-         "outbox", "projection", "replication"]
-    and all(.result.components[] | select(.component == "replication");
-            .status == "healthy" and .replication.role == "primary"
-            and .replication.registered_followers == 0)
-    and ([.result.components[]
-          | select(.component == "authoritative_storage"
-                   or .component == "catalog"
-                   or .component == "commit_coordinator")]
-         == [
-           {"component": "authoritative_storage", "status": "healthy"},
-           {"component": "catalog", "status": "healthy"},
-           {"component": "commit_coordinator", "status": "healthy"}
-         ])
-    and all(.result.components[]
-            | select(.component == "projection"
-                     or .component == "outbox");
-            .status == "healthy" or .status == "degraded")
-' "$health_result" >/dev/null; then
+if ! verify_bootstrap_health "$health_result"; then
     printf '%s\n' \
         'MCP developer credential did not observe deployment-required health' >&2
     exit 1

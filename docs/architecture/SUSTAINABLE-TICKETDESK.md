@@ -137,7 +137,7 @@ Expanded tests independently reproduce a deeper native snapshot defect: both
 outcome and provenance reads return false absence after current-index pruning.
 The [locator ownership repair design](WP-825-SNAPSHOT-LOCATOR-REPAIR.md)
 requires immutable exact directories published and retained with their source
-roots. The maintainer accepted ADR-0314 and its WP-825 registration, including the
+roots. The maintainer accepted ADR-0319 and its WP-825 registration, including the
 new aggregate memory and bounded startup policy. Focused checks pass genuine
 retention, publication and source-lifetime cases, both server cold-publication
 interleavings, full startup, follower reconnect, graceful-close, legacy-engine

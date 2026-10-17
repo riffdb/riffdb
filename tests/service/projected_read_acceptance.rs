@@ -1489,6 +1489,41 @@ fn grouped_results_arrive_in_canonical_group_key_value_order() {
             "groups must arrive in ascending canonical typed value order"
         );
         assert_eq!(groups.len(), AGGREGATE_SEED.len(), "titles are distinct");
+        // Explicit descending order with top-2 limit returns the top 2 groups in descending order.
+        let (context, _cancellation) = harness.context(0xda);
+        let body = ProjectedQueryBody::new(CanonicalValue::Uuid(org))
+            .with_group_by(Some(ProjectedGroupBySpec {
+                keys: vec!["title".to_owned()],
+                aggregates: vec![ProjectedAggregateOp::Count],
+            }))
+            .with_order(vec![riffdb_service::ProjectedOrderSpec {
+                field: "title".to_owned(),
+                direction: riffdb_columnar::SortDirection::Desc,
+            }])
+            .with_limit(Some(2));
+        let top_two_desc = harness
+            .service
+            .execute_projected_query(
+                context,
+                ExecuteProjectedQueryRequest::new(
+                    SymbolicContractSelector::active(),
+                    BOARD_PROJECTION_NAME,
+                    body,
+                    FreshnessPolicy::Available,
+                ),
+            )
+            .await
+            .expect("ordered top-2 grouped query serves");
+        let (_, desc_groups) = grouped_values(&top_two_desc);
+        let desc_titles: Vec<String> = desc_groups
+            .iter()
+            .map(|(keys, _)| match &keys[0] {
+                CanonicalValue::String(s) => s.as_str().to_owned(),
+                other => panic!("expected string group key, got {other:?}"),
+            })
+            .collect();
+        let expected_top_two_desc: Vec<String> = sorted.into_iter().rev().take(2).collect();
+        assert_eq!(desc_titles, expected_top_two_desc);
         harness.stop_coordinator();
     });
 }
@@ -2119,6 +2154,52 @@ fn causal_aggregates_carry_the_same_frontier_and_token_as_rows() {
             AggregateValue::Count(AGGREGATE_SEED.len() as u64)
         );
         harness.board_columnar().assert_no_apply_error();
+        harness.stop_coordinator();
+    });
+}
+
+// req: OQ-045, OQ-046
+#[test]
+fn summing_a_string_column_is_a_typed_actionable_rejection() {
+    run_async_threads(4, async move {
+        let mut harness = ServiceHarness::columnar_board();
+        let org = uuid(0x41);
+        let project = uuid(0x51);
+        let sequence = seed_aggregate_board(&harness, org, project, 0x60, "agg-money").await;
+        harness
+            .board_columnar()
+            .wait_until_applied(sequence, Duration::from_secs(10));
+
+        let (context, _cancellation) = harness.context(0xa8);
+        let failure = harness
+            .service
+            .execute_projected_query(
+                context,
+                aggregate_request(
+                    org,
+                    Vec::new(),
+                    ProjectedAggregateOp::Sum {
+                        field: "title".to_owned(),
+                    },
+                ),
+            )
+            .await
+            .expect_err("non-numeric string columns cannot be summed by the engine");
+        let error = failure
+            .public_error()
+            .expect("the rejection must be public and typed");
+        assert_eq!(error.kind(), PublicErrorKind::Validation);
+        let riffdb_errors::PublicErrorDetails::Validation(issues) = error.details() else {
+            panic!("a validation failure carries its issues, got {error:?}");
+        };
+        assert!(
+            issues
+                .as_slice()
+                .iter()
+                .any(|issue| issue.code() == riffdb_errors::ValidationCode::TypeMismatch),
+            "the caller must be told the column type is wrong, not that a value is: {issues:?}"
+        );
+
         harness.stop_coordinator();
     });
 }

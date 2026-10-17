@@ -6,11 +6,11 @@ tier: guarantee
 date: 2026-10-16
 accepted: "2026-10-16"
 acceptance: 'maintainer, in session, 2026-10-16: "they are approved" (ADR-0315, SPEC section 13.5 and WP-825 registration)'
-requires: [ADR-0007, ADR-0071, ADR-0314]
+requires: [ADR-0007, ADR-0071, ADR-0319]
 amends:
   - ADR-0007 service admission and SPEC section 13.5 audit entry boundary
   - ADR-0071 capacity-only unaudited pre-admission refusal
-  - ADR-0314 Decision 7 pending native locator admission
+  - ADR-0319 Decision 7 pending native locator admission
 supersedes: []
 requirements: [API-001, SEC-001, SEC-005, REC-001, TXN-042]
 packages: [WP-825]
@@ -36,7 +36,7 @@ SPEC section 13.5 and ADR-0007 audit every structurally valid authenticated
 mutation and administrative read, including prestart cancellation. ADR-0071's
 unaudited pre-admission exception covers capacity only. Extending that exception
 to a specifically unadmitted native dependency requires exact human acceptance;
-it cannot be inferred from ADR-0314's permission to refuse pending locators.
+it cannot be inferred from ADR-0319's permission to refuse pending locators.
 
 ## Decision
 
@@ -87,7 +87,7 @@ it cannot be inferred from ADR-0314's permission to refuse pending locators.
 6. Waiting holds no writer/mutation lease, coordinator actor, audit permit,
    index lock or mutable service state. Admit the waiter descriptor, completion
    subscription and retained source ownership under existing finite limits
-   before allocation. Native locator ownership remains within ADR-0314's
+   before allocation. Native locator ownership remains within ADR-0319's
    512-MiB aggregate, 448-MiB ordinary and 1,024-owner ceilings; existing provider,
    scratch, queue and payload-cache limits remain unchanged. Cancellation,
    deadline, refusal and completion release waiter ownership in bounded work.

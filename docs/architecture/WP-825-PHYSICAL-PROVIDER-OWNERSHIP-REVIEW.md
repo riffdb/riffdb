@@ -29,7 +29,7 @@ key files, under unchanged ceilings; campaign qualification remains open.
 
 The maintainer authorized expanding scope to cover any necessary native fixes.
 This registration applies that standing authorization to the concrete ownership
-repair, under accepted ADR-0266 Decisions 3, 4 and 8 and ADR-0314 Decisions 2–6
+repair, under accepted ADR-0266 Decisions 3, 4 and 8 and ADR-0319 Decisions 2–6
 and 9. No new guarantee, ceiling, durable format, fixture, authorization rule,
 transaction order, recovery gate or application bypass is proposed.
 
@@ -114,7 +114,7 @@ root allocation lifetimes, including queued and weak-reference retirement.
 Capacity refusal preserves completed checkpoint I/O and its original descriptor
 for a later publication attempt. The complete incremental ownership plan stays
 private until all fallible preparation succeeds, under accepted ADR-0266 and
-ADR-0314.
+ADR-0319.
 
 Checks run on the qualification host: 17 common accounting tests, 26 overlay
 checks, focused native ownership, provider rollback, engine, capability,

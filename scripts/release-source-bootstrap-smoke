@@ -1219,6 +1219,47 @@ fi
 "$bin_root/riffdb" --config "$client_config" --output json \
     contract deploy "$repo_root/contracts/examples/budget.riff" \
     >"$work_root/default-contract-deploy.json"
+
+pre_renew_operator_token="$(<"$operator_credential")"
+pre_renew_mcp_token="$(<"$mcp_credential")"
+pre_renew_operator_id="$(<"$operator_capability_id")"
+pre_renew_mcp_id="$(<"$mcp_capability_id")"
+old_operator_credential_copy="$work_root/pre-renew-operator.credential"
+old_mcp_credential_copy="$work_root/pre-renew-mcp.credential"
+cp "$operator_credential" "$old_operator_credential_copy"
+cp "$mcp_credential" "$old_mcp_credential_copy"
+chmod 0600 "$old_operator_credential_copy" "$old_mcp_credential_copy"
+renew_output="$work_root/renew-bootstrap.stdout"
+renew_stderr="$work_root/renew-bootstrap.stderr"
+if ! RIFFDB_ENDPOINT="$endpoint" cargo riffdb bootstrap --user --renew \
+    >"$renew_output" 2>"$renew_stderr"
+then
+    sed 's/^/renew bootstrap: /' "$renew_stderr" >&2 || true
+    fail "post-deployment cargo riffdb bootstrap --user --renew failed"
+fi
+renewed_operator_token="$(<"$operator_credential")"
+renewed_mcp_token="$(<"$mcp_credential")"
+renewed_operator_id="$(<"$operator_capability_id")"
+renewed_mcp_id="$(<"$mcp_capability_id")"
+if [[ "$renewed_operator_token" == "$pre_renew_operator_token" \
+   || "$renewed_mcp_token" == "$pre_renew_mcp_token" \
+   || "$renewed_operator_id" == "$pre_renew_operator_id" \
+   || "$renewed_mcp_id" == "$pre_renew_mcp_id" ]]; then
+    fail "bootstrap --renew did not rotate operator and MCP credentials and IDs"
+fi
+if grep -F -- "$pre_renew_operator_token" "$renew_output" "$renew_stderr" >/dev/null \
+   || grep -F -- "$pre_renew_mcp_token" "$renew_output" "$renew_stderr" >/dev/null \
+   || grep -F -- "$renewed_operator_token" "$renew_output" "$renew_stderr" >/dev/null \
+   || grep -F -- "$renewed_mcp_token" "$renew_output" "$renew_stderr" >/dev/null; then
+    fail "bootstrap --renew output exposed a bearer credential"
+fi
+if "$bin_root/riffdb" --endpoint "$endpoint" --database default --output json \
+    --credential-file "$old_operator_credential_copy" server health >/dev/null 2>&1 \
+   || "$bin_root/riffdb" --endpoint "$endpoint" --database default --output json \
+    --credential-file "$old_mcp_credential_copy" server health >/dev/null 2>&1; then
+    fail "bootstrap --renew left a superseded capability authorized"
+fi
+
 backup_start="$work_root/default-backup-start.json"
 set +e
 "$bin_root/riffdb" --config "$client_config" --max-attempts 1 --output json \

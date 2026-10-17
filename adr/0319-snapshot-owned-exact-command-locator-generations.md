@@ -1,5 +1,5 @@
 ---
-adr: "0314"
+adr: "0319"
 title: Snapshot-Owned Exact Command Locator Generations
 status: accepted
 tier: guarantee
@@ -16,27 +16,27 @@ packages: [WP-825]
 # scripts/<name>; ./scripts/check-adr-obligations requires it to exist as a
 # definition once the owning package is complete.
 obligations:
-  - id: OBL-0314-1
+  - id: OBL-0319-1
     package: WP-825
     proof: owned_snapshot_outcome_survives_retention_of_original_command
     says: A captured read retains its original outcome after later retention.
-  - id: OBL-0314-2
+  - id: OBL-0319-2
     package: WP-825
     proof: owned_snapshot_provenance_survives_retention_of_original_command
     says: A captured read retains its original provenance after later retention.
-  - id: OBL-0314-3
+  - id: OBL-0319-3
     package: WP-825
     proof: locator_generation_publication_never_splices_two_source_views
     says: Command, pruning and checkpoint publication keep source and directory together.
-  - id: OBL-0314-4
+  - id: OBL-0319-4
     package: WP-825
     proof: locator_generation_budget_refuses_before_durable_submission
     says: Exhaustion refuses before durability and charges protected old generations.
-  - id: OBL-0314-5
+  - id: OBL-0319-5
     package: WP-825
     proof: locator_generation_last_owner_releases_all_charges
     says: Cancellation and final owner release reclaim all charged derived ownership.
-  - id: OBL-0314-6
+  - id: OBL-0319-6
     package: WP-825
     proof: locator_generation_pending_never_proves_absence
     says: All snapshot constructors distinguish pending, invalid and complete directories.
@@ -46,7 +46,7 @@ review_triggers:
   - Recovery scratch, overlay, provider or payload-cache guarantees would change.
   - A durable format, public bypass, acknowledgement or ordering rule would change.
 ---
-# ADR-0314: Snapshot-Owned Exact Command Locator Generations
+# ADR-0319: Snapshot-Owned Exact Command Locator Generations
 
 ## Context
 

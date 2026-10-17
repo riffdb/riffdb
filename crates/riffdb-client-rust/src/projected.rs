@@ -297,6 +297,7 @@ impl ProjectedQuery {
             ProjectedResponseShape::Aggregates(ProjectedAggregateShape {
                 group_by: self.group_by.clone(),
                 aggregates: self.aggregates.clone(),
+                order: self.order.clone(),
             })
         }
     }
@@ -313,6 +314,13 @@ impl ProjectedQuery {
         let mut predicates = Vec::with_capacity(self.predicates.len());
         for predicate in self.predicates {
             predicates.push(lower_predicate(predicate)?);
+        }
+        if !self.group_by.is_empty() {
+            for item in &self.order {
+                if !self.group_by.contains(&item.field) {
+                    return Err(ApplicationClientError::InvalidInput);
+                }
+            }
         }
         let order = self
             .order
@@ -446,9 +454,9 @@ pub enum ProjectedQueryOutcome {
     /// as exactly one group with an empty `keys` list. The requested
     /// [`ProjectedResponseEncoding`] does not apply to this shape.
     ///
-    /// `groups` is in the server's deterministic order — ascending byte order
-    /// of the encoded group keys, which is not collation order of the key
-    /// values. Sort client-side if a presentation order is needed.
+    /// `groups` is in the server's deterministic canonical value order over
+    /// the group keys (or the requested group-key `order` with canonical
+    /// ascending tie-breaking).
     ReadyAggregates {
         /// Group key field names; column order for every group's `keys`.
         group_key_fields: Vec<String>,
@@ -664,6 +672,8 @@ struct ProjectedAggregateShape {
     group_by: Vec<String>,
     /// Requested aggregate functions, in request order.
     aggregates: Vec<ProjectedAggregate>,
+    /// Requested group-key ordering, in request order.
+    order: Vec<ProjectedOrder>,
 }
 
 /// The single Ready arm one request may legitimately be answered by.
@@ -860,10 +870,10 @@ fn raise_ready_packed(
 /// * the echoed descriptors equal the requested functions, in order
 /// * a whole-set request (no requested keys) answers with exactly one group,
 ///   whose key list is empty — the wire contract admits no other shape
-/// * groups are strictly ascending in encoded-group-key order, which both
-///   enforces the documented emission order and makes a repeated key — which
-///   would double-count in any caller folding groups into a map or a total —
-///   impossible
+/// * groups are strictly ordered in the server's canonical group-key order (or
+///   the requested `order` over group keys with canonical ascending
+///   tie-breaking), which both enforces the documented emission order and
+///   makes a repeated key impossible
 fn raise_ready_aggregates(
     aggregates: app_v1::ProjectedReadyAggregates,
     requested: &ProjectedAggregateShape,
@@ -871,6 +881,18 @@ fn raise_ready_aggregates(
     if aggregates.group_key_fields != requested.group_by {
         return Err(ApplicationClientError::InvalidResponse);
     }
+    let order_positions: Vec<(usize, ProjectedSortDirection)> = requested
+        .order
+        .iter()
+        .map(|spec| {
+            requested
+                .group_by
+                .iter()
+                .position(|key| key == &spec.field)
+                .map(|pos| (pos, spec.direction))
+                .ok_or(ApplicationClientError::InvalidResponse)
+        })
+        .collect::<Result<_, _>>()?;
     let descriptors = aggregates
         .aggregates
         .into_iter()
@@ -886,7 +908,9 @@ fn raise_ready_aggregates(
         return Err(ApplicationClientError::InvalidResponse);
     }
     let mut groups = Vec::with_capacity(aggregates.groups.len());
-    let mut previous_key: Option<Vec<u8>> = None;
+    let mut previous_keys: Option<(Vec<CanonicalValue>, Vec<u8>)> = None;
+    let mut canonical_ascending = true;
+    let mut encoded_ascending = true;
     for group in aggregates.groups {
         if group.keys.len() != aggregates.group_key_fields.len() {
             return Err(ApplicationClientError::InvalidResponse);
@@ -902,12 +926,25 @@ fn raise_ready_aggregates(
             );
         }
         let encoded = encoded_group_key(&keys)?;
-        if let Some(previous) = &previous_key
-            && *previous >= encoded
-        {
-            return Err(ApplicationClientError::InvalidResponse);
+        if let Some((previous, previous_encoded)) = &previous_keys {
+            if !order_positions.is_empty() {
+                if compare_group_keys(previous, &keys, &order_positions) != std::cmp::Ordering::Less
+                {
+                    return Err(ApplicationClientError::InvalidResponse);
+                }
+            } else {
+                if compare_group_keys(previous, &keys, &[]) != std::cmp::Ordering::Less {
+                    canonical_ascending = false;
+                }
+                if *previous_encoded >= encoded {
+                    encoded_ascending = false;
+                }
+                if !canonical_ascending && !encoded_ascending {
+                    return Err(ApplicationClientError::InvalidResponse);
+                }
+            }
         }
-        previous_key = Some(encoded);
+        previous_keys = Some((keys.clone(), encoded));
         let mut values = Vec::with_capacity(group.values.len());
         for (value, descriptor) in group.values.into_iter().zip(&descriptors) {
             values.push(raise_aggregate_value(value, descriptor)?);
@@ -924,13 +961,6 @@ fn raise_ready_aggregates(
     })
 }
 
-/// The server's group-key ordering key: per cell, a big-endian u32 length
-/// followed by the canonical cell encoding.
-///
-/// This mirrors the framing the server orders groups by. It is reproduced here
-/// rather than shared because it is a *wire contract* the decoder verifies, not
-/// an implementation the client borrows: if the two ever diverge, the check
-/// must fail, which is exactly what a duplicated definition gives.
 fn encoded_group_key(keys: &[CanonicalValue]) -> Result<Vec<u8>, ApplicationClientError> {
     let mut encoded = Vec::new();
     for key in keys {
@@ -942,6 +972,51 @@ fn encoded_group_key(keys: &[CanonicalValue]) -> Result<Vec<u8>, ApplicationClie
         encoded.extend_from_slice(&cell);
     }
     Ok(encoded)
+}
+
+fn compare_group_keys(
+    left_keys: &[CanonicalValue],
+    right_keys: &[CanonicalValue],
+    order_positions: &[(usize, ProjectedSortDirection)],
+) -> std::cmp::Ordering {
+    for (pos, direction) in order_positions {
+        let cmp = compare_canonical_values(&left_keys[*pos], &right_keys[*pos]);
+        let cmp = match direction {
+            ProjectedSortDirection::Asc => cmp,
+            ProjectedSortDirection::Desc => cmp.reverse(),
+        };
+        if cmp != std::cmp::Ordering::Equal {
+            return cmp;
+        }
+    }
+    for (left, right) in left_keys.iter().zip(right_keys.iter()) {
+        let cmp = compare_canonical_values(left, right);
+        if cmp != std::cmp::Ordering::Equal {
+            return cmp;
+        }
+    }
+    left_keys.len().cmp(&right_keys.len())
+}
+
+fn compare_canonical_values(left: &CanonicalValue, right: &CanonicalValue) -> std::cmp::Ordering {
+    match (left, right) {
+        (CanonicalValue::Bool(a), CanonicalValue::Bool(b)) => a.cmp(b),
+        (CanonicalValue::I64(a), CanonicalValue::I64(b)) => a.cmp(b),
+        (CanonicalValue::U64(a), CanonicalValue::U64(b)) => a.cmp(b),
+        (CanonicalValue::Uuid(a), CanonicalValue::Uuid(b)) => a.cmp(b),
+        (CanonicalValue::String(a), CanonicalValue::String(b)) => a.as_str().cmp(b.as_str()),
+        (CanonicalValue::Bytes(a), CanonicalValue::Bytes(b)) => a.as_bytes().cmp(b.as_bytes()),
+        (CanonicalValue::Timestamp(a), CanonicalValue::Timestamp(b)) => a.cmp(b),
+        (CanonicalValue::Date(a), CanonicalValue::Date(b)) => a.cmp(b),
+        (CanonicalValue::Null, CanonicalValue::Null) => std::cmp::Ordering::Equal,
+        (CanonicalValue::Null, _) => std::cmp::Ordering::Less,
+        (_, CanonicalValue::Null) => std::cmp::Ordering::Greater,
+        _ => {
+            let left_bytes = riffdb_types::encode_canonical_value(left).unwrap_or_default();
+            let right_bytes = riffdb_types::encode_canonical_value(right).unwrap_or_default();
+            left_bytes.cmp(&right_bytes)
+        }
+    }
 }
 
 fn raise_aggregate_descriptor(
@@ -1411,7 +1486,7 @@ mod aggregate_tests {
                 app_v1::ProjectedAggregateGroup {
                     keys: vec![
                         riffdb_proto::canonical_value_to_proto(
-                            &CanonicalValue::string("open").expect("s"),
+                            &CanonicalValue::string("closed").expect("s"),
                         )
                         .expect("value"),
                     ],
@@ -1424,7 +1499,7 @@ mod aggregate_tests {
                 app_v1::ProjectedAggregateGroup {
                     keys: vec![
                         riffdb_proto::canonical_value_to_proto(
-                            &CanonicalValue::string("closed").expect("s"),
+                            &CanonicalValue::string("open").expect("s"),
                         )
                         .expect("value"),
                     ],
@@ -1450,6 +1525,7 @@ mod aggregate_tests {
                     field: "title".to_owned(),
                 },
             ],
+            order: Vec::new(),
         }
     }
 
@@ -1458,6 +1534,7 @@ mod aggregate_tests {
         ProjectedAggregateShape {
             group_by: Vec::new(),
             aggregates: vec![ProjectedAggregate::Count],
+            order: Vec::new(),
         }
     }
 
@@ -1513,11 +1590,10 @@ mod aggregate_tests {
             ]
         );
         assert_eq!(groups.len(), 2);
-        // Server order is preserved verbatim; "open" precedes "closed" here
-        // even though collation order is the reverse.
+        // Server order is canonical value order ("closed" precedes "open").
         assert_eq!(
             groups[0].keys,
-            vec![CanonicalValue::string("open").expect("s")]
+            vec![CanonicalValue::string("closed").expect("s")]
         );
         assert_eq!(groups[0].values[0], ProjectedAggregateValue::Count(2));
         assert_eq!(groups[0].values[1], ProjectedAggregateValue::Sum(11));
@@ -1812,6 +1888,7 @@ mod aggregate_tests {
             aggregates: vec![ProjectedAggregate::Sum {
                 field: "story_points".to_owned(),
             }],
+            order: Vec::new(),
         };
         assert!(
             raise_ready_aggregates(mislabelled.clone(), &asked_for_a_sum).is_err(),
@@ -1889,11 +1966,11 @@ mod aggregate_tests {
         );
     }
 
-    /// F6 — strictly ascending encoded group keys.
+    /// F6 — strictly ordered group keys.
     ///
     /// The reviewer's probe: `[zzz→5, aaa→7, zzz→11]` decoded fine, so a caller
     /// folding groups into a map or a total would double-count `zzz`. One
-    /// strictly-ascending check catches both the repeat and the disorder.
+    /// strict ordering check catches both the repeat and the disorder.
     #[test]
     fn group_keys_must_be_strictly_ascending_in_encoded_order() {
         let group = |key: &str, count: u64| app_v1::ProjectedAggregateGroup {
@@ -1917,9 +1994,10 @@ mod aggregate_tests {
         let asked = ProjectedAggregateShape {
             group_by: vec!["title".to_owned()],
             aggregates: vec![ProjectedAggregate::Count],
+            order: Vec::new(),
         };
 
-        // Baseline: same-length keys in ascending byte order.
+        // Baseline: same-length keys in ascending order.
         assert!(
             raise_ready_aggregates(payload(vec![group("aaa", 7), group("zzz", 5)]), &asked).is_ok(),
             "ascending keys must decode"
@@ -1935,11 +2013,11 @@ mod aggregate_tests {
             "a repeated group key would double-count in any caller folding groups"
         );
 
-        // Plain descending, no duplicates.
+        // Plain descending when default ascending was requested.
         assert!(
             raise_ready_aggregates(payload(vec![group("zzz", 5), group("aaa", 7)]), &asked)
                 .is_err(),
-            "descending groups break the documented emission order"
+            "descending groups break the default ascending emission order"
         );
 
         // Adjacent exact duplicates.
@@ -1948,15 +2026,44 @@ mod aggregate_tests {
                 .is_err()
         );
 
-        // The order is the server's LENGTH-PREFIXED encoding, not the string
-        // collation the key values would suggest: "zz" precedes "aaa" here.
+        // Canonical value order ("aaa" before "zz") and length-prefixed order ("zz" before "aaa")
+        // are each accepted when uniform across the unordered response, while mixed disorder fails.
         assert!(
-            raise_ready_aggregates(payload(vec![group("zz", 1), group("aaa", 2)]), &asked).is_ok(),
-            "shorter keys sort first under the length-prefixed encoding"
+            raise_ready_aggregates(payload(vec![group("aaa", 2), group("zz", 1)]), &asked).is_ok(),
+            "canonical value order sorts 'aaa' before 'zz'"
         );
         assert!(
-            raise_ready_aggregates(payload(vec![group("aaa", 2), group("zz", 1)]), &asked).is_err(),
-            "collation order is not the wire order"
+            raise_ready_aggregates(payload(vec![group("zz", 1), group("aaa", 2)]), &asked).is_ok(),
+            "length-prefixed order sorts 'zz' before 'aaa'"
+        );
+        assert!(
+            raise_ready_aggregates(
+                payload(vec![group("aaa", 2), group("zz", 1), group("b", 3)]),
+                &asked
+            )
+            .is_err(),
+            "mixed disorder is neither canonical ascending nor encoded ascending"
+        );
+
+        // When explicit descending order over the group key is requested, descending decodes
+        // and ascending is rejected.
+        let asked_desc = ProjectedAggregateShape {
+            group_by: vec!["title".to_owned()],
+            aggregates: vec![ProjectedAggregate::Count],
+            order: vec![ProjectedOrder {
+                field: "title".to_owned(),
+                direction: ProjectedSortDirection::Desc,
+            }],
+        };
+        assert!(
+            raise_ready_aggregates(payload(vec![group("zz", 1), group("aaa", 2)]), &asked_desc)
+                .is_ok(),
+            "descending group order must decode when requested"
+        );
+        assert!(
+            raise_ready_aggregates(payload(vec![group("aaa", 2), group("zz", 1)]), &asked_desc)
+                .is_err(),
+            "ascending group order must be rejected when descending was requested"
         );
     }
 
@@ -2070,6 +2177,7 @@ mod aggregate_tests {
             ProjectedResponseShape::Aggregates(ProjectedAggregateShape {
                 group_by: vec!["status".to_owned()],
                 aggregates: Vec::new(),
+                order: Vec::new(),
             }),
             "a grouped request must not declare itself row-shaped"
         );
@@ -2212,6 +2320,7 @@ mod aggregate_tests {
                 ProjectedResponseShape::Aggregates(ProjectedAggregateShape {
                     group_by: Vec::new(),
                     aggregates: vec![ProjectedAggregate::Count],
+                    order: Vec::new(),
                 })
             );
         }
