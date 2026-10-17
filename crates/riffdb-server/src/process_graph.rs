@@ -837,6 +837,7 @@ impl ProductionGraphBuilder {
         let retention_failure = crate::retention_worker::RetentionLaneFailureSinks {
             incident_ids: Arc::clone(&incident_ids),
             diagnostics: Arc::clone(&diagnostics) as Arc<dyn ServiceDiagnostics>,
+            observability: Some(Arc::clone(&observability)),
         };
         let scrub_failure = crate::scrub_worker::ScrubFailureSinks {
             incident_ids: Arc::clone(&incident_ids),

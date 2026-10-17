@@ -31805,3 +31805,13 @@ work_packages:
     scale: Telemetry updates use O(1) atomic stores without extra storage transactions or heap allocations.
   human_review_triggers:
   - Online retention telemetry exposes raw tenant, principal, entity, or request identifiers or alters public gRPC Health membership.
+  closure:
+    status: complete
+    completed_at: '2026-10-16'
+    requirements_satisfied: [STO-030, STO-031, ID-005, PERF-001, END-007, END-008, DX-014]
+    evidence: cargo nextest run -p riffdb-observability -p riffdb-cli -E 'test(online_retention_telemetry) | test(telemetry_summarize)' && cargo nextest run -p riffdb-server --lib -E 'test(online_retention_telemetry)' && ./scripts/handbook check
+    decision: Added redaction-safe atomic online retention telemetry (state, active binding fence, steps_total, sequences_total, and watermark_sequence) to Observability, wired live updates from RetentionLaneStatus in retention_worker.rs, exposed the metrics in Prometheus (/metrics), OTLP JSON (/v1/metrics), and the NDJSON flight recorder, added retention summary fields to riffdb telemetry summarize, and updated docs/known-limitations.md and docs/configuration.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+

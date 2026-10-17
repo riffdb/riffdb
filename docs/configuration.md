@@ -100,8 +100,9 @@ When `--telemetry-flight-recorder <PATH>` (`RIFFDB_TELEMETRY_FLIGHT_RECORDER` or
 graceful drain on shutdown. Operators can aggregate a recorded flight file
 offline with `riffdb telemetry summarize <PATH>` (in human or `--output json`
 mode) to inspect throughput deltas, stage latency `p50`/`p95`/`p99` high-water
-marks, writer busy saturation, health transitions, and storage/journal byte
-growth across 24-hour and 72-hour soak runs.
+marks, writer busy saturation, health transitions, online retention state/fence
+and pruned-sequence progress, and storage/journal byte growth across 24-hour and
+72-hour soak runs.
 
 ### Named archive directories
 
@@ -209,13 +210,20 @@ The lane never passes a fence: projection frontiers, durable event-consumer
 checkpoints, undelivered outbox events, a staged contract migration, operator
 holds, and registered followers' acknowledged frontiers. An unreadable fencing
 source stops the lane with an internal incident until the next restart; it never
-prunes past it. Lane state is internal. No RPC, health member, or MCP tool
-reports or drives it, and application principals have no retention operation.
-The shutdown release census line records its state after graph teardown has
-joined the lane, the name of the fence that last held it, and its final step and
-sequence counts. An enabled lane normally ends as `cancelled`; a refused lane
-remains `refused`, and a configured hold that starts no worker remains `holding`.
-The graph and process release receipts share that frozen observation. The separate
+prunes past it. No gRPC health member, control RPC, or MCP tool drives the lane,
+and application principals have no retention operation. While `riffdbd` serves,
+`/metrics`, `/v1/metrics`, and the periodic NDJSON flight recorder export the
+closed online retention state (`riffdb_online_retention_state` /
+`online_retention_state`), active binding fence
+(`riffdb_online_retention_fence` / `online_retention_fence`), completed step
+count (`riffdb_online_retention_steps_total`), pruned sequence count
+(`riffdb_online_retention_sequences_total`), and latest watermark sequence
+(`riffdb_online_retention_watermark_sequence`). The shutdown release census line
+also records its state after graph teardown has joined the lane, the name of the
+fence that last held it, and its final step and sequence counts. An enabled lane
+normally ends as `cancelled`; a refused lane remains `refused`, and a configured
+hold that starts no worker remains `holding`. The graph and process release
+receipts share that frozen observation. The separate
 `riffdb-retention-extents-v1` line records files deleted or recycled, passes held
 by references or readers, and off-writer reclamation microseconds. Logical
 sequence progress does not imply physical space reclamation.

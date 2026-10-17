@@ -190,6 +190,137 @@ impl DefectBudget {
     }
 }
 
+/// Closed online retention lane states for process telemetry (`ADR-0314`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OnlineRetentionTelemetryState {
+    /// Configured as a hold; the lane never runs.
+    #[default]
+    Holding = 0,
+    /// The watermark meets the target; the lane waits for new history.
+    Idle = 1,
+    /// The last step removed history.
+    Advancing = 2,
+    /// A fencing input stops advancement below the target.
+    Fenced = 3,
+    /// A step failed; an incident is recorded and the lane has stopped.
+    Refused = 4,
+    /// Shutdown stopped the lane.
+    Cancelled = 5,
+}
+
+impl OnlineRetentionTelemetryState {
+    /// Returns the numeric gauge code (`0..=5`).
+    #[must_use]
+    pub const fn code(self) -> u64 {
+        self as u64
+    }
+
+    /// Decodes a numeric gauge code into the closed state enum.
+    #[must_use]
+    pub const fn from_code(code: u64) -> Self {
+        match code {
+            0 => Self::Holding,
+            1 => Self::Idle,
+            2 => Self::Advancing,
+            3 => Self::Fenced,
+            5 => Self::Cancelled,
+            _ => Self::Refused,
+        }
+    }
+
+    /// Returns the closed snake_case label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Holding => "holding",
+            Self::Idle => "idle",
+            Self::Advancing => "advancing",
+            Self::Fenced => "fenced",
+            Self::Refused => "refused",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Closed online retention binding fence for process telemetry (`ADR-0314`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OnlineRetentionTelemetryFence {
+    /// No fence is holding the lane.
+    #[default]
+    None = 0,
+    /// Durable application commit head.
+    DurableApplicationHead = 1,
+    /// Projection durable frontier (`projection_durable_frontier`).
+    ProjectionDurableFrontier = 2,
+    /// Operator hold (`operator_hold`).
+    OperatorHold = 3,
+    /// Undelivered outbox low-water mark (`undelivered_outbox`).
+    UndeliveredOutbox = 4,
+    /// Staged contract migration frozen frontier (`staged_migration`).
+    StagedMigration = 5,
+    /// Durable event-consumer low-water mark (`consumer_low_water`).
+    ConsumerLowWater = 6,
+    /// Registered follower acknowledged low-water mark (`follower_low_water`).
+    FollowerLowWater = 7,
+    /// Unbounded retention target (`unbounded`).
+    Unbounded = 8,
+}
+
+impl OnlineRetentionTelemetryFence {
+    /// Returns the numeric gauge code (`0..=8`).
+    #[must_use]
+    pub const fn code(self) -> u64 {
+        self as u64
+    }
+
+    /// Decodes a numeric gauge code into the closed fence enum.
+    #[must_use]
+    pub const fn from_code(code: u64) -> Self {
+        match code {
+            1 => Self::DurableApplicationHead,
+            2 => Self::ProjectionDurableFrontier,
+            3 => Self::OperatorHold,
+            4 => Self::UndeliveredOutbox,
+            5 => Self::StagedMigration,
+            6 => Self::ConsumerLowWater,
+            7 => Self::FollowerLowWater,
+            8 => Self::Unbounded,
+            _ => Self::None,
+        }
+    }
+
+    /// Returns the closed snake_case label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::DurableApplicationHead => "durable_application_head",
+            Self::ProjectionDurableFrontier => "projection_durable_frontier",
+            Self::OperatorHold => "operator_hold",
+            Self::UndeliveredOutbox => "undelivered_outbox",
+            Self::StagedMigration => "staged_migration",
+            Self::ConsumerLowWater => "consumer_low_water",
+            Self::FollowerLowWater => "follower_low_water",
+            Self::Unbounded => "unbounded",
+        }
+    }
+}
+
+/// Point-in-time redaction-safe snapshot of online retention telemetry (`ADR-0314`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OnlineRetentionTelemetrySnapshot {
+    /// Closed online retention lane state.
+    pub state: OnlineRetentionTelemetryState,
+    /// Closed binding fence that last held the lane, or `None`.
+    pub fence: OnlineRetentionTelemetryFence,
+    /// Total logical pruning steps completed in this process generation.
+    pub steps_total: u64,
+    /// Total commit sequences logically pruned in this process generation.
+    pub sequences_total: u64,
+    /// Latest inclusive retention watermark sequence observed by an online step (`0` if none).
+    pub watermark_sequence: u64,
+}
+
 /// Process-local aggregation of safe telemetry and incident correlation.
 ///
 /// The injected source is synchronous and is the only way this type creates an
@@ -217,6 +348,11 @@ pub struct Observability {
     completion_lane_elapsed_us: [AtomicU64; COMPLETION_LANE_PHASE_COUNT],
     completion_lane_depth_max: AtomicU64,
     completion_lane_reorder_max: AtomicU64,
+    online_retention_state: AtomicU64,
+    online_retention_fence: AtomicU64,
+    online_retention_steps_total: AtomicU64,
+    online_retention_sequences_total: AtomicU64,
+    online_retention_watermark_sequence: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -266,12 +402,57 @@ impl Observability {
             completion_lane_elapsed_us: std::array::from_fn(|_| AtomicU64::new(0)),
             completion_lane_depth_max: AtomicU64::new(0),
             completion_lane_reorder_max: AtomicU64::new(0),
+            online_retention_state: AtomicU64::new(0),
+            online_retention_fence: AtomicU64::new(0),
+            online_retention_steps_total: AtomicU64::new(0),
+            online_retention_sequences_total: AtomicU64::new(0),
+            online_retention_watermark_sequence: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
             defect_budget: Mutex::new(DefectBudget::new(defect_clock.now())),
             defect_clock,
         })
+    }
+
+    /// Updates the live online retention state gauge (`ADR-0314`).
+    pub fn set_online_retention_state(&self, state: OnlineRetentionTelemetryState) {
+        self.online_retention_state
+            .store(state.code(), Ordering::Relaxed);
+    }
+
+    /// Updates the live online retention binding fence gauge (`ADR-0314`).
+    pub fn set_online_retention_fence(&self, fence: OnlineRetentionTelemetryFence) {
+        self.online_retention_fence
+            .store(fence.code(), Ordering::Relaxed);
+    }
+
+    /// Records one completed online retention pruning step and updates the watermark (`ADR-0314`).
+    pub fn record_online_retention_step(&self, sequences: u64, watermark_sequence: u64) {
+        saturating_increment(&self.online_retention_steps_total);
+        saturating_add(&self.online_retention_sequences_total, sequences);
+        self.online_retention_watermark_sequence
+            .fetch_max(watermark_sequence, Ordering::Relaxed);
+    }
+
+    /// Returns the current redaction-safe online retention telemetry snapshot (`ADR-0314`).
+    #[must_use]
+    pub fn online_retention_snapshot(&self) -> OnlineRetentionTelemetrySnapshot {
+        OnlineRetentionTelemetrySnapshot {
+            state: OnlineRetentionTelemetryState::from_code(
+                self.online_retention_state.load(Ordering::Relaxed),
+            ),
+            fence: OnlineRetentionTelemetryFence::from_code(
+                self.online_retention_fence.load(Ordering::Relaxed),
+            ),
+            steps_total: self.online_retention_steps_total.load(Ordering::Relaxed),
+            sequences_total: self
+                .online_retention_sequences_total
+                .load(Ordering::Relaxed),
+            watermark_sequence: self
+                .online_retention_watermark_sequence
+                .load(Ordering::Relaxed),
+        }
     }
 
     /// Borrows the fixed-cardinality registry.

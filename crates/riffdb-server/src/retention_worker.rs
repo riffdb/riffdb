@@ -103,6 +103,17 @@ impl RetentionLaneState {
     const fn is_terminal(self) -> bool {
         matches!(self, Self::Refused | Self::Cancelled)
     }
+
+    const fn to_telemetry_state(self) -> riffdb_observability::OnlineRetentionTelemetryState {
+        match self {
+            Self::Holding => riffdb_observability::OnlineRetentionTelemetryState::Holding,
+            Self::Idle => riffdb_observability::OnlineRetentionTelemetryState::Idle,
+            Self::Advancing => riffdb_observability::OnlineRetentionTelemetryState::Advancing,
+            Self::Fenced => riffdb_observability::OnlineRetentionTelemetryState::Fenced,
+            Self::Refused => riffdb_observability::OnlineRetentionTelemetryState::Refused,
+            Self::Cancelled => riffdb_observability::OnlineRetentionTelemetryState::Cancelled,
+        }
+    }
 }
 
 impl fmt::Display for RetentionLaneState {
@@ -124,6 +135,38 @@ pub(crate) const fn fence_name(binding: Option<RetentionFenceBinding>) -> &'stat
         Some(RetentionFenceBinding::ConsumerLowWater) => "consumer_low_water",
         Some(RetentionFenceBinding::FollowerLowWater) => "follower_low_water",
         Some(RetentionFenceBinding::Unbounded) => "unbounded",
+    }
+}
+
+const fn to_telemetry_fence(
+    binding: Option<RetentionFenceBinding>,
+) -> riffdb_observability::OnlineRetentionTelemetryFence {
+    match binding {
+        None => riffdb_observability::OnlineRetentionTelemetryFence::None,
+        Some(RetentionFenceBinding::DurableApplicationHead) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::DurableApplicationHead
+        }
+        Some(RetentionFenceBinding::ProjectionDurableFrontier) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::ProjectionDurableFrontier
+        }
+        Some(RetentionFenceBinding::OperatorHold) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::OperatorHold
+        }
+        Some(RetentionFenceBinding::UndeliveredOutboxLowWater) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::UndeliveredOutbox
+        }
+        Some(RetentionFenceBinding::StagedMigrationFrozenFrontier) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::StagedMigration
+        }
+        Some(RetentionFenceBinding::ConsumerLowWater) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::ConsumerLowWater
+        }
+        Some(RetentionFenceBinding::FollowerLowWater) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::FollowerLowWater
+        }
+        Some(RetentionFenceBinding::Unbounded) => {
+            riffdb_observability::OnlineRetentionTelemetryFence::Unbounded
+        }
     }
 }
 
@@ -163,10 +206,25 @@ pub(crate) struct RetentionLaneStatus {
     sequences: Arc<AtomicU64>,
     phases: Arc<Mutex<OnlineRetentionPhases>>,
     holds: Arc<[AtomicU64; 4]>,
+    observability: Option<Arc<riffdb_observability::Observability>>,
 }
 
 impl RetentionLaneStatus {
+    #[cfg(test)]
     fn new(state: RetentionLaneState) -> Self {
+        Self::with_observability(state, None)
+    }
+
+    fn with_observability(
+        state: RetentionLaneState,
+        observability: Option<Arc<riffdb_observability::Observability>>,
+    ) -> Self {
+        if let Some(obs) = &observability {
+            obs.set_online_retention_state(state.to_telemetry_state());
+            obs.set_online_retention_fence(
+                riffdb_observability::OnlineRetentionTelemetryFence::None,
+            );
+        }
         Self {
             state: Arc::new(AtomicU8::new(state.code())),
             fence: Arc::new(AtomicU8::new(0)),
@@ -174,17 +232,23 @@ impl RetentionLaneStatus {
             sequences: Arc::new(AtomicU64::new(0)),
             phases: Arc::new(Mutex::new(OnlineRetentionPhases::default())),
             holds: Arc::new([const { AtomicU64::new(0) }; 4]),
+            observability,
         }
     }
 
     /// Moves to `to` unless the lane already ended; terminal states never
     /// transition.
     fn set(&self, to: RetentionLaneState) {
-        let _ = self
+        if self
             .state
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (!RetentionLaneState::from_code(current).is_terminal()).then_some(to.code())
-            });
+            })
+            .is_ok()
+            && let Some(obs) = &self.observability
+        {
+            obs.set_online_retention_state(to.to_telemetry_state());
+        }
     }
 
     fn note_fence(&self, binding: Option<RetentionFenceBinding>) {
@@ -193,6 +257,9 @@ impl RetentionLaneStatus {
             .and_then(|index| u8::try_from(index + 1).ok())
             .unwrap_or(0);
         self.fence.store(code, Ordering::Release);
+        if let Some(obs) = &self.observability {
+            obs.set_online_retention_fence(to_telemetry_fence(binding));
+        }
     }
 
     fn fence(&self) -> Option<RetentionFenceBinding> {
@@ -293,9 +360,12 @@ impl RetentionLaneStatus {
         }
     }
 
-    fn note_step(&self, sequences: u64) {
+    fn note_step(&self, sequences: u64, through: u64) {
         let _ = self.steps.fetch_add(1, Ordering::AcqRel);
         let _ = self.sequences.fetch_add(sequences, Ordering::AcqRel);
+        if let Some(obs) = &self.observability {
+            obs.record_online_retention_step(sequences, through);
+        }
     }
 
     pub(crate) fn state(&self) -> RetentionLaneState {
@@ -389,6 +459,7 @@ impl LaneControl {
 pub(crate) struct RetentionLaneFailureSinks {
     pub(crate) incident_ids: Arc<dyn IncidentIdSource>,
     pub(crate) diagnostics: Arc<dyn ServiceDiagnostics>,
+    pub(crate) observability: Option<Arc<riffdb_observability::Observability>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,12 +545,18 @@ impl RunningRetentionLane {
         });
         let RetentionTarget::RetainSequences(retain) = config.target() else {
             return Ok(Self {
-                status: RetentionLaneStatus::new(RetentionLaneState::Holding),
+                status: RetentionLaneStatus::with_observability(
+                    RetentionLaneState::Holding,
+                    failure.observability,
+                ),
                 control,
                 thread: None,
             });
         };
-        let status = RetentionLaneStatus::new(RetentionLaneState::Idle);
+        let status = RetentionLaneStatus::with_observability(
+            RetentionLaneState::Idle,
+            failure.observability.clone(),
+        );
         let worker_status = status.clone();
         let worker_control = Arc::clone(&control);
         let budget = config.sequences_per_epoch();
@@ -775,10 +852,10 @@ fn run_lane(
                     receipt_validation_pending = phases.receipt_validation_pending;
                     status.note_phases(&phases);
                     let pause = match step {
-                        OnlineRetentionStep::Advanced { sequences, .. } => {
+                        OnlineRetentionStep::Advanced { through, sequences } => {
                             status.note_fence(None);
                             status.set(RetentionLaneState::Advancing);
-                            status.note_step(sequences);
+                            status.note_step(sequences, through);
                             Duration::ZERO
                         }
                         OnlineRetentionStep::Held(OnlineRetentionHold::CheckpointInFlight) => {

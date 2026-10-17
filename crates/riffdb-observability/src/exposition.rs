@@ -947,6 +947,68 @@ impl Observability {
             completion.max_reorder_occupancy
         );
 
+        let retention = self.online_retention_snapshot();
+        let _ = writeln!(
+            out,
+            "# HELP riffdb_online_retention_state Online retention lane state (0=holding, 1=idle, 2=advancing, 3=fenced, 4=refused, 5=cancelled)."
+        );
+        let _ = writeln!(out, "# TYPE riffdb_online_retention_state gauge");
+        let _ = writeln!(
+            out,
+            "riffdb_online_retention_state {}",
+            retention.state.code()
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP riffdb_online_retention_fence Active online retention binding fence (0=none, 1=durable_application_head, 2=projection_durable_frontier, 3=operator_hold, 4=undelivered_outbox, 5=staged_migration, 6=consumer_low_water, 7=follower_low_water, 8=unbounded)."
+        );
+        let _ = writeln!(out, "# TYPE riffdb_online_retention_fence gauge");
+        let _ = writeln!(
+            out,
+            "riffdb_online_retention_fence {}",
+            retention.fence.code()
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP riffdb_online_retention_steps_total Total online retention pruning steps completed."
+        );
+        let _ = writeln!(out, "# TYPE riffdb_online_retention_steps_total counter");
+        let _ = writeln!(
+            out,
+            "riffdb_online_retention_steps_total {}",
+            retention.steps_total
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP riffdb_online_retention_sequences_total Total commit sequences logically pruned by online retention."
+        );
+        let _ = writeln!(
+            out,
+            "# TYPE riffdb_online_retention_sequences_total counter"
+        );
+        let _ = writeln!(
+            out,
+            "riffdb_online_retention_sequences_total {}",
+            retention.sequences_total
+        );
+
+        let _ = writeln!(
+            out,
+            "# HELP riffdb_online_retention_watermark_sequence Latest inclusive commit sequence pruned by online retention."
+        );
+        let _ = writeln!(
+            out,
+            "# TYPE riffdb_online_retention_watermark_sequence gauge"
+        );
+        let _ = writeln!(
+            out,
+            "riffdb_online_retention_watermark_sequence {}",
+            retention.watermark_sequence
+        );
+
         out
     }
 
@@ -999,6 +1061,44 @@ impl Observability {
             "riffdb_completion_lane_max_depth",
             timestamp_unix_nanos,
             completion.max_depth,
+        );
+        let retention = self.online_retention_snapshot();
+        write_otel_gauge(
+            &mut out,
+            &mut first,
+            "riffdb_online_retention_state",
+            timestamp_unix_nanos,
+            retention.state.code(),
+        );
+        write_otel_gauge(
+            &mut out,
+            &mut first,
+            "riffdb_online_retention_fence",
+            timestamp_unix_nanos,
+            retention.fence.code(),
+        );
+        write_otel_counter(
+            &mut out,
+            &mut first,
+            "riffdb_online_retention_steps_total",
+            timestamp_unix_nanos,
+            &[],
+            retention.steps_total,
+        );
+        write_otel_counter(
+            &mut out,
+            &mut first,
+            "riffdb_online_retention_sequences_total",
+            timestamp_unix_nanos,
+            &[],
+            retention.sequences_total,
+        );
+        write_otel_gauge(
+            &mut out,
+            &mut first,
+            "riffdb_online_retention_watermark_sequence",
+            timestamp_unix_nanos,
+            retention.watermark_sequence,
         );
         let _ = write!(out, "]}}]}}]}}");
         out
@@ -1076,6 +1176,16 @@ impl Observability {
         let _ = write!(
             out,
             ",\"storage_bytes\":{effective_storage_bytes},\"journal_bytes\":{journal_bytes},\"commits_total\":{commits_total},\"command_requests_total\":{command_requests_total},\"lock_timeouts_total\":{lock_timeouts_total},\"idempotency_hits_total\":{idempotency_hits_total},\"idempotency_mismatches_total\":{idempotency_mismatches_total},\"telemetry_dropped_total\":{telemetry_dropped_total},\"writer_busy_us_total\":{writer_busy_us_total},\"writer_idle_us_total\":{writer_idle_us_total},\"queue_delay_estimate_us\":{queue_delay_estimate_us},\"conflict_queue_depth\":{conflict_queue_depth},\"hot_conflict_key_cardinality\":{hot_conflict_key_cardinality},\"outbox_pending\":{outbox_pending},\"outbox_dead_letters\":{outbox_dead_letters}"
+        );
+        let retention = self.online_retention_snapshot();
+        let _ = write!(
+            out,
+            ",\"online_retention_state\":\"{}\",\"online_retention_fence\":\"{}\",\"online_retention_steps_total\":{},\"online_retention_sequences_total\":{},\"online_retention_watermark_sequence\":{}",
+            retention.state.as_str(),
+            retention.fence.as_str(),
+            retention.steps_total,
+            retention.sequences_total,
+            retention.watermark_sequence,
         );
 
         let _ = write!(out, ",\"commit_duration_us\":");
@@ -1497,5 +1607,54 @@ mod tests {
         assert!(flight.contains(
             "\"commit_duration_us\":{\"count\":2,\"sum\":282,\"p50\":32,\"p95\":256,\"p99\":256}"
         ));
+    }
+
+    #[test]
+    // req: STO-030, STO-031, ID-005, PERF-001, END-007, END-008, DX-014
+    fn online_retention_telemetry_exposes_state_fence_and_counters_in_prometheus_otel_and_flight_recorder()
+     {
+        use crate::{OnlineRetentionTelemetryFence, OnlineRetentionTelemetryState};
+
+        let obs = Observability::new(Arc::new(FixedIncidentIds), 16).expect("observability");
+        let initial = obs.online_retention_snapshot();
+        assert_eq!(initial.state, OnlineRetentionTelemetryState::Holding);
+        assert_eq!(initial.fence, OnlineRetentionTelemetryFence::None);
+        assert_eq!(initial.steps_total, 0);
+        assert_eq!(initial.sequences_total, 0);
+        assert_eq!(initial.watermark_sequence, 0);
+
+        obs.set_online_retention_state(OnlineRetentionTelemetryState::Advancing);
+        obs.record_online_retention_step(128, 256);
+        obs.record_online_retention_step(64, 320);
+        obs.set_online_retention_state(OnlineRetentionTelemetryState::Fenced);
+        obs.set_online_retention_fence(OnlineRetentionTelemetryFence::UndeliveredOutbox);
+
+        let snap = obs.online_retention_snapshot();
+        assert_eq!(snap.state, OnlineRetentionTelemetryState::Fenced);
+        assert_eq!(snap.fence, OnlineRetentionTelemetryFence::UndeliveredOutbox);
+        assert_eq!(snap.steps_total, 2);
+        assert_eq!(snap.sequences_total, 192);
+        assert_eq!(snap.watermark_sequence, 320);
+
+        let prom = obs.encode_prometheus_v1();
+        assert!(prom.contains("riffdb_online_retention_state 3\n"));
+        assert!(prom.contains("riffdb_online_retention_fence 4\n"));
+        assert!(prom.contains("riffdb_online_retention_steps_total 2\n"));
+        assert!(prom.contains("riffdb_online_retention_sequences_total 192\n"));
+        assert!(prom.contains("riffdb_online_retention_watermark_sequence 320\n"));
+
+        let otel = obs.encode_otel_json_v1(1_700_000_000_000_000_000);
+        assert!(otel.contains("\"name\":\"riffdb_online_retention_state\""));
+        assert!(otel.contains("\"name\":\"riffdb_online_retention_fence\""));
+        assert!(otel.contains("\"name\":\"riffdb_online_retention_steps_total\""));
+        assert!(otel.contains("\"name\":\"riffdb_online_retention_sequences_total\""));
+        assert!(otel.contains("\"name\":\"riffdb_online_retention_watermark_sequence\""));
+
+        let flight = obs.encode_flight_record_ndjson_v1(1_700_000_000_000_000_000, 65_536, 8_192);
+        assert!(flight.contains("\"online_retention_state\":\"fenced\""));
+        assert!(flight.contains("\"online_retention_fence\":\"undelivered_outbox\""));
+        assert!(flight.contains("\"online_retention_steps_total\":2"));
+        assert!(flight.contains("\"online_retention_sequences_total\":192"));
+        assert!(flight.contains("\"online_retention_watermark_sequence\":320"));
     }
 }

@@ -68,10 +68,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 
 Online retention (see [Configuration](configuration.md#online-retention)) never
 passes a fence, and in this POC two fences and one checkpoint interaction bind
-more than an operator may expect:
+more than an operator may expect (live state and active binding fence are
+exposed on `/metrics`, `/v1/metrics`, and the periodic NDJSON flight recorder):
 
-- When `outbox_archive_root` is omitted, no outbox worker is configured, so an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward until local archive delivery is configured.
-- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
+- When `outbox_archive_root` is omitted, no outbox worker is configured, so an emitted event is never marked delivered automatically and holds retention from the first undelivered event onward (`online_retention_fence="undelivered_outbox"`) until local archive delivery is configured.
+- A declared columnar projection that has not been queried in the current process holds retention at its last populated frontier (`online_retention_fence="projection_durable_frontier"`, or at the beginning of history if never populated) until a query activates it or an operator detaches it with `riffdb retention projection-detach`.
 - Online retention invalidates the optional validated-prefix startup checkpoint when logical pruning commits and refreshes it off the commit gate once a retention batch drains, while a `Completed` startup registry binding preserves bounded restart even before that refresh finishes; see [Startup integrity](operations/STARTUP-INTEGRITY.md).
 - Online logical pruning is paced to about five percent of writer time in journaled steps of at most 256 sequences and can fall behind under sustained write saturation; see the [retention design review](architecture/WP-815-DESIGN-REVIEW.md).
 

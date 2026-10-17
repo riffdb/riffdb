@@ -539,6 +539,7 @@ fn sinks(diagnostics: &Arc<RecordingDiagnostics>) -> RetentionLaneFailureSinks {
     RetentionLaneFailureSinks {
         incident_ids: Arc::new(FixedIncidents),
         diagnostics: diagnostics.clone(),
+        observability: None,
     }
 }
 
@@ -1305,4 +1306,51 @@ fn read_only_readiness_failure_never_advances_a_page_or_changes_checkpoint_autho
         error.kind(),
         riffdb_storage_api::StorageErrorKind::InvariantViolation
     );
+}
+
+// req: STO-030, STO-031, ID-005, PERF-001, END-007, END-008, DX-014
+#[test]
+fn online_retention_telemetry_exposes_state_fence_and_counters_in_prometheus_otel_and_flight_recorder()
+ {
+    use riffdb_observability::{
+        Observability, OnlineRetentionTelemetryFence, OnlineRetentionTelemetryState,
+    };
+
+    let obs = Arc::new(Observability::new(Arc::new(FixedIncidents), 16).expect("observability"));
+    let status =
+        RetentionLaneStatus::with_observability(RetentionLaneState::Idle, Some(Arc::clone(&obs)));
+    assert_eq!(
+        obs.online_retention_snapshot().state,
+        OnlineRetentionTelemetryState::Idle
+    );
+    assert_eq!(
+        obs.online_retention_snapshot().fence,
+        OnlineRetentionTelemetryFence::None
+    );
+
+    status.set(RetentionLaneState::Advancing);
+    status.note_step(128, 256);
+    status.note_fence(Some(RetentionFenceBinding::UndeliveredOutboxLowWater));
+    status.set(RetentionLaneState::Fenced);
+
+    let snap = obs.online_retention_snapshot();
+    assert_eq!(snap.state, OnlineRetentionTelemetryState::Fenced);
+    assert_eq!(snap.fence, OnlineRetentionTelemetryFence::UndeliveredOutbox);
+    assert_eq!(snap.steps_total, 1);
+    assert_eq!(snap.sequences_total, 128);
+    assert_eq!(snap.watermark_sequence, 256);
+
+    let prom = obs.encode_prometheus_v1();
+    assert!(prom.contains("riffdb_online_retention_state 3\n"));
+    assert!(prom.contains("riffdb_online_retention_fence 4\n"));
+    assert!(prom.contains("riffdb_online_retention_steps_total 1\n"));
+    assert!(prom.contains("riffdb_online_retention_sequences_total 128\n"));
+    assert!(prom.contains("riffdb_online_retention_watermark_sequence 256\n"));
+
+    let flight = obs.encode_flight_record_ndjson_v1(1_700_000_000_000_000_000, 4096, 1024);
+    assert!(flight.contains("\"online_retention_state\":\"fenced\""));
+    assert!(flight.contains("\"online_retention_fence\":\"undelivered_outbox\""));
+    assert!(flight.contains("\"online_retention_steps_total\":1"));
+    assert!(flight.contains("\"online_retention_sequences_total\":128"));
+    assert!(flight.contains("\"online_retention_watermark_sequence\":256"));
 }
