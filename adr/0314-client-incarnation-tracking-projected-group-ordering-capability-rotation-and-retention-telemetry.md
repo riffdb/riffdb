@@ -51,7 +51,7 @@ Four actionable product gaps remain in `docs/known-limitations.md`:
    - Add redaction-safe atomic online retention telemetry (`online_retention_state`, `online_retention_fence`, `online_retention_steps_total`, `online_retention_sequences_total`, `online_retention_watermark_sequence`) to `Observability` (`crates/riffdb-observability`), updated by `retention_worker.rs` (`crates/riffdb-server`).
    - Expose these gauges/counters in `encode_prometheus_v1`, `encode_otel_json_v1`, `encode_flight_record_ndjson_v1`, and `riffdb telemetry summarize`, and update `docs/known-limitations.md` and `docs/configuration.md`.
 
-## Options and consequences
+## Consequences
 
 - Preserving explicit per-request `observed_history_incarnation` precedence while defaulting unset fields from the client's remembered incarnation protects stateful clients and MCP sessions across destructive restores without breaking stateless callers.
 - Keeping online retention telemetry in `Observability` (`/metrics`, `/v1/metrics`, and the NDJSON flight recorder) honors `ADR-0182` section 6 (no public gRPC `Health` member or control RPC) while giving operators live visibility into active retention fences.

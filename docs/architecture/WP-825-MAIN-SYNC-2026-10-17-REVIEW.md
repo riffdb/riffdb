@@ -1,6 +1,7 @@
 # WP-825 main integration review, 2026-10-17
 
-Package: WP-825. Tier: guarantee. Qualification is pending.
+Package: WP-825. Tier: guarantee. Focused integration qualification passed;
+full acceptance and CI remain pending.
 
 Main adds WP-869 through WP-872: observed-incarnation tracking, projected
 aggregate order and limits, capability rotation and renewal, and retention
@@ -23,6 +24,19 @@ Projected-query conflicts retain the independent money-coefficient row oracle
 and canonical group-order assertions. Main's descending top-two group query
 and typed rejection of summing a string column remain executable assertions.
 
-The ADR index is regenerated on the qualification host. Focused merged-path
-checks precede broader qualification. No recovery, retention, release, memory,
-or workload gate changes.
+The ADR index was regenerated on the qualification host. The maintainer approved
+main's ADR-0314 heading-only correction from `Options and consequences` to
+`Consequences` on 2026-10-17; every other byte of that record is unchanged.
+
+Checks run on the 8-vCPU Linux qualification host: both retention schedule tests,
+four projected-query semantic tests, server and application-service Clippy,
+workspace formatting, ADR form and index, acceptance-commit protocol, scope,
+file-size and panic-allowance checks. These checks passed. Full acceptance and
+CI are still required before merging the completed package to main.
+
+Compatibility: both accepted locator decisions retain their original Decision
+text and acceptance; existing query and telemetry interfaces remain intact.
+The configuration and known-limitations handbook pages describe the merged
+behavior. Hazards and follow-ups: Source maintenance integration and the
+rehearsal gates remain open. No recovery, retention, release, memory or workload
+gate changes.
