@@ -9,13 +9,6 @@
 /projections/
 projections/
 
-# Public marketing website
-/website/node_modules/
-/website/dist/
-/website/.astro/
-/website/test-results/
-/website/playwright-report/
-
 # Nested crate unit-test target (CARGO_MANIFEST_DIR/target fallback)
 /crates/riffdb-bench-root/target/
 

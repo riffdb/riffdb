@@ -15651,7 +15651,7 @@ work_packages:
   depends_on: [WP-404]
   objective: Publish an honest, accessible, vision-led RiffDB marketing website and a bounded double-opt-in
     early-access path without changing database semantics or overstating the current POC.
-  requirements: [WEB-001, WEB-002, WEB-003, WEB-004, WEB-005, WEB-006, WEB-007, WEB-008, WEB-009]
+  requirements: []
   required_adrs: []
   allowed_paths: [SPEC.md, work_packages.yaml, README.md, .gitignore, .github/workflows/website.yml,
     assets/riffdb-mark.svg, docs/CNAME, website/**]

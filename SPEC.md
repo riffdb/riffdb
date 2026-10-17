@@ -869,63 +869,15 @@ update the affected handbook page in the same change. Pull requests MUST state
 their documentation impact, and generated handbook artifacts MUST remain
 reproducible.
 
-## 4.7.1 Public marketing website and early access
-
-`WEB-001` The repository MUST contain one reproducibly built, responsive public
-marketing website for `riffdb.com`. Its primary path MUST explain what RiffDB
-is, which application-safety problems it addresses, and why contract-first OLTP
-is suited to agent-built applications.
-
-`WEB-002` Marketing copy MUST distinguish the future managed-service thesis
-from implemented behavior. The primary path MUST identify the current project
-as a standalone, local-only proof of concept and link the public security and
-known-limitations pages. Proposed hosting, replication, authentication,
-availability, performance, or release dates MUST NOT be described as available.
-
-`WEB-003` The site MUST link the canonical public source repository, handbook,
-and generated stable Rust client API. The handbook MUST remain a separately
-reproducible GitHub Pages artifact available at `docs.riffdb.com`.
-
-`WEB-004` Early-access collection MUST accept only one bounded email address and
-bot-verification token, require successful server-side bot verification, and
-forward no IP address, user agent, credential, or unrelated form value to the
-mailing-list provider. A successful provider submission MUST use double opt-in.
-
-`WEB-005` The waitlist endpoint MUST use generic public outcomes that do not
-reveal whether an address already exists. Invalid, oversized, automated,
-rate-limited, and unavailable-provider requests MUST fail without disclosing
-provider internals or credentials.
-
-`WEB-006` The website MUST publish a privacy notice describing the email's sole
-early-access purpose, the named infrastructure and email processors, the
-double-opt-in and unsubscribe paths, and the public deletion-request contact.
-It MUST NOT add analytics, cookies, behavioral tracking, or unrelated personal
-data collection in this stage.
-
-`WEB-007` The default experience MUST be keyboard navigable, readable in light
-and dark presentation, responsive at phone and desktop sizes, honor reduced
-motion, retain visible focus, and meet automated WCAG 2.2 AA checks for the
-tested primary flows.
-
-`WEB-008` Pull-request CI MUST reproduce the pinned install and production build
-and verify types, formatting, unit behavior, internal links, primary desktop
-and mobile flows, and accessibility. Provider and bot-verification calls MUST
-be replaced with deterministic fakes in automated tests.
-
-`WEB-009` Production publication MUST use a least-privilege GitHub Actions
-environment and pinned Cloudflare deployment tooling. No deployment, provider,
-or bot-verification credential may be committed or exposed to preview builds.
-
-## 4.7.2 Repository ownership and open-source notices
+## 4.7.1 Repository ownership and open-source notices
 
 `OWN-001` The repository MUST publish the canonical notice `Copyright © 2026
 Kevin O'Shea and O'Shea & Sons, LLC.` in a root ownership file and the MIT
 license text. The notice applies to original RiffDB source, documentation,
-website content, graphics, and other project materials.
+graphics, and other project materials.
 
-`OWN-002` Public project documentation and the marketing website MUST display
-the canonical ownership notice. The website MUST link O'Shea & Sons, LLC to
-`https://osheaandsons.com/`.
+`OWN-002` Public project documentation MUST display the canonical ownership
+notice.
 
 `OWN-003` Verified release bundles and installed documentation MUST include the
 root ownership file with both existing license texts. The project MUST remain
@@ -10658,7 +10610,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `SAI-*` | Exact successor application identity before mutation |
 | `PYD-*` | Python generated application driver, packaging, and language parity |
 | `HBK-*` | Public handbook, generated references, publication, and documentation maintenance |
-| `WEB-*` | Public marketing website, early-access signup, accessibility, and deployment |
 | `OWN-*` | Repository ownership, open-source notices, and release attribution |
 | `MIG-*` | Deterministic offline contract-data migration, cutover, recovery, and administration |
 | `EVT-*` | Partitioned typed domain-event catalog, routing, replay, and presentation |
