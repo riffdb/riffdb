@@ -752,6 +752,14 @@ impl SharedRedb {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn locator_close_gate_for_test(&self) -> ExclusiveGate {
+        self.mutation_gate.clone_for_test()
+    }
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn locator_test_controller(&self) -> Option<RedbTestController> {
+        self.test_controller.clone()
+    }
     pub(crate) fn before_test_commit(
         &self,
         operation: RedbTestOperation,
@@ -1285,6 +1293,7 @@ impl SharedRedb {
             return Ok(());
         }
         drop(read);
+        self.database.locator_build_domain().rearm_precondition()?;
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction
             .set_durability(Durability::Immediate)
@@ -1338,6 +1347,9 @@ impl SharedRedb {
         #[cfg(test)]
         changelog_lifecycle::crash_edge("dirty-staged");
         self.commit_durable(transaction)?;
+        self.database
+            .locator_build_domain()
+            .rearm_after_verified_dirty()?;
         #[cfg(test)]
         changelog_lifecycle::crash_edge("dirty-committed");
         self.observe_changelog_checkpoint_v3();
@@ -3958,15 +3970,6 @@ impl RedbStore {
     #[must_use]
     pub fn complete_graceful_close(&self) -> crate::GracefulCheckpointCloseReceiptV1 {
         let started = Instant::now();
-        let lease = self.acquire_mutation_lease();
-        let Ok(_lease) = lease else {
-            self.shared.note_clean_close_write_failure();
-            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
-                saturating_elapsed_microseconds(started),
-                0,
-                0,
-            ]);
-        };
         if self.ensure_writable().is_err() {
             self.shared.note_clean_close_write_failure();
             return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
@@ -3975,7 +3978,46 @@ impl RedbStore {
                 0,
             ]);
         }
-        let receipt = self.shared.complete_graceful_close();
+        if !self.shared.source_close_eligible() {
+            self.shared.note_clean_close_write_failure();
+            return crate::GracefulCheckpointCloseReceiptV1::classification_failed([
+                saturating_elapsed_microseconds(started),
+                0,
+                0,
+            ]);
+        }
+        let closed = match self.shared.drain_locator_builders_before_close(started) {
+            Ok(closed) => closed,
+            Err(_) => {
+                self.shared.note_clean_close_write_failure();
+                return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
+                    saturating_elapsed_microseconds(started),
+                    0,
+                    0,
+                ]);
+            }
+        };
+        let drain_us = saturating_elapsed_microseconds(started);
+        let Ok(_lease) = self.acquire_mutation_lease() else {
+            self.shared.note_clean_close_write_failure();
+            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
+                saturating_elapsed_microseconds(started),
+                0,
+                0,
+            ]);
+        };
+        if self.ensure_writable().is_err() || closed.verify_under_mutation_lease().is_err() {
+            self.shared.note_clean_close_write_failure();
+            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
+                saturating_elapsed_microseconds(started),
+                0,
+                0,
+            ]);
+        }
+        let receipt = self
+            .shared
+            .complete_graceful_close_under_locator_drain(&closed)
+            .with_prior_barrier_elapsed(drain_us);
         if receipt.lifecycle() != crate::GracefulLifecycleOutcomeV1::CleanCommitted {
             self.shared.note_clean_close_write_failure();
         }
@@ -9285,7 +9327,19 @@ impl SharedRedb {
     ) -> Result<(), StorageError> {
         let generation = indexes.locator_generation()?;
         generation.validate_source(access)?;
+        if crate::locator_builder::source_construction_cancelled(access)? {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.test_controller {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeLocatorPublicationLease,
+            );
+        }
         let _lease = self.mutation_gate.acquire()?;
+        if crate::locator_builder::source_construction_cancelled(access)? {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
         access.locator_capability().install_generation(generation)?;
         let current = self.begin_composite_operational_read()?;
         let same_source = match (access, &current) {
@@ -9914,3 +9968,7 @@ impl Drop for SharedRedb {
         self.join_journal_sealer();
     }
 }
+
+#[cfg(test)]
+#[path = "locator_close_preflight_tests.rs"]
+mod locator_close_preflight_tests;

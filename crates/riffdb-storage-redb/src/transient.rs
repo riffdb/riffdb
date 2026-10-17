@@ -778,6 +778,9 @@ impl TransientIndexes {
                 return Err(unavailable());
             }
             for (id, (partition, event)) in &segment.events {
+                if cancelled() {
+                    return Err(unavailable());
+                }
                 if routes
                     .insert(encode_event_route_key(*partition, *id).to_vec(), *event)
                     .is_some()

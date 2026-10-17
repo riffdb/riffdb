@@ -290,6 +290,10 @@ pub struct GracefulCheckpointCloseReceiptV1 {
 }
 
 impl GracefulCheckpointCloseReceiptV1 {
+    pub(crate) fn with_prior_barrier_elapsed(mut self, prior_us: u64) -> Self {
+        self.elapsed_us[0] = self.elapsed_us[0].saturating_add(prior_us);
+        self
+    }
     const fn from_parts(
         disposition: GracefulCheckpointDispositionV1,
         lifecycle: GracefulLifecycleOutcomeV1,

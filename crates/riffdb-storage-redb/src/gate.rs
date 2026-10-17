@@ -37,6 +37,12 @@ pub(crate) struct ExclusiveLease {
 }
 
 impl ExclusiveGate {
+    #[cfg(test)]
+    pub(crate) fn clone_for_test(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
     /// Bounded maintenance admission. Existing queued tickets always win;
     /// refusal creates no waiter and does not consume a ticket.
     pub(crate) fn try_acquire(&self) -> Result<Option<ExclusiveLease>, StorageError> {
@@ -105,7 +111,7 @@ impl ExclusiveGate {
     }
 
     #[cfg(test)]
-    fn wait_for_queued(&self, expected: u128) {
+    pub(crate) fn wait_for_queued(&self, expected: u128) {
         let mut state = self
             .inner
             .state

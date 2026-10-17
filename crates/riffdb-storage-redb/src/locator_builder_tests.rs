@@ -53,6 +53,10 @@ fn job(access: RedbReadAccess) -> BuilderJob {
         access,
         shared: None,
         custody: None,
+        registration: None,
+        #[cfg(feature = "test-fixtures")]
+        lifetime_controller: None,
+        panic_during_construction: false,
         _charge: charge,
     }
 }
@@ -394,6 +398,237 @@ fn locator_builder_enqueue_wakes_predicate_wait_without_lost_notification() {
         worker.join().unwrap();
     });
     assert_eq!(lock(&queue.state).len, 0);
+}
+
+// req: STO-032, REC-001, TXN-042
+fn registered_close_job(access: RedbReadAccess) -> BuilderJob {
+    let registration = source_domain(&access).unwrap().register().unwrap();
+    assert!(access.locator_capability().request_build());
+    let mut work = job(access);
+    work.registration = Some(registration);
+    work
+}
+fn isolated_close_queue() -> BuilderQueue {
+    let charge = NativeLocatorPool::global()
+        .admit(
+            2 * std::mem::size_of::<[Option<BuilderJob>; LOCATOR_MAX_OWNERS]>()
+                + std::mem::size_of::<BuilderQueue>()
+                + 256,
+            LocatorAllocationClass::Maintenance,
+        )
+        .unwrap();
+    BuilderQueue {
+        state: Mutex::new(BuilderState {
+            jobs: Box::new(std::array::from_fn(|_| None)),
+            read: 0,
+            write: 0,
+            len: 0,
+            enabled: true,
+        }),
+        ready: Condvar::new(),
+        _charge: charge,
+    }
+}
+// req: STO-032, REC-001, TXN-042
+#[test]
+fn close_extracts_all_replaced_source_jobs_without_draining_another_engine() {
+    let (_first_scope, first_store, original, first) = populated_source();
+    let (_other_scope, _other_store, other, _) = populated_source();
+    append_segment(
+        &first_store,
+        CommitSequence::first().checked_next().unwrap(),
+        Some(first.segment_digest()),
+    );
+    let replacement = pending_source(&first_store, 2);
+    let first_domain = source_domain(&original).unwrap();
+    let replacement_domain = source_domain(&replacement).unwrap();
+    let other_domain = source_domain(&other).unwrap();
+    assert!(Arc::ptr_eq(&first_domain, &replacement_domain));
+    assert!(!Arc::ptr_eq(&first_domain, &other_domain));
+    let queue = isolated_close_queue();
+    queue
+        .enqueue(registered_close_job(original.clone()))
+        .unwrap();
+    queue.enqueue(registered_close_job(other.clone())).unwrap();
+    queue
+        .enqueue(registered_close_job(replacement.clone()))
+        .unwrap();
+    assert_eq!(first_domain.registrations_for_test(), 2);
+    let attempt = first_domain
+        .begin_close(std::time::Instant::now() + crate::locator_build_domain::LOCATOR_DRAIN_LIMIT)
+        .unwrap();
+    for _ in 0..2 {
+        let selected = lock(&queue.state).take_domain(&first_domain).unwrap();
+        finish_job(selected);
+    }
+    assert!(lock(&queue.state).take_domain(&first_domain).is_none());
+    attempt
+        .await_quiescence()
+        .unwrap()
+        .verify_under_mutation_lease()
+        .unwrap();
+    assert_eq!(first_domain.registrations_for_test(), 0);
+    assert_eq!(other_domain.registrations_for_test(), 1);
+    assert!(!other_domain.is_cancelled());
+    assert!(original.locator_capability().is_pending());
+    assert!(replacement.locator_capability().is_pending());
+    assert!(
+        !original
+            .locator_capability()
+            .builder_active_for_close_test()
+    );
+    assert!(
+        !replacement
+            .locator_capability()
+            .builder_active_for_close_test()
+    );
+    let remaining = lock(&queue.state).pop().unwrap();
+    assert!(
+        remaining
+            .access
+            .locator_capability()
+            .same_construction(other.locator_capability())
+    );
+    finish_job(remaining);
+    assert_eq!(other_domain.registrations_for_test(), 0);
+}
+// req: STO-032, REC-001, TXN-042
+#[test]
+fn closing_domain_refuses_late_enqueue_and_releases_its_real_source_request() {
+    let (_scope, _store, original, _) = populated_source();
+    let owner = source_domain(&original).unwrap();
+    let work = registered_close_job(original.clone());
+    let attempt = owner
+        .begin_close(std::time::Instant::now() + crate::locator_build_domain::LOCATOR_DRAIN_LIMIT)
+        .unwrap();
+    let queue = isolated_close_queue();
+    assert_eq!(
+        queue.enqueue(work).unwrap_err().kind(),
+        StorageErrorKind::Unavailable
+    );
+    assert_eq!(lock(&queue.state).len, 0);
+    attempt
+        .await_quiescence()
+        .unwrap()
+        .verify_under_mutation_lease()
+        .unwrap();
+    assert!(original.locator_capability().is_pending());
+    assert!(
+        !original
+            .locator_capability()
+            .builder_active_for_close_test()
+    );
+    assert_eq!(owner.registrations_for_test(), 0);
+}
+// req: STO-032, REC-001, TXN-042
+#[test]
+fn cancelled_active_job_releases_source_and_predicate_before_close_acknowledgment() {
+    let (_scope, _store, original, _) = populated_source();
+    let owner = source_domain(&original).unwrap();
+    let work = registered_close_job(original.clone());
+    let attempt = owner
+        .begin_close(std::time::Instant::now() + crate::locator_build_domain::LOCATOR_DRAIN_LIMIT)
+        .unwrap();
+    process_and_finish_job(work);
+    attempt
+        .await_quiescence()
+        .unwrap()
+        .verify_under_mutation_lease()
+        .unwrap();
+    assert!(original.locator_capability().is_pending());
+    assert!(
+        !original
+            .locator_capability()
+            .builder_active_for_close_test()
+    );
+    assert_eq!(owner.registrations_for_test(), 0);
+}
+// req: STO-032, REC-001, TXN-042
+#[test]
+fn failed_real_construction_releases_registration_without_fabricating_completion() {
+    let (_scope, store, _old, _) = populated_source();
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(crate::layout::COMMITS)
+        .unwrap()
+        .insert(
+            crate::keys::encode_application_sequence_key(CommitSequence::first()).as_slice(),
+            b"invalid-canonical-command-segment".as_slice(),
+        )
+        .unwrap();
+    write.commit().unwrap();
+    let original = pending_source(&store, 0x1615);
+    let owner = source_domain(&original).unwrap();
+    process_and_finish_job(registered_close_job(original.clone()));
+    assert_eq!(owner.registrations_for_test(), 0);
+    assert!(
+        !original
+            .locator_capability()
+            .builder_active_for_close_test()
+    );
+    assert!(original.locator_capability().require_complete().is_err());
+}
+
+// req: STO-032, REC-001, TXN-042
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn caught_construction_panic_releases_actual_engine_before_close_acknowledgment() {
+    use crate::hooks::RedbCheckpointTestPoint;
+    let (_scope, store, original, _) = populated_source();
+    let domain = source_domain(&original).unwrap();
+    let engine = Arc::downgrade(&store.shared.database);
+    let capability = original.locator_capability().clone();
+    let (controller, schedule) = crate::RedbTestController::checkpoint_schedule();
+    schedule.arm(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
+    let mut work = registered_close_job(original);
+    work.panic_during_construction = true;
+    work.lifetime_controller = Some(controller);
+    drop(store);
+    struct Release {
+        schedule: Option<crate::hooks::RedbCheckpointTestSchedule>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Release {
+        fn drop(&mut self) {
+            drop(self.schedule.take());
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    let mut release = Release {
+        schedule: Some(schedule),
+        worker: Some(std::thread::spawn(move || process_and_finish_job(work))),
+    };
+    let schedule = release.schedule.as_ref().unwrap();
+    schedule.wait(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
+    assert_eq!(domain.registrations_for_test(), 1);
+    assert!(capability.builder_active_for_close_test());
+    assert!(
+        engine.strong_count() > 0,
+        "caught panic must still own its actual source until finish"
+    );
+    assert_eq!(
+        capability.require_complete().err().unwrap().kind(),
+        StorageErrorKind::Unavailable
+    );
+    let attempt = domain
+        .begin_close(std::time::Instant::now() + crate::locator_build_domain::LOCATOR_DRAIN_LIMIT)
+        .unwrap();
+    schedule.release(RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease);
+    release.worker.take().unwrap().join().unwrap();
+    attempt
+        .await_quiescence()
+        .unwrap()
+        .verify_under_mutation_lease()
+        .unwrap();
+    assert_eq!(engine.strong_count(), 0);
+    assert_eq!(domain.registrations_for_test(), 0);
+    assert!(!capability.builder_active_for_close_test());
+    assert_eq!(
+        capability.require_complete().err().unwrap().kind(),
+        StorageErrorKind::Unavailable
+    );
 }
 
 // req: STO-032, REC-001

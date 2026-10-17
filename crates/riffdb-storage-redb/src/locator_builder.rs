@@ -31,6 +31,11 @@ struct BuilderJob {
     access: RedbReadAccess,
     shared: Option<Weak<SharedRedb>>,
     custody: Option<Arc<crate::startup::ValidatedReadCustody>>,
+    registration: Option<crate::locator_build_domain::BuildRegistration>,
+    #[cfg(feature = "test-fixtures")]
+    lifetime_controller: Option<crate::hooks::RedbTestController>,
+    #[cfg(test)]
+    panic_during_construction: bool,
     _charge: LocatorCharge,
 }
 struct BuilderState {
@@ -41,6 +46,32 @@ struct BuilderState {
     enabled: bool,
 }
 impl BuilderState {
+    fn take_domain(
+        &mut self,
+        domain: &Arc<crate::locator_build_domain::LocatorBuildDomain>,
+    ) -> Option<BuilderJob> {
+        for offset in 0..self.len {
+            let index = (self.read + offset) % LOCATOR_MAX_OWNERS;
+            let matches = self.jobs[index]
+                .as_ref()
+                .and_then(|job| job.registration.as_ref())
+                .is_some_and(|registration| Arc::ptr_eq(registration.domain(), domain));
+            if !matches {
+                continue;
+            }
+            let removed = self.jobs[index].take();
+            for later in offset..self.len - 1 {
+                let destination = (self.read + later) % LOCATOR_MAX_OWNERS;
+                let source = (destination + 1) % LOCATOR_MAX_OWNERS;
+                self.jobs[destination] = self.jobs[source].take();
+            }
+            self.write = (self.write + LOCATOR_MAX_OWNERS - 1) % LOCATOR_MAX_OWNERS;
+            self.jobs[self.write] = None;
+            self.len -= 1;
+            return removed;
+        }
+        None
+    }
     fn push(&mut self, job: BuilderJob) -> Result<(), BuilderJob> {
         if !self.enabled || self.len == LOCATOR_MAX_OWNERS {
             return Err(job);
@@ -65,9 +96,9 @@ struct BuilderQueue {
     ready: Condvar,
     _charge: LocatorCharge,
 }
+static QUEUE: OnceLock<Result<Arc<BuilderQueue>, StorageErrorKind>> = OnceLock::new();
 impl BuilderQueue {
     fn global() -> Result<Arc<Self>, StorageError> {
-        static QUEUE: OnceLock<Result<Arc<BuilderQueue>, StorageErrorKind>> = OnceLock::new();
         match QUEUE.get_or_init(|| Self::start().map_err(|error| error.kind())) {
             Ok(queue) => Ok(Arc::clone(queue)),
             Err(kind) => Err(StorageError::new(*kind, None)),
@@ -118,27 +149,7 @@ impl BuilderQueue {
                     let Some(job) = job else {
                         continue;
                     };
-                    let capability = job.access.locator_capability().clone();
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        process_job(&job)
-                    }));
-                    match outcome {
-                        Ok(Err(error))
-                            if !matches!(
-                                error.kind(),
-                                StorageErrorKind::Unavailable | StorageErrorKind::LimitExceeded
-                            ) =>
-                        {
-                            capability.invalidate(error.kind())
-                        }
-                        Err(_) => capability.invalidate(StorageErrorKind::Unavailable),
-                        Ok(_) => {}
-                    }
-                    drop(job);
-                    // Release the active predicate only after its actual
-                    // source/engine reference is gone. Temporary pressure and
-                    // cancellation leave Pending for a later admitted attempt.
-                    capability.release_build_request();
+                    process_and_finish_job(job);
                     std::thread::yield_now();
                 }
             })
@@ -149,13 +160,124 @@ impl BuilderQueue {
     fn enqueue(&self, job: BuilderJob) -> Result<(), StorageError> {
         // Poisoned queue admission refuses; its existing owners remain available
         // to the cleanup worker through the recovering lock above.
-        let mut state = self.state.lock().map_err(|_| unavailable())?;
-        state.push(job).map_err(|_| unavailable())?;
-        self.ready.notify_one();
-        Ok(())
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(error) => {
+                drop(error);
+                finish_job(job);
+                return Err(unavailable());
+            }
+        };
+        if job
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.is_cancelled())
+        {
+            drop(state);
+            finish_job(job);
+            return Err(unavailable());
+        }
+        match state.push(job) {
+            Ok(()) => {
+                self.ready.notify_one();
+                Ok(())
+            }
+            Err(job) => {
+                drop(state);
+                finish_job(job);
+                Err(unavailable())
+            }
+        }
     }
 }
 
+fn process_and_finish_job(job: BuilderJob) {
+    let capability = job.access.locator_capability().clone();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process_job(&job)));
+    match outcome {
+        Ok(Err(error))
+            if !matches!(
+                error.kind(),
+                StorageErrorKind::Unavailable | StorageErrorKind::LimitExceeded
+            ) =>
+        {
+            capability.invalidate(error.kind())
+        }
+        Err(_) => capability.invalidate(StorageErrorKind::Unavailable),
+        Ok(_) => {}
+    }
+    #[cfg(feature = "test-fixtures")]
+    if let Some(controller) = &job.lifetime_controller {
+        controller.checkpoint_test_pause(
+            crate::hooks::RedbCheckpointTestPoint::BeforeLocatorJobSourceRelease,
+        );
+    }
+    finish_job(job);
+}
+
+struct FinishRegistration {
+    capability: crate::locator_capability::LocatorCapability,
+    registration: Option<crate::locator_build_domain::BuildRegistration>,
+}
+impl Drop for FinishRegistration {
+    fn drop(&mut self) {
+        self.capability.release_build_request();
+        drop(self.registration.take());
+    }
+}
+fn finish_job(mut job: BuilderJob) {
+    let finishing = FinishRegistration {
+        capability: job.access.locator_capability().clone(),
+        registration: job.registration.take(),
+    };
+    drop(job);
+    drop(finishing);
+}
+fn root_domain(
+    root: &crate::checkpoint_root::CheckpointRoot,
+) -> Result<Arc<crate::locator_build_domain::LocatorBuildDomain>, StorageError> {
+    match root.engine_custody() {
+        Some(crate::checkpoint_root::CheckpointEngineCustody::Writable { owner }) => {
+            Ok(Arc::clone(owner.locator_build_domain()))
+        }
+        Some(crate::checkpoint_root::CheckpointEngineCustody::ReadOnly { owner }) => {
+            Ok(Arc::clone(owner.locator_build_domain()))
+        }
+        None => Err(unavailable()),
+    }
+}
+fn source_domain(
+    access: &RedbReadAccess,
+) -> Result<Arc<crate::locator_build_domain::LocatorBuildDomain>, StorageError> {
+    match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => root_domain(root),
+        RedbReadAccess::Composite(view) => root_domain(&view.checkpoint_root_shared()),
+    }
+}
+pub(crate) fn source_construction_cancelled(access: &RedbReadAccess) -> Result<bool, StorageError> {
+    Ok(source_domain(access)?.is_cancelled())
+}
+pub(crate) fn cancel_queued_for_close(
+    domain: &Arc<crate::locator_build_domain::LocatorBuildDomain>,
+    deadline: std::time::Instant,
+) -> Result<(), StorageError> {
+    let Some(Ok(queue)) = QUEUE.get() else {
+        return Ok(());
+    };
+    for _ in 0..=LOCATOR_MAX_OWNERS {
+        if std::time::Instant::now() >= deadline {
+            return Err(unavailable());
+        }
+        let mut state = queue.state.try_lock().map_err(|_| unavailable())?;
+        let next = state.take_domain(domain);
+        drop(state);
+        let Some(job) = next else {
+            return Ok(());
+        };
+        finish_job(job);
+    }
+    Err(unavailable())
+}
 fn source_has_external_owner(access: &RedbReadAccess) -> bool {
     match access {
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
@@ -199,6 +321,13 @@ fn checked_construction<T>(
 }
 
 fn process_job(job: &BuilderJob) -> Result<(), StorageError> {
+    if job
+        .registration
+        .as_ref()
+        .is_some_and(|registration| registration.is_cancelled())
+    {
+        return Ok(());
+    }
     let capability = job.access.locator_capability();
     if !capability.is_pending() {
         return Ok(());
@@ -207,13 +336,23 @@ fn process_job(job: &BuilderJob) -> Result<(), StorageError> {
         return Ok(());
     }
     verify_job_custody(job)?;
+    #[cfg(test)]
+    if job.panic_during_construction {
+        panic!("fixture construction panic while owning the actual source");
+    }
     let (database, incarnation, registry) = capability.source_binding()?;
     let owner = capability.construction_owner()?;
     // The captured-source builder admits its native row/frame/protobuf
     // workspace and independently enforces the existing recovery ceiling.
     let custody_failure = RefCell::new(None);
     let cancelled = || {
-        if !job_has_external_owner(job) || custody_failure.borrow().is_some() {
+        if job
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.is_cancelled())
+            || !job_has_external_owner(job)
+            || custody_failure.borrow().is_some()
+        {
             return true;
         }
         if let Err(error) = verify_job_custody(job) {
@@ -233,7 +372,12 @@ fn process_job(job: &BuilderJob) -> Result<(), StorageError> {
             &custody_failure,
         )?;
         verify_job_custody(job)?;
-        if !job_has_external_owner(job) {
+        if job
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.is_cancelled())
+            || !job_has_external_owner(job)
+        {
             return Ok(());
         }
         if let Some(shared) = job.shared.as_ref().and_then(Weak::upgrade) {
@@ -255,7 +399,12 @@ fn process_job(job: &BuilderJob) -> Result<(), StorageError> {
             &custody_failure,
         )?;
         verify_job_custody(job)?;
-        if !job_has_external_owner(job) {
+        if job
+            .registration
+            .as_ref()
+            .is_some_and(|registration| registration.is_cancelled())
+            || !job_has_external_owner(job)
+        {
             return Ok(());
         }
         generation.validate_database_incarnation(database, incarnation)?;
@@ -287,29 +436,67 @@ pub(crate) fn start_locator_builder_with_custody(
         return capability.require_complete().map(|_| ());
     }
     capability.source_binding()?;
+    let domain = source_domain(&access)?;
+    let registration = domain.register()?;
     if !capability.request_build() {
+        drop(access);
+        drop(shared);
+        drop(custody);
+        drop(registration);
         return Ok(());
     }
-    let result = (|| {
-        let pool = NativeLocatorPool::global();
-        let charge = pool.admit(
-            std::mem::size_of::<BuilderJob>() + 64,
-            LocatorAllocationClass::Ordinary,
-        )?;
-        let queue = BuilderQueue::global()?;
-        queue.enqueue(BuilderJob {
-            access,
-            shared: shared.as_ref().map(Arc::downgrade),
-            custody,
-            _charge: charge,
-        })
-    })();
-    if result.is_err() {
-        capability.release_build_request();
-    }
-    result
+    #[cfg(feature = "test-fixtures")]
+    let lifetime_controller = shared
+        .as_ref()
+        .and_then(|shared| shared.locator_test_controller());
+    let weak_shared = shared.as_ref().map(Arc::downgrade);
+    drop(shared);
+    let charge = match NativeLocatorPool::global().admit(
+        std::mem::size_of::<BuilderJob>() + 64,
+        LocatorAllocationClass::Ordinary,
+    ) {
+        Ok(charge) => charge,
+        Err(error) => {
+            drop(access);
+            drop(custody);
+            capability.release_build_request();
+            drop(registration);
+            return Err(error);
+        }
+    };
+    let job = BuilderJob {
+        access,
+        shared: weak_shared,
+        custody,
+        registration: Some(registration),
+        #[cfg(feature = "test-fixtures")]
+        lifetime_controller,
+        #[cfg(test)]
+        panic_during_construction: false,
+        _charge: charge,
+    };
+    let queue = match BuilderQueue::global() {
+        Ok(queue) => queue,
+        Err(error) => {
+            finish_job(job);
+            return Err(error);
+        }
+    };
+    queue.enqueue(job)
 }
 
 #[cfg(test)]
 #[path = "locator_builder_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "test-fixtures"))]
+pub(crate) fn global_queue_contains_source_for_test(access: &RedbReadAccess) -> bool {
+    let Some(Ok(queue)) = QUEUE.get() else {
+        return false;
+    };
+    lock(&queue.state).jobs.iter().flatten().any(|job| {
+        job.access
+            .locator_capability()
+            .same_construction(access.locator_capability())
+    })
+}

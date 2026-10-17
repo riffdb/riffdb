@@ -85,7 +85,12 @@ fn follower_restart_lifecycle_must_preserve_the_exact_upstream_successor() {
             .unwrap()
             .is_none()
     );
+    assert!(!store.shared.database.locator_build_domain().is_cancelled());
     let close = store.shared.complete_graceful_close();
+    assert!(
+        !store.shared.database.locator_build_domain().is_cancelled(),
+        "refused follower close preserves its construction domain"
+    );
     assert_eq!(
         close.disposition(),
         crate::GracefulCheckpointDispositionV1::ClassificationFailed,
@@ -361,4 +366,35 @@ fn malformed_lifecycle_history_declines_clean_roots_and_refuses_dirty_before_mut
             .value(),
         lifecycle
     );
+}
+
+// req: REC-001, STO-032, TXN-042
+#[test]
+fn initial_verified_dirty_producer_preserves_open_captured_construction() {
+    let scope = crate::test_path::ScopedDirectory::new("dirty-open-construction");
+    let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x72; 10]).unwrap();
+    store.initialize_legacy_fixture(database_id).unwrap();
+    crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = store.shared.capture_checkpoint_root().unwrap();
+    let domain = Arc::clone(store.shared.database.locator_build_domain());
+    let registration = domain.register().unwrap();
+    let work = (source, registration);
+    let before = store.shared.durable_commit_epoch();
+    store
+        .shared
+        .advance_dirty_lifecycle_before_activation(database_id, 1, None)
+        .unwrap();
+    assert_eq!(store.shared.durable_commit_epoch(), before + 1);
+    assert!(!domain.is_cancelled());
+    assert_eq!(domain.registrations_for_test(), 1);
+    assert_receipt(&store.shared, 2, ChangelogAttributionV3::DirtyActivation);
+    drop(work);
+    assert_eq!(domain.registrations_for_test(), 0);
 }

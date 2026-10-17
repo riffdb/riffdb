@@ -15,6 +15,7 @@ pub(crate) struct EngineOwner<T> {
     cache_bytes: usize,
     _control: LocatorCharge,
     provider: SharedPhysicalOwnershipCell,
+    locator_build_domain: Arc<crate::locator_build_domain::LocatorBuildDomain>,
 }
 
 impl<T> EngineOwner<T> {
@@ -33,21 +34,29 @@ impl<T> EngineOwner<T> {
         pool: &Arc<NativeLocatorPool>,
     ) -> Result<Arc<Self>, StorageError> {
         let control = pool.admit(std::mem::size_of::<Self>() + 128, class)?;
+        let locator_build_domain =
+            crate::locator_build_domain::LocatorBuildDomain::try_new(pool, class)?;
         Ok(Arc::new(Self {
             database,
             cache_bytes,
             _control: control,
             provider: SharedPhysicalOwnershipCell::new(),
+            locator_build_domain,
         }))
     }
 
+    pub(crate) fn locator_build_domain(
+        &self,
+    ) -> &Arc<crate::locator_build_domain::LocatorBuildDomain> {
+        &self.locator_build_domain
+    }
     pub(crate) fn database(&self) -> &T {
         &self.database
     }
 
     #[cfg(test)]
     pub(crate) fn provider_charge_bytes(&self) -> u64 {
-        self.provider.owned_bytes().unwrap()
+        self.provider.owned_bytes().unwrap() + self.locator_build_domain.provider_charge_bytes()
     }
 
     fn provider_bound(&self) -> Result<u64, StorageError> {
@@ -63,9 +72,16 @@ impl<T> EngineOwner<T> {
         &self,
         budget: &ProviderBudget,
     ) -> Result<u64, StorageError> {
-        self.provider
+        let engine = self
+            .provider
             .provider_ownership_needed(self.provider_bound()?, budget)
-            .map_err(|_| unavailable())
+            .map_err(|_| unavailable())?;
+        engine
+            .checked_add(
+                self.locator_build_domain
+                    .provider_ownership_needed(budget)?,
+            )
+            .ok_or_else(unavailable)
     }
 
     #[cfg(test)]
@@ -83,13 +99,27 @@ impl<T> EngineOwner<T> {
         work: &mut Reservation,
         budget: &ProviderBudget,
     ) -> Result<PreparedEngineProviderOwnership<'_>, StorageError> {
-        self.provider
+        let engine = self
+            .provider
             .prepare_provider_ownership_from(self.provider_bound()?, work, budget)
-            .map_err(|_| unavailable())
+            .map_err(|_| unavailable())?;
+        let domain = self
+            .locator_build_domain
+            .prepare_provider_ownership_from(work, budget)?;
+        Ok(PreparedEngineProviderOwnership { engine, domain })
     }
 }
 
-pub(crate) type PreparedEngineProviderOwnership<'a> = PreparedSharedPhysicalOwnership<'a>;
+pub(crate) struct PreparedEngineProviderOwnership<'a> {
+    engine: PreparedSharedPhysicalOwnership<'a>,
+    domain: PreparedSharedPhysicalOwnership<'a>,
+}
+impl PreparedEngineProviderOwnership<'_> {
+    pub(crate) fn commit(self) {
+        self.engine.commit();
+        self.domain.commit();
+    }
+}
 
 impl<T> Deref for EngineOwner<T> {
     type Target = T;
@@ -250,5 +280,22 @@ mod tests {
         drop(maintenance);
         assert_eq!(pool.charged_bytes(), before);
         drop(occupied);
+    }
+    // req: OQ-040, TXN-042, STO-032
+    #[test]
+    fn domain_provider_charge_outlives_engine_until_final_registered_control_drop() {
+        let budget = ProviderBudget::new();
+        let engine = EngineOwner::try_new((), 0, LocatorAllocationClass::Ordinary).unwrap();
+        admit(&engine, &budget).unwrap();
+        let owner = Arc::clone(engine.locator_build_domain());
+        let domain_bytes = owner.provider_charge_bytes();
+        assert!(domain_bytes > 0);
+        let work = owner.register().unwrap();
+        drop(engine);
+        assert_eq!(budget.observation().unwrap().owned_bytes, domain_bytes);
+        drop(owner);
+        assert_eq!(budget.observation().unwrap().owned_bytes, domain_bytes);
+        drop(work);
+        assert_eq!(budget.observation().unwrap().owned_bytes, 0);
     }
 }

@@ -174,6 +174,12 @@ impl LocatorCapability {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn builder_active_for_close_test(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|state| state.build_started.load(Ordering::Acquire))
+    }
     pub(crate) fn release_build_request(&self) {
         if let Some(state) = &self.completion {
             // Completion waiters observe the complete process_job handoff,

@@ -79,6 +79,7 @@ mod layout;
 mod native_initial_dependency;
 pub use native_initial_dependency::{NativeDependencyCancellation, OwnedNativeDependencyWait};
 
+mod locator_build_domain;
 mod locator_builder;
 mod locator_capability;
 mod locator_memory;

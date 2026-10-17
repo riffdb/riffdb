@@ -1,10 +1,54 @@
 use super::*;
 
 impl SharedRedb {
+    #[cfg(test)]
     pub(super) fn complete_graceful_close(
         self: &Arc<Self>,
     ) -> crate::GracefulCheckpointCloseReceiptV1 {
+        RedbStore {
+            shared: Arc::clone(self),
+        }
+        .complete_graceful_close()
+    }
+
+    pub(super) fn source_close_eligible(&self) -> bool {
+        matches!(
+            self.database
+                .begin_read()
+                .map_err(transaction_error)
+                .and_then(|read| crate::follower_lifecycle::is_attached(&read)),
+            Ok(false)
+        )
+    }
+
+    pub(super) fn drain_locator_builders_before_close(
+        &self,
+        started: Instant,
+    ) -> Result<crate::locator_build_domain::ClosedLocatorOwner, StorageError> {
+        let deadline = started
+            .checked_add(crate::locator_build_domain::LOCATOR_DRAIN_LIMIT)
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        let domain = self.database.locator_build_domain();
+        let attempt = domain.begin_close(deadline)?;
+        crate::locator_builder::cancel_queued_for_close(domain, attempt.deadline())?;
+        #[cfg(feature = "test-fixtures")]
+        {
+            attempt.await_quiescence_with_controller(self.test_controller.as_ref())
+        }
+        #[cfg(not(feature = "test-fixtures"))]
+        {
+            attempt.await_quiescence()
+        }
+    }
+
+    pub(super) fn complete_graceful_close_under_locator_drain(
+        self: &Arc<Self>,
+        closed: &crate::locator_build_domain::ClosedLocatorOwner,
+    ) -> crate::GracefulCheckpointCloseReceiptV1 {
         let mut elapsed_us = [0_u64; 3];
+        if closed.verify_under_mutation_lease().is_err() {
+            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed(elapsed_us);
+        }
         // This is the SOURCE close owner. Follower shutdown belongs to the
         // sole applier and must never enter its journal/checkpoint/CLEAN path.
         // Also fail closed if attachment cannot be decoded.
@@ -78,6 +122,12 @@ impl SharedRedb {
                 disposition,
                 crate::validated_prefix::AttemptedGracefulLifecycleOutcome::Failed,
                 elapsed_us,
+            );
+        }
+        #[cfg(feature = "test-fixtures")]
+        if let Some(controller) = &self.test_controller {
+            controller.checkpoint_test_pause(
+                crate::hooks::RedbCheckpointTestPoint::BeforeFinalCleanCommit,
             );
         }
         let lifecycle = match self.write_final_clean_close_lifecycle_after_barrier(write) {

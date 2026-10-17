@@ -284,6 +284,14 @@ generation may also be admitted through its normal durable lifecycle. Do not
 weaken freshness or emulate the query against authoritative rows.
 
 Shutdown first stops admission and drains writers, workers, and the journal.
+Native command-locator construction also closes admission for the actual engine,
+cancels its queued work, and releases active construction sources before the
+final mutation gate and clean-close record. Other databases keep their workers.
+This drain has a fixed deadline of one second; failure leaves the barrier failed
+and does not attempt CLEAN. Cancellation preserves incomplete locator status.
+Already completed protected captures remain readable and charged until their
+final references release.
+
 The row-projection recovery and catch-up worker checks termination before each
 bounded repository operation, including pages within authoritative replay. An
 in-flight operation may finish; shutdown prevents the next operation. Interrupted
