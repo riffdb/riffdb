@@ -3990,7 +3990,14 @@ fn read_retained_frame_from_with_admission<R>(
     {
         return Err(JournalIoError::Corrupt);
     }
-    for path in candidates {
+    // A retained generation moves monotonically active -> checkpoint ->
+    // sealing -> sealed. The sealed name is tried first, so a complete first
+    // miss can race its final rename after that first lookup. Retry the fixed
+    // inventory once: a generation missed at every earlier name is now sealed.
+    // Malformed content, custody and I/O errors still return immediately.
+    for path in candidates.iter().chain(candidates) {
+        #[cfg(test)]
+        retention_rotation_race_tests::pause_before_candidate_open(path)?;
         let physical_bytes = placement
             .padded_len
             .checked_add(EXTENT_DATA_OFFSET)
@@ -8084,3 +8091,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "journal_retention_rotation_race_tests.rs"]
+mod retention_rotation_race_tests;

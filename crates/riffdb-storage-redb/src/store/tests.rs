@@ -67,17 +67,12 @@ fn background_locator_construction_completes_under_the_callers_live_read_transac
                 .durable_read_frontier
                 .write()
                 .expect("durable read frontier lock");
-            *frontier = Some(Arc::new(
-                CheckpointRoot::new(
-                    store
-                        .shared
-                        .database
-                        .begin_read()
-                        .expect("durable frontier read"),
-                    store.shared.durable_commit_epoch.load(Ordering::Acquire),
-                )
-                .unwrap(),
-            ));
+            *frontier = Some(
+                store
+                    .shared
+                    .capture_checkpoint_root()
+                    .expect("actual engine-owned durable frontier"),
+            );
         }
         drop(
             store
@@ -110,8 +105,12 @@ fn background_locator_construction_completes_under_the_callers_live_read_transac
         // The caller's read transaction, held across the whole warm.
         let read = store
             .shared
-            .begin_operational_read()
+            .begin_composite_operational_read()
             .expect("caller read access");
+        assert!(
+            store.shared.owns_current_locator_source(&read),
+            "the caller retains the actual engine-owned source being warmed"
+        );
         let pending = store
             .shared
             .ensure_transient_indexes_ready()

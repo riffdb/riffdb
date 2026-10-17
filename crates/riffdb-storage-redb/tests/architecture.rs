@@ -211,15 +211,11 @@ fn graceful_close_drops_immutable_classification_before_one_final_write_transact
     let store_owner = production_source(crate_root().join("src/store.rs"));
     assert!(store_owner.contains("#[path = \"store_graceful_close.rs\"]"));
     let store = production_source(crate_root().join("src/store_graceful_close.rs"));
-    let close = store
-        .split_once("fn complete_graceful_close(")
-        .expect("graceful close owner")
-        .1
-        .split_once("fn complete_graceful_close_barrier")
-        .expect("barrier helper follows orchestrator")
-        .0;
+    // The compatibility wrapper and pre-drain eligibility probe are separate
+    // functions. Inspect only the real owner retained under the locator drain.
+    let close = compact_function(&store, "complete_graceful_close_under_locator_drain");
     let read = close
-        .find("self.database.begin_read()")
+        .find("letread=matchself.database.begin_read()")
         .expect("immutable classification view");
     let classify = close
         .find("classify_graceful_checkpoint(")
@@ -237,12 +233,13 @@ fn graceful_close_drops_immutable_classification_before_one_final_write_transact
     let probe = close
         .find("follower_lifecycle::is_attached(&read)")
         .unwrap();
-    let refusal = close.find("if !matches!(source, Ok(false))").unwrap();
+    let refusal = close.find("if!matches!(source,Ok(false))").unwrap();
     let barrier = close
         .find("self.complete_graceful_close_barrier()")
         .unwrap();
     // The probe's owned read is dropped by and_then before either the barrier
     // or its separate immutable checkpoint classification view is opened.
+    assert!(close.contains(".and_then(|read|crate::follower_lifecycle::is_attached(&read));"));
     assert!(probe < refusal && refusal < barrier && barrier < read);
 
     let final_clean = store
@@ -1370,9 +1367,8 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(!follower.contains("RedbOperationalPorts"));
     assert!(!follower.contains("complete_graceful_close("));
     assert!(!follower.contains("allocate_one("));
-    let projection = without_whitespace(&production_source(
-        source_dir.join("store_follower_projection.rs"),
-    ));
+    let projection_source = production_source(source_dir.join("store_follower_projection.rs"));
+    let projection = without_whitespace(&projection_source);
     assert!(projection.contains("implRedbFollowerApplier{"));
     assert_eq!(
         projection
@@ -1382,10 +1378,34 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     );
     assert_eq!(
         projection
-            .matches("self.shared.commit_durable(write)?")
+            .matches("self.shared.commit_with_source_footprint_and_locator(")
             .count(),
         1
     );
+    assert!(!projection.contains("commit_durable("));
+    let rebuild = compact_function(&projection_source, "rebuild_projection_commit");
+    let fuse = rebuild.find("self.failed=true").unwrap();
+    let lease = rebuild
+        .find("self.shared.mutation_gate.acquire()?")
+        .unwrap();
+    let predecessor = rebuild
+        .find("letpredecessor=self.shared.capture_checkpoint_root()?")
+        .unwrap();
+    let locator = rebuild
+        .find("letlocator=predecessor.locator_capability().clone()")
+        .unwrap();
+    let begin_write = rebuild.find("self.shared.database.begin_write()").unwrap();
+    assert!(fuse < lease && lease < predecessor && predecessor < locator && locator < begin_write);
+    assert!(rebuild.contains("if!locator.is_pending(){locator.require_complete()?;}"));
+    assert!(rebuild.contains("self.shared.commit_with_source_footprint_and_locator(write,crate::source_continuation::SourceContinuationFootprint::unknown(),locator,)?"));
+    assert!(
+        rebuild
+            .find("self.shared.commit_with_source_footprint_and_locator(")
+            .unwrap()
+            < rebuild.find("self.failed=false").unwrap()
+    );
+    assert!(!rebuild.contains("LocatorCapability::try_complete"));
+    assert!(!rebuild.contains("LocatorCapability::try_pending"));
     assert_eq!(
         projection
             .matches("shared.mutation_gate.acquire()?")

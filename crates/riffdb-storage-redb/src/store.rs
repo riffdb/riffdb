@@ -9972,3 +9972,7 @@ impl Drop for SharedRedb {
 #[cfg(test)]
 #[path = "locator_close_preflight_tests.rs"]
 mod locator_close_preflight_tests;
+
+#[cfg(test)]
+#[path = "store/retention_rotation_fixture.rs"]
+mod retention_rotation_fixture;

@@ -95,6 +95,12 @@ writer checks the current source again under its lease before admitting a prune;
 invalid construction and actual storage failures still stop the lane as
 `refused`. A Pending hold does not count as retention progress.
 
+A retained-history read can overlap checkpoint rotation and journal sealing.
+RiffDB resolves the pinned generation across its existing journal names and makes
+one bounded retry if the generation moves during lookup. It still verifies the
+exact database, generation, frame position and content hash; malformed frames or
+failed artifact custody checks refuse the read.
+
 Restore normalizes retained event-consumer leases to the restored incarnation
 before readiness. This metadata recovery can commit while command locators are
 pending. It preserves the refusal of incomplete command lookups and requests
