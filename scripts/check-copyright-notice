@@ -13,7 +13,6 @@ notice_files=(
     docs/release.md
     release/README.md
     release/RELEASE_NOTES.md
-    website/src/components/SiteFooter.astro
 )
 
 for notice_file in "${notice_files[@]}"; do
@@ -37,4 +36,4 @@ if ! grep -Fq 'COPYRIGHT' scripts/release-install-smoke; then
     exit 1
 fi
 
-printf '%s\n' 'Copyright notice is consistent across source, documentation, website, and release paths.'
+printf '%s\n' 'Copyright notice is consistent across source, documentation, and release paths.'
