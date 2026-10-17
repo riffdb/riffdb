@@ -88,6 +88,11 @@ pub struct ResolvedProjectionPlan {
     projection_ordinal: u16,
 }
 
+riffdb_types::inspect_owned_capacity_struct_v1!(ResolvedProjectionPlan {
+    owned: [identity, plan, bundle, lineage_proof],
+    inline: [projection_ordinal]
+});
+
 impl ResolvedProjectionPlan {
     /// Returns the exact lineage, projection ID, and semantic plan hash.
     #[must_use]
@@ -283,6 +288,20 @@ pub(crate) fn resolve_projection_from_lineage(
     proof: &Arc<LineageMaterializationProof>,
     identity: &ProjectionIdentity,
 ) -> Result<ResolvedProjectionPlan, CatalogError> {
+    let (projection_ordinal, bundle, plan) = select_projection_from_lineage(proof, identity)?;
+    Ok(ResolvedProjectionPlan {
+        identity: identity.clone(),
+        plan: plan.clone(),
+        bundle: bundle.clone(),
+        lineage_proof: Arc::clone(proof),
+        projection_ordinal,
+    })
+}
+
+pub(crate) fn select_projection_from_lineage<'proof>(
+    proof: &'proof Arc<LineageMaterializationProof>,
+    identity: &ProjectionIdentity,
+) -> Result<(u16, &'proof ValidatedContractBundle, &'proof ProjectionPlan), CatalogError> {
     if identity.contract_lineage() != proof.terminal().lineage() {
         return Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan));
     }
@@ -301,13 +320,7 @@ pub(crate) fn resolve_projection_from_lineage(
         .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
     let projection_ordinal = u16::try_from(index)
         .map_err(|_| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-    Ok(ResolvedProjectionPlan {
-        identity: identity.clone(),
-        plan: plan.clone(),
-        bundle: bundle.clone(),
-        lineage_proof: Arc::clone(proof),
-        projection_ordinal,
-    })
+    Ok((projection_ordinal, bundle, plan))
 }
 
 impl ValidatedMigrationPlan {

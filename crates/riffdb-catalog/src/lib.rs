@@ -24,6 +24,7 @@ mod migration;
 mod notification;
 mod projection_materialization;
 mod projection_provider;
+mod projection_source_capture;
 mod query_module;
 mod reactive_module;
 
@@ -42,5 +43,7 @@ pub use migration::*;
 pub use notification::*;
 pub use projection_materialization::*;
 pub use projection_provider::*;
+#[doc(hidden)]
+pub use projection_source_capture::*;
 pub use query_module::*;
 pub use reactive_module::*;

@@ -42,3 +42,8 @@ riffdb_types::inspect_owned_capacity_struct_v1!(ProjectionPlan {
     ],
     inline: []
 });
+
+riffdb_types::inspect_owned_capacity_struct_v1!(BoundProjectionGroupSchema {
+    owned: [schema, identity],
+    inline: []
+});

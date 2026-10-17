@@ -111,6 +111,13 @@ impl ProjectionSourceWorkingBudgetV1 {
         })
     }
 
+    /// Exact accounting-owner affinity, never durable identity or authority.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shares_owner_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0.0, &other.0.0)
+    }
+
     /// Bounded counters only; no paths, source keys or payload values.
     pub fn observation(&self) -> Result<BudgetObservation, BudgetUnavailable> {
         self.0.observation()

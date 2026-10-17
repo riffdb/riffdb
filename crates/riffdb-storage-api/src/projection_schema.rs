@@ -100,3 +100,8 @@ impl CheckedProjectionSchema {
         Ok(())
     }
 }
+
+riffdb_types::inspect_owned_capacity_struct_v1!(CheckedProjectionSchema {
+    owned: [bound],
+    inline: []
+});
