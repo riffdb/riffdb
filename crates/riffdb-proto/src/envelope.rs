@@ -810,12 +810,12 @@ pub(crate) fn is_canonical_encoding<M: Message>(message: &M, payload: &[u8]) -> 
         };
         scratch.clear();
         scratch.reserve(payload.len());
-        if message.encode(&mut *scratch).is_err() {
-            return false;
-        }
-        let canonical = scratch.as_slice() == payload;
+        let canonical = message.encode(&mut *scratch).is_ok() && scratch.as_slice() == payload;
         if scratch.capacity() > CANONICAL_SCRATCH_RETAINED_BYTES {
-            scratch.shrink_to(CANONICAL_SCRATCH_RETAINED_BYTES);
+            // shrink_to cannot release bytes below the live payload length.
+            // Destroy the oversized buffer after the exact comparison, including
+            // an encoding failure, before returning to the caller.
+            *scratch = Vec::new();
         }
         canonical
     })
@@ -1088,6 +1088,7 @@ mod tests {
 
     /// A payload sitting above the retained scratch capacity still compares
     /// exactly, and the shrink afterwards must not disturb the next call.
+    // req: PRJ-004, REC-001
     #[test]
     fn canonicality_compare_handles_payloads_above_the_retained_scratch() {
         let message = crate::storage::v1::StoredRecordRegistryV2 {
@@ -1096,6 +1097,21 @@ mod tests {
         let payload = message.encode_to_vec();
         assert!(payload.len() > CANONICAL_SCRATCH_RETAINED_BYTES);
         assert!(is_canonical_encoding(&message, &payload));
+        CANONICAL_SCRATCH.with(|scratch| {
+            assert!(
+                scratch.borrow().capacity() <= CANONICAL_SCRATCH_RETAINED_BYTES,
+                "canonical scratch retained oversized allocation after a large compare"
+            );
+        });
+        let mut corrupted = payload.clone();
+        *corrupted.last_mut().unwrap() ^= 1;
+        assert!(!is_canonical_encoding(&message, &corrupted));
+        CANONICAL_SCRATCH.with(|scratch| {
+            assert!(
+                scratch.borrow().capacity() <= CANONICAL_SCRATCH_RETAINED_BYTES,
+                "canonical scratch retained oversized allocation after a rejected compare"
+            );
+        });
 
         let small = crate::storage::v1::StoredRecordRegistryV2 {
             registry_digest: vec![0x5A; 16],

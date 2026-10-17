@@ -67,6 +67,12 @@ command group before allocation. The existing 256-command group limit and native
 memory ceilings remain unchanged. A legitimate group whose complete ownership
 exceeds its available window still receives a typed capacity refusal.
 
+Envelope decoders that reuse a canonicality buffer retain at most 64 KiB of
+buffer capacity per thread between comparisons. A larger comparison releases
+its oversized buffer before returning, including when the bytes are rejected.
+This cache limit does not replace an operation's memory admission or increase
+its allowance.
+
 Before an ordinary authenticated request starts work on a live writer service,
 the service checks the exact native source dependency. A complete source enters
 the normal authorization and audit path immediately. A Pending source waits on

@@ -3959,3 +3959,24 @@ successful durable receipt and every independent recovery check remain required.
 An unavailable poll at the deadline is a sticky campaign failure. The native
 restore-lifecycle cost remains unresolved; this classification correction alone
 qualifies neither WP-825 nor WP-826.
+
+### Canonical decode scratch retires oversized capacity
+
+A focused regression reproduced an existing retention bug in the ordinary
+canonical-envelope comparison. After encoding a large payload, the code tried
+to shrink its scratch buffer to 64 KiB while its live length still contained
+the complete payload. The buffer therefore retained the larger allocation
+until a later smaller comparison or explicit teardown.
+
+The comparison now destroys an oversized buffer after the exact byte check,
+also covering encoding failure. Small comparisons retain their existing cache.
+The strengthened regression verifies immediate retirement after both a valid
+large comparison and an equal-length corrupted comparison, then verifies the
+next small comparison. The original code fails this assertion; the correction
+passes it. All 99 Protobuf library tests, all-target Protobuf Clippy, and the
+scope, size and panic checks pass on the reference Linux host. Durable bytes,
+golden fixtures and acceptance predicates are unchanged.
+
+This repairs the cache's existing retention policy. It does not prove complete
+Source working-memory admission, caller-owned decoder scratch, native writer
+resource planning, or either campaign. WP-825 and WP-826 remain open.
