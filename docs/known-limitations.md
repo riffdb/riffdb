@@ -61,7 +61,7 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Asynchronous follower replication, follower reads, operator registration and retirement, and explicit incarnation-fenced primary promotion operate on a single-primary topology without quorum durability, automatic failover, cascading followers, or multi-primary writes; see [follower administration](operations/FOLLOWER-ADMINISTRATION.md).
 - Restore publication requires the database directory to be private to the sole configured service identity, and shared write access or concurrent server processes are unsupported.
 - Full backup and restore publication are offline maintenance operations, while changelog-derived archive backup and restore operate at commit-sequence granularity without wall-clock point-in-time recovery or built-in archive encryption; see [backup and restore](backup-restore.md).
-- Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`), leaving clients that omit `observed_history_incarnation` unvalidated.
+- Destructive restore preserves `DatabaseId` while rewinding sequence allocators and bumping the durable `history_incarnation` fence (`RDB-HISTORY-0101`); stateful `RiffDbClient` and `riffdb-mcp` sessions automatically track and send `observed_history_incarnation` across commit and event reads, while newly connected stateless callers that omit a prior `observed_history_incarnation` adopt the restored incarnation.
 - Locators, cursors, sessions, read-after-sequence expectations, authorization observations, and idempotency assumptions from a destroyed history suffix are invalid after a restore.
 
 ## Retention

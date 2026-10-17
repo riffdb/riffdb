@@ -36,11 +36,39 @@ const MAX_INITIAL_DISCOVERY_ITEMS: usize = 1_024;
 const MAX_FULL_CONCRETE_RESOURCE_ITEMS: usize = 16_387;
 const MAX_GUIDANCE_DISCOVERY_PAGES: usize = 5;
 
+#[derive(Default)]
+struct SessionHistoryIncarnationTracker {
+    observed: std::sync::atomic::AtomicU64,
+}
+
+impl SessionHistoryIncarnationTracker {
+    fn with_initial(initial: Option<u64>) -> Self {
+        Self {
+            observed: std::sync::atomic::AtomicU64::new(initial.unwrap_or(0)),
+        }
+    }
+
+    fn get(&self) -> Option<u64> {
+        let observed = self.observed.load(std::sync::atomic::Ordering::Acquire);
+        (observed >= 1).then_some(observed)
+    }
+
+    fn record(&self, observed: Option<u64>) {
+        if let Some(observed) = observed
+            && observed >= 1
+        {
+            self.observed
+                .store(observed, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 /// Public-client MCP backend with no local service or authorization authority.
 pub struct PublicGrpcMcpBackend {
     client: RiffDbClient,
     metadata: CallMetadata,
     client_activity: McpStdioClientActivity,
+    observed_history_incarnation: SessionHistoryIncarnationTracker,
 }
 
 #[derive(Clone)]
@@ -106,11 +134,32 @@ impl PublicGrpcMcpBackend {
         metadata: CallMetadata,
         client_activity: McpStdioClientActivity,
     ) -> Self {
+        let initial_incarnation = client.observed_history_incarnation();
         Self {
             client,
             metadata,
             client_activity,
+            observed_history_incarnation: SessionHistoryIncarnationTracker::with_initial(
+                initial_incarnation,
+            ),
         }
+    }
+
+    /// Returns the session's observed history incarnation, if any.
+    #[must_use]
+    pub fn observed_history_incarnation(&self) -> Option<u64> {
+        self.observed_history_incarnation.get()
+    }
+
+    fn clone_client(&self) -> RiffDbClient {
+        let mut client = self.client.clone();
+        client.set_observed_history_incarnation(self.observed_history_incarnation());
+        client
+    }
+
+    fn remember_client_history_incarnation(&self, client: &RiffDbClient) {
+        self.observed_history_incarnation
+            .record(client.observed_history_incarnation());
     }
 
     async fn discover_tool_page(
@@ -315,7 +364,7 @@ impl PublicGrpcMcpBackend {
             McpResourceLocator::Commit(sequence) => {
                 let expected_sequence = sequence.get();
                 let uri = format_commit_locator(sequence);
-                let mut client = self.client.clone();
+                let mut client = self.clone_client();
                 let response = client
                     .get_commit(
                         v1::GetCommitRequest {
@@ -327,6 +376,7 @@ impl PublicGrpcMcpBackend {
                     )
                     .await
                     .authenticated_client_result(&self.client_activity)?;
+                self.remember_client_history_incarnation(&client);
                 let commit = match response.result {
                     Some(v1::get_commit_response::Result::Found(commit)) => commit,
                     Some(v1::get_commit_response::Result::NotFound(_)) | None => {
@@ -1004,7 +1054,7 @@ impl PublicGrpcMcpBackend {
             .map_err(|_| McpBackendError::InvalidResponse)?;
         let request = wire::fixed_request_to_proto(request_id, request)
             .map_err(|_| McpBackendError::InvalidResponse)?;
-        let mut client = self.client.clone();
+        let mut client = self.clone_client();
         match request {
             FixedGrpcRequest::ValidateContract(request) => response::validate_contract(
                 client
@@ -1050,20 +1100,21 @@ impl PublicGrpcMcpBackend {
             ),
             FixedGrpcRequest::GetCommit(request) => {
                 let expected_sequence = request.commit_sequence;
-                response::get_commit(
-                    client
-                        .get_commit(request, &self.metadata)
-                        .await
-                        .authenticated_client_result(&self.client_activity)?,
-                    expected_sequence,
-                )
+                let response = client
+                    .get_commit(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?;
+                self.remember_client_history_incarnation(&client);
+                response::get_commit(response, expected_sequence)
             }
-            FixedGrpcRequest::ScanCommits(request) => response::scan_commits(
-                client
+            FixedGrpcRequest::ScanCommits(request) => {
+                let response = client
                     .scan_commits(request, &self.metadata)
                     .await
-                    .authenticated_client_result(&self.client_activity)?,
-            ),
+                    .authenticated_client_result(&self.client_activity)?;
+                self.remember_client_history_incarnation(&client);
+                response::scan_commits(response)
+            }
             FixedGrpcRequest::TraceProvenance(request) => response::trace_provenance(
                 client
                     .trace_provenance(request, &self.metadata)
@@ -2653,5 +2704,20 @@ mod tests {
                 .expect("client work is outside watcher meter");
         }
         assert_eq!(budget.calls(), 5);
+    }
+
+    // req: REC-002, STO-001, DX-014
+    #[test]
+    fn client_and_mcp_track_observed_history_incarnation_across_commit_and_event_reads() {
+        let tracker = SessionHistoryIncarnationTracker::with_initial(None);
+        assert_eq!(tracker.get(), None);
+        tracker.record(Some(0));
+        assert_eq!(tracker.get(), None);
+        tracker.record(Some(6));
+        assert_eq!(tracker.get(), Some(6));
+        tracker.record(None);
+        assert_eq!(tracker.get(), Some(6));
+        tracker.record(Some(8));
+        assert_eq!(tracker.get(), Some(8));
     }
 }

@@ -31701,6 +31701,15 @@ work_packages:
     scale: Incarnation tracking stores one Option<u64> / AtomicU64 per client or MCP session with O(1) overhead.
   human_review_triggers:
   - Client or MCP history-incarnation tracking overrides an explicit caller-supplied observed_history_incarnation or weakens RDB-HISTORY-0101 validation.
+  closure:
+    status: complete
+    completed_at: '2026-10-16'
+    requirements_satisfied: [REC-002, STO-001, DX-014]
+    evidence: cargo nextest run -p riffdb-client-rust -p riffdb-mcp-stdio -E 'test(client_and_mcp_track_observed_history_incarnation_across_commit_and_event_reads)' && ./scripts/generate-operation-adapters --check && ./scripts/handbook check
+    decision: Wired automatic observed_history_incarnation application and response remembering into RiffDbClient get_commit, scan_commits, subscribe_commits, replay_events, and tail_events, added SessionHistoryIncarnationTracker across commit resource and tool calls in PublicGrpcMcpBackend, and updated docs/known-limitations.md.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
 - id: WP-870
   name: Ad-hoc projected group-by ordering, top-N limit, and aggregate limitations reconciliation
   tier: guarantee

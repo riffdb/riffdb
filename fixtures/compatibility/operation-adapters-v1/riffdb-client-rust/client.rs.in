@@ -342,6 +342,34 @@ impl RiffDbClient {
         request
     }
 
+    /// Fills `observed_history_incarnation` on a replay-events request when unset (`0`).
+    #[must_use]
+    pub fn apply_observed_history_incarnation_replay(
+        &self,
+        mut request: v1::ReplayEventsRequest,
+    ) -> v1::ReplayEventsRequest {
+        if request.observed_history_incarnation == 0
+            && let Some(remembered) = self.observed_history_incarnation
+        {
+            request.observed_history_incarnation = remembered;
+        }
+        request
+    }
+
+    /// Fills `observed_history_incarnation` on a tail-events request when unset (`0`).
+    #[must_use]
+    pub fn apply_observed_history_incarnation_tail(
+        &self,
+        mut request: v1::TailEventsRequest,
+    ) -> v1::TailEventsRequest {
+        if request.observed_history_incarnation == 0
+            && let Some(remembered) = self.observed_history_incarnation
+        {
+            request.observed_history_incarnation = remembered;
+        }
+        request
+    }
+
     /// Remembers the history incarnation reported by a get-commit response.
     pub fn remember_history_incarnation_from_get(&mut self, response: &v1::GetCommitResponse) {
         if response.history_incarnation >= 1 {
@@ -352,6 +380,15 @@ impl RiffDbClient {
     /// Remembers the history incarnation reported by a commit page.
     pub fn remember_history_incarnation_from_scan(&mut self, response: &v1::ScanCommitsResponse) {
         if let Some(page) = response.page.as_ref()
+            && page.history_incarnation >= 1
+        {
+            self.observed_history_incarnation = Some(page.history_incarnation);
+        }
+    }
+
+    /// Remembers the history incarnation reported by an event page.
+    pub fn remember_history_incarnation_from_event_page(&mut self, page: Option<&v1::EventPage>) {
+        if let Some(page) = page
             && page.history_incarnation >= 1
         {
             self.observed_history_incarnation = Some(page.history_incarnation);
@@ -550,21 +587,49 @@ impl RiffDbClient {
         configure_projection_wait(&mut message, required_sequence, maximum_wait)?;
         self.query_projection(message, metadata).await
     }
-    unary!(
-        get_commit,
-        commit,
-        get_commit,
-        v1::GetCommitRequest,
-        v1::GetCommitResponse
-    );
-    unary_exchange!(
-        scan_commits,
-        commit,
-        scan_commits,
-        v1::ScanCommitsRequest,
-        v1::ScanCommitsResponse,
-        validate_scan_commits_exchange
-    );
+    /// Performs the checked `get_commit` unary RPC.
+    pub async fn get_commit(
+        &mut self,
+        message: v1::GetCommitRequest,
+        metadata: &CallMetadata,
+    ) -> Result<v1::GetCommitResponse, ClientError> {
+        let message = self.apply_observed_history_incarnation_get(message);
+        validate_outbound(&message)?;
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let response = self
+            .commit
+            .get_commit(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        self.remember_history_incarnation_from_get(&response);
+        Ok(response)
+    }
+
+    /// Performs the checked `scan_commits` unary RPC.
+    pub async fn scan_commits(
+        &mut self,
+        message: v1::ScanCommitsRequest,
+        metadata: &CallMetadata,
+    ) -> Result<v1::ScanCommitsResponse, ClientError> {
+        let message = self.apply_observed_history_incarnation_scan(message);
+        validate_outbound(&message)?;
+        let exchange_request = message.clone();
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let response = self
+            .commit
+            .scan_commits(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        validate_scan_commits_exchange(&exchange_request, &response)
+            .map_err(|_| invalid_inbound())?;
+        self.remember_history_incarnation_from_scan(&response);
+        Ok(response)
+    }
+
     unary_exchange!(
         trace_provenance,
         commit,
@@ -580,20 +645,46 @@ impl RiffDbClient {
         v1::DescribeEventRequest,
         v1::DescribeEventResponse
     );
-    unary!(
-        replay_events,
-        event,
-        replay_events,
-        v1::ReplayEventsRequest,
-        v1::ReplayEventsResponse
-    );
-    unary!(
-        tail_events,
-        event,
-        tail_events,
-        v1::TailEventsRequest,
-        v1::TailEventsResponse
-    );
+
+    /// Performs the checked `replay_events` unary RPC.
+    pub async fn replay_events(
+        &mut self,
+        message: v1::ReplayEventsRequest,
+        metadata: &CallMetadata,
+    ) -> Result<v1::ReplayEventsResponse, ClientError> {
+        let message = self.apply_observed_history_incarnation_replay(message);
+        validate_outbound(&message)?;
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let response = self
+            .event
+            .replay_events(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        self.remember_history_incarnation_from_event_page(response.page.as_ref());
+        Ok(response)
+    }
+
+    /// Performs the checked `tail_events` unary RPC.
+    pub async fn tail_events(
+        &mut self,
+        message: v1::TailEventsRequest,
+        metadata: &CallMetadata,
+    ) -> Result<v1::TailEventsResponse, ClientError> {
+        let message = self.apply_observed_history_incarnation_tail(message);
+        validate_outbound(&message)?;
+        let mut request = Request::new(message);
+        metadata.apply(&mut request);
+        let response = self
+            .event
+            .tail_events(request)
+            .await
+            .map_err(checked_status)?
+            .into_inner();
+        self.remember_history_incarnation_from_event_page(response.page.as_ref());
+        Ok(response)
+    }
     unary!(
         consume_event_stream,
         event,
@@ -902,6 +993,7 @@ impl RiffDbClient {
         message: v1::SubscribeCommitsRequest,
         metadata: &CallMetadata,
     ) -> Result<CommitNotificationStream, ClientError> {
+        let message = self.apply_observed_history_incarnation_subscribe(message);
         validate_outbound(&message)?;
         let mut request = Request::new(message);
         metadata.apply(&mut request);
@@ -3124,8 +3216,12 @@ mod tests {
 
 #[cfg(test)]
 mod history_incarnation_tests {
-    use super::merge_observed_history_incarnation;
+    use riffdb_proto::v1;
+    use tonic::transport::Endpoint;
 
+    use super::{RiffDbClient, merge_observed_history_incarnation};
+
+    // req: REC-002, STO-001, DX-014
     #[test]
     fn merge_prefers_explicit_over_remembered() {
         assert_eq!(merge_observed_history_incarnation(None, Some(7)), Some(7));
@@ -3135,5 +3231,102 @@ mod history_incarnation_tests {
         );
         assert_eq!(merge_observed_history_incarnation(None, None), None);
         assert_eq!(merge_observed_history_incarnation(Some(3), None), Some(3));
+    }
+
+    // req: REC-002, STO-001, DX-014
+    #[test]
+    fn client_and_mcp_track_observed_history_incarnation_across_commit_and_event_reads() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("current-thread runtime");
+        let _guard = runtime.enter();
+        let mut client =
+            RiffDbClient::from_channel(Endpoint::from_static("http://[::1]:1").connect_lazy());
+        assert_eq!(client.observed_history_incarnation(), None);
+
+        client.remember_history_incarnation_from_get(&v1::GetCommitResponse {
+            result: None,
+            history_incarnation: 4,
+        });
+        assert_eq!(client.observed_history_incarnation(), Some(4));
+
+        let get_req = client.apply_observed_history_incarnation_get(v1::GetCommitRequest {
+            request_id: vec![1; 16],
+            commit_sequence: 1,
+            observed_history_incarnation: None,
+        });
+        assert_eq!(get_req.observed_history_incarnation, Some(4));
+
+        let explicit_get = client.apply_observed_history_incarnation_get(v1::GetCommitRequest {
+            request_id: vec![1; 16],
+            commit_sequence: 1,
+            observed_history_incarnation: Some(2),
+        });
+        assert_eq!(explicit_get.observed_history_incarnation, Some(2));
+
+        client.remember_history_incarnation_from_scan(&v1::ScanCommitsResponse {
+            page: Some(v1::CommitPage {
+                items: Vec::new(),
+                next_cursor: None,
+                observed_fence: None,
+                history_incarnation: 5,
+            }),
+        });
+        assert_eq!(client.observed_history_incarnation(), Some(5));
+
+        let scan_req = client.apply_observed_history_incarnation_scan(v1::ScanCommitsRequest {
+            request_id: vec![1; 16],
+            page: None,
+            observed_history_incarnation: None,
+        });
+        assert_eq!(scan_req.observed_history_incarnation, Some(5));
+
+        let sub_req =
+            client.apply_observed_history_incarnation_subscribe(v1::SubscribeCommitsRequest {
+                request_id: vec![1; 16],
+                after_sequence: None,
+                maximum_lifetime_nanos: 1_000,
+                observed_history_incarnation: None,
+            });
+        assert_eq!(sub_req.observed_history_incarnation, Some(5));
+
+        client.remember_history_incarnation_from_event_page(Some(&v1::EventPage {
+            items: Vec::new(),
+            next_cursor: Vec::new(),
+            observed_upper: None,
+            disposition: 0,
+            history_incarnation: 9,
+        }));
+        assert_eq!(client.observed_history_incarnation(), Some(9));
+
+        let replay_req = client.apply_observed_history_incarnation_replay(v1::ReplayEventsRequest {
+            request_id: vec![1; 16],
+            selection: None,
+            after_event_id: None,
+            page: None,
+            observed_history_incarnation: 0,
+        });
+        assert_eq!(replay_req.observed_history_incarnation, 9);
+
+        let explicit_replay =
+            client.apply_observed_history_incarnation_replay(v1::ReplayEventsRequest {
+                request_id: vec![1; 16],
+                selection: None,
+                after_event_id: None,
+                page: None,
+                observed_history_incarnation: 3,
+            });
+        assert_eq!(explicit_replay.observed_history_incarnation, 3);
+
+        let tail_req = client.apply_observed_history_incarnation_tail(v1::TailEventsRequest {
+            request_id: vec![1; 16],
+            selection: None,
+            after_event_id: None,
+            page: None,
+            maximum_wait_nanos: 1_000,
+            observed_history_incarnation: 0,
+        });
+        assert_eq!(tail_req.observed_history_incarnation, 9);
     }
 }
