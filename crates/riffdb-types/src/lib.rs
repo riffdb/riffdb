@@ -8,6 +8,7 @@ mod aggregate;
 pub mod application_plan;
 /// Canonical application-portability value model.
 pub mod application_portability;
+mod canonical_clone_capacity;
 mod capability;
 mod capability_grant;
 mod codec;
@@ -60,6 +61,7 @@ pub use actor::*;
 pub use aggregate::*;
 pub use application_plan::*;
 pub use application_portability::*;
+pub use canonical_clone_capacity::*;
 pub use capability::*;
 pub use capability_grant::*;
 pub use codec::*;

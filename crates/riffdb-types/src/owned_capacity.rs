@@ -442,6 +442,20 @@ macro_rules! inspect_owned_capacity_copy_v1 {
     };
 }
 
+/// Allocation-free allowance for one requested allocation, using the exact same
+/// alignment and allocator accounting as the trusted ownership inspector.
+/// Invalid alignment and arithmetic overflow refuse; this grants no budget.
+#[doc(hidden)]
+pub fn owned_allocation_capacity_bound_v1(
+    bytes: usize,
+    alignment: usize,
+) -> Result<u64, OwnedCapacityInspectionErrorV1> {
+    if !alignment.is_power_of_two() {
+        return Err(OwnedCapacityInspectionErrorV1);
+    }
+    allocation_upper_bound(bytes, alignment)
+}
+
 /// One admitted allocator allowance shared by decoded sizing and owned inspection.
 pub(crate) fn allocation_upper_bound(
     bytes: usize,
