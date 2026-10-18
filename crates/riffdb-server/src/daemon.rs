@@ -1731,8 +1731,8 @@ async fn run_multi_database_server(
             .map_err(|_| DaemonError::GrpcConfiguration)?;
     }
 
-    let mut hosted_mcp = match config.mcp_listen_address() {
-        Some(address) => {
+    let mut hosted_mcp = match config.mcp_listener() {
+        Some(mcp_listener) => {
             let mut dependencies = Vec::with_capacity(graphs.len());
             for (database, graph) in config.databases().iter().zip(&graphs) {
                 let Some(hosted) = graph.hosted_mcp_dependencies() else {
@@ -1741,7 +1741,9 @@ async fn run_multi_database_server(
                 };
                 dependencies.push((database.alias().clone(), hosted));
             }
-            match HostedMcp::bind_routes(address, config.mcp_origins(), dependencies).await {
+            match HostedMcp::bind_listener_routes(mcp_listener, config.mcp_origins(), dependencies)
+                .await
+            {
                 Ok(hosted) => Some(hosted),
                 Err(source) => {
                     shutdown_multi_before_ready(&mut transport, graphs).await?;
@@ -3329,14 +3331,14 @@ async fn start_generation(
             return Err(DaemonError::GraphBuild(source));
         }
     };
-    let mut hosted_mcp = match config.mcp_listen_address() {
-        Some(address) => {
+    let mut hosted_mcp = match config.mcp_listener() {
+        Some(mcp_listener) => {
             let Some(dependencies) = graph.hosted_mcp_dependencies() else {
                 let mut no_hosted_mcp = None;
                 shutdown_before_ready(graph, &mut transport, &mut no_hosted_mcp).await?;
                 return Err(DaemonError::McpDependencies);
             };
-            match HostedMcp::bind(address, config.mcp_origins(), dependencies).await {
+            match HostedMcp::bind_listener(mcp_listener, config.mcp_origins(), dependencies).await {
                 Ok(hosted) => Some(hosted),
                 Err(source) => {
                     let mut no_hosted_mcp = None;
@@ -4671,6 +4673,40 @@ fn load_tls_snapshot(
             private_key: private_key_identity,
         },
     ))
+}
+
+pub(crate) fn load_http1_tls_acceptor(
+    listener: &DirectTlsListenerConfig,
+) -> Result<TlsAcceptor, HostedMcpStartError> {
+    let certificate_path = listener.tls().certificate_chain().as_path();
+    let private_key_path = listener.tls().private_key().as_path();
+    let expected_identity = listener.public_endpoint().identity();
+    let (certificate_chain, _) =
+        read_transport_file(certificate_path, MAX_CERTIFICATE_CHAIN_BYTES, false)
+            .map_err(|_| HostedMcpStartError::Tls)?;
+    let (private_key, _) = read_transport_file(private_key_path, MAX_PRIVATE_KEY_BYTES, true)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    verify_certificate_identity(&certificate_chain, expected_identity)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    let mut certificate_reader = io::Cursor::new(&certificate_chain);
+    let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    if certificates.is_empty() {
+        return Err(HostedMcpStartError::Tls);
+    }
+    let private_key = Zeroizing::new(private_key);
+    let private_key = PrivateKeyDer::from_pem_reader(io::Cursor::new(private_key.as_slice()))
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let mut config = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS13])
+        .map_err(|_| HostedMcpStartError::Tls)?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|_| HostedMcpStartError::Tls)?;
+    config.alpn_protocols.push(b"http/1.1".to_vec());
+    Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
 fn read_transport_file(

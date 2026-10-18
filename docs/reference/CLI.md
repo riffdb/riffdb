@@ -52,6 +52,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -69,6 +71,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -89,6 +93,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -109,6 +115,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -136,6 +144,10 @@ Options:
       --max-attempts <1..10>
 
       --credential-file <PATH>
+
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
 
   -h, --help
           Print help
@@ -167,6 +179,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -195,6 +211,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -216,6 +236,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -233,6 +255,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -250,6 +274,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -274,6 +300,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -303,6 +331,10 @@ Options:
       --max-attempts <1..10>
 
       --credential-file <PATH>
+
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
 
   -h, --help
           Print help
@@ -334,6 +366,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -358,6 +392,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -395,7 +431,11 @@ Options:
           Repository-relative Go main-package directory used by `--run`
       --seed
 
+      --tls-trust-root <PATH>
+
       --seed-dir <DIRECTORY>
+
+      --tls-server-name <SERVER_NAME>
 
       --seed-concurrency <1..8>
           [default: 8]
@@ -426,6 +466,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -447,6 +489,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -465,6 +509,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -483,6 +529,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -511,6 +559,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -535,6 +585,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -553,6 +605,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -581,6 +635,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -604,6 +660,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -627,6 +685,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -652,6 +712,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -670,6 +732,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -691,6 +755,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -714,6 +780,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -737,6 +805,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -761,6 +831,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -785,6 +857,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -803,6 +877,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -821,6 +897,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -841,6 +919,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -858,6 +938,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -875,6 +957,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -894,6 +978,8 @@ Options:
       --output <human|json>                     [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                    Print help
 ```
 
@@ -913,6 +999,8 @@ Options:
       --output <human|json>                    [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                   Print help
 ```
 
@@ -931,6 +1019,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -951,6 +1041,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -972,6 +1064,8 @@ Options:
       --output <human|json>                 [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                Print help
 ```
 
@@ -1003,6 +1097,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1022,6 +1120,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1044,6 +1144,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1078,6 +1180,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1099,6 +1205,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1135,6 +1243,10 @@ Options:
           Explicit role name in `riffdb.application.json` to receive newly discovered operations
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1158,6 +1270,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1198,8 +1312,12 @@ Options:
           [default: 8]
       --replace-role-credential
 
+      --tls-trust-root <PATH>
+
       --installation-plan <CANONICAL_PLAN>
           Binds deployment to one exact installation plan and campaign
+      --tls-server-name <SERVER_NAME>
+
       --installation-campaign-id <UUID_V7>
           Caller-stable campaign resumed before and after remote deployment
   -h, --help
@@ -1228,6 +1346,8 @@ Options:
       --max-attempts <1..10>
       --replace-role-credential
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1247,6 +1367,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1268,6 +1390,8 @@ Options:
       --output <human|json>                     [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                    Print help
 ```
 
@@ -1289,6 +1413,8 @@ Options:
       --output <human|json>                    [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                   Print help
 ```
 
@@ -1309,6 +1435,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1329,6 +1457,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1347,6 +1477,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1367,6 +1499,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1386,6 +1520,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1427,6 +1563,10 @@ Options:
 
       --application <RIFFDB.APPLICATION.JSON>
           Exact application source used to preflight compiled collection bounds
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1462,6 +1602,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1483,6 +1627,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1504,6 +1650,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1542,6 +1690,10 @@ Options:
 
       --field <FIELD_ID_OR_NAME>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1569,6 +1721,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1590,6 +1746,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1616,6 +1774,8 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
       --observed-history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                        Print help
 ```
 
@@ -1642,6 +1802,8 @@ Options:
       --wait-nanos <NANOSECONDS>                    [default: 30000000000]
       --credential-file <PATH>
       --observed-history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                        Print help
 ```
 
@@ -1666,6 +1828,8 @@ Options:
       --credential-file <PATH>
       --in-flight-limit <1..64>            [default: 16]
       --lease-seconds <5..900>             [default: 60]
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
       --wait-nanos <NANOSECONDS>           [default: 0]
       --progress-cursor <BASE64_CURSOR>
   -h, --help                               Print help
@@ -1692,6 +1856,8 @@ Options:
       --credential-file <PATH>
       --lease-token <64_HEX_CHARS>
       --history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1716,7 +1882,9 @@ Options:
       --credential-file <PATH>
       --lease-token <64_HEX_CHARS>
       --history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
       --retry-delay-nanos <NANOSECONDS>    [default: 0]
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1752,6 +1920,10 @@ Options:
 
       --progress-cursor <BASE64_CURSOR>
           Opaque protected-consumer cursor returned by status or consume
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -1774,6 +1946,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1795,6 +1969,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1818,6 +1994,8 @@ Options:
       --wait-nanos <NANOSECONDS>           [default: 0]
       --credential-file <PATH>
       --progress-cursor <BASE64_CURSOR>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1842,6 +2020,8 @@ Options:
       --credential-file <PATH>
       --lease-token <64_HEX_CHARS>
       --history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1866,7 +2046,9 @@ Options:
       --credential-file <PATH>
       --lease-token <64_HEX_CHARS>
       --history-incarnation <INCARNATION>
+      --tls-trust-root <PATH>
       --retry-delay-nanos <NANOSECONDS>    [default: 0]
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1888,6 +2070,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1912,7 +2096,9 @@ Options:
       --causation-token <OPAQUE_LOWER_HEX>
       --credential-file <PATH>
       --command-name <COMMAND>
+      --tls-trust-root <PATH>
       --input <JSON_INPUT>
+      --tls-server-name <SERVER_NAME>
       --expected-version <VERSION>
   -h, --help                                Print help
 ```
@@ -1939,6 +2125,8 @@ Options:
       --credential-file <PATH>
       --limit <ROWS>
       --cursor <BASE64_CURSOR>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1956,6 +2144,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1977,6 +2167,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -1998,6 +2190,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2036,7 +2230,11 @@ Options:
 
       --consistency <CONSISTENCY>
           [possible values: admission-head]
+      --tls-trust-root <PATH>
+
       --contract-lineage <LINEAGE>
+
+      --tls-server-name <SERVER_NAME>
 
       --contract-version <VERSION>
 
@@ -2079,7 +2277,11 @@ Options:
 
       --consistency <CONSISTENCY>
           [possible values: admission-head]
+      --tls-trust-root <PATH>
+
       --contract-lineage <LINEAGE>
+
+      --tls-server-name <SERVER_NAME>
 
       --contract-version <VERSION>
 
@@ -2107,6 +2309,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2130,6 +2334,8 @@ Options:
       --contract-version <VERSION>
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                          Print help
 ```
 
@@ -2148,6 +2354,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2165,6 +2373,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2203,6 +2413,10 @@ Options:
       --contract-version <VERSION>
 
       --credential-file <PATH>
+
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
 
   -h, --help
           Print help
@@ -2245,8 +2459,12 @@ Options:
 
       --group-by <FIELD>
           Group-by key field name (repeatable)
+      --tls-trust-root <PATH>
+
       --limit <ROWS>
           Post-sort row or group limit. With unordered `--group-by` this is the maximum number of groups (exceeding it is rejected); with `--group-by` and `--order` it truncates to the top N ordered groups; it does not apply to an aggregate without `--group-by`
+      --tls-server-name <SERVER_NAME>
+
       --freshness <POLICY>
           Freshness policy: `available`, `bounded:N`, or `causal` (requires token) [default: available]
       --token-hex <HEX>
@@ -2284,6 +2502,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2304,6 +2524,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2342,7 +2564,11 @@ Options:
 
       --principal-facts <JSON_OBJECT_PATH>
           Operator-owned bounded fact values for a compiler-protected role
+      --tls-trust-root <PATH>
+
       --capability-id <CAPABILITY_UUIDV7>
+
+      --tls-server-name <SERVER_NAME>
 
       --credential-output <PATH>
 
@@ -2373,6 +2599,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -2395,6 +2625,8 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
       --inventory-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2414,6 +2646,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2441,6 +2675,10 @@ Options:
       --max-attempts <1..10>
 
       --credential-file <PATH>
+
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
 
   -h, --help
           Print help
@@ -2478,6 +2716,10 @@ Options:
 
       --limit <COUNT>
           Bounded page size (`1..=256`, default `100`) [default: 100]
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -2508,6 +2750,10 @@ Options:
       --max-attempts <1..10>
 
       --credential-file <PATH>
+
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
 
   -h, --help
           Print help
@@ -2550,6 +2796,10 @@ Options:
           Non-secret operator capability inventory JSON file to read and update
       --database-path <PATH>
           Quiescent local Redb database path to read the source capability grant from
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -2568,6 +2818,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2605,8 +2857,12 @@ Options:
           Primary endpoint URI to fence before promoting this follower
       --primary-config <PATH>
           Operator client configuration file targeting the primary to fence
+      --tls-trust-root <PATH>
+
       --primary-credential-file <PATH>
           Optional credential file for fencing the primary (defaults to primary config or current credential)
+      --tls-server-name <SERVER_NAME>
+
       --operation-id <PROMOTION_OPERATION_UUIDV7>
           Promotion operation UUIDv7 (minted automatically when omitted)
       --fence-operation-id <FENCE_OPERATION_UUIDV7>
@@ -2636,6 +2892,8 @@ Options:
       --credential-file <PATH>
       --operation-id <PROMOTION_OPERATION_UUIDV7>
       --fence-operation-id <FENCE_OPERATION_UUIDV7>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                               Print help
 ```
 
@@ -2659,6 +2917,8 @@ Options:
       --registration-generation <REGISTRATION_GENERATION>
       --credential-file <PATH>
       --operation-id <OPERATION_ID>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                               Print help
 ```
 
@@ -2682,6 +2942,8 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
       --expires-at-sequence <NONZERO_APPLICATION_SEQUENCE>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                                Print help
 ```
 
@@ -2704,6 +2966,8 @@ Options:
       --max-attempts <1..10>
       --registration-generation <NONZERO_U64>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                   Print help
 ```
 
@@ -2719,6 +2983,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2737,6 +3003,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2756,6 +3024,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2776,6 +3046,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2794,6 +3066,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2846,7 +3120,13 @@ Options:
       --lease-seconds <60..86400>
           [default: 3600]
 
+      --tls-trust-root <PATH>
+
+
       --operation-id <UUID_V7>
+
+
+      --tls-server-name <SERVER_NAME>
 
 
       --portability-manifest <PORTABILITY_MANIFEST_JSON>
@@ -2874,6 +3154,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2892,6 +3174,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2910,6 +3194,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -2959,6 +3245,12 @@ Options:
       --credential-file <PATH>
 
 
+      --tls-trust-root <PATH>
+
+
+      --tls-server-name <SERVER_NAME>
+
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -2984,7 +3276,9 @@ Options:
       --class-complete
       --credential-file <PATH>
       --operation-complete
+      --tls-trust-root <PATH>
       --next-cursor <OPAQUE_BASE64_CURSOR>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                Print help
 ```
 
@@ -3003,6 +3297,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3021,6 +3317,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3044,6 +3342,8 @@ Options:
       --output <human|json>                  [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                                 Print help
 ```
 
@@ -3061,6 +3361,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3079,6 +3381,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3098,6 +3402,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3116,6 +3422,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3134,6 +3442,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3155,6 +3465,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3175,6 +3487,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3195,6 +3509,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3214,6 +3530,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3239,6 +3557,10 @@ Options:
 
       --credential-file <PATH>
 
+      --tls-trust-root <PATH>
+
+      --tls-server-name <SERVER_NAME>
+
   -h, --help
           Print help
 ```
@@ -3260,6 +3582,8 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3279,6 +3603,8 @@ Options:
       --reason <TEXT>
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```
 
@@ -3296,5 +3622,7 @@ Options:
       --output <human|json>                [possible values: human, json]
       --max-attempts <1..10>
       --credential-file <PATH>
+      --tls-trust-root <PATH>
+      --tls-server-name <SERVER_NAME>
   -h, --help                               Print help
 ```

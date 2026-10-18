@@ -14,6 +14,10 @@ use outbox::{OutboxDocument, parse_outbox};
 mod retention;
 pub(crate) use retention::{RetentionConfig, RetentionTarget};
 use retention::{RetentionDocument, parse_retention};
+#[path = "config_limits.rs"]
+mod limits;
+pub(crate) use limits::{DatabaseLimitsConfig, ServerDatabaseResourceGovernor};
+use limits::{LimitsDocument, parse_limits};
 #[path = "config_follower.rs"]
 mod follower;
 use follower::FollowerSourceDocument;
@@ -71,6 +75,21 @@ const CAPABILITY_KEYS_ENVIRONMENT: &str = "RIFFDB_CAPABILITY_KEYS";
 const IDEMPOTENCY_KEYS_ENVIRONMENT: &str = "RIFFDB_IDEMPOTENCY_KEYS";
 const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum McpListenerConfig {
+    LoopbackCleartext(SocketAddr),
+    DirectTls(DirectTlsListenerConfig),
+}
+
+impl McpListenerConfig {
+    pub(crate) const fn listen_address(&self) -> SocketAddr {
+        match self {
+            Self::LoopbackCleartext(address) => *address,
+            Self::DirectTls(listener) => listener.listen_address(),
+        }
+    }
+}
+
 /// Complete POC process configuration.
 ///
 /// Every field resolves independently as CLI, environment, explicitly selected
@@ -81,7 +100,7 @@ pub(crate) struct ServerConfig {
     databases: Vec<DatabaseConfig>,
     application_listener: ApplicationListenerConfig,
     audience: Audience,
-    mcp_listen_address: Option<SocketAddr>,
+    mcp_listener: Option<McpListenerConfig>,
     mcp_origins: Vec<String>,
     mcp_audience: Option<Audience>,
     metrics_listen_address: Option<SocketAddr>,
@@ -97,6 +116,7 @@ pub(crate) struct DatabaseConfig {
     outbox: Option<ConfiguredOutbox>,
     archives: Vec<ConfiguredArchive>,
     retention: RetentionConfig,
+    limits: DatabaseLimitsConfig,
     follower: Option<FollowerSourceConfig>,
     alias: DatabaseAlias,
     database_path: PathBuf,
@@ -164,6 +184,10 @@ impl DatabaseConfig {
     /// The ADR-0182 online retention lane's target and budget.
     pub(crate) const fn retention(&self) -> RetentionConfig {
         self.retention
+    }
+
+    pub(crate) const fn limits(&self) -> DatabaseLimitsConfig {
+        self.limits
     }
 
     pub(crate) fn follower(&self) -> Option<&FollowerSourceConfig> {
@@ -294,6 +318,7 @@ impl ServerConfig {
             || maintenance.projections_root.is_some()
             || !maintenance.archives.is_empty()
             || maintenance.retention.is_some()
+            || maintenance.limits.is_some()
             || maintenance.outbox.is_some()
             || !top_level_projections.is_empty();
         if !named_databases.is_empty() && uses_legacy_database_configuration {
@@ -304,6 +329,7 @@ impl ServerConfig {
                 outbox: parse_outbox(maintenance.outbox)?,
                 archives: parse_archives(maintenance.archives)?,
                 retention: parse_retention(maintenance.retention)?,
+                limits: parse_limits(maintenance.limits)?,
                 follower: server
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -374,13 +400,26 @@ impl ServerConfig {
             server.audience.map(OsString::from),
             OsString::from(DEFAULT_AUDIENCE),
         )?)?;
-        let mcp_listen_address = select_optional_os(
-            arguments.mcp_listen.as_ref(),
-            environment.value(MCP_LISTEN_ENVIRONMENT),
-            server.mcp_listen.map(OsString::from),
-        )?
-        .map(|value| parse_mcp_loopback_address(&value))
-        .transpose()?;
+        let mcp_listen_environment = environment.value(MCP_LISTEN_ENVIRONMENT);
+        let uses_legacy_mcp_listener = arguments.mcp_listen.is_some()
+            || mcp_listen_environment.is_some()
+            || server.mcp_listen.is_some();
+        if server.mcp_listener.is_some() && uses_legacy_mcp_listener {
+            return Err(ServerConfigError::InvalidMcpConfiguration);
+        }
+        let mcp_listener = match server.mcp_listener {
+            Some(document) => Some(parse_mcp_listener(document)?),
+            None => select_optional_os(
+                arguments.mcp_listen.as_ref(),
+                mcp_listen_environment,
+                server.mcp_listen.map(OsString::from),
+            )?
+            .map(|value| {
+                parse_mcp_loopback_address(&value).map(McpListenerConfig::LoopbackCleartext)
+            })
+            .transpose()?,
+        };
+        let mcp_listen_address = mcp_listener.as_ref().map(McpListenerConfig::listen_address);
         let mcp_origins = resolve_mcp_origins(
             &arguments.mcp_origins,
             environment.value(MCP_ORIGINS_ENVIRONMENT),
@@ -427,11 +466,20 @@ impl ServerConfig {
             OsString::from(DEFAULT_REDB_COMMIT_PROFILE),
         )?)?;
 
-        if mcp_listen_address.is_none() && !mcp_origins.is_empty() {
+        if mcp_listener.is_none() && !mcp_origins.is_empty() {
             return Err(ServerConfigError::InvalidMcpConfiguration);
         }
-        let mcp_audience = mcp_listen_address
-            .map(|address| Audience::new(format!("http://{address}{MCP_ROUTE}")))
+        let mcp_audience = mcp_listener
+            .as_ref()
+            .map(|listener| match listener {
+                McpListenerConfig::LoopbackCleartext(address) => {
+                    Audience::new(format!("http://{address}{MCP_ROUTE}"))
+                }
+                McpListenerConfig::DirectTls(listener) => Audience::new(format!(
+                    "{}{MCP_ROUTE}",
+                    listener.public_endpoint().as_str()
+                )),
+            })
             .transpose()
             .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
         if mcp_audience.as_ref() == Some(&audience) {
@@ -454,7 +502,7 @@ impl ServerConfig {
             databases,
             application_listener,
             audience,
-            mcp_listen_address,
+            mcp_listener,
             mcp_origins,
             mcp_audience,
             metrics_listen_address,
@@ -587,8 +635,14 @@ impl ServerConfig {
         &self.audience
     }
 
-    pub(crate) const fn mcp_listen_address(&self) -> Option<SocketAddr> {
-        self.mcp_listen_address
+    pub(crate) const fn mcp_listener(&self) -> Option<&McpListenerConfig> {
+        self.mcp_listener.as_ref()
+    }
+
+    pub(crate) fn mcp_listen_address(&self) -> Option<SocketAddr> {
+        self.mcp_listener
+            .as_ref()
+            .map(McpListenerConfig::listen_address)
     }
 
     pub(crate) fn mcp_origins(&self) -> &[String] {
@@ -646,7 +700,7 @@ impl fmt::Debug for ServerConfig {
             .field("databases", &self.databases)
             .field("application_listener", &self.application_listener)
             .field("audience", &"[CONFIGURED]")
-            .field("mcp_listen_address", &self.mcp_listen_address)
+            .field("mcp_listen_address", &self.mcp_listen_address())
             .field("mcp_origins", &"[CONFIGURED]")
             .field("mcp_audience", &"[DERIVED]")
             .field("metrics_listen_address", &self.metrics_listen_address)
@@ -772,6 +826,7 @@ struct ServerDocument {
     environment: Option<String>,
     audience: Option<String>,
     mcp_listen: Option<String>,
+    mcp_listener: Option<McpListenerDocument>,
     mcp_origins: Option<Vec<String>>,
     metrics_listen: Option<String>,
     telemetry_flight_recorder: Option<String>,
@@ -779,6 +834,21 @@ struct ServerDocument {
     capability_keys: Option<String>,
     idempotency_keys: Option<String>,
     redb_commit_profile: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum McpListenerDocument {
+    LoopbackCleartext {
+        listen: String,
+    },
+    DirectTls {
+        listen: String,
+        public_endpoint: String,
+        certificate_chain: String,
+        private_key: String,
+        bounds: Option<ListenerBoundsDocument>,
+    },
 }
 
 /// The versioned file-only application ingress selection.
@@ -843,6 +913,7 @@ struct MaintenanceDocument {
     backup_root: Option<String>,
     projections_root: Option<String>,
     retention: Option<RetentionDocument>,
+    limits: Option<LimitsDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -861,6 +932,7 @@ struct DatabaseDocument {
     #[serde(default)]
     projections: Vec<ProjectionDocument>,
     retention: Option<RetentionDocument>,
+    limits: Option<LimitsDocument>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -939,6 +1011,7 @@ fn parse_named_databases(
                 outbox: parse_outbox(document.outbox)?,
                 archives: parse_archives(document.archives)?,
                 retention: parse_retention(document.retention)?,
+                limits: parse_limits(document.limits)?,
                 follower: document
                     .replication_source
                     .map(FollowerSourceDocument::resolve)
@@ -1143,6 +1216,41 @@ fn parse_application_listener(
     Ok(listener)
 }
 
+fn parse_mcp_listener(
+    document: McpListenerDocument,
+) -> Result<McpListenerConfig, ServerConfigError> {
+    match document {
+        McpListenerDocument::LoopbackCleartext { listen } => Ok(
+            McpListenerConfig::LoopbackCleartext(parse_mcp_loopback_address(OsStr::new(&listen))?),
+        ),
+        McpListenerDocument::DirectTls {
+            listen,
+            public_endpoint,
+            certificate_chain,
+            private_key,
+            bounds,
+        } => {
+            let listen = listen
+                .parse::<SocketAddr>()
+                .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
+            let endpoint = CanonicalHttpsEndpoint::parse(&public_endpoint)
+                .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
+            let files = ServerTlsFiles::new(
+                ProtectedFilePath::new(certificate_chain)
+                    .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?,
+                ProtectedFilePath::new(private_key)
+                    .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?,
+            )
+            .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
+            let bounds = parse_listener_bounds(bounds)
+                .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
+            let config = DirectTlsListenerConfig::new(listen, endpoint, files, bounds)
+                .map_err(|_| ServerConfigError::InvalidMcpConfiguration)?;
+            Ok(McpListenerConfig::DirectTls(config))
+        }
+    }
+}
+
 fn parse_listener_bounds(
     document: Option<ListenerBoundsDocument>,
 ) -> Result<ListenerBounds, ServerConfigError> {
@@ -1298,6 +1406,7 @@ pub(crate) enum ServerConfigError {
     InvalidOutboxConfiguration,
     InvalidArchiveConfiguration,
     InvalidRetentionConfiguration,
+    InvalidLimitsConfiguration,
     InvalidFollowerConfiguration,
     UnknownOption,
     MissingValue,
@@ -1329,6 +1438,9 @@ impl fmt::Display for ServerConfigError {
             Self::InvalidArchiveConfiguration => "archive configuration is invalid or incomplete",
             Self::InvalidRetentionConfiguration => {
                 "retention configuration must name retained_sequences or hold, with sequences_per_epoch in 1..=256"
+            }
+            Self::InvalidLimitsConfiguration => {
+                "database resource limits configuration is out of bounds"
             }
             Self::InvalidFollowerConfiguration => {
                 "follower source configuration is invalid or incomplete"
@@ -2056,5 +2168,148 @@ telemetry_flight_interval_ms = 5000
             .unwrap_err(),
             ServerConfigError::OverlappingPaths { .. }
         ));
+    }
+
+    #[test]
+    fn database_limits_parse_in_single_and_named_database_documents_and_reject_mixed_form() {
+        let root = TestRoot::new();
+        let single_doc = root.write(
+            br#"
+[maintenance.limits]
+max_storage_bytes = 5368709120
+max_write_rps = 50
+write_burst = 100
+max_read_rps = 250
+read_burst = 500
+max_blocking_operations = 8
+blocking_worker_threads = 2
+max_coordinator_capacity = 64
+"#,
+        );
+        let single = ServerConfig::resolve(
+            [OsString::from("--config"), single_doc.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("valid single-database limits config");
+        let limits = single.databases()[0].limits();
+        assert_eq!(limits.max_storage_bytes().unwrap().get(), 5_368_709_120);
+        assert_eq!(limits.write_rate().unwrap().rate_per_second().get(), 50);
+        assert_eq!(limits.write_rate().unwrap().burst().get(), 100);
+        assert_eq!(limits.read_rate().unwrap().rate_per_second().get(), 250);
+        assert_eq!(limits.read_rate().unwrap().burst().get(), 500);
+        assert_eq!(limits.max_blocking_operations().get(), 8);
+        assert_eq!(limits.blocking_worker_threads().get(), 2);
+        assert_eq!(limits.max_coordinator_capacity().unwrap().get(), 64);
+
+        let named_doc = root.write(
+            br#"
+[databases.tenant_a]
+path = "data/tenant_a.redb"
+backup_root = "/var/lib/riffdb/backups/tenant_a"
+projections_root = "/var/lib/riffdb/projections/tenant_a"
+environment = "staging"
+
+[databases.tenant_a.limits]
+max_storage_bytes = 1073741824
+max_write_rps = 25
+max_read_rps = 100
+max_blocking_operations = 4
+"#,
+        );
+        let named = ServerConfig::resolve(
+            [OsString::from("--config"), named_doc.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("valid named-database limits config");
+        let tenant_limits = named.databases()[0].limits();
+        assert_eq!(
+            tenant_limits.max_storage_bytes().unwrap().get(),
+            1_073_741_824
+        );
+        assert_eq!(
+            tenant_limits.write_rate().unwrap().rate_per_second().get(),
+            25
+        );
+        assert_eq!(tenant_limits.write_rate().unwrap().burst().get(), 25);
+        assert_eq!(tenant_limits.max_blocking_operations().get(), 4);
+        assert_eq!(tenant_limits.blocking_worker_threads().get(), 4);
+
+        // Mixing [maintenance.limits] with [databases.<alias>] fails closed.
+        let mixed_doc = root.write(
+            br#"
+[maintenance.limits]
+max_storage_bytes = 1073741824
+
+[databases.tenant_a]
+path = "data/tenant_a.redb"
+backup_root = "/var/lib/riffdb/backups/tenant_a"
+environment = "staging"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), mixed_doc.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::MixedDatabaseConfiguration
+        );
+    }
+
+    // req: MCP-021
+    #[test]
+    fn mcp_listener_supports_direct_tls_and_rejects_mixed_legacy_configuration() {
+        let root = TestRoot::new();
+        let tls_doc = root.write(
+            br#"
+[server]
+mcp_origins = ["https://app.example.com"]
+
+[server.mcp_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:8444"
+public_endpoint = "https://db.example.com:8444"
+certificate_chain = "/etc/riffdb/mcp-cert.pem"
+private_key = "/etc/riffdb/mcp-key.pem"
+"#,
+        );
+        let resolved = ServerConfig::resolve(
+            [OsString::from("--config"), tls_doc.into_os_string()],
+            &EmptyEnvironment,
+            &root.0,
+        )
+        .expect("valid direct_tls mcp_listener config");
+        assert_eq!(
+            resolved.mcp_listen_address(),
+            Some("0.0.0.0:8444".parse().expect("socket"))
+        );
+        assert_eq!(
+            resolved.mcp_audience().map(Audience::as_str),
+            Some("https://db.example.com:8444/mcp")
+        );
+        assert_eq!(resolved.mcp_origins(), &["https://app.example.com"]);
+
+        let mixed_doc = root.write(
+            br#"
+[server]
+mcp_listen = "127.0.0.1:7444"
+
+[server.mcp_listener]
+mode = "loopback_cleartext"
+listen = "127.0.0.1:7444"
+"#,
+        );
+        assert_eq!(
+            ServerConfig::resolve(
+                [OsString::from("--config"), mixed_doc.into_os_string()],
+                &EmptyEnvironment,
+                &root.0,
+            )
+            .unwrap_err(),
+            ServerConfigError::InvalidMcpConfiguration
+        );
     }
 }

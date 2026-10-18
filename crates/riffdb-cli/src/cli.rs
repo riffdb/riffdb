@@ -17,6 +17,10 @@ pub(crate) struct Cli {
     pub(crate) max_attempts: Option<String>,
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) credential_file: Option<OsString>,
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) tls_trust_root: Option<String>,
+    #[arg(long, global = true, value_name = "SERVER_NAME")]
+    pub(crate) tls_server_name: Option<String>,
     #[command(subcommand)]
     pub(crate) command: TopLevel,
 }

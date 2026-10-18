@@ -217,6 +217,7 @@ pub struct ServiceProviders {
     pub(crate) tokenized_text: Option<Arc<dyn crate::TokenizedTextProjectionPort>>,
     pub(crate) exact_predicate: Option<Arc<dyn crate::ExactPredicateProjectionPort>>,
     pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
+    pub(crate) resource_admission: Option<Arc<dyn crate::DatabaseResourceAdmissionPort>>,
 }
 
 impl ServiceProviders {
@@ -276,6 +277,7 @@ impl ServiceProviders {
             tokenized_text: None,
             exact_predicate: None,
             vector_projection: None,
+            resource_admission: None,
         }
     }
 
@@ -442,6 +444,16 @@ impl ServiceProviders {
         application_reimport: Arc<dyn ApplicationReimportCoordinatorPort>,
     ) -> Self {
         self.application_reimport = Some(application_reimport);
+        self
+    }
+
+    /// Installs the per-database request rate and storage quota admission port.
+    #[must_use]
+    pub fn with_resource_admission(
+        mut self,
+        resource_admission: Arc<dyn crate::DatabaseResourceAdmissionPort>,
+    ) -> Self {
+        self.resource_admission = Some(resource_admission);
         self
     }
 }
@@ -612,7 +624,7 @@ impl RiffDbService {
         T: ServiceResponseCharge + Send + 'static,
         F: Future<Output = ServiceResult<T>> + Send + 'static,
     {
-        if let Err(failure) = self.inner.executors.admit_operation(operation) {
+        if let Err(failure) = self.inner.admit_operation(operation, ingress) {
             return Box::pin(async move { Err(failure) });
         }
         let (sender, receipt) = port_completion_channel();
@@ -647,7 +659,7 @@ impl RiffDbService {
         T: ServiceResponseCharge + Send + 'static,
         F: Future<Output = ServiceResult<T>> + Send + 'static,
     {
-        if let Err(failure) = self.inner.executors.admit_operation(operation) {
+        if let Err(failure) = self.inner.admit_operation(operation, ingress) {
             return Box::pin(async move { Err(failure) });
         }
         let job_inner = Arc::clone(&self.inner);
@@ -723,7 +735,7 @@ pub(crate) async fn observe_inline_operation<T, F>(
 where
     F: Future<Output = ServiceResult<T>>,
 {
-    service.executors.admit_operation(operation)?;
+    service.admit_operation(operation, ingress)?;
     observe_operation(
         service,
         operation,
@@ -737,6 +749,10 @@ where
 
 #[path = "follower_admission.rs"]
 mod follower_admission;
+pub use follower_admission::{
+    operation_grows_authoritative_storage, operation_is_exempt_from_resource_limits,
+    operation_uses_write_rate_bucket,
+};
 
 async fn observe_operation<T, F>(
     service: &RiffDbServiceInner,

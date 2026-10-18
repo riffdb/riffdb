@@ -491,11 +491,20 @@ pub enum ApplicationListenerConfig {
     LocalSocket(LocalSocketListenerConfig),
 }
 
+/// Closed client trust-root selection for verified HTTPS connections.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientTrustRootConfig {
+    /// Load and verify the platform's system CA bundle.
+    SystemCaBundle,
+    /// Load and verify an explicit protected PEM trust-root file.
+    ExplicitPemFile(ProtectedFilePath),
+}
+
 /// Complete static client TLS endpoint selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TlsClientConfig {
     endpoint: CanonicalHttpsEndpoint,
-    trust_root: ProtectedFilePath,
+    trust_root: ClientTrustRootConfig,
     expected_server_identity: TlsServerIdentity,
     connect_timeout: Duration,
     keepalive_interval: Duration,
@@ -504,7 +513,7 @@ pub struct TlsClientConfig {
 }
 
 impl TlsClientConfig {
-    /// Builds one verified-peer-only client selection with bounded pooling.
+    /// Builds one verified-peer-only client selection with an explicit PEM trust-root file.
     #[allow(
         clippy::too_many_arguments,
         reason = "all transport bounds are explicit and closed"
@@ -512,6 +521,31 @@ impl TlsClientConfig {
     pub fn new(
         endpoint: CanonicalHttpsEndpoint,
         trust_root: ProtectedFilePath,
+        expected_server_identity: TlsServerIdentity,
+        connect_timeout: Duration,
+        keepalive_interval: Duration,
+        max_pool_connections: NonZeroU32,
+        max_streams_per_connection: NonZeroU32,
+    ) -> Result<Self, RemoteConfigError> {
+        Self::with_trust_root_config(
+            endpoint,
+            ClientTrustRootConfig::ExplicitPemFile(trust_root),
+            expected_server_identity,
+            connect_timeout,
+            keepalive_interval,
+            max_pool_connections,
+            max_streams_per_connection,
+        )
+    }
+
+    /// Builds one verified-peer-only client selection using either the system CA bundle or an explicit PEM file.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all transport bounds are explicit and closed"
+    )]
+    pub fn with_trust_root_config(
+        endpoint: CanonicalHttpsEndpoint,
+        trust_root: ClientTrustRootConfig,
         expected_server_identity: TlsServerIdentity,
         connect_timeout: Duration,
         keepalive_interval: Duration,
@@ -539,16 +573,60 @@ impl TlsClientConfig {
         })
     }
 
+    /// Builds one verified-peer-only client selection using the system CA bundle and endpoint-derived server identity.
+    pub fn system_trust(
+        endpoint: CanonicalHttpsEndpoint,
+        connect_timeout: Duration,
+        keepalive_interval: Duration,
+        max_pool_connections: NonZeroU32,
+        max_streams_per_connection: NonZeroU32,
+    ) -> Result<Self, RemoteConfigError> {
+        let expected_server_identity = endpoint.identity().clone();
+        Self::with_trust_root_config(
+            endpoint,
+            ClientTrustRootConfig::SystemCaBundle,
+            expected_server_identity,
+            connect_timeout,
+            keepalive_interval,
+            max_pool_connections,
+            max_streams_per_connection,
+        )
+    }
+
     /// Returns the canonical HTTPS endpoint.
     #[must_use]
     pub const fn endpoint(&self) -> &CanonicalHttpsEndpoint {
         &self.endpoint
     }
 
-    /// Returns the protected CA-root path.
+    /// Returns the closed client trust-root selection.
+    #[must_use]
+    pub const fn trust_root_config(&self) -> &ClientTrustRootConfig {
+        &self.trust_root
+    }
+
+    /// Returns the protected CA-root path when an explicit PEM file was configured.
+    #[must_use]
+    pub const fn explicit_trust_root(&self) -> Option<&ProtectedFilePath> {
+        match &self.trust_root {
+            ClientTrustRootConfig::SystemCaBundle => None,
+            ClientTrustRootConfig::ExplicitPemFile(path) => Some(path),
+        }
+    }
+
+    /// Returns the protected CA-root path for callers that require an explicit PEM file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self` was constructed with [`ClientTrustRootConfig::SystemCaBundle`].
     #[must_use]
     pub const fn trust_root(&self) -> &ProtectedFilePath {
-        &self.trust_root
+        match &self.trust_root {
+            ClientTrustRootConfig::ExplicitPemFile(path) => path,
+            ClientTrustRootConfig::SystemCaBundle => {
+                panic!("trust_root() called on system-trust TlsClientConfig")
+            }
+        }
     }
 
     /// Returns the exact expected peer identity.

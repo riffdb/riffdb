@@ -31954,11 +31954,11 @@ work_packages:
   - Storage quota enforcement blocks read queries, idempotent command-outcome recovery, capability revocation, or application export.
   - Hosted MCP direct-TLS listener bypasses capability authentication, audience binding, or Origin validation.
   closure:
-    status: ready
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-18'
+    requirements_satisfied: [NET-001, NET-002, NET-005, MCP-001, MCP-048]
+    evidence: cargo test -p riffdb-server -p riffdb-client-rust -p riffdb-api-mcp && ./scripts/acceptance --wp WP-876
+    decision: Implemented per-database storage byte quotas, monotonic token-bucket write/read rate limits, and blocking worker/coordinator capacity caps in riffdb-service and riffdb-server while preserving reads, uncertainty recovery, capability revocation, and application exports at storage ceilings; added ClientTrustRootConfig::SystemCaBundle and endpoint-derived TlsServerIdentity defaults on remote https:// connections across riffdb-config, riffdb-client-rust, riffdb-driver-host, riffdb-client-python-native, and riffdb-cli; and added DirectTls Hosted MCP listener support in riffdb-api-mcp and riffdb-server.
     decisions_taken: []
     known_limitations: null
     follow_ups: []

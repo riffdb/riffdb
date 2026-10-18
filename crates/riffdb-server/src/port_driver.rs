@@ -372,7 +372,7 @@ impl BlockingPortDriver {
         )
     }
 
-    fn with_limits(
+    pub(crate) fn with_limits(
         routing: RuntimeRoutingState,
         worker_count: usize,
         max_in_flight: usize,

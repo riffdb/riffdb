@@ -11,7 +11,8 @@ use riffdb_client_rust::{
     RiffDbClient, StartApplicationReimport, load_protected_bearer_credential,
 };
 use riffdb_config::{
-    CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+    CanonicalHttpsEndpoint, ClientTrustRootConfig, ProtectedFilePath, TlsClientConfig,
+    TlsServerIdentity,
 };
 use riffdb_types::{ApplicationPortabilityManifest, ContractLineage, DatabaseAlias};
 use serde::Deserialize;
@@ -104,13 +105,22 @@ impl OperatorDriverRuntime {
 }
 
 fn tls_config(document: &OperatorDocument) -> Result<TlsClientConfig, OperatorRuntimeError> {
-    TlsClientConfig::new(
-        CanonicalHttpsEndpoint::parse(&document.remote.endpoint)
-            .map_err(|_| OperatorRuntimeError)?,
-        ProtectedFilePath::new(checked_absolute(&document.remote.tls_trust_root)?)
-            .map_err(|_| OperatorRuntimeError)?,
-        TlsServerIdentity::parse(&document.remote.tls_server_name)
-            .map_err(|_| OperatorRuntimeError)?,
+    let endpoint = CanonicalHttpsEndpoint::parse(&document.remote.endpoint)
+        .map_err(|_| OperatorRuntimeError)?;
+    let trust_root = match document.remote.tls_trust_root.as_deref() {
+        Some(path) => ClientTrustRootConfig::ExplicitPemFile(
+            ProtectedFilePath::new(checked_absolute(path)?).map_err(|_| OperatorRuntimeError)?,
+        ),
+        None => ClientTrustRootConfig::SystemCaBundle,
+    };
+    let identity = match document.remote.tls_server_name.as_deref() {
+        Some(name) => TlsServerIdentity::parse(name).map_err(|_| OperatorRuntimeError)?,
+        None => endpoint.identity().clone(),
+    };
+    TlsClientConfig::with_trust_root_config(
+        endpoint,
+        trust_root,
+        identity,
         Duration::from_secs(5),
         Duration::from_secs(30),
         NonZeroU32::new(1).expect("one"),
@@ -146,8 +156,8 @@ struct OperatorCampaignSection {
 #[serde(deny_unknown_fields)]
 struct OperatorRemoteSection {
     endpoint: String,
-    tls_trust_root: String,
-    tls_server_name: String,
+    tls_trust_root: Option<String>,
+    tls_server_name: Option<String>,
     credential_file: String,
 }
 

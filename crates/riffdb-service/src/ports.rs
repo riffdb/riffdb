@@ -3283,6 +3283,22 @@ pub trait OperationalStatusPort: Send + Sync {
     >;
 }
 
+/// Server-owned per-database rate and storage quota admission boundary.
+///
+/// Invoked at the shared service entry before any operation future, blocking
+/// port reservation, or durable audit begins (ADR-0071, ADR-0105).
+pub trait DatabaseResourceAdmissionPort: Send + Sync {
+    /// Admits one operation against the database's configured rate and storage ceilings.
+    ///
+    /// Implementations must exempt health/statistics probes, and must never
+    /// reject reads, uncertainty recovery (`ResolveCommandOutcome`), or
+    /// application data exports due to storage-byte ceilings.
+    fn admit_operation(
+        &self,
+        operation: riffdb_types::ServiceOperationV1,
+    ) -> Result<(), riffdb_errors::PublicError>;
+}
+
 pub use riffdb_observability::{
     AuthoritativeReadinessFailure, CapacityRejectionStage, NoopServiceTelemetry, ReadPipelineStage,
     ServiceDiagnostics, ServiceHealthHooks, ServiceTelemetry, ServiceTelemetryEvent,

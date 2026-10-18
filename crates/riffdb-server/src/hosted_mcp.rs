@@ -52,7 +52,7 @@ pub(crate) struct HostedMcp {
 
 #[derive(Clone)]
 struct HostedMcpRegistrationFactory {
-    address: SocketAddr,
+    listener: crate::config::McpListenerConfig,
     allowed_origins: Arc<[String]>,
     rate_limiter: Arc<McpRateLimiter<SystemMcpRateClock>>,
     monotonic_clock: Arc<dyn McpMonotonicClock>,
@@ -61,18 +61,42 @@ struct HostedMcpRegistrationFactory {
 }
 
 impl HostedMcpRegistrationFactory {
+    fn build_config(
+        listener: &crate::config::McpListenerConfig,
+        authentication: riffdb_auth::AuthenticationContext,
+        allowed_origins: &[String],
+    ) -> Result<HostedMcpHttpConfiguration, HostedMcpStartError> {
+        match listener {
+            crate::config::McpListenerConfig::LoopbackCleartext(address) => {
+                HostedMcpHttpConfiguration::new(
+                    *address,
+                    authentication,
+                    allowed_origins.iter().cloned(),
+                )
+                .map_err(HostedMcpStartError::Configuration)
+            }
+            crate::config::McpListenerConfig::DirectTls(tls_listener) => {
+                HostedMcpHttpConfiguration::new_direct_tls(
+                    tls_listener.listen_address(),
+                    authentication,
+                    allowed_origins.iter().cloned(),
+                )
+                .map_err(HostedMcpStartError::Configuration)
+            }
+        }
+    }
+
     fn build(
         &self,
         database_alias: DatabaseAlias,
         dependencies: HostedMcpDependencies,
     ) -> Result<HostedMcpRegistration, HostedMcpStartError> {
         let authentication_audience = dependencies.authentication.audience().clone();
-        let configuration = HostedMcpHttpConfiguration::new(
-            self.address,
+        let configuration = Self::build_config(
+            &self.listener,
             dependencies.authentication,
-            self.allowed_origins.iter().cloned(),
-        )
-        .map_err(HostedMcpStartError::Configuration)?;
+            &self.allowed_origins,
+        )?;
         let observer_request_ids: Arc<dyn RequestIdSource> =
             Arc::new(dependencies.request_ids.clone());
         let observer_service = Arc::new(HostedServiceMcpBackend::new(
@@ -122,7 +146,111 @@ impl HostedMcpRegistrationFactory {
     }
 }
 
+struct DirectTlsMcpListener {
+    tcp: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    handshake_timeout: Duration,
+    permits: Arc<tokio::sync::Semaphore>,
+    local_addr: SocketAddr,
+}
+
+struct PermittedTlsStream {
+    inner: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl tokio::io::AsyncRead for PermittedTlsStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for PermittedTlsStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl axum::serve::Listener for DirectTlsMcpListener {
+    type Io = PermittedTlsStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let Ok((tcp_stream, peer_addr)) = self.tcp.accept().await else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            let _ = tcp_stream.set_nodelay(true);
+            let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned() else {
+                drop(tcp_stream);
+                continue;
+            };
+            let acceptor = self.acceptor.clone();
+            let timeout = self.handshake_timeout;
+            if let Ok(Ok(tls_stream)) =
+                tokio::time::timeout(timeout, acceptor.accept(tcp_stream)).await
+            {
+                return (
+                    PermittedTlsStream {
+                        inner: tls_stream,
+                        _permit: permit,
+                    },
+                    peer_addr,
+                );
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        Ok(self.local_addr)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct McpPeerAddr(SocketAddr);
+
+impl
+    axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>>
+    for McpPeerAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, DirectTlsMcpListener>>
+    for McpPeerAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, DirectTlsMcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
 impl HostedMcp {
+    #[allow(dead_code)]
     pub(crate) async fn bind(
         address: SocketAddr,
         allowed_origins: &[String],
@@ -136,8 +264,35 @@ impl HostedMcp {
         .await
     }
 
+    pub(crate) async fn bind_listener(
+        listener: &crate::config::McpListenerConfig,
+        allowed_origins: &[String],
+        dependencies: HostedMcpDependencies,
+    ) -> Result<Self, HostedMcpStartError> {
+        Self::bind_listener_routes(
+            listener,
+            allowed_origins,
+            [(DatabaseAlias::default_alias(), dependencies)],
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
     pub(crate) async fn bind_routes(
         address: SocketAddr,
+        allowed_origins: &[String],
+        dependencies: impl IntoIterator<Item = (DatabaseAlias, HostedMcpDependencies)>,
+    ) -> Result<Self, HostedMcpStartError> {
+        Self::bind_listener_routes(
+            &crate::config::McpListenerConfig::LoopbackCleartext(address),
+            allowed_origins,
+            dependencies,
+        )
+        .await
+    }
+
+    pub(crate) async fn bind_listener_routes(
+        listener_config: &crate::config::McpListenerConfig,
         allowed_origins: &[String],
         dependencies: impl IntoIterator<Item = (DatabaseAlias, HostedMcpDependencies)>,
     ) -> Result<Self, HostedMcpStartError> {
@@ -145,17 +300,26 @@ impl HostedMcp {
         if dependencies.is_empty() || dependencies.len() > MAX_DATABASES_PER_PROCESS {
             return Err(HostedMcpStartError::Routes);
         }
-        let configuration = HostedMcpHttpConfiguration::new(
-            address,
+        let configuration = HostedMcpRegistrationFactory::build_config(
+            listener_config,
             dependencies[0].1.authentication.clone(),
-            allowed_origins.iter().cloned(),
-        )
-        .map_err(HostedMcpStartError::Configuration)?;
+            allowed_origins,
+        )?;
+        let tls_acceptor = match listener_config {
+            crate::config::McpListenerConfig::LoopbackCleartext(_) => None,
+            crate::config::McpListenerConfig::DirectTls(tls_listener) => {
+                let acceptor = crate::daemon::load_http1_tls_acceptor(tls_listener)?;
+                Some((acceptor, tls_listener.bounds()))
+            }
+        };
         let listener = tokio::net::TcpListener::bind(configuration.bind_address())
             .await
             .map_err(HostedMcpStartError::Listener)?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(HostedMcpStartError::Listener)?;
         let factory = HostedMcpRegistrationFactory {
-            address,
+            listener: listener_config.clone(),
             allowed_origins: Arc::from(allowed_origins.to_vec()),
             rate_limiter: Arc::new(McpRateLimiter::new(
                 SystemMcpRateClock::new(),
@@ -184,15 +348,42 @@ impl HostedMcp {
         let (shutdown, stopped) = oneshot::channel();
         let routes_for_maintenance = routes.clone();
         let task = tokio::spawn(async move {
-            let server = axum::serve(
-                listener,
-                application.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async move {
-                let _ = stopped.await;
-            })
-            .into_future();
-            tokio::pin!(server);
+            let server_future: std::pin::Pin<
+                Box<dyn std::future::Future<Output = io::Result<()>> + Send>,
+            > = match tls_acceptor {
+                None => Box::pin(
+                    axum::serve(
+                        listener,
+                        application.into_make_service_with_connect_info::<McpPeerAddr>(),
+                    )
+                    .with_graceful_shutdown(async move {
+                        let _ = stopped.await;
+                    })
+                    .into_future(),
+                ),
+                Some((acceptor, bounds)) => {
+                    let tls_listener = DirectTlsMcpListener {
+                        tcp: listener,
+                        acceptor,
+                        handshake_timeout: bounds.handshake_timeout(),
+                        permits: Arc::new(tokio::sync::Semaphore::new(
+                            bounds.max_connections().get() as usize,
+                        )),
+                        local_addr,
+                    };
+                    Box::pin(
+                        axum::serve(
+                            tls_listener,
+                            application.into_make_service_with_connect_info::<McpPeerAddr>(),
+                        )
+                        .with_graceful_shutdown(async move {
+                            let _ = stopped.await;
+                        })
+                        .into_future(),
+                    )
+                }
+            };
+            tokio::pin!(server_future);
             let mut interval = tokio::time::interval_at(
                 Instant::now() + SESSION_MAINTENANCE_INTERVAL,
                 SESSION_MAINTENANCE_INTERVAL,
@@ -200,7 +391,7 @@ impl HostedMcp {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
-                    result = &mut server => {
+                    result = &mut server_future => {
                         return result.map_err(|_| HostedMcpTaskError::Server);
                     }
                     _ = interval.tick() => {
@@ -312,7 +503,7 @@ impl fmt::Debug for HostedMcp {
 
 async fn proxy(
     State(routes): State<HostedMcpRoutes>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(McpPeerAddr(peer)): ConnectInfo<McpPeerAddr>,
     request: Request<Body>,
 ) -> Response<Body> {
     let mut values = request.headers().get_all(DATABASE_METADATA_KEY).iter();
@@ -375,6 +566,7 @@ enum HostedMcpTaskError {
 pub(crate) enum HostedMcpStartError {
     Configuration(HostedMcpHttpConfigurationError),
     Listener(io::Error),
+    Tls,
     Routes,
 }
 
@@ -395,7 +587,7 @@ impl std::error::Error for HostedMcpStartError {
         match self {
             Self::Configuration(source) => Some(source),
             Self::Listener(source) => Some(source),
-            Self::Routes => None,
+            Self::Tls | Self::Routes => None,
         }
     }
 }

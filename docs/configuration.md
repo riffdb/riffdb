@@ -2,7 +2,8 @@
 
 Application gRPC has a closed listener profile: development-only cleartext on
 a literal loopback address, verified direct TLS on TCP, or a protected Unix
-socket. There is no insecure remote mode. Hosted MCP remains loopback-only.
+socket. Hosted MCP supports literal-loopback cleartext or verified direct TLS on
+TCP. There is no insecure remote mode.
 See [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md).
 
 ## Project `riffdb.toml`
@@ -439,26 +440,76 @@ configuration root at `/etc/riffdb`. The latter contains the root-owned
 `riffdbd.toml` path-only configuration and the two protected digest-key
 documents. It contains no raw digest key in TOML.
 
+### Per-database resource limits
+
+An optional `[maintenance.limits]` table (or `[databases.<alias>.limits]` in the
+multi-database form) bounds per-database storage, request rates, blocking pool
+concurrency, and commit coordinator capacity:
+
+```toml
+[maintenance.limits]
+max_storage_bytes = 536870912
+max_write_rps = 50
+write_burst = 100
+max_read_rps = 250
+read_burst = 500
+max_blocking_operations = 4
+blocking_worker_threads = 2
+max_coordinator_capacity = 32
+```
+
+- `max_storage_bytes` (`1_048_576..=1_099_511_627_776`): refuses new state-growing
+  commands, contract deployments, migrations, and capability creations with typed
+  `ResourceExhausted` when the authoritative database file plus journal footprint
+  reaches or exceeds the ceiling. Reads, `ResolveCommandOutcome`,
+  `RevokeCapability`, and application exports (`StartApplicationExport`,
+  `GetApplicationExportPage`, `GetApplicationExport`, `CancelApplicationExport`)
+  remain permitted at the storage ceiling so data and outcomes are never stranded.
+- `max_write_rps` (`1..=100_000`) and optional `write_burst` (`>= max_write_rps`,
+  default `max_write_rps`): monotonic token-bucket governor for mutating commands
+  and administration writes.
+- `max_read_rps` (`1..=500_000`) and optional `read_burst` (`>= max_read_rps`,
+  default `max_read_rps`): monotonic token-bucket governor for reads, queries, and
+  export scans (`GetHealth` and `GetStatistics` probes are exempt).
+- `max_blocking_operations` (`1..=512`), `blocking_worker_threads` (`1..=64`), and
+  `max_coordinator_capacity` (`1..=256`): override the per-database blocking pool
+  and commit coordinator queue bounds.
+
 Optional hosted MCP settings:
 
 | Option | Value | Restart | Impact |
 |---|---|---|---|
-| `--mcp-listen` | Literal loopback address with nonzero port | Yes | Enables hosted Streamable HTTP MCP |
-| `--mcp-origin` | Repeatable checked loopback origin | Yes | Browser-origin authorization |
+| `--mcp-listen` | Literal loopback address with nonzero port | Yes | Enables loopback-cleartext Streamable HTTP MCP |
+| `--mcp-origin` | Repeatable checked origin | Yes | Browser-origin authorization |
+
+In TOML, `[server.mcp_listener]` may also select an explicit `loopback_cleartext`
+or `direct_tls` profile (mutually exclusive with `mcp_listen` / `mcp_origins` /
+`--mcp-listen` / `--mcp-origin`):
+
+```toml
+[server.mcp_listener]
+mode = "direct_tls"
+listen = "0.0.0.0:7444"
+public_endpoint = "https://riffdb.internal.example:7444"
+certificate_chain = "/etc/riffdb/tls/server-chain.pem"
+private_key = "/etc/riffdb/tls/server-key.pem"
+origins = ["https://app.internal.example:8443"]
+```
 
 `--mcp-origin` without `--mcp-listen` rejects. With no allowed origins, only
 requests without an `Origin` header are accepted. The MCP protected-resource
-audience is derived exactly as `http://<listen-authority>/mcp`; it cannot be
-configured and must differ from the gRPC audience.
+audience is derived as `http://<listen-authority>/mcp` for `loopback_cleartext`
+and `<public_endpoint>/mcp` for `direct_tls`; it cannot be configured and must
+differ from the gRPC audience. Direct-TLS origins must use `https://`.
 
 `RIFFDB_MCP_ORIGINS` is one nonempty comma-separated list with no trimming or
 normalization. TOML uses a string array and CLI uses one flag per origin.
 Whichever source wins supplies the whole list. At most 16 unique origins and
 8,192 aggregate bytes are accepted; each origin is at most 512 visible ASCII
-bytes and must pass the hosted transport's exact loopback-origin checks.
+bytes and must pass the hosted transport's origin checks.
 
-Other `RIFFDB_*` variables are not server settings. There is no metrics
-listener, storage-engine selector, group-commit tuning, transaction callback,
+Other `RIFFDB_*` variables are not server settings. There is no
+storage-engine selector, group-commit tuning, transaction callback,
 or nondeterministic scheduler setting in the POC configuration surface.
 
 ## Digest-Key Documents
@@ -498,8 +549,8 @@ first:
 | Output | `--output` | `RIFFDB_OUTPUT` | `client.output` | `human` |
 | Attempts | `--max-attempts` | `RIFFDB_MAX_ATTEMPTS` | `client.max_attempts` | `3` |
 | Credential file | `--credential-file` | `RIFFDB_CREDENTIAL_FILE` | `client.credential_file` | absent |
-| TLS trust root | none | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | absent |
-| TLS server name | none | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | absent |
+| TLS trust root | none | `RIFFDB_TLS_TRUST_ROOT` | `client.tls_trust_root` | system CA bundle on `https://` |
+| TLS server name | none | `RIFFDB_TLS_SERVER_NAME` | `client.tls_server_name` | endpoint host on `https://` |
 
 The TOML path is selected only by `--config`, then `RIFFDB_CONFIG`, then
 absence. There is no directory discovery. A present invalid higher-precedence
@@ -507,11 +558,13 @@ value rejects instead of falling through.
 
 The endpoint is either exact lowercase
 `http://<literal-loopback-IP>:<port-1..65535>` or canonical
-`https://<DNS-or-IP>:<port-1..65535>`. HTTPS requires both an absolute,
-normalized trust-root path and an exact peer DNS name or IP that matches the
-endpoint authority. Supplying either TLS field for cleartext, omitting either
-field for HTTPS, or requesting a trust-all/native-root/downgrade mode rejects.
-Generated application client configuration retains these two non-secret TLS
+`https://<DNS-or-IP>:<port-1..65535>`. For HTTPS, omitting `tls_trust_root`
+selects the platform system CA bundle, and omitting `tls_server_name` derives
+the expected peer identity from the endpoint authority host; when supplied,
+`tls_trust_root` must be an absolute, normalized path and `tls_server_name` must
+match the endpoint authority. Supplying either TLS field for cleartext or
+requesting a trust-all/downgrade mode rejects.
+Generated application client configuration retains any explicit non-secret TLS
 selectors. Unknown, duplicate, or wrong-type input rejects. Output is `human`
 or `json`. Attempts is canonical decimal `1..=10`.
 

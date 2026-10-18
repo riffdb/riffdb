@@ -6,10 +6,10 @@ RiffDB application gRPC has three and only three listener profiles:
 - `direct_tls` for TCP beyond literal loopback; and
 - `local_socket` for a same-host or same-pod first-party client.
 
-There is no insecure non-loopback profile. Hosted MCP remains loopback-only.
-Every protected operation still requires a RiffDB bearer capability and the
-normal database selector; transport identity never becomes application
-authority.
+Hosted MCP supports `loopback_cleartext` and `direct_tls`. There is no insecure
+non-loopback profile. Every protected operation still requires a RiffDB bearer
+capability and the normal database selector; transport identity never becomes
+application authority.
 
 ## Direct TLS
 
@@ -41,7 +41,8 @@ identity only if the complete pair validates. Invalid or partially published
 material retains the previous valid snapshot and emits a path-free diagnostic.
 Established connections keep their existing identity until bounded drain.
 
-The Rust client uses a protected explicit trust root:
+The Rust client supports either an explicit CA bundle or the platform system CA
+bundle:
 
 ```rust,ignore
 use std::num::NonZeroU32;
@@ -64,6 +65,11 @@ let tls = TlsClientConfig::new(
 let client = RiffDbClient::connect_verified_tls(&tls).await?;
 ```
 
+For publicly trusted endpoints (such as Let's Encrypt or cloud-managed TLS),
+use `TlsClientConfig::system_trust` or omit `tls_trust_root` and
+`tls_server_name` in client configuration to verify against the operating
+system's CA bundle and derive the server identity from the endpoint host.
+
 For a long-lived host that creates replacement channels, retain a
 `VerifiedTlsConnector` instead. It validates the initial CA bundle, atomically
 adopts a complete valid file replacement for later handshakes, and retains its
@@ -72,11 +78,10 @@ Existing `RiffDbClient` channels keep the snapshot used for their handshake.
 `last_reload_status()` reports only the closed current/retained disposition and
 never exposes a path or certificate bytes.
 
-The alpha TLS surface is intentionally small: rustls with the reviewed `ring`
-provider, certificate/key files on the server, and an explicit CA root plus
-peer identity on the client. There is no mTLS, native-root discovery,
-trust-all, redirect, downgrade, cipher-suite, protocol-version, or provider
-configuration.
+The TLS surface uses rustls with the reviewed `ring` provider, certificate/key
+files on the server, and either an explicit CA root or the platform system CA
+bundle plus verified peer identity on the client. There is no mTLS, trust-all,
+redirect, downgrade, cipher-suite, protocol-version, or provider configuration.
 
 The CLI accepts the same verified target through its ordinary client file:
 
@@ -89,10 +94,12 @@ tls_trust_root = "/run/secrets/riffdb-ca.pem"
 tls_server_name = "riffdb.internal.example"
 ```
 
-`RIFFDB_TLS_TRUST_ROOT` and `RIFFDB_TLS_SERVER_NAME` are the only environment
-overrides for those TLS selectors. They must be supplied together. The CLI
-does not accept certificate material, bearer material, or a verification
-override on the command line.
+When `tls_trust_root` is omitted on an `https://` endpoint, the client uses the
+platform system CA bundle; when `tls_server_name` is omitted, it derives the
+expected server identity from the endpoint authority host. `RIFFDB_TLS_TRUST_ROOT`
+and `RIFFDB_TLS_SERVER_NAME` are the only environment overrides for those TLS
+selectors. The CLI does not accept certificate material, bearer material, or a
+verification override on the command line.
 
 ## Liveness and readiness
 
@@ -251,9 +258,12 @@ tenant, database, and authorization assertions. A proxy may carry the byte
 stream, but the ordinary RiffDB credential and current authorization checks are
 always repeated by the shared service.
 
-Per-principal request-rate limits and tenant storage quotas are explicitly
-deferred for alpha. Deploy remote ingress only on a controlled network behind
-external connection controls; do not claim untrusted public multi-tenancy.
+Per-database storage ceilings (`max_storage_bytes`), write/read token-bucket
+rate limits (`max_write_rps`, `max_read_rps`), and blocking pool bounds are
+configured in `[maintenance.limits]` or `[databases.<alias>.limits]`; see the
+[configuration reference](../configuration.md#per-database-resource-limits).
+Deploy remote ingress behind external network connection controls as well when
+operating shared infrastructure.
 
 ## Compose and Kubernetes
 
