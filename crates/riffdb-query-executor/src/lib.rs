@@ -3451,6 +3451,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     Ok(snapshot)
 }
 
+mod projected_table;
+pub use projected_table::execute_projected_table_rows;
+
 fn execute_covered_page_in_snapshot<V: QueryReadView>(
     program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
@@ -7312,6 +7315,9 @@ fn validate_binary_text_interval_parameter(
     ) {
         return Ok(());
     }
+    let Some(descriptor) = step.internal_operational_index_descriptor() else {
+        return Ok(());
+    };
     let fields = match step.access() {
         QueryAccessKind::Index { fields, .. }
         | QueryAccessKind::PartitionSetIndex { fields, .. }
@@ -7321,10 +7327,7 @@ fn validate_binary_text_interval_parameter(
     let Some(position) = fields.iter().position(|candidate| candidate == field) else {
         return Err(QueryExecutionError::InvalidProgram);
     };
-    let Some(component) = step
-        .internal_operational_index_descriptor()
-        .and_then(|descriptor| descriptor.component(position, field))
-    else {
+    let Some(component) = descriptor.component(position, field) else {
         return Ok(());
     };
     if component.encoding()

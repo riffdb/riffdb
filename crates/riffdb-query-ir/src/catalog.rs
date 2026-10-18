@@ -3,9 +3,12 @@ use std::collections::BTreeMap;
 use riffdb_contract_ir::{
     ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeyComponentSchema, KeyPurpose,
     KeySchema, LineageEntryState, RowPolicyOperationV1, StableIdNamespaceTag, TextKeyProfileV1,
-    UNICODE_FOLD_V1_MAXIMUM_EXPANSION, ValueType,
+    UNICODE_FOLD_V1_MAXIMUM_EXPANSION, UnaryOperator, ValueType,
 };
-use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, HashDomain, IndexId, hash};
+use riffdb_types::{
+    AggregateTypeId, EntityTypeId, EnumTypeId, EnumVariantId, FieldId, HashDomain, IndexId,
+    ProjectionId, hash,
+};
 
 use crate::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
@@ -630,6 +633,104 @@ impl EnumSymbol {
     }
 }
 
+/// Compiler-visible event projection symbol for `source projected <ProjectionName>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventProjectionSymbol {
+    id: ProjectionId,
+    name: String,
+    source_event_name: String,
+    group_key_fields: Vec<String>,
+    measure_fields: Vec<String>,
+    virtual_entity: EntitySymbol,
+}
+
+impl EventProjectionSymbol {
+    /// Stable projection ID.
+    #[must_use]
+    pub const fn id(&self) -> ProjectionId {
+        self.id
+    }
+
+    /// Exact contract projection name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Source event name.
+    #[must_use]
+    pub fn source_event_name(&self) -> &str {
+        &self.source_event_name
+    }
+
+    /// Ordered group-key field names.
+    #[must_use]
+    pub fn group_key_fields(&self) -> &[String] {
+        &self.group_key_fields
+    }
+
+    /// Measure field names in declaration order.
+    #[must_use]
+    pub fn measure_fields(&self) -> &[String] {
+        &self.measure_fields
+    }
+
+    /// Synthetic entity view used during RiffQL type resolution and planning.
+    #[must_use]
+    pub const fn virtual_entity(&self) -> &EntitySymbol {
+        &self.virtual_entity
+    }
+}
+
+/// Compiler-visible scalar columnar projection symbol for `source projected <ColumnarProjectionName>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnarProjectionSymbol {
+    name: String,
+    entity_name: String,
+    entity_id: EntityTypeId,
+    org_scope_field: String,
+    projected_fields: Vec<String>,
+    virtual_entity: EntitySymbol,
+}
+
+impl ColumnarProjectionSymbol {
+    /// Exact contract columnar projection name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Backing entity name.
+    #[must_use]
+    pub fn entity_name(&self) -> &str {
+        &self.entity_name
+    }
+
+    /// Backing entity ID.
+    #[must_use]
+    pub const fn entity_id(&self) -> EntityTypeId {
+        self.entity_id
+    }
+
+    /// Partition-derived organization scope field name.
+    #[must_use]
+    pub fn org_scope_field(&self) -> &str {
+        &self.org_scope_field
+    }
+
+    /// Declared projected scalar field names.
+    #[must_use]
+    pub fn projected_fields(&self) -> &[String] {
+        &self.projected_fields
+    }
+
+    /// Narrowed entity view retaining only the organization scope, primary key, and projected scalar fields.
+    #[must_use]
+    pub const fn virtual_entity(&self) -> &EntitySymbol {
+        &self.virtual_entity
+    }
+}
+
 /// Immutable name-addressed view of one exact validated contract bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolicCatalog {
@@ -638,6 +739,8 @@ pub struct SymbolicCatalog {
     enums: BTreeMap<String, EnumSymbol>,
     row_policies: BTreeMap<String, RowPolicySymbol>,
     principal_facts: BTreeMap<String, PrincipalFactSymbol>,
+    event_projections: BTreeMap<String, EventProjectionSymbol>,
+    columnar_projections: BTreeMap<String, ColumnarProjectionSymbol>,
 }
 
 impl SymbolicCatalog {
@@ -943,6 +1046,233 @@ impl SymbolicCatalog {
                 return Err(invariant("duplicate exact-contract principal fact"));
             }
         }
+        let mut event_projections = BTreeMap::new();
+        for plan in bundle.projections() {
+            let source_event = bundle
+                .schema()
+                .event(plan.source_event())
+                .ok_or_else(|| invariant("event projection source event is absent"))?;
+            let mut fields = BTreeMap::new();
+            let mut group_key_fields = Vec::with_capacity(plan.key_expressions().len());
+            let mut group_key_field_ids = Vec::with_capacity(plan.key_expressions().len());
+            let mut key_components = Vec::with_capacity(plan.key_expressions().len());
+            let mut next_field_id = 1_u32;
+            for (expr_id, component) in plan
+                .key_expressions()
+                .iter()
+                .zip(plan.group_schema().group_components())
+            {
+                let expr = plan
+                    .expressions()
+                    .get(*expr_id)
+                    .ok_or_else(|| invariant("event projection key expression is absent"))?;
+                let field_name = match expr.kind() {
+                    ExpressionKind::SourceEventField(field_id) => source_event
+                        .payload()
+                        .field(*field_id)
+                        .map(|field| field.name().to_owned())
+                        .ok_or_else(|| invariant("event projection key field is absent"))?,
+                    ExpressionKind::Unary { operator, operand } => {
+                        let prefix = match operator {
+                            UnaryOperator::TemporalHour => "hour",
+                            UnaryOperator::TemporalDay => "day",
+                            UnaryOperator::TemporalWeek => "week",
+                            UnaryOperator::TemporalMonth => "month",
+                            UnaryOperator::TemporalYear => "year",
+                            _ => "expr",
+                        };
+                        let operand_node = plan
+                            .expressions()
+                            .get(*operand)
+                            .ok_or_else(|| invariant("event projection unary operand is absent"))?;
+                        let base_name = match operand_node.kind() {
+                            ExpressionKind::SourceEventField(field_id) => source_event
+                                .payload()
+                                .field(*field_id)
+                                .map(|field| field.name())
+                                .ok_or_else(|| {
+                                    invariant("event projection unary field is absent")
+                                })?,
+                            ExpressionKind::TransactionDate => "tx_date",
+                            ExpressionKind::TransactionTime => "tx_time",
+                            _ => "bucket",
+                        };
+                        if fields.contains_key(base_name) {
+                            format!("{prefix}_{base_name}")
+                        } else {
+                            base_name.to_owned()
+                        }
+                    }
+                    ExpressionKind::TransactionDate => "tx_date".to_owned(),
+                    ExpressionKind::TransactionTime => "tx_time".to_owned(),
+                    _ => format!("key_{next_field_id}"),
+                };
+                let field_id = FieldId::new(next_field_id)
+                    .ok_or_else(|| invariant("event projection field ID overflow"))?;
+                next_field_id = next_field_id.saturating_add(1);
+                let symbol = FieldSymbol {
+                    id: field_id,
+                    name: field_name.clone(),
+                    value_type: component.value_type().clone(),
+                    key: true,
+                    secret: false,
+                    production_vector: false,
+                    present_and_non_null_across_lineage: true,
+                };
+                if fields.insert(field_name.clone(), symbol).is_some() {
+                    return Err(invariant("duplicate event projection group key field"));
+                }
+                let key_component = KeyComponentSchema::new(
+                    component.value_type().clone(),
+                    component.enum_variants().to_vec(),
+                )
+                .map_err(|_| invariant("event projection group key component is invalid"))?;
+                group_key_fields.push(field_name);
+                group_key_field_ids.push(field_id);
+                key_components.push(key_component);
+            }
+            let mut measure_fields =
+                Vec::with_capacity(plan.group_schema().measures().fields().len());
+            for measure_field in plan.group_schema().measures().fields() {
+                let field_id = FieldId::new(next_field_id)
+                    .ok_or_else(|| invariant("event projection measure field ID overflow"))?;
+                next_field_id = next_field_id.saturating_add(1);
+                let field_name = measure_field.name().to_owned();
+                let symbol = FieldSymbol {
+                    id: field_id,
+                    name: field_name.clone(),
+                    value_type: measure_field.value_type().clone(),
+                    key: false,
+                    secret: false,
+                    production_vector: false,
+                    present_and_non_null_across_lineage: true,
+                };
+                if fields.insert(field_name.clone(), symbol).is_some() {
+                    return Err(invariant("duplicate event projection measure field"));
+                }
+                measure_fields.push(field_name);
+            }
+            let virtual_entity_id =
+                EntityTypeId::new(10_000_u32.saturating_add(plan.projection_id().get()))
+                    .ok_or_else(|| invariant("event projection virtual entity ID is invalid"))?;
+            let partition_key_schema = KeySchema::new(
+                KeyPurpose::Partition(
+                    AggregateTypeId::new(1).ok_or_else(|| invariant("partition ID"))?,
+                ),
+                vec![key_components[0].clone()],
+            )
+            .map_err(|_| invariant("event projection partition key schema is invalid"))?;
+            let primary_key_schema = KeySchema::new(
+                KeyPurpose::Entity(virtual_entity_id),
+                key_components.clone(),
+            )
+            .map_err(|_| invariant("event projection primary key schema is invalid"))?;
+            let synthetic_index_id =
+                IndexId::new(1).ok_or_else(|| invariant("event projection index ID"))?;
+            let index_key_schema = KeySchema::index(
+                synthetic_index_id,
+                virtual_entity_id,
+                key_components,
+                primary_key_schema.clone(),
+            )
+            .map_err(|_| invariant("event projection index key schema is invalid"))?;
+            let mut indexes = BTreeMap::new();
+            indexes.insert(
+                "group_key".to_owned(),
+                IndexSymbol {
+                    id: synthetic_index_id,
+                    name: "group_key".to_owned(),
+                    field_ids: group_key_field_ids,
+                    fields: group_key_fields.clone(),
+                    cover_fields: measure_fields.clone(),
+                    encodings: vec![IndexFieldEncodingV1::Canonical; group_key_fields.len()],
+                    key_schema: index_key_schema,
+                    unique: true,
+                },
+            );
+            let partition_field = group_key_fields
+                .first()
+                .cloned()
+                .ok_or_else(|| invariant("event projection has no group key fields"))?;
+            let virtual_entity = EntitySymbol {
+                id: virtual_entity_id,
+                name: plan.name().to_owned(),
+                fields,
+                indexes,
+                text_indexes: BTreeMap::new(),
+                long_pattern_indexes: BTreeMap::new(),
+                relationships: BTreeMap::new(),
+                primary_key: group_key_fields.clone(),
+                partition_field,
+                partition_key_schema,
+                primary_key_schema,
+            };
+            let symbol = EventProjectionSymbol {
+                id: plan.projection_id(),
+                name: plan.name().to_owned(),
+                source_event_name: source_event.name().to_owned(),
+                group_key_fields,
+                measure_fields,
+                virtual_entity,
+            };
+            if event_projections
+                .insert(symbol.name.clone(), symbol)
+                .is_some()
+            {
+                return Err(invariant("duplicate event projection symbol"));
+            }
+        }
+        let mut columnar_projections = BTreeMap::new();
+        for spec in bundle.schema().columnar_projection_specs() {
+            let schema_entity = bundle
+                .schema()
+                .entity(spec.entity())
+                .ok_or_else(|| invariant("columnar projection backing entity is absent"))?;
+            let base_symbol = entities
+                .get(schema_entity.name())
+                .ok_or_else(|| invariant("columnar projection entity symbol is absent"))?;
+            let org_scope_field = schema_entity
+                .record()
+                .field(spec.org_scope_field())
+                .map(|field| field.name().to_owned())
+                .ok_or_else(|| invariant("columnar projection org_scope_field is absent"))?;
+            let mut projected_fields = Vec::with_capacity(spec.projected_fields().len());
+            for field_id in spec.projected_fields() {
+                let field_name = schema_entity
+                    .record()
+                    .field(*field_id)
+                    .map(|field| field.name().to_owned())
+                    .ok_or_else(|| invariant("columnar projection field is absent"))?;
+                projected_fields.push(field_name);
+            }
+            let mut virtual_entity = base_symbol.clone();
+            virtual_entity.fields.retain(|name, _| {
+                name == &org_scope_field
+                    || base_symbol.primary_key.contains(name)
+                    || projected_fields.contains(name)
+            });
+            virtual_entity.indexes.retain(|_, index| {
+                index
+                    .fields
+                    .iter()
+                    .chain(&index.cover_fields)
+                    .all(|field| virtual_entity.fields.contains_key(field))
+            });
+            let symbol = ColumnarProjectionSymbol {
+                name: spec.name().to_owned(),
+                entity_name: schema_entity.name().to_owned(),
+                entity_id: spec.entity(),
+                org_scope_field,
+                projected_fields,
+                virtual_entity,
+            };
+            if columnar_projections
+                .insert(symbol.name.clone(), symbol)
+                .is_some()
+            {
+                return Err(invariant("duplicate columnar projection symbol"));
+            }
+        }
         Ok(Self {
             identity: ExactContractIdentity::new(
                 bundle.lineage().clone(),
@@ -953,6 +1283,8 @@ impl SymbolicCatalog {
             enums,
             row_policies,
             principal_facts,
+            event_projections,
+            columnar_projections,
         })
     }
 
@@ -1184,6 +1516,30 @@ impl SymbolicCatalog {
     #[must_use]
     pub fn principal_facts(&self) -> impl ExactSizeIterator<Item = &PrincipalFactSymbol> {
         self.principal_facts.values()
+    }
+
+    /// Resolves one event projection symbol by exact contract name.
+    #[must_use]
+    pub fn event_projection(&self, name: &str) -> Option<&EventProjectionSymbol> {
+        self.event_projections.get(name)
+    }
+
+    /// Event projections in exact source-name order.
+    #[must_use]
+    pub fn event_projections(&self) -> impl ExactSizeIterator<Item = &EventProjectionSymbol> {
+        self.event_projections.values()
+    }
+
+    /// Resolves one scalar columnar projection symbol by exact contract name.
+    #[must_use]
+    pub fn columnar_projection(&self, name: &str) -> Option<&ColumnarProjectionSymbol> {
+        self.columnar_projections.get(name)
+    }
+
+    /// Scalar columnar projections in exact source-name order.
+    #[must_use]
+    pub fn columnar_projections(&self) -> impl ExactSizeIterator<Item = &ColumnarProjectionSymbol> {
+        self.columnar_projections.values()
     }
 
     pub(crate) fn enum_name(&self, id: EnumTypeId) -> Option<&str> {

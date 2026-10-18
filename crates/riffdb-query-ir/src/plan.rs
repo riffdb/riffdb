@@ -104,6 +104,54 @@ impl ProjectedVectorSourceV1 {
     }
 }
 
+/// Compiler-owned projected table source (`source projected <ProjectionName>`) under ADR-0315.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectedTableSourceV1 {
+    /// Event-driven projection (`projection <Name> from <Event>`).
+    Event {
+        /// Exact projection name.
+        projection_name: String,
+        /// Stable projection identifier.
+        projection_id: riffdb_types::ProjectionId,
+        /// Compiler-owned freshness policy.
+        freshness: ProjectedVectorFreshnessV1,
+    },
+    /// Entity-backed scalar columnar projection (`columnar_projection <Name> from <Entity>`).
+    Columnar {
+        /// Exact columnar projection name.
+        projection_name: String,
+        /// Backing entity name.
+        entity: String,
+        /// Stable backing entity identifier.
+        entity_id: EntityTypeId,
+        /// Compiler-owned freshness policy.
+        freshness: ProjectedVectorFreshnessV1,
+    },
+}
+
+impl ProjectedTableSourceV1 {
+    /// Exact declared projection name.
+    #[must_use]
+    pub fn projection_name(&self) -> &str {
+        match self {
+            Self::Event {
+                projection_name, ..
+            }
+            | Self::Columnar {
+                projection_name, ..
+            } => projection_name,
+        }
+    }
+
+    /// Compiler-owned freshness policy.
+    #[must_use]
+    pub const fn freshness(&self) -> ProjectedVectorFreshnessV1 {
+        match self {
+            Self::Event { freshness, .. } | Self::Columnar { freshness, .. } => *freshness,
+        }
+    }
+}
+
 /// One compiler-owned positional field in a sealed covered-result layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoveredResultSourceV1 {
@@ -1360,6 +1408,7 @@ pub struct QueryAccessProgramV1 {
     surface: ResolvedQueryV1,
     name: Option<String>,
     projected_source: Option<ProjectedVectorSourceV1>,
+    projected_table_source: Option<ProjectedTableSourceV1>,
     partition_route: QueryPartitionRouteV1,
     steps: Vec<QueryAccessStep>,
     authorization: Vec<AuthorizationEntityAccess>,
@@ -1407,6 +1456,7 @@ impl QueryAccessProgramV1 {
             authorization,
             cost,
             None,
+            None,
         )
     }
 
@@ -1431,6 +1481,7 @@ impl QueryAccessProgramV1 {
             steps,
             authorization,
             cost,
+            None,
             None,
         )
     }
@@ -1457,6 +1508,33 @@ impl QueryAccessProgramV1 {
             authorization,
             cost,
             Some(projected_source),
+            None,
+        )
+    }
+
+    /// Constructs a program bound to one explicit projected event or columnar table source.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn checked_projected_table(
+        contract: ExactContractIdentity,
+        surface: ResolvedQueryV1,
+        name: Option<String>,
+        partition_parameter: String,
+        steps: Vec<QueryAccessStep>,
+        authorization: Vec<AuthorizationEntityAccess>,
+        cost: QueryCostVectorV1,
+        projected_table_source: ProjectedTableSourceV1,
+    ) -> Option<Self> {
+        Self::checked_with_projected_source(
+            contract,
+            surface,
+            name,
+            QueryPartitionRouteV1::exact(partition_parameter)?,
+            steps,
+            authorization,
+            cost,
+            None,
+            Some(projected_table_source),
         )
     }
 
@@ -1470,10 +1548,12 @@ impl QueryAccessProgramV1 {
         authorization: Vec<AuthorizationEntityAccess>,
         cost: QueryCostVectorV1,
         projected_source: Option<ProjectedVectorSourceV1>,
+        projected_table_source: Option<ProjectedTableSourceV1>,
     ) -> Option<Self> {
         if surface.contract() != &contract
             || partition_route.parameter().is_empty()
             || (partition_route.is_finite_set() && !surface.has_bounded_set())
+            || (projected_source.is_some() && projected_table_source.is_some())
             || steps.is_empty()
             || authorization.is_empty()
             || authorization
@@ -1526,6 +1606,7 @@ impl QueryAccessProgramV1 {
             &authorization,
             cost,
             projected_source.as_ref(),
+            projected_table_source.as_ref(),
         )?;
         let identity = QueryPlanIdentity(hash_query_plan(&canonical_bytes));
         let explain = build_explain(&partition_route, &steps, &authorization, cost);
@@ -1535,6 +1616,7 @@ impl QueryAccessProgramV1 {
             surface,
             name,
             projected_source,
+            projected_table_source,
             partition_route,
             steps,
             authorization,
@@ -1567,6 +1649,12 @@ impl QueryAccessProgramV1 {
     #[must_use]
     pub const fn projected_source(&self) -> Option<&ProjectedVectorSourceV1> {
         self.projected_source.as_ref()
+    }
+
+    /// Exact projected table source, when this program targets an event or columnar projection.
+    #[must_use]
+    pub const fn projected_table_source(&self) -> Option<&ProjectedTableSourceV1> {
+        self.projected_table_source.as_ref()
     }
 
     /// One parameter routing every access to the same partition.
@@ -1887,6 +1975,7 @@ fn encode_program(
     authorization: &[AuthorizationEntityAccess],
     cost: QueryCostVectorV1,
     projected_source: Option<&ProjectedVectorSourceV1>,
+    projected_table_source: Option<&ProjectedTableSourceV1>,
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(PROGRAM_MAGIC);
@@ -1930,6 +2019,60 @@ fn encode_program(
         }
     } else if projected_source.is_some() {
         return None;
+    }
+    if let Some(table_source) = projected_table_source {
+        match table_source {
+            ProjectedTableSourceV1::Event {
+                projection_name,
+                projection_id,
+                freshness,
+            } => {
+                out.push(1);
+                write_text(&mut out, projection_name)?;
+                out.extend_from_slice(&projection_id.get().to_be_bytes());
+                match freshness {
+                    ProjectedVectorFreshnessV1::Available => out.push(1),
+                    ProjectedVectorFreshnessV1::Causal {
+                        inherit_session_commit,
+                        max_wait_ms,
+                    } => {
+                        out.push(2);
+                        out.push(u8::from(*inherit_session_commit));
+                        out.extend_from_slice(&max_wait_ms.to_be_bytes());
+                    }
+                    ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => {
+                        out.push(3);
+                        out.extend_from_slice(&max_lag_ms.to_be_bytes());
+                    }
+                }
+            }
+            ProjectedTableSourceV1::Columnar {
+                projection_name,
+                entity,
+                entity_id,
+                freshness,
+            } => {
+                out.push(2);
+                write_text(&mut out, projection_name)?;
+                write_text(&mut out, entity)?;
+                out.extend_from_slice(&entity_id.get().to_be_bytes());
+                match freshness {
+                    ProjectedVectorFreshnessV1::Available => out.push(1),
+                    ProjectedVectorFreshnessV1::Causal {
+                        inherit_session_commit,
+                        max_wait_ms,
+                    } => {
+                        out.push(2);
+                        out.push(u8::from(*inherit_session_commit));
+                        out.extend_from_slice(&max_wait_ms.to_be_bytes());
+                    }
+                    ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => {
+                        out.push(3);
+                        out.extend_from_slice(&max_lag_ms.to_be_bytes());
+                    }
+                }
+            }
+        }
     }
     if matches!(
         surface.ir_version,
@@ -2418,6 +2561,7 @@ riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessProgramV1 {
         surface,
         name,
         projected_source,
+        projected_table_source,
         partition_route,
         steps,
         authorization,
@@ -2427,6 +2571,37 @@ riffdb_types::inspect_owned_capacity_struct_v1!(QueryAccessProgramV1 {
     inline: [cost, identity],
     lifecycle: ownership_lifecycle
 });
+
+impl riffdb_types::InspectOwnedCapacityV1 for ProjectedTableSourceV1 {
+    fn inspect_owned_capacity(
+        &self,
+        inspection: &mut riffdb_types::OwnedCapacityInspectionV1,
+    ) -> Result<(), riffdb_types::OwnedCapacityInspectionErrorV1> {
+        match self {
+            Self::Event {
+                projection_name,
+                projection_id,
+                freshness,
+            } => {
+                inspection.visit(projection_name)?;
+                inspection.inline(projection_id)?;
+                inspection.visit(freshness)?;
+            }
+            Self::Columnar {
+                projection_name,
+                entity,
+                entity_id,
+                freshness,
+            } => {
+                inspection.visit(projection_name)?;
+                inspection.visit(entity)?;
+                inspection.inline(entity_id)?;
+                inspection.visit(freshness)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 riffdb_types::inspect_owned_capacity_struct_v1!(ProjectedVectorSourceV1 {
     owned: [entity, field],

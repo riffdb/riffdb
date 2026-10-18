@@ -604,12 +604,21 @@ impl ApplicationCatalogCandidatesV1 {
                     authority.clone(),
                 );
                 for access in query.plan().authorization() {
-                    let entity = contract
+                    let Some(entity) = contract
                         .schema()
                         .entities()
                         .iter()
                         .find(|entity| entity.name() == access.entity())
-                        .ok_or(ApplicationCatalogError)?;
+                    else {
+                        if contract
+                            .projections()
+                            .iter()
+                            .any(|projection| projection.name() == access.entity())
+                        {
+                            continue;
+                        }
+                        return Err(ApplicationCatalogError);
+                    };
                     insert_candidate(
                         &mut symbols,
                         ApplicationCatalogSymbolV1::checked(

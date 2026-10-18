@@ -2669,29 +2669,48 @@ fn application_catalog_query_candidates(
         let query_name = QueryOperationName::new(query.name().to_owned()).ok()?;
         let mut accesses = Vec::with_capacity(query.plan().authorization().len());
         for access in query.plan().authorization() {
-            let entity = bundle
+            let maximum_rows = NonZeroU16::new(u16::try_from(access.maximum_rows()).ok()?)?;
+            if let Some(entity) = bundle
                 .schema()
                 .entities()
                 .iter()
-                .find(|entity| entity.name() == access.entity())?;
-            let mut non_key_fields = access
-                .internal_fields()
-                .filter_map(|(_, field)| {
-                    (!entity.primary_key_fields().contains(&field)).then_some(field)
-                })
-                .collect::<Vec<_>>();
-            non_key_fields.sort_unstable();
-            non_key_fields.dedup();
-            let maximum_rows = NonZeroU16::new(u16::try_from(access.maximum_rows()).ok()?)?;
-            accesses.push(
-                ApplicationQueryAccessRequirement::new(
-                    entity.id(),
-                    None,
-                    non_key_fields,
-                    maximum_rows,
-                )
-                .ok()?,
-            );
+                .find(|entity| entity.name() == access.entity())
+            {
+                let mut non_key_fields = access
+                    .internal_fields()
+                    .filter_map(|(_, field)| {
+                        (!entity.primary_key_fields().contains(&field)).then_some(field)
+                    })
+                    .collect::<Vec<_>>();
+                non_key_fields.sort_unstable();
+                non_key_fields.dedup();
+                accesses.push(
+                    ApplicationQueryAccessRequirement::new(
+                        entity.id(),
+                        None,
+                        non_key_fields,
+                        maximum_rows,
+                    )
+                    .ok()?,
+                );
+            } else {
+                let projection = bundle
+                    .projections()
+                    .iter()
+                    .find(|projection| projection.name() == access.entity())?;
+                let virtual_entity_id = riffdb_types::EntityTypeId::new(
+                    10_000_u32.saturating_add(projection.projection_id().get()),
+                )?;
+                accesses.push(
+                    ApplicationQueryAccessRequirement::new(
+                        virtual_entity_id,
+                        None,
+                        Vec::new(),
+                        maximum_rows,
+                    )
+                    .ok()?,
+                );
+            }
         }
         let candidate = ApplicationCatalogQueryCandidate::new(
             NamedQueryToolCandidate::new(
@@ -3398,6 +3417,25 @@ async fn execute_named_query(
         )
         .await;
     }
+    if program.projected_table_source().is_some() {
+        let authorization_plan_hash = program.identity().hash();
+        return execute_projected_table_named_query(
+            service,
+            context,
+            bundle,
+            program,
+            query.shared_document(),
+            module_hash,
+            authorization_plan_hash,
+            response_plan_hash,
+            query_name,
+            request.parameters,
+            request.cursor,
+            request.minimum_application_head,
+            request.consistency,
+        )
+        .await;
+    }
     if program
         .steps()
         .iter()
@@ -3896,6 +3934,748 @@ fn vector_projection_failure(
         || service.internal_failure(operation, InternalDefect::ProofMismatch),
         |code| application_validation_failure(ValidationCode::InvalidValue, code),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_projected_table_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    program: Arc<QueryAccessProgramV1>,
+    document: Arc<Document>,
+    module_hash: QueryModuleHash,
+    authorization_plan_hash: QueryPlanHash,
+    response_plan_hash: QueryPlanHash,
+    query_name: QueryOperationName,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    if cursor.is_some() || program.steps().len() != 1 {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::CursorInvalid,
+        ));
+    }
+    let param_materialize_started = Instant::now();
+    let source = program
+        .projected_table_source()
+        .cloned()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let parameters = materialize_query_parameters(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        document.as_ref(),
+        &submitted,
+    )?;
+    let target = application_query_target_with_identity(
+        bundle.bundle(),
+        &program,
+        &parameters,
+        context.ingress(),
+        authorization_plan_hash,
+        program.cost(),
+        None,
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let operation_request = OperationRequest::execute_named_query(
+        bundle.lineage().clone(),
+        module_hash,
+        query_name,
+        target,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ParamMaterialize,
+        param_materialize_started,
+    );
+    let authorize_begin_started = Instant::now();
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizeBegin,
+        authorize_begin_started,
+    );
+    let authorize_pre_started = Instant::now();
+    let execution_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let minimum_application_head = match resolve_admission_head_floor(
+        &service,
+        &context,
+        minimum_application_head,
+        consistency,
+    )
+    .await
+    {
+        Ok(floor) => floor,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
+    let policy_shape = execution_authorization.application_role_hash();
+    let row_policy_identity = row_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePre,
+        authorize_pre_started,
+    );
+    let execute_started = Instant::now();
+    let step = &program.steps()[0];
+    let admission_head_fenced = consistency == Some(QueryConsistencyV1::AdmissionHead);
+    let (candidate_rows, application_head, epoch_key, epoch) = match &source {
+        riffdb_query_ir::ProjectedTableSourceV1::Event {
+            projection_name,
+            projection_id,
+            freshness,
+        } => {
+            match fetch_event_projection_candidate_rows(
+                &service,
+                &context,
+                &begun,
+                bundle.bundle(),
+                step,
+                &parameters,
+                projection_name,
+                *projection_id,
+                freshness,
+                minimum_application_head,
+                admission_head_fenced,
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(failure) => {
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            }
+        }
+        riffdb_query_ir::ProjectedTableSourceV1::Columnar {
+            projection_name,
+            entity_id,
+            freshness,
+            ..
+        } => {
+            match fetch_columnar_projection_candidate_rows(
+                &service,
+                &context,
+                &begun,
+                bundle.bundle(),
+                &program,
+                step,
+                &parameters,
+                projection_name,
+                *entity_id,
+                freshness,
+                row_policy.as_deref(),
+                minimum_application_head,
+                admission_head_fenced,
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(failure) => {
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            }
+        }
+    };
+    let snapshot = match riffdb_query_executor::execute_projected_table_rows(
+        &program,
+        &parameters,
+        candidate_rows,
+        application_head,
+        epoch_key,
+        epoch,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let failure = execution_failure(&service, OPERATION, error);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
+    let authorize_post_started = Instant::now();
+    let release_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_policy =
+        resolve_authorized_query_row_policy_context(&release_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_policy_identity = release_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    if release_authorization.application_role_hash() != policy_shape
+        || release_policy_identity != row_policy_identity
+    {
+        return Err(begun.finish_authorization_denial(&service, &context).await);
+    }
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePost,
+        authorize_post_started,
+    );
+    let response_build_started = Instant::now();
+    let mut result = ExecuteSymbolicQueryResult::from_snapshot(
+        &program,
+        snapshot,
+        Arc::clone(bundle.enum_variant_names()),
+        false,
+        false,
+    );
+    result.identity.module_hash = Some(module_hash);
+    result.identity.plan_hash = response_plan_hash;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ResponseBuild,
+        response_build_started,
+    );
+    let audit_finish_started = Instant::now();
+    finish_success(&service, &context, &begun).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuditFinish,
+        audit_finish_started,
+    );
+    Ok(result)
+}
+
+fn resolve_static_or_param_value(
+    value: &QueryPredicateValue,
+    parameters: &QueryParameters,
+) -> Option<CanonicalValue> {
+    match value {
+        QueryPredicateValue::Parameter(name) => parameters.get(name).cloned(),
+        QueryPredicateValue::Literal(literal) => match literal {
+            riffdb_query_ir::QueryLiteral::Boolean(b) => Some(CanonicalValue::Bool(*b)),
+            riffdb_query_ir::QueryLiteral::Unsigned(v) => v
+                .parse::<u64>()
+                .ok()
+                .map(CanonicalValue::U64)
+                .or_else(|| v.parse::<i64>().ok().map(CanonicalValue::I64)),
+            riffdb_query_ir::QueryLiteral::String(s) => {
+                riffdb_types::CanonicalString::new(s.clone())
+                    .ok()
+                    .map(CanonicalValue::String)
+            }
+            riffdb_query_ir::QueryLiteral::Null => Some(CanonicalValue::Null),
+        },
+        QueryPredicateValue::EnumVariant {
+            type_id,
+            variant_id,
+            ..
+        } => Some(CanonicalValue::Enum {
+            type_id: *type_id,
+            variant_id: *variant_id,
+        }),
+        QueryPredicateValue::BindingField { .. }
+        | QueryPredicateValue::BindingFieldSet { .. }
+        | QueryPredicateValue::CandidateBinding { .. } => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_event_projection_candidate_rows(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    bundle: &riffdb_contract_ir::ContractBundle,
+    step: &riffdb_query_ir::QueryAccessStep,
+    parameters: &QueryParameters,
+    projection_name: &str,
+    projection_id: riffdb_types::ProjectionId,
+    freshness: &ProjectedVectorFreshnessV1,
+    minimum_application_head: Option<u64>,
+    admission_head_fenced: bool,
+) -> ServiceResult<(Vec<QueryRow>, u64, String, u64)> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    const MAX_OBSERVATIONS: usize = 64;
+    let bound_schema = bundle
+        .bound_projection_group_schema(projection_id)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let projection = bound_schema.schema();
+    let group_key_names: &[String] = match step.access() {
+        riffdb_query_ir::QueryAccessKind::Point { key_fields } => key_fields.as_slice(),
+        riffdb_query_ir::QueryAccessKind::Index { fields, .. } => fields.as_slice(),
+        _ => return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch)),
+    };
+    let mut leading_components = Vec::new();
+    for comp_name in group_key_names {
+        let Some(eq_pred) = step.predicates().iter().find(|pred| {
+            pred.field() == comp_name && pred.operator() == QueryPredicateOperator::Equal
+        }) else {
+            break;
+        };
+        let value = resolve_static_or_param_value(eq_pred.value(), parameters)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+        leading_components.push(value);
+    }
+    let inherited_minimum = match freshness {
+        ProjectedVectorFreshnessV1::Causal {
+            inherit_session_commit: true,
+            ..
+        } => minimum_application_head,
+        ProjectedVectorFreshnessV1::Available
+        | ProjectedVectorFreshnessV1::Bounded { .. }
+        | ProjectedVectorFreshnessV1::Causal { .. } => None,
+    };
+    let required_sequence = admission_head_fenced
+        .then_some(minimum_application_head)
+        .flatten()
+        .or(inherited_minimum)
+        .map(|val| {
+            CommitSequence::new(val).ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
+    let max_wait = if admission_head_fenced {
+        EXACT_PROVIDER_READINESS_WAIT
+    } else if let ProjectedVectorFreshnessV1::Causal { max_wait_ms, .. } = freshness {
+        Duration::from_millis(u64::from(*max_wait_ms))
+    } else {
+        Duration::ZERO
+    };
+    let wait_deadline = (Instant::now() + max_wait).min(context.control().deadline());
+    let limit = crate::PageLimit::new(256).expect("256 is within PageLimit::MAX");
+
+    let mut observation_count = 0usize;
+    let ready = loop {
+        let permit = match wait_with_control(
+            context.control(),
+            service.providers.deadline_scheduler.as_ref(),
+            service
+                .providers
+                .projection
+                .reserve_query_projection(context.control()),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => return Err(PublicError::storage_unavailable().into()),
+            Err(err) => return Err(controlled_failure(err)),
+        };
+        begun.reauthorize_read(service, context).await?;
+        let lower_request = crate::ProjectionPortRequest::new(
+            bound_schema.identity().clone(),
+            leading_components.clone(),
+            required_sequence,
+            wait_deadline,
+            limit,
+            None,
+        )
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        let receipt = permit
+            .submit(lower_request)
+            .map_err(|_| PublicError::storage_unavailable())?;
+        let observed = match wait_with_control(
+            context.control(),
+            service.providers.deadline_scheduler.as_ref(),
+            receipt,
+        )
+        .await
+        {
+            Ok(Ok(Ok(result))) => result,
+            Ok(Ok(Err(_))) | Ok(Err(PortDriverStopped)) => {
+                return Err(PublicError::storage_unavailable().into());
+            }
+            Err(err) => return Err(controlled_failure(err)),
+        };
+        observation_count += 1;
+        match observed {
+            crate::ProjectionPortResult::Ready(ready) => break ready,
+            crate::ProjectionPortResult::PendingObservation { .. } => {
+                begun.reauthorize_read(service, context).await?;
+                if observation_count >= MAX_OBSERVATIONS {
+                    return Err(application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::FreshnessUnsatisfied,
+                    ));
+                }
+            }
+            crate::ProjectionPortResult::WaitTimedOut { .. } => {
+                return Err(application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::FreshnessUnsatisfied,
+                ));
+            }
+            crate::ProjectionPortResult::Degraded { .. }
+            | crate::ProjectionPortResult::Invalid { .. }
+            | crate::ProjectionPortResult::ContinuationInvalidated => {
+                return Err(application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::QueryUnavailable,
+                ));
+            }
+        }
+    };
+
+    let application_head = match ready.frontier() {
+        FrontierPosition::BeforeFirst => 0,
+        FrontierPosition::AppliedThrough(seq) => seq.get(),
+    };
+    if required_sequence.is_some_and(|req| application_head < req.get()) {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::FreshnessUnsatisfied,
+        ));
+    }
+    let measure_fields = projection.measures().fields();
+    let mut measure_names = BTreeMap::new();
+    for measure in measure_fields {
+        measure_names.insert(measure.id(), measure.name().to_owned());
+    }
+    let mut candidate_rows = Vec::with_capacity(ready.rows().len());
+    for row in ready.rows() {
+        let mut fields = BTreeMap::new();
+        for (comp_name, value) in group_key_names.iter().zip(row.group().iter()) {
+            fields.insert(comp_name.clone(), value.clone());
+        }
+        for (field_id, value) in row.values().clone().into_fields() {
+            if let Some(name) = measure_names.get(&field_id) {
+                fields.insert(name.clone(), value);
+            }
+        }
+        let qrow = QueryRow::checked(step.entity().to_owned(), fields)
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        candidate_rows.push(qrow);
+    }
+    Ok((
+        candidate_rows,
+        application_head,
+        format!("projection.{projection_name}"),
+        application_head,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_columnar_projection_candidate_rows(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    bundle: &riffdb_contract_ir::ContractBundle,
+    program: &QueryAccessProgramV1,
+    step: &riffdb_query_ir::QueryAccessStep,
+    parameters: &QueryParameters,
+    projection_name: &str,
+    entity_id: riffdb_types::EntityTypeId,
+    freshness: &ProjectedVectorFreshnessV1,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    minimum_application_head: Option<u64>,
+    admission_head_fenced: bool,
+) -> ServiceResult<(Vec<QueryRow>, u64, String, u64)> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    const MAX_OBSERVATIONS: usize = 64;
+    let Some(columnar) = service.providers.columnar.as_ref() else {
+        return Err(PublicError::storage_unavailable().into());
+    };
+    let definition = columnar.definition(projection_name).ok_or_else(|| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        )
+    })?;
+    let contract_entity = bundle
+        .schema()
+        .entity(entity_id)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+
+    let inherited_minimum = match freshness {
+        ProjectedVectorFreshnessV1::Causal {
+            inherit_session_commit: true,
+            ..
+        } => minimum_application_head,
+        ProjectedVectorFreshnessV1::Available
+        | ProjectedVectorFreshnessV1::Bounded { .. }
+        | ProjectedVectorFreshnessV1::Causal { .. } => None,
+    };
+    let minimum_epoch = admission_head_fenced
+        .then_some(minimum_application_head)
+        .flatten()
+        .or(inherited_minimum)
+        .map(|val| {
+            CommitSequence::new(val).ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
+    let max_wait = if admission_head_fenced {
+        EXACT_PROVIDER_READINESS_WAIT
+    } else if let ProjectedVectorFreshnessV1::Causal { max_wait_ms, .. } = freshness {
+        Duration::from_millis(u64::from(*max_wait_ms))
+    } else {
+        Duration::ZERO
+    };
+    let wait_deadline = (Instant::now() + max_wait).min(context.control().deadline());
+    let cancellation = columnar.notifier().cancellation();
+
+    let observe_once = || -> ServiceResult<crate::ColumnarObservation> {
+        columnar
+            .observe(projection_name)
+            .and_then(|obs| obs.scope_to_database(service.identity.database_id()))
+            .map_err(|_| PublicError::storage_unavailable().into())
+    };
+
+    let observation = if minimum_epoch.is_some() && !max_wait.is_zero() {
+        let mut chosen = None;
+        for _ in 0..MAX_OBSERVATIONS {
+            if context.control().is_cancelled() {
+                return Err(ServiceFailure::Cancelled);
+            }
+            let registration = columnar
+                .notifier()
+                .register(projection_name.to_owned())
+                .map_err(|error| match error.kind() {
+                    crate::columnar_notification::ColumnarNotificationErrorKind::WaiterCapacityExceeded => {
+                        PublicError::storage_unavailable().into()
+                    }
+                    crate::columnar_notification::ColumnarNotificationErrorKind::Integrity => {
+                        service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+                    }
+                })?;
+            let obs = observe_once()?;
+            let ready_and_satisfied = obs.has_published()
+                && matches!(
+                    obs.lifecycle(),
+                    Some(crate::ColumnarLifecycle::Ready) | None
+                )
+                && minimum_epoch.is_none_or(|min| {
+                    obs.published_frontier()
+                        .commit_token()
+                        .map(|t| t.commit_sequence())
+                        >= Some(min)
+                });
+            if ready_and_satisfied {
+                drop(registration);
+                chosen = Some(obs);
+                break;
+            }
+            if matches!(
+                obs.lifecycle(),
+                Some(
+                    crate::ColumnarLifecycle::Degraded { .. }
+                        | crate::ColumnarLifecycle::Invalid { .. }
+                )
+            ) {
+                drop(registration);
+                return Err(application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::QueryUnavailable,
+                ));
+            }
+            if Instant::now() >= wait_deadline {
+                drop(registration);
+                chosen = Some(obs);
+                break;
+            }
+            let wake = registration
+                .wait_controlled(wait_deadline, &cancellation)
+                .map_err(|_| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
+            match wake {
+                crate::ColumnarWake::Cancelled => return Err(ServiceFailure::Cancelled),
+                crate::ColumnarWake::TimedOut => {
+                    chosen = Some(observe_once()?);
+                    break;
+                }
+                crate::ColumnarWake::Notified => {
+                    begun.reauthorize_read(service, context).await?;
+                }
+            }
+        }
+        match chosen {
+            Some(obs) => obs,
+            None => observe_once()?,
+        }
+    } else {
+        observe_once()?
+    };
+
+    if !observation.has_published()
+        || !matches!(
+            observation.lifecycle(),
+            Some(crate::ColumnarLifecycle::Ready) | None
+        )
+    {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        ));
+    }
+    if let ProjectedVectorFreshnessV1::Bounded { max_lag_ms } = freshness {
+        let lag = observation
+            .published_frontier()
+            .lag_sequences(observation.head());
+        if lag.is_none_or(|dist| dist > *max_lag_ms) {
+            return Err(application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::FreshnessUnsatisfied,
+            ));
+        }
+    }
+    if minimum_epoch.is_some_and(|min| {
+        observation
+            .published_frontier()
+            .commit_token()
+            .map(|t| t.commit_sequence())
+            < Some(min)
+    }) {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::FreshnessUnsatisfied,
+        ));
+    }
+
+    let access = program
+        .internal_entity_access(step.entity())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let mut pushed_predicates = Vec::new();
+    for predicate in step.predicates() {
+        if predicate.operator() == QueryPredicateOperator::Equal
+            && let Some(field_id) = access.internal_field_id(predicate.field())
+            && definition.projected_fields().contains(&field_id)
+            && let Some(value) = resolve_static_or_param_value(predicate.value(), parameters)
+        {
+            pushed_predicates.push(ColumnPredicate::Eq {
+                field: field_id,
+                value,
+            });
+        }
+    }
+    let engine_request = riffdb_columnar::ColumnarQueryRequest {
+        org_scope: partition_value.clone(),
+        select: definition.projected_fields().to_vec(),
+        predicates: pushed_predicates,
+        order: Vec::new(),
+        limit: Some(
+            usize::try_from(riffdb_query_executor::MAX_QUERY_SCANNED_ROWS).unwrap_or(1_024),
+        ),
+        group_by: None,
+        aggregate: None,
+        budget: riffdb_columnar::QueryBudget::default(),
+    };
+    let snapshot_arc = observation.snapshot_arc();
+    let query_result = match row_policy {
+        Some(policy) => {
+            let org =
+                riffdb_columnar::OrgKey::from_value(&engine_request.org_scope).map_err(|_| {
+                    application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::InputInvalid,
+                    )
+                })?;
+            let merged = snapshot_arc
+                .merged_org_bounded(&org, riffdb_policy::MAX_PROJECTED_POLICY_CANDIDATES_V1)
+                .ok_or_else(|| {
+                    application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::QueryUnavailable,
+                    )
+                })?;
+            let candidates = merged
+                .keys()
+                .map(|key| {
+                    riffdb_types::EntityKey::from_bytes(key.as_bytes().to_vec()).map_err(|_| {
+                        service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+                    })
+                })
+                .collect::<ServiceResult<Vec<_>>>()?;
+            let executor = service.providers.query_executor.as_ref().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+            })?;
+            let admission = executor
+                .authorize_projected_candidates(definition.entity_type_id(), &candidates, policy)
+                .map_err(|error| execution_failure(service, OPERATION, error))?;
+            riffdb_columnar::query_snapshot_with_policy_admission(
+                &definition,
+                snapshot_arc.as_ref(),
+                &engine_request,
+                &admission,
+            )
+        }
+        None => {
+            riffdb_columnar::query_snapshot(&definition, snapshot_arc.as_ref(), &engine_request)
+        }
+    }
+    .map_err(|_| {
+        application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        )
+    })?;
+    let riffdb_columnar::QueryResult::Rows(riffdb_columnar::QueryRows {
+        fields,
+        primary_key_fields,
+        rows,
+    }) = query_result
+    else {
+        return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+    };
+    let field_names = fields
+        .iter()
+        .map(|fid| {
+            contract_entity
+                .record()
+                .field(*fid)
+                .map(|f| f.name().to_owned())
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .collect::<ServiceResult<Vec<_>>>()?;
+    let pk_names = primary_key_fields
+        .iter()
+        .map(|fid| {
+            contract_entity
+                .record()
+                .field(*fid)
+                .map(|f| f.name().to_owned())
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .collect::<ServiceResult<Vec<_>>>()?;
+
+    let mut candidate_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut row_fields = BTreeMap::new();
+        for (name, val) in pk_names.iter().zip(row.primary_key) {
+            row_fields.insert(name.clone(), val);
+        }
+        for (name, val) in field_names.iter().zip(row.cells) {
+            row_fields.insert(name.clone(), val);
+        }
+        let qrow = QueryRow::checked(step.entity().to_owned(), row_fields)
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        candidate_rows.push(qrow);
+    }
+    let application_head = observation
+        .published_frontier()
+        .commit_token()
+        .map_or(0, |t| t.commit_sequence().get());
+    Ok((
+        candidate_rows,
+        application_head,
+        format!("columnar.{projection_name}"),
+        application_head,
+    ))
 }
 
 fn vector_projection_response(
@@ -7251,28 +8031,6 @@ fn cached_query_target_template(
             .authorization()
             .iter()
             .find(|access| access.entity() == step.entity())?;
-        let contract_entity = bundle.schema().entity(step.internal_entity_id())?;
-        let mut non_key_fields = entity
-            .internal_fields()
-            .filter_map(|(_, field)| {
-                (!contract_entity.primary_key_fields().contains(&field)).then_some(field)
-            })
-            .collect::<Vec<_>>();
-        non_key_fields.sort_unstable();
-        non_key_fields.dedup();
-        let aggregate = bundle
-            .schema()
-            .aggregate_for_entity(step.internal_entity_id())?;
-        if last_aggregate_id != Some(aggregate.id()) {
-            partition_schemas.push(aggregate.keys().partition_schema().clone());
-            last_aggregate_id = Some(aggregate.id());
-        }
-        // Exact provider execution performs no authoritative entity/index
-        // scan on the request path. Its access requirement names the entity,
-        // index, and visible fields whose already-proved derived descriptor is
-        // consumed, while the output/candidate ceilings remain in the sealed
-        // cost vector. Represent that single descriptor access explicitly so
-        // background provider work never inflates application scan authority.
         let rows = match maximum_access_rows_override {
             Some(rows) => rows,
             None => {
@@ -7288,69 +8046,114 @@ fn cached_query_target_template(
                 NonZeroU16::new(rows)?
             }
         };
-        let index_id = match step.access() {
-            QueryAccessKind::Index { .. }
-            | QueryAccessKind::ExpansionIndex { .. }
-            | QueryAccessKind::PartitionSetIndex { .. }
-            | QueryAccessKind::LongPatternCandidate { .. } => Some(step.internal_index_id()?),
-            QueryAccessKind::Point { .. }
-            | QueryAccessKind::DependentPointBatch { .. }
-            | QueryAccessKind::Nearest { .. }
-            | QueryAccessKind::CandidateRootHydration { .. } => None,
-        };
-        // ADR-0118: secret-classified fields are gated on PROJECTION only.
-        // The step's selected fields — the ones its released rows carry —
-        // resolve against the schema's secret set and require the grant's
-        // dedicated secret naming. Predicate-only secret use compares the
-        // value without returning it (the executor's projection step drops
-        // non-selected fields), so secrets leave the ordinary non-key list
-        // and its all-fields-visible rule entirely.
-        let schema_secret_fields = bundle
-            .schema()
-            .secret_fields_for_entity(step.internal_entity_id());
-        let (projected_secret_fields, non_key_fields) = if schema_secret_fields.is_empty() {
-            (Vec::new(), non_key_fields)
+        if let Some(contract_entity) = bundle.schema().entity(step.internal_entity_id()) {
+            let mut non_key_fields = entity
+                .internal_fields()
+                .filter_map(|(_, field)| {
+                    (!contract_entity.primary_key_fields().contains(&field)).then_some(field)
+                })
+                .collect::<Vec<_>>();
+            non_key_fields.sort_unstable();
+            non_key_fields.dedup();
+            let aggregate = bundle
+                .schema()
+                .aggregate_for_entity(step.internal_entity_id())?;
+            if last_aggregate_id != Some(aggregate.id()) {
+                partition_schemas.push(aggregate.keys().partition_schema().clone());
+                last_aggregate_id = Some(aggregate.id());
+            }
+            // Exact provider execution performs no authoritative entity/index
+            // scan on the request path. Its access requirement names the entity,
+            // index, and visible fields whose already-proved derived descriptor is
+            // consumed, while the output/candidate ceilings remain in the sealed
+            // cost vector. Represent that single descriptor access explicitly so
+            // background provider work never inflates application scan authority.
+            let index_id = if program.projected_table_source().is_some() {
+                None
+            } else {
+                match step.access() {
+                    QueryAccessKind::Index { .. }
+                    | QueryAccessKind::ExpansionIndex { .. }
+                    | QueryAccessKind::PartitionSetIndex { .. }
+                    | QueryAccessKind::LongPatternCandidate { .. } => {
+                        Some(step.internal_index_id()?)
+                    }
+                    QueryAccessKind::Point { .. }
+                    | QueryAccessKind::DependentPointBatch { .. }
+                    | QueryAccessKind::Nearest { .. }
+                    | QueryAccessKind::CandidateRootHydration { .. } => None,
+                }
+            };
+            // ADR-0118: secret-classified fields are gated on PROJECTION only.
+            // The step's selected fields — the ones its released rows carry —
+            // resolve against the schema's secret set and require the grant's
+            // dedicated secret naming. Predicate-only secret use compares the
+            // value without returning it (the executor's projection step drops
+            // non-selected fields), so secrets leave the ordinary non-key list
+            // and its all-fields-visible rule entirely.
+            let schema_secret_fields = bundle
+                .schema()
+                .secret_fields_for_entity(step.internal_entity_id());
+            let (projected_secret_fields, non_key_fields) = if schema_secret_fields.is_empty() {
+                (Vec::new(), non_key_fields)
+            } else {
+                let field_ids: std::collections::BTreeMap<&str, riffdb_types::FieldId> =
+                    entity.internal_fields().collect();
+                let mut projected: Vec<riffdb_types::FieldId> = step
+                    .selected_fields()
+                    .iter()
+                    .filter_map(|name| field_ids.get(name.as_str()).copied())
+                    .filter(|field| schema_secret_fields.binary_search(field).is_ok())
+                    .collect();
+                projected.sort_unstable();
+                projected.dedup();
+                let ordinary = non_key_fields
+                    .into_iter()
+                    .filter(|field| schema_secret_fields.binary_search(field).is_err())
+                    .collect();
+                (projected, ordinary)
+            };
+            let access = match program.partition_route() {
+                riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+                    ApplicationQueryAccessRequirement::new(
+                        step.internal_entity_id(),
+                        index_id,
+                        non_key_fields,
+                        rows,
+                    )
+                }
+                riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+                    ApplicationQueryAccessRequirement::new_partition_set(
+                        step.internal_entity_id(),
+                        index_id,
+                        non_key_fields,
+                        rows,
+                        NonZeroU16::new(*maximum)?,
+                    )
+                }
+            };
+            accesses.push(
+                access
+                    .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
+                    .ok()?,
+            );
         } else {
-            let field_ids: std::collections::BTreeMap<&str, riffdb_types::FieldId> =
-                entity.internal_fields().collect();
-            let mut projected: Vec<riffdb_types::FieldId> = step
-                .selected_fields()
+            let _projection = bundle
+                .projections()
                 .iter()
-                .filter_map(|name| field_ids.get(name.as_str()).copied())
-                .filter(|field| schema_secret_fields.binary_search(field).is_ok())
-                .collect();
-            projected.sort_unstable();
-            projected.dedup();
-            let ordinary = non_key_fields
-                .into_iter()
-                .filter(|field| schema_secret_fields.binary_search(field).is_err())
-                .collect();
-            (projected, ordinary)
-        };
-        let access = match program.partition_route() {
-            riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
-                ApplicationQueryAccessRequirement::new(
-                    step.internal_entity_id(),
-                    index_id,
-                    non_key_fields,
-                    rows,
-                )
+                .find(|projection| projection.name() == step.entity())?;
+            if partition_schemas.is_empty() {
+                partition_schemas.push(step.internal_partition_key_schema().clone());
             }
-            riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
-                ApplicationQueryAccessRequirement::new_partition_set(
-                    step.internal_entity_id(),
-                    index_id,
-                    non_key_fields,
-                    rows,
-                    NonZeroU16::new(*maximum)?,
-                )
-            }
-        };
-        accesses.push(
-            access
-                .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
-                .ok()?,
-        );
+            let access = ApplicationQueryAccessRequirement::new(
+                step.internal_entity_id(),
+                None,
+                Vec::new(),
+                rows,
+            )
+            .ok()?;
+            accesses.push(access);
+        }
     }
     let built = Arc::new(CachedQueryTargetTemplate {
         partition_schemas,
@@ -8691,6 +9494,346 @@ mod reimport_observation_tests {
         assert_eq!(
             hash_reimport_query_result(&collection).expect("collection hash"),
             expected_hash("a9b45a1bfe185d2cd91261ef6544a53eaf9fc020c7c2edc096159db5ea09969a")
+        );
+    }
+}
+
+#[cfg(test)]
+mod projected_table_query_execution_tests {
+    use super::*;
+    use riffdb_query_executor::QueryRow;
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_types::Timestamp;
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045
+    #[test]
+    fn riffql_source_projected_executes_event_and_columnar_projections_across_sdks() {
+        let contract_src = r#"
+contract TraceObservability version 1 {
+  entity Span {
+    key (org_id: string<64>, span_id: string<64>)
+    field model: string<128>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  event SpanLogged {
+    org_id: string<64>
+    model: string<128>
+    latency_ms: i64
+    total_tokens: i64
+    started_at: timestamp
+  }
+  aggregate Spans {
+    root Span
+    partition_by (org_id)
+    conflict_key (org_id, span_id)
+  }
+  projection HourlyModelRollup {
+    source event SpanLogged
+    key (org_id, model, hour(started_at))
+    measure span_count = count()
+    measure tokens_sum = sum(total_tokens)
+    measure latency_min = min(latency_ms)
+    measure latency_max = max(latency_ms)
+    measure latency_mean = mean(latency_ms)
+    frontier transactionally_ordered
+  }
+  columnar_projection SpanAnalytics {
+    source entity Span
+    fields (model, status, latency_ms, total_tokens, started_at)
+  }
+}
+"#;
+        let event_query = r#"
+query QueryHourlyRollup(
+    $org_id: Span.org_id,
+    $model: Span.model,
+    $start_bucket: Span.started_at,
+    $end_bucket: Span.started_at
+) {
+    source projected HourlyModelRollup
+    freshness available
+
+    many rollups from HourlyModelRollup
+        where org_id == $org_id
+          && model == $model
+          && started_at >= $start_bucket
+          && started_at < $end_bucket
+        order by started_at asc
+        take 24
+
+    return Found {
+        rollups: rollups {
+            started_at
+            span_count
+            tokens_sum
+            latency_min
+            latency_max
+        }
+    }
+    outcomes Found
+}
+"#;
+        let columnar_query = r#"
+query QuerySpanAnalytics(
+    $org_id: Span.org_id,
+    $start_at: Span.started_at,
+    $end_at: Span.started_at
+) {
+    source projected SpanAnalytics
+    freshness bounded max_lag_ms 5000
+
+    many spans from Span
+        where org_id == $org_id
+          && started_at >= $start_at
+          && started_at < $end_at
+        take 100
+
+    aggregate by_model from spans {
+        group by model, hour(started_at) as hour_bucket
+        count() as span_count
+        sum(total_tokens) as total_tokens
+        p95(latency_ms) as p95_latency_ms
+        order by total_tokens desc, model asc, hour_bucket asc
+        take 20
+    }
+
+    return Found {
+        by_model: by_model {
+            model
+            hour_bucket
+            span_count
+            total_tokens
+            p95_latency_ms
+        }
+    }
+    outcomes Found
+}
+"#;
+        let bundle =
+            riffdb_contract_compiler::compile_contract_source(contract_src).expect("contract");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("trace_analytics").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![
+                    NamedQuerySource::new("QueryHourlyRollup", event_query).expect("event query"),
+                    NamedQuerySource::new("QuerySpanAnalytics", columnar_query)
+                        .expect("columnar query"),
+                ],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect("module");
+
+        // 1. Execute event projection query via execute_projected_table_rows + snapshot_to_result
+        let event_compiled = module.query("QueryHourlyRollup").expect("event query");
+        let event_program = event_compiled.plan().representative_program();
+        let t_h1 = Timestamp::new(1_700_000_000 - (1_700_000_000 % 3600), 0).expect("t1");
+        let t_h2 = Timestamp::new(t_h1.seconds() + 3600, 0).expect("t2");
+        let t_h3 = Timestamp::new(t_h1.seconds() + 7200, 0).expect("t3");
+        let event_params = QueryParameters::checked(BTreeMap::from([
+            (
+                "org_id".to_owned(),
+                CanonicalValue::string("org-1").expect("org"),
+            ),
+            (
+                "model".to_owned(),
+                CanonicalValue::string("gpt-4o").expect("model"),
+            ),
+            ("start_bucket".to_owned(), CanonicalValue::Timestamp(t_h1)),
+            ("end_bucket".to_owned(), CanonicalValue::Timestamp(t_h3)),
+        ]))
+        .expect("event params");
+        let event_candidates = vec![
+            QueryRow::checked(
+                "HourlyModelRollup".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "model".to_owned(),
+                        CanonicalValue::string("gpt-4o").expect("model"),
+                    ),
+                    ("started_at".to_owned(), CanonicalValue::Timestamp(t_h2)),
+                    ("span_count".to_owned(), CanonicalValue::U64(5)),
+                    ("tokens_sum".to_owned(), CanonicalValue::I64(2500)),
+                    ("latency_min".to_owned(), CanonicalValue::I64(80)),
+                    ("latency_max".to_owned(), CanonicalValue::I64(420)),
+                ]),
+            )
+            .expect("row 2"),
+            QueryRow::checked(
+                "HourlyModelRollup".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "model".to_owned(),
+                        CanonicalValue::string("gpt-4o").expect("model"),
+                    ),
+                    ("started_at".to_owned(), CanonicalValue::Timestamp(t_h1)),
+                    ("span_count".to_owned(), CanonicalValue::U64(3)),
+                    ("tokens_sum".to_owned(), CanonicalValue::I64(1200)),
+                    ("latency_min".to_owned(), CanonicalValue::I64(100)),
+                    ("latency_max".to_owned(), CanonicalValue::I64(300)),
+                ]),
+            )
+            .expect("row 1"),
+        ];
+        let event_snapshot = riffdb_query_executor::execute_projected_table_rows(
+            event_program,
+            &event_params,
+            event_candidates,
+            42,
+            "HourlyModelRollup".to_owned(),
+            42,
+        )
+        .expect("execute event projection query");
+        let event_result = ExecuteSymbolicQueryResult::from_snapshot(
+            event_program,
+            event_snapshot,
+            Arc::new(BTreeMap::new().into()),
+            false,
+            false,
+        );
+        assert_eq!(event_result.outcome(), "Found");
+        let SymbolicResultField::Many(rollups) = &event_result.fields()["rollups"] else {
+            panic!("expected rollups list");
+        };
+        assert_eq!(rollups.len(), 2);
+        assert_eq!(
+            rollups[0].fields()["started_at"],
+            CanonicalValue::Timestamp(t_h1)
+        );
+        assert_eq!(rollups[0].fields()["tokens_sum"], CanonicalValue::I64(1200));
+        assert_eq!(
+            rollups[1].fields()["started_at"],
+            CanonicalValue::Timestamp(t_h2)
+        );
+        assert_eq!(rollups[1].fields()["tokens_sum"], CanonicalValue::I64(2500));
+
+        // 2. Execute columnar projection query with temporal bucket group by and p95
+        let col_compiled = module.query("QuerySpanAnalytics").expect("columnar query");
+        let col_program = col_compiled.plan().representative_program();
+        let col_params = QueryParameters::checked(BTreeMap::from([
+            (
+                "org_id".to_owned(),
+                CanonicalValue::string("org-1").expect("org"),
+            ),
+            ("start_at".to_owned(), CanonicalValue::Timestamp(t_h1)),
+            ("end_at".to_owned(), CanonicalValue::Timestamp(t_h3)),
+        ]))
+        .expect("columnar params");
+        let col_candidates = vec![
+            QueryRow::checked(
+                "Span".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "span_id".to_owned(),
+                        CanonicalValue::string("s-1").expect("span"),
+                    ),
+                    (
+                        "model".to_owned(),
+                        CanonicalValue::string("gpt-4o").expect("model"),
+                    ),
+                    (
+                        "status".to_owned(),
+                        CanonicalValue::string("OK").expect("status"),
+                    ),
+                    ("latency_ms".to_owned(), CanonicalValue::I64(100)),
+                    ("total_tokens".to_owned(), CanonicalValue::I64(400)),
+                    (
+                        "started_at".to_owned(),
+                        CanonicalValue::Timestamp(
+                            Timestamp::new(t_h1.seconds() + 120, 0).expect("ts"),
+                        ),
+                    ),
+                ]),
+            )
+            .expect("span 1"),
+            QueryRow::checked(
+                "Span".to_owned(),
+                BTreeMap::from([
+                    (
+                        "org_id".to_owned(),
+                        CanonicalValue::string("org-1").expect("org"),
+                    ),
+                    (
+                        "span_id".to_owned(),
+                        CanonicalValue::string("s-2").expect("span"),
+                    ),
+                    (
+                        "model".to_owned(),
+                        CanonicalValue::string("gpt-4o").expect("model"),
+                    ),
+                    (
+                        "status".to_owned(),
+                        CanonicalValue::string("OK").expect("status"),
+                    ),
+                    ("latency_ms".to_owned(), CanonicalValue::I64(300)),
+                    ("total_tokens".to_owned(), CanonicalValue::I64(800)),
+                    (
+                        "started_at".to_owned(),
+                        CanonicalValue::Timestamp(
+                            Timestamp::new(t_h1.seconds() + 600, 0).expect("ts"),
+                        ),
+                    ),
+                ]),
+            )
+            .expect("span 2"),
+        ];
+        let col_snapshot = riffdb_query_executor::execute_projected_table_rows(
+            col_program,
+            &col_params,
+            col_candidates,
+            55,
+            "SpanAnalytics".to_owned(),
+            55,
+        )
+        .expect("execute columnar projection query");
+        let col_result = ExecuteSymbolicQueryResult::from_snapshot(
+            col_program,
+            col_snapshot,
+            Arc::new(BTreeMap::new().into()),
+            false,
+            false,
+        );
+        assert_eq!(col_result.outcome(), "Found");
+        let SymbolicResultField::Many(by_model) = &col_result.fields()["by_model"] else {
+            panic!("expected by_model groups");
+        };
+        assert_eq!(by_model.len(), 1);
+        assert_eq!(
+            by_model[0].fields()["model"],
+            CanonicalValue::string("gpt-4o").expect("model")
+        );
+        assert_eq!(
+            by_model[0].fields()["hour_bucket"],
+            CanonicalValue::Timestamp(t_h1)
+        );
+        assert_eq!(by_model[0].fields()["span_count"], CanonicalValue::U64(2));
+        assert_eq!(
+            by_model[0].exact_decimals()["total_tokens"].coefficient(),
+            1200
+        );
+        assert_eq!(
+            by_model[0].fields()["p95_latency_ms"],
+            CanonicalValue::I64(300)
         );
     }
 }

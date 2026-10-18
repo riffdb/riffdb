@@ -180,3 +180,144 @@ fn generators_emit_typed_vector_entity_and_command_models() {
     );
     assert!(python.contains("def set_document_embedding_for_embedding(*,"));
 }
+
+// req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045
+#[test]
+fn riffql_source_projected_executes_event_and_columnar_projections_across_sdks() {
+    let contract_src = r#"
+contract TraceObservability version 1 {
+  entity Span {
+    key (org_id: string<64>, span_id: string<64>)
+    field model: string<128>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  event SpanLogged {
+    org_id: string<64>
+    model: string<128>
+    latency_ms: i64
+    total_tokens: i64
+    started_at: timestamp
+  }
+  aggregate Spans {
+    root Span
+    partition_by (org_id)
+    conflict_key (org_id, span_id)
+  }
+  projection HourlyModelRollup {
+    source event SpanLogged
+    key (org_id, model, hour(started_at))
+    measure span_count = count()
+    measure tokens_sum = sum(total_tokens)
+    measure latency_min = min(latency_ms)
+    measure latency_max = max(latency_ms)
+    measure latency_mean = mean(latency_ms)
+    frontier transactionally_ordered
+  }
+  columnar_projection SpanAnalytics {
+    source entity Span
+    fields (model, status, latency_ms, total_tokens, started_at)
+  }
+}
+"#;
+    let event_query = r#"
+query QueryHourlyRollup(
+    $org_id: Span.org_id,
+    $model: Span.model,
+    $start_bucket: Span.started_at,
+    $end_bucket: Span.started_at
+) {
+    source projected HourlyModelRollup
+    freshness available
+
+    many rollups from HourlyModelRollup
+        where org_id == $org_id
+          && model == $model
+          && started_at >= $start_bucket
+          && started_at < $end_bucket
+        order by started_at asc
+        take 24
+
+    return Found {
+        rollups: rollups {
+            started_at
+            span_count
+            tokens_sum
+            latency_min
+            latency_max
+        }
+    }
+    outcomes Found
+}
+"#;
+    let columnar_query = r#"
+query QuerySpanAnalytics(
+    $org_id: Span.org_id,
+    $start_at: Span.started_at,
+    $end_at: Span.started_at
+) {
+    source projected SpanAnalytics
+    freshness bounded max_lag_ms 5000
+
+    many spans from Span
+        where org_id == $org_id
+          && started_at >= $start_at
+          && started_at < $end_at
+        take 100
+
+    aggregate by_model from spans {
+        group by model, hour(started_at) as hour_bucket
+        count() as span_count
+        sum(total_tokens) as total_tokens
+        p95(latency_ms) as p95_latency_ms
+        order by total_tokens desc, model asc, hour_bucket asc
+        take 20
+    }
+
+    return Found {
+        by_model: by_model {
+            model
+            hour_bucket
+            span_count
+            total_tokens
+            p95_latency_ms
+        }
+    }
+    outcomes Found
+}
+"#;
+    let contract = compile_contract_source(contract_src).expect("trace contract compiles");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("trace_analytics").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![
+            NamedQuerySource::new("QueryHourlyRollup", event_query).expect("event query"),
+            NamedQuerySource::new("QuerySpanAnalytics", columnar_query).expect("columnar query"),
+        ],
+    )
+    .expect("module candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("projected module compiles");
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &contract)
+        .expect("projected module round-trips");
+    assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
+
+    let rust = generate_rust_application_client(&module, &contract, &[]);
+    assert!(rust.contains("QueryHourlyRollup"));
+    assert!(rust.contains("QuerySpanAnalytics"));
+
+    let go = generate_go_application_client(&module, &contract, &[]);
+    assert!(go.contains("QueryHourlyRollup"));
+    assert!(go.contains("QuerySpanAnalytics"));
+
+    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    assert!(typescript.contains("QueryHourlyRollup"));
+    assert!(typescript.contains("QuerySpanAnalytics"));
+
+    let python =
+        generate_python_application_client(&module, &contract, &[]).expect("Python client");
+    assert!(python.contains("query_hourly_rollup"));
+    assert!(python.contains("query_span_analytics"));
+}

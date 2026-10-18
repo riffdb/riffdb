@@ -31912,4 +31912,12 @@ work_packages:
     scale: Projected RiffQL queries inherit the bounded page, scan, group, and state-byte ceilings of the underlying event and columnar projection engines.
   human_review_triggers:
   - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.
-
+  closure:
+    status: complete
+    completed_at: '2026-10-18'
+    requirements_satisfied: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045]
+    evidence: cargo test -p riffdb-query-compiler -p riffdb-query-module -p riffdb-service riffql_source_projected_executes_event_and_columnar_projections_across_sdks && ./scripts/acceptance --wp WP-875
+    decision: Extended SymbolicCatalog, RiffQL compiler, and RiffDbService to compile and execute named RiffQL queries with source projected over contract-declared event projections (group_by rollups with temporal bucket keys and range bounds) and scalar columnar projections (with row-policy and org-scope admission), enforcing declared freshness policies and emitting standard typed query methods across Rust, Go, TypeScript, and Python SDK generators while preserving byte-exact V1 hashes for unaffected queries.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

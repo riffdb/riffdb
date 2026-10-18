@@ -20,9 +20,9 @@ mod tokenized_text;
 
 pub use candidate::*;
 pub use catalog::{
-    EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, LongPatternSymbol,
-    OperationalIndexComponentV1, OperationalIndexDescriptorV1, PrincipalFactSymbol,
-    RowPolicySymbol, SymbolicCatalog,
+    ColumnarProjectionSymbol, EntitySymbol, EnumSymbol, EventProjectionSymbol, FieldSymbol,
+    IndexSymbol, LongPatternSymbol, OperationalIndexComponentV1, OperationalIndexDescriptorV1,
+    PrincipalFactSymbol, RowPolicySymbol, SymbolicCatalog,
 };
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
@@ -34,10 +34,11 @@ pub use operational::*;
 pub use order_family::*;
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
-    CoveredResultSourceV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPartitionRouteV1, QueryPlanExplain,
-    QueryPlanIdentity, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
-    QueryRootOrderTermV1, QueryRowLimit, candidate_source_binding_name,
+    CoveredResultSourceV1, ProjectedTableSourceV1, ProjectedVectorFreshnessV1,
+    ProjectedVectorSourceV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
+    QueryPartitionRouteV1, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,
+    QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
+    candidate_source_binding_name,
 };
 pub use reactive::*;
 pub use resolver::{

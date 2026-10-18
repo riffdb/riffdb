@@ -446,6 +446,29 @@ The choice and recall floor are compiler-owned; neither is a request option.
 See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
 [Known Limitations](../known-limitations.md).
 
+## Event and scalar columnar projected queries (`ADR-0315`)
+
+`source projected <Target>` also compiles named queries over contract-declared
+event projections (`projection <Name>`) and scalar columnar projections
+(`columnar_projection <Name>`):
+
+1. **Event-driven projections (`source projected <ProjectionName>`)**:
+   - Requires `freshness available` or `freshness causal inherit_session_commit true max_wait_ms N`.
+   - Binds `one`, `maybe`, or `many` over `<ProjectionName>`, requiring an exact
+     equality predicate on the leading organization-scope key component, optional
+     leading key equalities, and an optional trailing key range bound (`>=`, `>`,
+     `<=`, `<`).
+   - Group-key components and declared measures (`count`, `sum`, `min`, `max`,
+     `mean`) are projected as ordinary typed RiffQL fields.
+2. **Scalar columnar projections (`source projected <ColumnarProjectionName>`)**:
+   - Requires `freshness available`, `freshness bounded max_lag_ms N`, or
+     `freshness causal inherit_session_commit true max_wait_ms N`.
+   - Binds over the backing `<Entity>` narrowed to its organization-scope field,
+     primary-key fields, and the fields listed in `columnar_projection <Name>`,
+     supporting equality/range predicates, `order by`, `take`, and `aggregate` /
+     `group by` blocks (including UTC temporal bucket keys, quantiles, `stddev`,
+     and measure-ordered `group by`).
+
 ## Accepted application-profile target
 
 The following boundary defines the safe application query profile:
