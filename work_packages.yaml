@@ -31921,3 +31921,45 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-876
+  name: Database resource quotas, system-trust TLS, and direct-TLS Hosted MCP
+  tier: guarantee
+  depends_on: [WP-875]
+  objective: Implement ADR-0316. Add per-database storage byte quotas, token-bucket
+    read/write rate limits, and worker/coordinator capacity caps in riffdb-service
+    and riffdb-server; add system CA bundle trust-root support and automatic
+    endpoint-derived server identity on remote HTTPS connections across
+    riffdb-config, riffdb-client-rust, riffdb-driver-host,
+    riffdb-client-python-native, and riffdb-cli; and add direct-TLS listener
+    support to Hosted MCP in riffdb-api-mcp and riffdb-server.
+  requirements: [NET-001, NET-002, NET-005, MCP-001, MCP-048]
+  required_adrs: [ADR-0316, ADR-0028, ADR-0035, ADR-0036, ADR-0102, ADR-0103, ADR-0271]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-config/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-client-python-native/**, crates/riffdb-cli/**, crates/riffdb-api-mcp/**, crates/riffdb-service/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Per-database storage quotas, read/write token-bucket rate governors, and blocking worker/coordinator caps in riffdb-service and riffdb-server
+  - System CA bundle trust-root support and automatic server-name derivation from CanonicalHttpsEndpoint in riffdb-config, riffdb-client-rust, riffdb-driver-host, riffdb-client-python-native, and riffdb-cli
+  - Direct-TLS listener support (mode = "direct_tls") for Hosted MCP in riffdb-api-mcp and riffdb-server
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-876
+  exit_gate: Per-database storage and rate limits enforce isolation without blocking
+    reads, uncertainty recovery, or exports; remote HTTPS clients connect with
+    endpoint-derived SNI and system or explicit trust roots; and Hosted MCP
+    serves over direct TLS 1.3 with exact https://<host>:<port>/v1/mcp audience
+    binding.
+  standing_design_tests:
+    interface_safety: Certificate verification is never disabled on remote HTTPS connections, and storage quotas never block read queries, uncertainty recovery, capability revocation, or application export.
+    scale: Per-database worker threads, rate buckets, storage byte quotas, system CA bundle size, and direct-TLS MCP connections are strictly bounded.
+  human_review_triggers:
+  - Remote HTTPS connections permit insecure certificate-verification bypass, plaintext HTTP over non-loopback addresses, or unvalidated SNI hostnames.
+  - Storage quota enforcement blocks read queries, idempotent command-outcome recovery, capability revocation, or application export.
+  - Hosted MCP direct-TLS listener bypasses capability authentication, audience binding, or Origin validation.
+  closure:
+    status: ready
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
+
