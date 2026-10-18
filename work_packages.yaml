@@ -31962,4 +31962,39 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
-
+- id: WP-877
+  name: Compact journal extent profile and lazy spare allocation
+  tier: guarantee
+  depends_on: [WP-876]
+  objective: Implement ADR-0317. Add JournalExtentProfile (Standard | Compact) with
+    8 MiB compact extents, 4 MiB physical checkpoint rotation thresholds, lossless
+    capacity transitions between compact and standard profiles across restarts,
+    and lazy spare extent allocation in riffdb-storage-redb and riffdb-server.
+  requirements: [STO-032, REC-001, REC-002, REC-004, PERF-019]
+  required_adrs: [ADR-0317, ADR-0103, ADR-0157, ADR-0263, ADR-0271, ADR-0316]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - JournalExtentProfile (Standard | Compact) with 8 MiB extent capacity and lossless capacity normalization in riffdb-storage-redb
+  - Lazy spare extent allocation in Compact profile (deferring spare creation until 25% utilization or on-demand checkpoint rotation)
+  - Server configuration support (extent_profile = "standard" | "compact") in [maintenance.limits] and [databases.<alias>.limits]
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-877
+  exit_gate: Compact databases allocate only a single 8 MiB active journal extent
+    on initial writes, prepare the spare at 25% utilization or on-demand checkpoint
+    rotation, and transition losslessly to and from standard extents across restarts
+    without invalidating history stubs.
+  standing_design_tests:
+    interface_safety: Durability, crash recovery, generation monotonicity, and StubLocator history resolution are identical between standard and compact extent profiles.
+    scale: Compact databases allocate an 8 MiB active journal extent on initial writes instead of 640 MiB (2 x 320 MiB), an 80x reduction in initial journal disk footprint.
+  human_review_triggers:
+  - Changing extent_profile drops uncheckpointed suffix frames or invalidates sealed history-stub locators.
+  - Lazy spare allocation permits a checkpoint rotation to proceed without a validated, generation-monotonic replacement active extent.
+  closure:
+    status: ready
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []
