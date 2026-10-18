@@ -876,6 +876,14 @@ fn contract_symbols(uri: &str, source: &str) -> Vec<EditorSymbol> {
                 projection.name.span.into(),
                 12,
             ),
+            Declaration::ColumnarProjection(columnar) => push_symbol(
+                &mut symbols,
+                uri,
+                &columnar.name.value,
+                format!("columnar_projection {}", columnar.name.value),
+                columnar.name.span.into(),
+                12,
+            ),
             Declaration::Workflow(workflow) => push_symbol(
                 &mut symbols,
                 uri,

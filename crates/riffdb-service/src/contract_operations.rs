@@ -627,7 +627,8 @@ async fn deploy_contract(
     // control behind; pruning is an offline operation and this process holds
     // the store's exclusive lock, so the answer cannot go stale before the
     // deploy completes.
-    if !candidate.schema().vector_production_specs().is_empty()
+    if (!candidate.schema().vector_production_specs().is_empty()
+        || !candidate.schema().columnar_projection_specs().is_empty())
         && let Some(admission) = service.providers.columnar_admission.as_ref()
     {
         match admission.fresh_source_is_replayable() {

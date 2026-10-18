@@ -38,7 +38,8 @@ pub(super) fn resolve_columnar_bindings(
     };
     let count = projections
         .len()
-        .checked_add(bundle.schema().vector_production_specs().len())
+        .checked_add(bundle.schema().columnar_projection_specs().len())
+        .and_then(|count| count.checked_add(bundle.schema().vector_production_specs().len()))
         .filter(|count| *count <= 256)
         .ok_or_else(|| ColumnarRegistrationError::definition("columnar-control"))?;
     let mut bindings = Vec::with_capacity(count);
@@ -47,6 +48,36 @@ pub(super) fn resolve_columnar_bindings(
     for configured in projections {
         let name = configured.name().to_owned();
         let definition = resolve_configured_projection(configured, bundle)?;
+        let spec = ColumnarProjectionSpecV1::for_scalar(&definition, bundle)
+            .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
+        insert_control_binding(
+            &mut bindings,
+            &mut names,
+            &mut sources,
+            ColumnarControlBinding {
+                name,
+                definition,
+                spec,
+                is_vector: false,
+            },
+        )?;
+    }
+    for declared in bundle.schema().columnar_projection_specs() {
+        let name = declared.name().to_owned();
+        let entity = bundle
+            .schema()
+            .entity(declared.entity())
+            .ok_or_else(|| ColumnarRegistrationError::unknown_entity(name.clone()))?;
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: name.clone(),
+                entity_name: entity.name().to_owned(),
+                projected_fields: declared.projected_fields().to_vec(),
+                org_scope_field: declared.org_scope_field(),
+            },
+            bundle,
+        )
+        .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
         let spec = ColumnarProjectionSpecV1::for_scalar(&definition, bundle)
             .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
         insert_control_binding(

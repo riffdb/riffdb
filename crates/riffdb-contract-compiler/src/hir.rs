@@ -697,6 +697,15 @@ pub(crate) struct HirProjection {
     pub(crate) expressions: HirExpressionArena,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct HirColumnarProjection {
+    pub(crate) name: String,
+    pub(crate) span: Span,
+    pub(crate) source_entity: EntityTypeId,
+    pub(crate) source_entity_span: Span,
+    pub(crate) projected_fields: Vec<(FieldId, Span)>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HirFrontier {
     TransactionallyOrdered,
@@ -715,6 +724,7 @@ pub(crate) struct TypedContractHir {
     pub(crate) workflows: Vec<HirWorkflow>,
     pub(crate) commands: Vec<HirCommand>,
     pub(crate) projections: Vec<HirProjection>,
+    pub(crate) columnar_projections: Vec<HirColumnarProjection>,
 }
 
 impl TypedContractHir {
@@ -771,6 +781,8 @@ pub(crate) fn lower_contract_hir(
         &mut diagnostics,
     );
     let projections = lower_projections(document, symbols, &events, &mut diagnostics);
+    let columnar_projections =
+        lower_columnar_projections(document, symbols, &entities, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"));
     }
@@ -786,6 +798,7 @@ pub(crate) fn lower_contract_hir(
         workflows,
         commands,
         projections,
+        columnar_projections,
     })
 }
 
@@ -4412,6 +4425,100 @@ fn lower_projections(
         });
     }
     result
+}
+
+fn lower_columnar_projections(
+    document: &ContractDocument,
+    symbols: &GenesisSymbols,
+    entities: &[HirEntity],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<HirColumnarProjection> {
+    let mut result = Vec::new();
+    for declaration in &document.contract.value.declarations {
+        let Declaration::ColumnarProjection(source) = &declaration.value else {
+            continue;
+        };
+        let Some(entity_id) = symbols.entities.get(&source.source_entity.value).copied() else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                source.source_entity.span,
+            ));
+            continue;
+        };
+        let Some(entity) = entities.iter().find(|entity| entity.id == entity_id) else {
+            continue;
+        };
+        let fields_by_name = entity.fields_by_name();
+        let mut seen_fields = BTreeMap::<FieldId, Span>::new();
+        let mut projected_fields = Vec::with_capacity(source.fields.len());
+        let mut valid = true;
+        if source.fields.len() > riffdb_contract_ir::MAX_COLUMNAR_PROJECTED_FIELDS {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::BoundExceeded,
+                source.name.span,
+            ));
+            continue;
+        }
+        for field_name in &source.fields {
+            let Some((field_id, value_type)) = fields_by_name.get(&field_name.value) else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnknownName,
+                    field_name.span,
+                ));
+                valid = false;
+                continue;
+            };
+            if let Some(first_span) = seen_fields.insert(*field_id, field_name.span) {
+                diagnostics.push(
+                    CompilerDiagnostic::new(CompilerDiagnosticCode::DuplicateName, field_name.span)
+                        .with_related_span(first_span),
+                );
+                valid = false;
+                continue;
+            }
+            if !is_scalar_columnar_field_type(value_type) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidProjection,
+                    field_name.span,
+                ));
+                valid = false;
+                continue;
+            }
+            projected_fields.push((*field_id, field_name.span));
+        }
+        if !valid {
+            continue;
+        }
+        result.push(HirColumnarProjection {
+            name: source.name.value.clone(),
+            span: source.name.span,
+            source_entity: entity_id,
+            source_entity_span: source.source_entity.span,
+            projected_fields,
+        });
+    }
+    result
+}
+
+fn is_scalar_columnar_field_type(value_type: &ValueType) -> bool {
+    use riffdb_contract_ir::ValueTypeTag;
+    match value_type.tag() {
+        ValueTypeTag::Bool
+        | ValueTypeTag::I64
+        | ValueTypeTag::U64
+        | ValueTypeTag::String
+        | ValueTypeTag::Uuid
+        | ValueTypeTag::Enum
+        | ValueTypeTag::Timestamp
+        | ValueTypeTag::Date
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Money
+        | ValueTypeTag::Bytes => true,
+        ValueTypeTag::Optional => value_type
+            .optional_inner()
+            .is_some_and(is_scalar_columnar_field_type),
+        ValueTypeTag::Vector | ValueTypeTag::List | ValueTypeTag::Record => false,
+    }
 }
 
 fn lower_field(

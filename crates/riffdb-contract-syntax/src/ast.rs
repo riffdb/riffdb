@@ -41,6 +41,8 @@ pub enum Declaration {
     Workflow(WorkflowDeclaration),
     /// An event-derived projection declaration.
     Projection(ProjectionDeclaration),
+    /// A contract-declared scalar columnar projection declaration.
+    ColumnarProjection(ColumnarProjectionDeclaration),
     /// One compiler-visible principal fact schema.
     PrincipalFact(PrincipalFactDeclaration),
     /// One closed principal-aware entity row policy.
@@ -1120,6 +1122,17 @@ pub struct ProjectionDeclaration {
     pub measures: Vec<Spanned<Measure>>,
     /// The declared projection frontier mode.
     pub frontier: Spanned<Frontier>,
+}
+
+/// A contract-declared scalar columnar projection declaration (`ADR-0315`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColumnarProjectionDeclaration {
+    /// The columnar projection identifier.
+    pub name: Spanned<String>,
+    /// The unresolved source entity name.
+    pub source_entity: Spanned<String>,
+    /// Projected scalar field identifiers in source order.
+    pub fields: Vec<Spanned<String>>,
 }
 
 /// A named projection aggregation.

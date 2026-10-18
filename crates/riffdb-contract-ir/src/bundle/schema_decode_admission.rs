@@ -418,6 +418,23 @@ impl SchemaSectionBound {
                 reader.read(10 * 4 + 4 * 8 + 3 * 8 + 2 * 4)?;
             }
         }
+        if let Some(count) = walk.extension::<ColumnarProjectionSchemaV1>(
+            &mut reader,
+            COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION,
+            "columnar projection specs",
+        )? {
+            for _ in 0..count {
+                walk.name(&mut reader, 256)?;
+                reader.read(8)?;
+                let fields = walk.fields::<FieldId>(
+                    &mut reader,
+                    "columnar projected fields",
+                    crate::MAX_COLUMNAR_PROJECTED_FIELDS,
+                    4,
+                )?;
+                walk.field_set(fields)?;
+            }
+        }
         reader.finish()?;
 
         // The ordinary whole-schema constructor retains these forests while

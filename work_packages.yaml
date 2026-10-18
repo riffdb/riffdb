@@ -31877,6 +31877,15 @@ work_packages:
     scale: Total configured + contract-declared + vector columnar projections remain capped at 256 per database and stay cold at startup until queried (ADR-0195).
   human_review_triggers:
   - Existing contracts that do not declare columnar_projection change their canonical bundle or schema hashes.
+  closure:
+    status: complete
+    completed_at: '2026-10-17'
+    requirements_satisfied: [PRJ-002, PRJ-004, PRJ-005, PRJ-008]
+    evidence: cargo test -p riffdb-contract-compiler -p riffdb-server contract_declared_columnar_projections_compile_and_admit_live_without_restart && ./scripts/acceptance --wp WP-874
+    decision: Added columnar_projection declarations to .riff contract syntax, compiler HIR/schema lowering, and additive SchemaIr/ContractBundle encoding (ColumnarProjectionSchemaV1), deriving org_scope_field from the enclosing aggregate's leading partition_by field while preserving byte-exact V1 bundle hashes when omitted; extended resolve_columnar_bindings and admit_active_catalog_sources in riffdb-server to admit contract-declared scalar columnar projections live upon contract activation without daemon restart.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: [WP-875]
 - id: WP-875
   name: Named RiffQL queries over event and scalar columnar projections
   tier: guarantee

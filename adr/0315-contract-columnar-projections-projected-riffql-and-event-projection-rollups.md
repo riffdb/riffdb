@@ -20,6 +20,10 @@ obligations:
     package: WP-873
     summary: Columnar queries support UTC temporal bucket group keys, quantiles, stddev, per-measure filters, measure ordering, and 4,096 distinct values
     proof: columnar_query_supports_temporal_buckets_quantiles_measure_order_and_4096_distinct
+  - id: OBL-0315-3
+    package: WP-874
+    summary: Contract-declared scalar columnar projections compile, preserve V1 bundle hashes when omitted, and admit live upon contract activation
+    proof: contract_declared_columnar_projections_compile_and_admit_live_without_restart
 review_triggers:
   - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
   - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.

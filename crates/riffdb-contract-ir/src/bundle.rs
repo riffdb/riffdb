@@ -284,6 +284,7 @@ const VECTOR_ANN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff7;
 const VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff5;
 const TEXT_INDEX_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff4;
 const LONG_PATTERN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff3;
+const COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff2;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -3106,6 +3107,19 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u32(spec.stale_entity_count_threshold())?;
         }
     }
+    if !schema.columnar_projection_specs().is_empty() {
+        writer.u32(COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.columnar_projection_specs().len() as u32)?;
+        for spec in schema.columnar_projection_specs() {
+            writer.string(spec.name())?;
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.org_scope_field().get())?;
+            writer.u32(spec.projected_fields().len() as u32)?;
+            for field in spec.projected_fields() {
+                writer.u32(field.get())?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -5037,6 +5051,36 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
+    let mut columnar_projection_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == COLUMNAR_PROJECTION_SPEC_SCHEMA_EXTENSION {
+        let _ = reader.u32()?;
+        let spec_count = decode_len(
+            reader,
+            "columnar projection specs",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        columnar_projection_specs.reserve(spec_count);
+        for _ in 0..spec_count {
+            let name = reader.string(256)?;
+            let entity = decode_entity_id(reader)?;
+            let org_scope_field = decode_field_id(reader)?;
+            let field_count = decode_len(
+                reader,
+                "columnar projected fields",
+                crate::MAX_COLUMNAR_PROJECTED_FIELDS,
+            )?;
+            let mut projected_fields = Vec::with_capacity(field_count);
+            for _ in 0..field_count {
+                projected_fields.push(decode_field_id(reader)?);
+            }
+            columnar_projection_specs.push(crate::ColumnarProjectionSchemaV1::new(
+                name,
+                entity,
+                org_scope_field,
+                projected_fields,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -5051,7 +5095,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     .with_vector_ann_specs(vector_ann_specs)?
     .with_vector_production_specs(vector_production_specs)?
     .with_text_index_specs(text_index_specs)?
-    .with_long_pattern_specs(long_pattern_specs)
+    .with_long_pattern_specs(long_pattern_specs)?
+    .with_columnar_projection_specs(columnar_projection_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

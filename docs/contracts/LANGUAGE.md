@@ -46,6 +46,8 @@ Declaration: Spanned<Declaration> = {
         => parser::spanned(Declaration::Workflow(workflow), lo, hi),
     <lo:@L> <projection:ProjectionDeclaration> <hi:@R>
         => parser::spanned(Declaration::Projection(projection), lo, hi),
+    <lo:@L> <columnar:ColumnarProjectionDeclaration> <hi:@R>
+        => parser::spanned(Declaration::ColumnarProjection(columnar), lo, hi),
     <lo:@L> <fact:PrincipalFactDeclaration> <hi:@R>
         => parser::spanned(Declaration::PrincipalFact(fact), lo, hi),
     <lo:@L> <policy:RowPolicyDeclaration> <hi:@R>
@@ -879,7 +881,7 @@ ProjectionDeclaration: ProjectionDeclaration = {
     "projection" <name:Identifier> "{"
         "source" "event" <source_event:Identifier>
         <filter:WhereClause?>
-        "key" "(" <key:ExpressionList> ")"
+        "key" "(" <key:ProjectionKeyList> ")"
         <measures:Measure+>
         <frontier:FrontierClause>
     "}" => ProjectionDeclaration {
@@ -890,6 +892,33 @@ ProjectionDeclaration: ProjectionDeclaration = {
         measures,
         frontier,
     },
+};
+
+ColumnarProjectionDeclaration: ColumnarProjectionDeclaration = {
+    "columnar_projection" <name:Identifier> "{"
+        "source" "entity" <source_entity:Identifier>
+        <fields_keyword:Identifier> "(" <fields:IdentifierList> ")"
+    "}" =>? parser::grammar_result(parser::columnar_projection_declaration(
+        name,
+        source_entity,
+        fields_keyword,
+        fields,
+    )),
+};
+
+ProjectionKeyList: Vec<Spanned<Expression>> = {
+    <head:ProjectionKeyExpression> <tail:("," <ProjectionKeyExpression>)*> <trailing:Comma?> => {
+        let _ = trailing;
+        let mut values = vec![head.into_syntax()];
+        values.extend(tail.into_iter().map(ParsedExpression::into_syntax));
+        values
+    },
+};
+
+ProjectionKeyExpression: ParsedExpression = {
+    <lo:@L> <callee:Identifier> "(" <operand:Expression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::temporal_bucket_expression(callee, operand, parser::span(lo, hi))),
+    Expression,
 };
 
 WhereClause: Spanned<Expression> = {
@@ -960,8 +989,6 @@ UnaryExpression: ParsedExpression = {
 PrimaryExpression: ParsedExpression = {
     <literal:Literal> => parser::literal_expression(literal),
     <path:Path> => parser::path_expression(path),
-    <lo:@L> <callee:Identifier> "(" <operand:Expression> ")" <hi:@R>
-        =>? parser::grammar_result(parser::temporal_bucket_expression(callee, operand, parser::span(lo, hi))),
     <lo:@L> "(" <expression:Expression> ")" <hi:@R>
         =>? parser::grammar_result(parser::parenthesized_expression(expression, parser::span(lo, hi))),
 };
@@ -1134,6 +1161,7 @@ extern {
         "policy_anchor" => Token::PolicyAnchor,
         "conflict_key" => Token::ConflictKey,
         "projection" => Token::Projection,
+        "columnar_projection" => Token::ColumnarProjection,
         "source" => Token::Source,
         "where" => Token::Where,
         "measure" => Token::Measure,

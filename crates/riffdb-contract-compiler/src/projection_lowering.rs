@@ -380,4 +380,111 @@ contract FilterArithmetic version 1 {
             projection_span,
         );
     }
+
+    // req: PRJ-002, PRJ-004, PRJ-005, PRJ-008
+    #[test]
+    fn contract_declared_columnar_projections_compile_and_admit_live_without_restart() {
+        let base_source = r#"
+contract TraceObservability version 1 {
+  entity Trace {
+    key (org_id: string<64>, trace_id: string<64>)
+    field name: string<128>
+    delete_policy no_inbound
+  }
+  entity Span {
+    key (org_id: string<64>, trace_id: string<64>, span_id: string<64>)
+    field model: optional<string<128>>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  aggregate Traces {
+    root Trace
+    child Span
+    partition_by (org_id)
+    conflict_key (org_id, trace_id)
+  }
+}
+"#;
+        let with_columnar_source = r#"
+contract TraceObservability version 1 {
+  entity Trace {
+    key (org_id: string<64>, trace_id: string<64>)
+    field name: string<128>
+    delete_policy no_inbound
+  }
+  entity Span {
+    key (org_id: string<64>, trace_id: string<64>, span_id: string<64>)
+    field model: optional<string<128>>
+    field status: string<32>
+    field latency_ms: i64
+    field total_tokens: i64
+    field started_at: timestamp
+    delete_policy no_inbound
+  }
+  aggregate Traces {
+    root Trace
+    child Span
+    partition_by (org_id)
+    conflict_key (org_id, trace_id)
+  }
+  columnar_projection SpanAnalytics {
+    source entity Span
+    fields (model, status, latency_ms, total_tokens, started_at)
+  }
+}
+"#;
+        let base_bundle = crate::compile_contract_source(base_source).expect("base contract");
+        assert!(base_bundle.schema().columnar_projection_specs().is_empty());
+
+        let bundle =
+            crate::compile_contract_source(with_columnar_source).expect("columnar contract");
+        assert_eq!(bundle.schema().columnar_projection_specs().len(), 1);
+        let spec = bundle
+            .schema()
+            .columnar_projection_spec("SpanAnalytics")
+            .expect("SpanAnalytics spec");
+        let span_entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Span")
+            .expect("Span entity");
+        let org_field = span_entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "org_id")
+            .expect("org_id field");
+        assert_eq!(spec.entity(), span_entity.id());
+        assert_eq!(spec.org_scope_field(), org_field.id());
+        assert_eq!(spec.projected_fields().len(), 5);
+
+        let encoded = bundle.canonical_bytes();
+        let decoded = riffdb_contract_ir::ContractBundle::decode(encoded).expect("decode");
+        assert_eq!(
+            decoded.schema().columnar_projection_specs(),
+            bundle.schema().columnar_projection_specs()
+        );
+
+        let unknown_field_source = r#"
+contract InvalidColumnar version 1 {
+  entity Row { key (org_id: string<64>, id: uuid) field status: string<16> }
+  aggregate Rows { root Row partition_by (org_id) conflict_key (org_id, id) }
+  columnar_projection Bad {
+    source entity Row
+    fields (status, missing_col)
+  }
+}
+"#;
+        let start = unknown_field_source.find("missing_col").expect("span");
+        let span = Span::new(start, start + "missing_col".len()).expect("span");
+        assert_source_diagnostic(
+            unknown_field_source,
+            CompilerDiagnosticCode::UnknownName,
+            span,
+        );
+    }
 }

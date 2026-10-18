@@ -488,6 +488,25 @@ pub(crate) fn named_aggregation(
     Ok(spanned(aggregation, lo, hi))
 }
 
+pub(crate) fn columnar_projection_declaration(
+    name: Spanned<String>,
+    source_entity: Spanned<String>,
+    fields_keyword: Spanned<String>,
+    fields: Vec<Spanned<String>>,
+) -> Result<ColumnarProjectionDeclaration, SyntaxDiagnostic> {
+    if fields_keyword.value != "fields" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::UnexpectedToken,
+            fields_keyword.span,
+        ));
+    }
+    Ok(ColumnarProjectionDeclaration {
+        name,
+        source_entity,
+        fields,
+    })
+}
+
 pub(crate) fn binary_expression(
     left: ParsedExpression,
     operator: Spanned<BinaryOperator>,
@@ -773,6 +792,7 @@ enum DeclarationKind {
     Aggregate,
     Command,
     Projection,
+    ColumnarProjection,
     PrincipalFact,
     RowPolicy,
 }
@@ -786,6 +806,7 @@ impl DeclarationKind {
             Token::Aggregate => Some(Self::Aggregate),
             Token::Command => Some(Self::Command),
             Token::Projection => Some(Self::Projection),
+            Token::ColumnarProjection => Some(Self::ColumnarProjection),
             Token::Principal => Some(Self::PrincipalFact),
             Token::Row => Some(Self::RowPolicy),
             _ => None,
@@ -831,6 +852,7 @@ impl DeclarationKind {
                 token,
                 Token::Source | Token::Where | Token::Key | Token::Measure | Token::Frontier
             ),
+            Self::ColumnarProjection => matches!(token, Token::Source),
             Self::PrincipalFact => false,
             Self::RowPolicy => matches!(token, Token::Allow),
         }
@@ -1363,6 +1385,12 @@ impl NodeCounter {
             Declaration::Projection(projection) => {
                 self.add(1, declaration.span)?;
                 self.projection(projection, declaration.span)?;
+            }
+            Declaration::ColumnarProjection(columnar) => {
+                self.add(1, declaration.span)?;
+                self.name(&columnar.name)?;
+                self.name(&columnar.source_entity)?;
+                self.names(&columnar.fields, declaration.span)?;
             }
             Declaration::PrincipalFact(fact) => {
                 self.add(1, declaration.span)?;

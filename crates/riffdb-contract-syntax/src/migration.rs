@@ -740,6 +740,7 @@ fn token_word(token: &Token) -> Option<&str> {
         Token::Command => Some("command"),
         Token::Event => Some("event"),
         Token::Projection => Some("projection"),
+        Token::ColumnarProjection => Some("columnar_projection"),
         Token::Aggregate => Some("aggregate"),
         _ => token_identifier(token),
     }
