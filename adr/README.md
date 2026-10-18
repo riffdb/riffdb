@@ -349,6 +349,7 @@ record with no front matter.
 | [0312](0312-columnar-activation-recovery-projected-aggregate-parity-and-installer-lifecycle.md) | Columnar Activation Recovery, Projected Aggregate Parity, and Installer Lifecycle | Accepted | guarantee |
 | [0313](0313-projected-group-by-canonical-ordering-follower-ann-graph-cache-parity-and-transactional-installer-binary-swap.md) | Projected group-by canonical ordering, follower ANN graph cache parity, and transactional installer binary swap | Accepted | guarantee |
 | [0314](0314-client-incarnation-tracking-projected-group-ordering-capability-rotation-and-retention-telemetry.md) | Client Incarnation Tracking, Projected Group Ordering, Capability Rotation, and Retention Telemetry | Accepted | guarantee |
+| [0315](0315-contract-columnar-projections-projected-riffql-and-event-projection-rollups.md) | Contract Columnar Projections, Projected RiffQL, and Event Projection Rollups | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

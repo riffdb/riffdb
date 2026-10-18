@@ -31814,4 +31814,84 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-873
+  name: Event projection rollups, temporal keys, range scans, and columnar ADR-0309 parity
+  tier: guarantee
+  depends_on: [WP-872]
+  objective: Implement ADR-0315 Decision 1. Extend event-driven .riff projections
+    with min, max, and mean measures, UTC temporal bucket key expressions, and
+    trailing key range bounds on QueryProjection; extend crates/riffdb-columnar
+    and ExecuteProjectedQuery with UTC temporal bucket group keys, exact quantiles
+    (p50, p90, p95, p99) and stddev, per-measure equality filters, aggregate
+    measure group ordering, and a 4,096 distinct-value ceiling.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045, OQ-046, OQ-047, OQ-048]
+  required_adrs: [ADR-0315, ADR-0017, ADR-0086, ADR-0087, ADR-0152, ADR-0162, ADR-0309, ADR-0312, ADR-0313, ADR-0314]
+  allowed_paths: [work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**, crates/riffdb-invariant/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-projection/**, crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, fixtures/**, release/**, docs/**]
+  deliverables:
+  - min, max, and mean measures and UTC temporal bucket key expressions (hour, day, week, month, year) in .riff event projections while preserving V1 bundle/plan hashes when unused
+  - Optional trailing single-component range bounds (lower_bound, upper_bound) on ProjectionQuerySelector and QueryProjection across storage, projection, service, gRPC, client, and CLI
+  - UTC temporal bucket group keys, exact quantiles (p50, p90, p95, p99) and stddev, per-measure equality filters, aggregate measure group ordering, and MAX_COLUMNAR_DISTINCT_VALUES_V1 = 4,096 in crates/riffdb-columnar and ExecuteProjectedQuery
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-873
+  exit_gate: Event projections support min/max/mean, temporal bucket keys, and
+    trailing key range scans; columnar queries support temporal bucket keys,
+    quantiles, stddev, per-measure filters, measure group ordering, and 4,096
+    distinct values; existing V1 projection hashes remain unchanged.
+  standing_design_tests:
+    interface_safety: Existing V1 projection plans retain byte-exact hashes; trailing range bounds validate component types against the projection group schema; columnar aggregate wire responses remain cross-checked against request descriptors.
+    scale: Event-projection range scans remain bounded by page limit (<= 1,000) and key width (<= 4,096 bytes); columnar distinct and quantile state remain bounded by MAX_COLUMNAR_DISTINCT_VALUES_V1 (4,096) and MAX_AGGREGATE_STATE_BYTES_V1 (1 MiB).
+  human_review_triggers:
+  - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
+  - Event or columnar projection rollups accept unbounded distinct/quantile state or floating-point business arithmetic.
+- id: WP-874
+  name: Contract-declared scalar columnar projections and live admission
+  tier: guarantee
+  depends_on: [WP-873]
+  objective: Implement ADR-0315 Decision 2. Add columnar_projection declarations
+    to .riff contracts, derive org_scope_field from the enclosing aggregate's
+    leading partition_by field, preserve byte-exact V1 ContractBundle hashes when
+    no columnar_projection is declared, and admit declared scalar columnar
+    projections automatically on contract activation in riffdb-server.
+  requirements: [PRJ-002, PRJ-004, PRJ-005, PRJ-008]
+  required_adrs: [ADR-0315, ADR-0086, ADR-0195, ADR-0251, ADR-0312]
+  allowed_paths: [work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**, crates/riffdb-catalog/**, crates/riffdb-columnar/**, crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-cli/**, fixtures/**, release/**, docs/**]
+  deliverables:
+  - columnar_projection syntax, HIR lowering, and additive SchemaIr/ContractBundle encoding
+  - Live admission of contract-declared scalar columnar projections in resolve_columnar_bindings in crates/riffdb-server/src/columnar_admission.rs with cold demand activation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-874
+  exit_gate: Contracts declaring columnar_projection blocks compile and admit
+    their scalar columnar projections live upon deployment without daemon restart,
+    while contracts without columnar_projection retain identical bundle bytes.
+  standing_design_tests:
+    interface_safety: Every contract-declared columnar projection derives its mandatory org_scope_field from the entity's partition key and rejects non-existent or vector fields at compile time.
+    scale: Total configured + contract-declared + vector columnar projections remain capped at 256 per database and stay cold at startup until queried (ADR-0195).
+  human_review_triggers:
+  - Existing contracts that do not declare columnar_projection change their canonical bundle or schema hashes.
+- id: WP-875
+  name: Named RiffQL queries over event and scalar columnar projections
+  tier: guarantee
+  depends_on: [WP-874]
+  objective: Implement ADR-0315 Decision 3. Extend source projected in .riffq to
+    compile named queries over contract-declared event projections and scalar
+    columnar projections, execute them through RiffDbService under declared
+    freshness policies, and emit standard typed query methods across Rust, Go,
+    TypeScript, and Python SDK generators.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045]
+  required_adrs: [ADR-0315, ADR-0017, ADR-0086, ADR-0087, ADR-0303, ADR-0309, ADR-0312, ADR-0313, ADR-0314]
+  allowed_paths: [work_packages.yaml, adr/**, proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**, crates/riffdb-catalog/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-projection/**, crates/riffdb-columnar/**, crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-cli/**, crates/riffdb-server/**, clients/**, drivers/**, fixtures/**, release/**, docs/**]
+  deliverables:
+  - RiffQL compiler support for source projected <ProjectionName> (event projection) and source projected <ColumnarProjectionName> (scalar columnar projection) with freshness enforcement
+  - Named-query execution routing in RiffDbService to event-projection and columnar-projection engines with org-scope and row-policy enforcement
+  - End-to-end SDK generation and execution tests across Rust, Go, TypeScript, and Python
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-875
+  exit_gate: Named RiffQL queries with source projected over event and scalar
+    columnar projections compile, enforce freshness and authorization, and
+    execute through generated SDK clients.
+  standing_design_tests:
+    interface_safety: Projected RiffQL queries require explicit freshness policies, prove single-partition org-scope routing at compile time, and enforce row-level policy admission before columnar aggregation.
+    scale: Projected RiffQL queries inherit the bounded page, scan, group, and state-byte ceilings of the underlying event and columnar projection engines.
+  human_review_triggers:
+  - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.
 
