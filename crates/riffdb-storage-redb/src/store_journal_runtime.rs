@@ -161,10 +161,11 @@ impl SharedRedb {
                 other => {
                     drop(other);
                     Arc::new(
-                        crate::journal::JournalLane::open_with_media(
+                        crate::journal::JournalLane::open_with_media_and_capacity(
                             self.journal_media.as_ref(),
                             &path,
                             &header,
+                            self.extent_profile.extent_data_bytes(),
                             #[cfg(feature = "test-fixtures")]
                             self.test_controller.clone(),
                         )
@@ -174,7 +175,8 @@ impl SharedRedb {
             };
             if matches!(purpose, JournalRuntimePurpose::Writer) {
                 // Refresh an existing spare's generation now; a missing one (the
-                // last install consumed it) is zero-filled off the writer's path.
+                // last install consumed it) is zero-filled off the writer's path
+                // once the active extent profile's preparation threshold is reached.
                 let spare_path = crate::journal::spare_journal_path(&self.path);
                 let spare_guard = self
                     .journal_spare
@@ -185,17 +187,20 @@ impl SharedRedb {
                     .try_exists(&spare_path)
                     .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
                 {
-                    crate::journal::reset_journal_after_with_media(
+                    crate::journal::reset_journal_after_with_media_and_capacity(
                         self.journal_media.as_ref(),
                         &spare_path,
                         &spare_header,
                         &path,
+                        self.extent_profile.extent_data_bytes(),
                     )
                     .map_err(journal_io_error)?;
                     drop(spare_guard);
                 } else {
                     drop(spare_guard);
-                    self.ensure_journal_spare(spare_header)?;
+                    if self.extent_profile.should_prepare_spare(physical_bytes, 0) {
+                        self.ensure_journal_spare(spare_header)?;
+                    }
                 }
             }
             *runtime = Some(JournalRuntime {
@@ -242,7 +247,9 @@ impl SharedRedb {
             // submitted FIFO prefix, retaining results for original owners.
             self.publish_pending_journal_prefix()?;
         }
-        let start_physical_bytes = journal_checkpoint_start_physical_bytes()
+        let start_physical_bytes = self
+            .extent_profile
+            .checkpoint_start_physical_bytes()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
 
         let mut checkpoint_guard = self
@@ -280,6 +287,32 @@ impl SharedRedb {
             && runtime.suffix_bytes < JOURNAL_CHECKPOINT_START_BYTES
             && runtime.suffix_physical_bytes < start_physical_bytes
         {
+            if self
+                .extent_profile
+                .should_prepare_spare(runtime.suffix_physical_bytes, runtime.suffix_transitions)
+            {
+                let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+                    runtime.database_id,
+                    runtime.last_sequence,
+                    runtime.last_administration_sequence,
+                    runtime.last_hash,
+                );
+                drop(runtime_guard);
+                drop(checkpoint_guard);
+                let spare_path = crate::journal::spare_journal_path(&self.path);
+                let has_spare = {
+                    let _spare_guard = self
+                        .journal_spare
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                    self.journal_media
+                        .try_exists(&spare_path)
+                        .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+                };
+                if !has_spare {
+                    self.ensure_journal_spare(spare_header)?;
+                }
+            }
             return Ok(());
         }
         let checkpoint_triggers = [
@@ -363,11 +396,12 @@ impl SharedRedb {
             .journal_spare
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        crate::journal::reset_journal_after_with_media(
+        crate::journal::reset_journal_after_with_media_and_capacity(
             media,
             &spare_path,
             &next_header,
             &active_path,
+            self.extent_profile.extent_data_bytes(),
         )
         .map_err(journal_io_error)?;
         media
@@ -385,10 +419,11 @@ impl SharedRedb {
             .map_err(journal_io_error)?;
         drop(spare_guard);
         let lane = Arc::new(
-            crate::journal::JournalLane::open_with_media(
+            crate::journal::JournalLane::open_with_media_and_capacity(
                 media,
                 &active_path,
                 &next_header,
+                self.extent_profile.extent_data_bytes(),
                 #[cfg(feature = "test-fixtures")]
                 self.test_controller.clone(),
             )

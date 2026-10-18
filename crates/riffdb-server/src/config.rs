@@ -690,6 +690,10 @@ impl ServerConfig {
     pub(crate) const fn redb_commit_profile(&self) -> RedbCommitProfile {
         self.redb_commit_profile
     }
+
+    pub(crate) fn limits(&self) -> DatabaseLimitsConfig {
+        self.databases[0].limits()
+    }
 }
 
 impl fmt::Debug for ServerConfig {

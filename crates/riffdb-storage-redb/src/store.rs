@@ -461,6 +461,7 @@ pub(crate) struct SharedRedb {
     /// only the hidden simulation constructor installs anything else.
     journal_media: Arc<dyn JournalMedia>,
     application_commit_profile: RedbCommitProfile,
+    pub(crate) extent_profile: crate::journal::JournalExtentProfile,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
     /// True when redb invoked repair while opening this handle. Engine repair
@@ -1898,9 +1899,25 @@ struct JournalCapacityCharge {
 }
 
 impl JournalCapacityCharge {
+    #[cfg(test)]
     fn admits(self, transitions: usize, bytes: usize, physical_bytes: usize) -> bool {
+        self.admits_for_profile(
+            crate::journal::JournalExtentProfile::Standard,
+            transitions,
+            bytes,
+            physical_bytes,
+        )
+    }
+
+    fn admits_for_profile(
+        self,
+        profile: crate::journal::JournalExtentProfile,
+        transitions: usize,
+        bytes: usize,
+        physical_bytes: usize,
+    ) -> bool {
         transitions <= crate::journal::MAX_JOURNAL_TRANSITIONS
-            && bytes <= crate::journal::MAX_JOURNAL_FRAME_BYTES
+            && bytes <= profile.max_frame_bytes()
             && self
                 .checkpoint_transitions
                 .saturating_add(self.suffix_transitions)
@@ -1912,11 +1929,10 @@ impl JournalCapacityCharge {
                 .saturating_add(bytes)
                 <= crate::journal::MAX_JOURNAL_SUFFIX_BYTES
             && self.suffix_physical_bytes.saturating_add(physical_bytes)
-                <= crate::journal::EXTENT_DATA_BYTES
+                <= profile.extent_data_bytes()
             && self.unpublished_transitions.saturating_add(transitions)
                 <= crate::journal::MAX_JOURNAL_TRANSITIONS
-            && self.unpublished_bytes.saturating_add(bytes)
-                <= crate::journal::MAX_JOURNAL_FRAME_BYTES
+            && self.unpublished_bytes.saturating_add(bytes) <= profile.max_frame_bytes()
     }
 }
 
@@ -1924,6 +1940,7 @@ const JOURNAL_CHECKPOINT_START_TRANSITIONS: usize =
     crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS / 2;
 const JOURNAL_CHECKPOINT_START_BYTES: usize = crate::journal::MAX_JOURNAL_SUFFIX_BYTES / 2;
 
+#[cfg(test)]
 fn journal_checkpoint_start_physical_bytes() -> Option<usize> {
     crate::journal::EXTENT_DATA_BYTES.checked_sub(crate::journal::extent_frame_bytes(
         crate::journal::MAX_JOURNAL_FRAME_BYTES,
@@ -2471,6 +2488,30 @@ impl RedbStore {
         )
     }
 
+    /// Opens a database with explicit application commit and journal extent profiles.
+    pub fn open_with_extent_profile(
+        path: impl AsRef<Path>,
+        application_commit_profile: RedbCommitProfile,
+        extent_profile: crate::journal::JournalExtentProfile,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner_with_extent_profile(
+            path.as_ref(),
+            application_commit_profile,
+            extent_profile,
+            None,
+            changelog_port,
+            None,
+            engine_open::EngineRepairPolicy::Recover,
+        )
+    }
+
+    /// Returns the configured journal extent profile for this handle.
+    #[must_use]
+    pub fn extent_profile(&self) -> crate::journal::JournalExtentProfile {
+        self.shared.extent_profile
+    }
+
     /// Opens a database with one closed process-test failpoint controller.
     #[doc(hidden)]
     pub fn open_with_test_controller(
@@ -2603,6 +2644,26 @@ impl RedbStore {
         media: Option<RedbStorageMedia>,
         repair_policy: engine_open::EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
+        Self::open_inner_with_extent_profile(
+            path,
+            application_commit_profile,
+            crate::journal::JournalExtentProfile::Standard,
+            test_controller,
+            changelog_port,
+            media,
+            repair_policy,
+        )
+    }
+
+    fn open_inner_with_extent_profile(
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        extent_profile: crate::journal::JournalExtentProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        media: Option<RedbStorageMedia>,
+        repair_policy: engine_open::EngineRepairPolicy,
+    ) -> Result<Self, StorageError> {
         let path = path.to_path_buf();
         let (engine_backend, journal_media) = match media {
             Some(media) => (Some(media.engine), media.journal),
@@ -2617,10 +2678,11 @@ impl RedbStore {
         ) {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
-        Self::open_after_format_preflight_with_repair_policy(
+        Self::open_after_format_preflight_with_repair_policy_and_extent_profile(
             OpenMode::Source,
             &path,
             application_commit_profile,
+            extent_profile,
             test_controller,
             changelog_port,
             (format_preflight == RedbDurableFormatPreflight::InitializeCurrent)
@@ -2739,8 +2801,13 @@ impl RedbStore {
         }
         // A crash between retiring the active extent and creating its successor
         // leaves only the sealing name; the successor continues after it.
-        crate::journal::recreate_missing_active_with_media(media, &self.shared.path)
-            .map_err(recovery_journal_error)?;
+        let extent_data_bytes = self.shared.extent_profile.extent_data_bytes();
+        crate::journal::recreate_missing_active_with_media_and_capacity(
+            media,
+            &self.shared.path,
+            extent_data_bytes,
+        )
+        .map_err(recovery_journal_error)?;
         crate::journal::recover_journal_with_media(
             media,
             &self.shared.database,
@@ -2750,8 +2817,13 @@ impl RedbStore {
         .map_err(recovery_journal_error)?;
         // An extent written before ADR-0263 raised the ceilings keeps its legacy
         // capacity until here, where its recovered suffix is empty.
-        crate::journal::normalize_active_capacity_with_media(media, &self.shared.path, database_id)
-            .map_err(recovery_journal_error)?;
+        crate::journal::normalize_active_capacity_with_media_to(
+            media,
+            &self.shared.path,
+            database_id,
+            extent_data_bytes,
+        )
+        .map_err(recovery_journal_error)?;
 
         // An extent whose checkpoint installed before a crash may still wait
         // at the sealing name; its frames are materialized, so sealing it is
@@ -6994,9 +7066,9 @@ impl RedbDurabilityEpoch {
                 > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
                 || checkpoint_bytes.saturating_add(next_bytes)
                     > crate::journal::MAX_JOURNAL_SUFFIX_BYTES
-                || next_physical_bytes > crate::journal::EXTENT_DATA_BYTES
+                || next_physical_bytes > self.shared.extent_profile.extent_data_bytes()
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
-                || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                || next_unpublished_bytes > self.shared.extent_profile.max_frame_bytes()
             {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             } else {
@@ -7783,9 +7855,9 @@ impl SharedRedb {
         if transitions == 0
             || transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
             || bytes == 0
-            || bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+            || bytes > self.extent_profile.max_frame_bytes()
             || physical_bytes == 0
-            || physical_bytes > crate::journal::EXTENT_DATA_BYTES
+            || physical_bytes > self.extent_profile.extent_data_bytes()
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
@@ -7809,7 +7881,7 @@ impl SharedRedb {
                     unpublished_bytes: runtime.unpublished_bytes,
                 }
             };
-            if charge.admits(transitions, bytes, physical_bytes) {
+            if charge.admits_for_profile(self.extent_profile, transitions, bytes, physical_bytes) {
                 return Ok(rebased);
             }
             if charge.unpublished_transitions != 0 || charge.unpublished_bytes != 0 {
@@ -7871,7 +7943,7 @@ impl SharedRedb {
             let Some(checkpoint) = checkpoint.as_mut() else {
                 return Ok(());
             };
-            if checkpoint.result.is_none() {
+            if checkpoint.completion.is_some() {
                 let receiver = checkpoint
                     .completion
                     .as_ref()
@@ -7935,15 +8007,24 @@ impl SharedRedb {
     /// one retires or seals at a time. A failure leaves the extent at its name;
     /// the next rotation or open resumes it, and a missing spare is created by
     /// the next checkpoint start instead.
+    #[cfg(test)]
     pub(super) fn start_journal_sealer(
         &self,
         spare_header: crate::journal::JournalFileHeader,
+    ) -> Result<(), StorageError> {
+        self.start_journal_sealer_with_spare(spare_header, true)
+    }
+
+    pub(super) fn start_journal_sealer_with_spare(
+        &self,
+        spare_header: crate::journal::JournalFileHeader,
+        prepare_spare: bool,
     ) -> Result<(), StorageError> {
         let sealer = self
             .journal_sealer
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.start_journal_sealer_locked(spare_header, sealer)
+        self.start_journal_sealer_locked(spare_header, prepare_spare, sealer)
     }
 
     /// Preparation demand creates no new extent-publication obligation. Reuse
@@ -7961,18 +8042,20 @@ impl SharedRedb {
         if sealer.as_ref().is_some_and(|job| !job.handle.is_finished()) {
             return Ok(());
         }
-        self.start_journal_sealer_locked(spare_header, sealer)
+        self.start_journal_sealer_locked(spare_header, true, sealer)
     }
 
     fn start_journal_sealer_locked(
         &self,
         spare_header: crate::journal::JournalFileHeader,
+        prepare_spare: bool,
         mut sealer: std::sync::MutexGuard<'_, Option<JournalSealer>>,
     ) -> Result<(), StorageError> {
         let media = Arc::clone(&self.journal_media);
         let path = self.path.clone();
         let spare_lock = Arc::clone(&self.journal_spare);
         let database_id = spare_header.database_id();
+        let extent_data_bytes = self.extent_profile.extent_data_bytes();
         #[cfg(feature = "test-fixtures")]
         let controller = self.test_controller.clone();
         #[cfg(feature = "test-fixtures")]
@@ -8018,14 +8101,17 @@ impl SharedRedb {
                         crate::hooks::RedbCheckpointTestPoint::BeforeSparePreparation,
                     );
                 }
-                crate::journal::record_spare_outcome(
-                    crate::journal::prepare_spare_extent_with_media(
-                        media.as_ref(),
-                        &path,
-                        &spare_header,
-                        &spare_lock,
-                    ),
-                );
+                if prepare_spare {
+                    crate::journal::record_spare_outcome(
+                        crate::journal::prepare_spare_extent_with_media_and_capacity(
+                            media.as_ref(),
+                            &path,
+                            &spare_header,
+                            &spare_lock,
+                            extent_data_bytes,
+                        ),
+                    );
+                }
                 drop(_maintenance);
                 completion.publish(Ok(()));
             })
@@ -8143,12 +8229,18 @@ impl SharedRedb {
             // The installed extent is retained history now (ADR-0263): it is
             // sealed, not recycled. The sealer retires and seals it off the
             // writer's path; the next rotation waits for the checkpoint name.
-            self.start_journal_sealer(crate::journal::JournalFileHeader::with_frontiers(
-                runtime.database_id,
-                runtime.last_sequence,
-                runtime.last_administration_sequence,
-                runtime.last_hash,
-            ))?;
+            self.start_journal_sealer_with_spare(
+                crate::journal::JournalFileHeader::with_frontiers(
+                    runtime.database_id,
+                    runtime.last_sequence,
+                    runtime.last_administration_sequence,
+                    runtime.last_hash,
+                ),
+                self.extent_profile.should_prepare_spare(
+                    runtime.suffix_physical_bytes,
+                    runtime.suffix_transitions,
+                ),
+            )?;
             #[cfg(feature = "test-fixtures")]
             if let Some(controller) = &self.test_controller {
                 controller.checkpoint_test_pause(crate::hooks::RedbCheckpointTestPoint::Reclaimed);

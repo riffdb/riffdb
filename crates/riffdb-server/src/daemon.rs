@@ -111,7 +111,7 @@ use crate::restore_retry_host::{
     RestoreRetryHostShutdownError, RestoreRetryHostStartError, RunningRestoreRetryHost,
 };
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
-use crate::startup::{RedbStartupError, open_redb_startup_with_commit_profile};
+use crate::startup::{RedbStartupError, open_redb_startup_with_extent_profile};
 
 /// Bounded public-service scheduler width. Blocking storage ports retain their
 /// separate eight-thread admission bound.
@@ -757,11 +757,12 @@ async fn run_server(
         match initial_action {
             InitialDatabaseAction::OpenCurrent => {
                 match promoted_startup.take().map(Ok).unwrap_or_else(|| {
-                    open_redb_startup_with_commit_profile(
+                    open_redb_startup_with_extent_profile(
                         config.database_path(),
                         startup_inputs.clone(),
                         &database_ids,
                         config.redb_commit_profile(),
+                        config.limits().extent_profile(),
                     )
                 }) {
                     Ok(startup) => startup,
@@ -805,11 +806,12 @@ async fn run_server(
                         .take()
                         .map(Ok)
                         .unwrap_or_else(|| {
-                            open_redb_startup_with_commit_profile(
+                            open_redb_startup_with_extent_profile(
                                 config.database_path(),
                                 startup_inputs.clone(),
                                 &database_ids,
                                 config.redb_commit_profile(),
+                                config.limits().extent_profile(),
                             )
                         })
                         .map_err(DaemonError::Startup)?;
@@ -884,11 +886,12 @@ async fn run_server(
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| {
-                        open_redb_startup_with_commit_profile(
+                        open_redb_startup_with_extent_profile(
                             config.database_path(),
                             startup_inputs.clone(),
                             &database_ids,
                             config.redb_commit_profile(),
+                            config.limits().extent_profile(),
                         )
                     })
                     .map_err(DaemonError::Startup)?;
@@ -1381,11 +1384,12 @@ async fn run_multi_database_server(
             match initial_action {
                 InitialDatabaseAction::OpenCurrent => {
                     match promoted_startup.take().map(Ok).unwrap_or_else(|| {
-                        open_redb_startup_with_commit_profile(
+                        open_redb_startup_with_extent_profile(
                             database.database_path(),
                             startup_inputs.clone(),
                             &pending.identifiers.database_ids(),
                             config.redb_commit_profile(),
+                            database.limits().extent_profile(),
                         )
                     }) {
                         Ok(startup) => startup,
@@ -1407,11 +1411,12 @@ async fn run_multi_database_server(
                             .take()
                             .map(Ok)
                             .unwrap_or_else(|| {
-                                open_redb_startup_with_commit_profile(
+                                open_redb_startup_with_extent_profile(
                                     database.database_path(),
                                     startup_inputs.clone(),
                                     &pending.identifiers.database_ids(),
                                     config.redb_commit_profile(),
+                                    database.limits().extent_profile(),
                                 )
                             })
                             .map_err(DaemonError::Startup)?;
@@ -1489,11 +1494,12 @@ async fn run_multi_database_server(
                         .take()
                         .map(Ok)
                         .unwrap_or_else(|| {
-                            open_redb_startup_with_commit_profile(
+                            open_redb_startup_with_extent_profile(
                                 database.database_path(),
                                 startup_inputs.clone(),
                                 &pending.identifiers.database_ids(),
                                 config.redb_commit_profile(),
+                                database.limits().extent_profile(),
                             )
                         })
                         .map_err(DaemonError::Startup)?;
@@ -5462,7 +5468,7 @@ mod tests {
             .0;
         let listener = production.find("HostedGrpc::bind(").expect("listener bind");
         let startup = production
-            .find("open_redb_startup_with_commit_profile(")
+            .find("open_redb_startup_with_extent_profile(")
             .expect("startup proof");
         let readiness = production.find("publish_readiness(").expect("readiness");
         assert!(listener < startup);

@@ -307,7 +307,7 @@ mod tests {
     async fn daemon_managed_start_bootstraps_then_reopens_without_new_source_construction() {
         let scope = tempfile::tempdir().unwrap();
         let source_path = scope.path().join("primary.redb");
-        let mut startup = open_redb_startup_with_commit_profile(
+        let mut startup = crate::startup::open_redb_startup_with_commit_profile(
             &source_path,
             inputs(),
             &ProductionIdentifierSources::new().database_ids(),

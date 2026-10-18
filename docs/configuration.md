@@ -444,7 +444,7 @@ documents. It contains no raw digest key in TOML.
 
 An optional `[maintenance.limits]` table (or `[databases.<alias>.limits]` in the
 multi-database form) bounds per-database storage, request rates, blocking pool
-concurrency, and commit coordinator capacity:
+concurrency, commit coordinator capacity, and journal extent sizing:
 
 ```toml
 [maintenance.limits]
@@ -456,24 +456,33 @@ read_burst = 500
 max_blocking_operations = 4
 blocking_worker_threads = 2
 max_coordinator_capacity = 32
+extent_profile = "compact"
 ```
 
-- `max_storage_bytes` (`1_048_576..=1_099_511_627_776`): refuses new state-growing
+- `max_storage_bytes` (`65_536..`): refuses new state-growing
   commands, contract deployments, migrations, and capability creations with typed
-  `ResourceExhausted` when the authoritative database file plus journal footprint
+  `Overloaded` when the authoritative database file plus journal footprint
   reaches or exceeds the ceiling. Reads, `ResolveCommandOutcome`,
   `RevokeCapability`, and application exports (`StartApplicationExport`,
   `GetApplicationExportPage`, `GetApplicationExport`, `CancelApplicationExport`)
   remain permitted at the storage ceiling so data and outcomes are never stranded.
-- `max_write_rps` (`1..=100_000`) and optional `write_burst` (`>= max_write_rps`,
+- `max_write_rps` (`1..=1_000_000`) and optional `write_burst` (`1..=1_000_000`,
   default `max_write_rps`): monotonic token-bucket governor for mutating commands
   and administration writes.
-- `max_read_rps` (`1..=500_000`) and optional `read_burst` (`>= max_read_rps`,
+- `max_read_rps` (`1..=1_000_000`) and optional `read_burst` (`1..=1_000_000`,
   default `max_read_rps`): monotonic token-bucket governor for reads, queries, and
   export scans (`GetHealth` and `GetStatistics` probes are exempt).
-- `max_blocking_operations` (`1..=512`), `blocking_worker_threads` (`1..=64`), and
-  `max_coordinator_capacity` (`1..=256`): override the per-database blocking pool
+- `max_blocking_operations` (`1..=256`), `blocking_worker_threads` (`1..=8`), and
+  `max_coordinator_capacity` (`1..=4_096`): override the per-database blocking pool
   and commit coordinator queue bounds.
+- `extent_profile` (`"standard"` or `"compact"`, default `"standard"`): selects
+  the per-database journal extent profile. `"standard"` preallocates
+  `320 MiB` active and spare extents; `"compact"` preallocates an `8 MiB` active
+  extent (`4 MiB` checkpoint rotation threshold) and defers `.riffjournal.spare`
+  allocation until `2 MiB` (`25%`) active utilization or on-demand checkpoint
+  rotation. Switching profiles across restarts normalizes empty active extents in
+  place and seals extents that contain materialized history stubs before opening
+  the next generation at the newly configured capacity.
 
 Optional hosted MCP settings:
 

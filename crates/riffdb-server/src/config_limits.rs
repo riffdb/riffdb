@@ -39,6 +39,7 @@ pub(super) struct LimitsDocument {
     max_blocking_operations: Option<u16>,
     blocking_worker_threads: Option<u16>,
     max_coordinator_capacity: Option<u16>,
+    extent_profile: Option<String>,
 }
 
 impl fmt::Debug for LimitsDocument {
@@ -73,6 +74,7 @@ pub(crate) struct DatabaseLimitsConfig {
     max_blocking_operations: NonZeroU16,
     blocking_worker_threads: NonZeroU16,
     max_coordinator_capacity: Option<NonZeroU16>,
+    extent_profile: riffdb_storage_redb::JournalExtentProfile,
 }
 
 impl Default for DatabaseLimitsConfig {
@@ -86,6 +88,7 @@ impl Default for DatabaseLimitsConfig {
             blocking_worker_threads: NonZeroU16::new(MAX_BLOCKING_WORKER_THREADS)
                 .unwrap_or(NonZeroU16::MIN),
             max_coordinator_capacity: None,
+            extent_profile: riffdb_storage_redb::JournalExtentProfile::Standard,
         }
     }
 }
@@ -113,6 +116,10 @@ impl DatabaseLimitsConfig {
 
     pub(crate) const fn max_coordinator_capacity(self) -> Option<NonZeroU16> {
         self.max_coordinator_capacity
+    }
+
+    pub(crate) const fn extent_profile(self) -> riffdb_storage_redb::JournalExtentProfile {
+        self.extent_profile
     }
 
     pub(crate) const fn has_admission_governor(self) -> bool {
@@ -177,6 +184,11 @@ pub(super) fn parse_limits(
         }
         None => None,
     };
+    let extent_profile = match document.extent_profile.as_deref() {
+        None | Some("standard") => riffdb_storage_redb::JournalExtentProfile::Standard,
+        Some("compact") => riffdb_storage_redb::JournalExtentProfile::Compact,
+        Some(_) => return Err(ServerConfigError::InvalidLimitsConfiguration),
+    };
     Ok(DatabaseLimitsConfig {
         max_storage_bytes,
         write_rate,
@@ -184,6 +196,7 @@ pub(super) fn parse_limits(
         max_blocking_operations,
         blocking_worker_threads,
         max_coordinator_capacity,
+        extent_profile,
     })
 }
 
@@ -452,7 +465,7 @@ mod tests {
         let config_path = root.path().join("config.toml");
 
         let valid = format!(
-            "[databases.dev]\npath = '{0}/dev.redb'\nbackup_root = '{0}/dev-backups'\nprojections_root = '{0}/dev-projections'\nenvironment = 'development'\n[databases.dev.limits]\nmax_storage_bytes = 536870912\nmax_write_rps = 50\nwrite_burst = 100\nmax_read_rps = 250\nread_burst = 500\nmax_blocking_operations = 4\nmax_coordinator_capacity = 64\n",
+            "[databases.dev]\npath = '{0}/dev.redb'\nbackup_root = '{0}/dev-backups'\nprojections_root = '{0}/dev-projections'\nenvironment = 'development'\n[databases.dev.limits]\nmax_storage_bytes = 536870912\nmax_write_rps = 50\nwrite_burst = 100\nmax_read_rps = 250\nread_burst = 500\nmax_blocking_operations = 4\nmax_coordinator_capacity = 64\nextent_profile = 'compact'\n",
             root.path().display()
         );
         fs::write(&config_path, &valid).unwrap();
@@ -471,6 +484,10 @@ mod tests {
         assert_eq!(limits.max_blocking_operations().get(), 4);
         assert_eq!(limits.blocking_worker_threads().get(), 4);
         assert_eq!(limits.max_coordinator_capacity().unwrap().get(), 64);
+        assert_eq!(
+            limits.extent_profile(),
+            riffdb_storage_redb::JournalExtentProfile::Compact
+        );
 
         for invalid in [
             valid.replace("536870912", "1024"),
@@ -484,6 +501,7 @@ mod tests {
                 "max_coordinator_capacity = 64",
                 "max_coordinator_capacity = 8192",
             ),
+            valid.replace("extent_profile = 'compact'", "extent_profile = 'tiny'"),
         ] {
             fs::write(&config_path, invalid).unwrap();
             assert_eq!(
@@ -517,6 +535,7 @@ mod tests {
             max_blocking_operations: Some(16),
             blocking_worker_threads: Some(2),
             max_coordinator_capacity: Some(32),
+            extent_profile: Some("compact".to_owned()),
         }))
         .unwrap();
         let governor = ServerDatabaseResourceGovernor::with_clock(

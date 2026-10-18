@@ -315,9 +315,9 @@ impl RedbWriteAccess {
                 > crate::journal::MAX_JOURNAL_SUFFIX_TRANSITIONS
                 || checkpoint_bytes.saturating_add(next_bytes)
                     > crate::journal::MAX_JOURNAL_SUFFIX_BYTES
-                || next_physical_bytes > crate::journal::EXTENT_DATA_BYTES
+                || next_physical_bytes > self.shared.extent_profile.extent_data_bytes()
                 || next_unpublished_transitions > crate::journal::MAX_JOURNAL_TRANSITIONS
-                || next_unpublished_bytes > crate::journal::MAX_JOURNAL_FRAME_BYTES
+                || next_unpublished_bytes > self.shared.extent_profile.max_frame_bytes()
             {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
@@ -550,7 +550,7 @@ impl SharedRedb {
             unpublished_transitions: runtime.unpublished_transitions,
             unpublished_bytes: runtime.unpublished_bytes,
         }
-        .admits(transitions, bytes, physical_bytes))
+        .admits_for_profile(self.extent_profile, transitions, bytes, physical_bytes))
     }
 
     pub(super) fn begin_source_journal_write(

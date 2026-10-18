@@ -68,6 +68,12 @@ const SEALED_FOOTER_MAGIC: [u8; 8] = *b"RDBJSF04";
 const EXTENT_HEADER_SLOT_BYTES: usize = 4 * 1024;
 const EXTENT_HEADER_SLOT_COUNT: usize = 2;
 const EXTENT_DATA_OFFSET: usize = EXTENT_HEADER_SLOT_BYTES * EXTENT_HEADER_SLOT_COUNT;
+/// Compact journal extent data capacity (8 MiB, ADR-0317).
+pub const COMPACT_EXTENT_DATA_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum logical frame bytes in the compact journal extent profile (4 MiB, ADR-0317).
+pub const COMPACT_MAX_JOURNAL_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// Physical utilization threshold at which the compact profile begins background spare preparation (2 MiB, ADR-0317).
+pub const COMPACT_LAZY_SPARE_THRESHOLD_BYTES: usize = COMPACT_EXTENT_DATA_BYTES / 4;
 /// Data capacity of every extent written so far. Each extent stamps its own
 /// capacity, so recovery reads it whatever the configured size, and the open
 /// path replaces a recovered extent of another size with one of the configured
@@ -85,7 +91,59 @@ pub(crate) const EXTENT_DATA_BYTES: usize = PRODUCTION_EXTENT_DATA_BYTES;
 pub(crate) const EXTENT_DATA_BYTES: usize = LEGACY_EXTENT_DATA_BYTES;
 const EXTENT_FILE_BYTES: usize = EXTENT_DATA_OFFSET + EXTENT_DATA_BYTES;
 
-const fn extent_file_bytes(data_bytes: usize) -> usize {
+/// Per-database durability journal extent sizing and spare-allocation profile (ADR-0317).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum JournalExtentProfile {
+    /// Standard extent capacity (`320 MiB` in production, `40 MiB` in test builds) with eager spare preparation.
+    #[default]
+    Standard,
+    /// Compact `8 MiB` extent capacity with `4 MiB` physical checkpoint threshold and lazy spare preparation at `25%` (`2 MiB`) utilization.
+    Compact,
+}
+
+impl JournalExtentProfile {
+    /// Stamped data capacity in bytes for active and spare extents under this profile.
+    #[must_use]
+    pub const fn extent_data_bytes(self) -> usize {
+        match self {
+            Self::Standard => EXTENT_DATA_BYTES,
+            Self::Compact => COMPACT_EXTENT_DATA_BYTES,
+        }
+    }
+
+    /// Maximum logical frame size in bytes admitted under this profile.
+    #[must_use]
+    pub const fn max_frame_bytes(self) -> usize {
+        match self {
+            Self::Standard => MAX_JOURNAL_FRAME_BYTES,
+            Self::Compact => COMPACT_MAX_JOURNAL_FRAME_BYTES,
+        }
+    }
+
+    /// Physical extent utilization threshold that triggers an asynchronous checkpoint.
+    pub(crate) fn checkpoint_start_physical_bytes(self) -> Option<usize> {
+        match self {
+            Self::Standard => {
+                EXTENT_DATA_BYTES.checked_sub(extent_frame_bytes(MAX_JOURNAL_FRAME_BYTES)?)
+            }
+            Self::Compact => Some(COMPACT_EXTENT_DATA_BYTES / 2),
+        }
+    }
+
+    /// Whether background `.riffjournal.spare` preparation should run at the current utilization.
+    #[must_use]
+    pub const fn should_prepare_spare(self, physical_bytes: usize, transitions: usize) -> bool {
+        match self {
+            Self::Standard => true,
+            Self::Compact => {
+                physical_bytes >= COMPACT_LAZY_SPARE_THRESHOLD_BYTES
+                    || transitions >= MAX_JOURNAL_SUFFIX_TRANSITIONS / 8
+            }
+        }
+    }
+}
+
+pub(crate) const fn extent_file_bytes(data_bytes: usize) -> usize {
     EXTENT_DATA_OFFSET + data_bytes
 }
 
@@ -108,7 +166,8 @@ pub(crate) fn extent_used_bytes(complete_bytes: usize) -> usize {
 }
 
 fn known_extent_data_bytes(data_bytes: usize) -> bool {
-    data_bytes == EXTENT_DATA_BYTES
+    data_bytes == COMPACT_EXTENT_DATA_BYTES
+        || data_bytes == EXTENT_DATA_BYTES
         || data_bytes == LEGACY_EXTENT_DATA_BYTES
         || data_bytes == PRODUCTION_EXTENT_DATA_BYTES
 }
@@ -1253,11 +1312,15 @@ struct ExtentHeader {
 
 impl ExtentHeader {
     fn initial(logical: JournalFileHeader) -> Self {
+        Self::initial_with_capacity(logical, EXTENT_DATA_BYTES)
+    }
+
+    fn initial_with_capacity(logical: JournalFileHeader, data_bytes: usize) -> Self {
         Self {
             logical,
             generation: 1,
             slot: 0,
-            data_bytes: EXTENT_DATA_BYTES,
+            data_bytes,
             revision: 0,
             anchor_position: EXTENT_DATA_OFFSET,
         }
@@ -2366,6 +2429,15 @@ impl EncodedExtentFrame {
         position: usize,
         logical: &EncodedJournalFrame,
     ) -> Result<Self, JournalIoError> {
+        Self::encode_for_extent(generation, position, EXTENT_DATA_BYTES, logical)
+    }
+
+    fn encode_for_extent(
+        generation: u64,
+        position: usize,
+        extent_data_bytes: usize,
+        logical: &EncodedJournalFrame,
+    ) -> Result<Self, JournalIoError> {
         if generation == 0
             || position < EXTENT_DATA_OFFSET
             || !position.is_multiple_of(EXTENT_FRAME_ALIGNMENT)
@@ -2374,10 +2446,11 @@ impl EncodedExtentFrame {
         }
         let encoded_len = logical.as_bytes().len();
         let padded_len = extent_frame_bytes(encoded_len).ok_or(JournalIoError::Capacity)?;
-        if padded_len > EXTENT_DATA_BYTES
+        let file_bytes = extent_file_bytes(extent_data_bytes);
+        if padded_len > extent_data_bytes
             || position
                 .checked_add(padded_len)
-                .filter(|end| *end <= EXTENT_FILE_BYTES)
+                .filter(|end| *end <= file_bytes)
                 .is_none()
         {
             return Err(JournalIoError::Capacity);
@@ -2611,7 +2684,25 @@ impl JournalLane {
         header: &JournalFileHeader,
         #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
     ) -> Result<Self, JournalIoError> {
-        let state = initialize_or_validate_file_with_media(media, path, header)?;
+        Self::open_with_media_and_capacity(
+            media,
+            path,
+            header,
+            EXTENT_DATA_BYTES,
+            #[cfg(feature = "test-fixtures")]
+            controller,
+        )
+    }
+
+    pub(crate) fn open_with_media_and_capacity(
+        media: &dyn JournalMedia,
+        path: &Path,
+        header: &JournalFileHeader,
+        data_bytes: usize,
+        #[cfg(feature = "test-fixtures")] controller: Option<crate::hooks::RedbTestController>,
+    ) -> Result<Self, JournalIoError> {
+        let state =
+            initialize_or_validate_file_with_media_and_capacity(media, path, header, data_bytes)?;
         let generation = state.header.generation;
         let file = media
             .open_read_write(path)
@@ -2733,6 +2824,15 @@ fn initialize_or_validate_file_with_media(
     path: &Path,
     expected: &JournalFileHeader,
 ) -> Result<ExtentState, JournalIoError> {
+    initialize_or_validate_file_with_media_and_capacity(media, path, expected, EXTENT_DATA_BYTES)
+}
+
+fn initialize_or_validate_file_with_media_and_capacity(
+    media: &dyn JournalMedia,
+    path: &Path,
+    expected: &JournalFileHeader,
+    data_bytes: usize,
+) -> Result<ExtentState, JournalIoError> {
     match media.open_read(path) {
         Ok(mut file) => {
             let mut magic = [0_u8; 8];
@@ -2749,7 +2849,9 @@ fn initialize_or_validate_file_with_media(
                 if tail.transition_count != 0 || tail.incomplete_tail {
                     return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
                 }
-                migrate_empty_legacy_journal_with_media(media, path, expected)?;
+                migrate_empty_legacy_journal_with_media_and_capacity(
+                    media, path, expected, data_bytes,
+                )?;
             } else if magic != EXTENT_MAGIC {
                 return Err(JournalIoError::Corrupt);
             }
@@ -2758,7 +2860,9 @@ fn initialize_or_validate_file_with_media(
             // The active name must never expose a partially initialized file.
             // Reuse the existing synced replacement ceremony for the first
             // extent too: a crash leaves absence or a complete anchored extent.
-            migrate_empty_legacy_journal_with_media(media, path, expected)?;
+            migrate_empty_legacy_journal_with_media_and_capacity(
+                media, path, expected, data_bytes,
+            )?;
         }
         Err(_) => return Err(JournalIoError::Io),
     }
@@ -2812,7 +2916,12 @@ fn journal_worker(
         let mut physical = Vec::with_capacity(batch.len());
         let mut encode_error = None;
         for submission in &batch {
-            match EncodedExtentFrame::encode(generation, next_position, &submission.frame) {
+            match EncodedExtentFrame::encode_for_extent(
+                generation,
+                next_position,
+                state.header.data_bytes,
+                &submission.frame,
+            ) {
                 Ok(frame) => {
                     next_position = match next_position.checked_add(frame.bytes.len()) {
                         Some(position) => position,
@@ -3409,10 +3518,11 @@ pub(crate) fn recycled_journal_path(database_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn prepare_recycled_extent_with_media(
+fn prepare_recycled_extent_with_media_and_capacity(
     media: &dyn JournalMedia,
     path: &Path,
     header: &JournalFileHeader,
+    data_bytes: usize,
 ) -> Result<(), JournalIoError> {
     let mut file = media
         .open_read_write(path)
@@ -3423,7 +3533,7 @@ fn prepare_recycled_extent_with_media(
     }
     let length = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
         .map_err(|_| JournalIoError::Corrupt)?;
-    let full = extent_file_bytes(EXTENT_DATA_BYTES);
+    let full = extent_file_bytes(data_bytes);
     // Preserve already allocated frame blocks. Only the trimmed tail needs
     // allocation, on the background preparation thread, never the writer.
     let zeros = [0_u8; 64 * 1024];
@@ -3443,7 +3553,7 @@ fn prepare_recycled_extent_with_media(
     file.set_len(u64::try_from(full).map_err(|_| JournalIoError::Corrupt)?)
         .map_err(|_| JournalIoError::Io)?;
     let mut successor = current.successor(header.clone())?;
-    successor.data_bytes = EXTENT_DATA_BYTES;
+    successor.data_bytes = data_bytes;
     file.write_all_at(
         &successor.encode(),
         usize::from(successor.slot) * EXTENT_HEADER_SLOT_BYTES,
@@ -3460,6 +3570,22 @@ pub(crate) fn prepare_spare_extent_with_media(
     database_path: &Path,
     header: &JournalFileHeader,
     spare_lock: &std::sync::Mutex<()>,
+) -> Result<bool, JournalIoError> {
+    prepare_spare_extent_with_media_and_capacity(
+        media,
+        database_path,
+        header,
+        spare_lock,
+        EXTENT_DATA_BYTES,
+    )
+}
+
+pub(crate) fn prepare_spare_extent_with_media_and_capacity(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    header: &JournalFileHeader,
+    spare_lock: &std::sync::Mutex<()>,
+    data_bytes: usize,
 ) -> Result<bool, JournalIoError> {
     let _maintenance = ExtentMaintenanceGuard::enter();
     let spare = spare_journal_path(database_path);
@@ -3491,9 +3617,13 @@ pub(crate) fn prepare_spare_extent_with_media(
         // The pool claim is complete. Foreground rotation need not wait for
         // this scratch-name directory sync while holding its spare lock.
         sync_parent_with_media(media, &preparing)?;
-        prepare_recycled_extent_with_media(media, &preparing, header)?;
+        prepare_recycled_extent_with_media_and_capacity(media, &preparing, header, data_bytes)?;
     } else {
-        create_extent_file_with_media(media, &preparing, &ExtentHeader::initial(header.clone()))?;
+        create_extent_file_with_media(
+            media,
+            &preparing,
+            &ExtentHeader::initial_with_capacity(header.clone(), data_bytes),
+        )?;
     }
     let _guard = spare_lock.lock().map_err(|_| JournalIoError::Io)?;
     if media.try_exists(&spare).map_err(|_| JournalIoError::Io)? {
@@ -3578,10 +3708,11 @@ fn classify_extent_creation_error(error: &io::Error) -> JournalIoError {
     }
 }
 
-fn migrate_empty_legacy_journal_with_media(
+fn migrate_empty_legacy_journal_with_media_and_capacity(
     media: &dyn JournalMedia,
     path: &Path,
     expected: &JournalFileHeader,
+    data_bytes: usize,
 ) -> Result<(), JournalIoError> {
     let parent = path.parent().ok_or(JournalIoError::Io)?;
     let file_name = path.file_name().ok_or(JournalIoError::Io)?;
@@ -3596,7 +3727,7 @@ fn migrate_empty_legacy_journal_with_media(
     create_extent_file_with_media(
         media,
         &replacement,
-        &ExtentHeader::initial(expected.clone()),
+        &ExtentHeader::initial_with_capacity(expected.clone(), data_bytes),
     )?;
     media
         .rename(&replacement, path)
@@ -5409,6 +5540,14 @@ pub(crate) fn recreate_missing_active_with_media(
     media: &dyn JournalMedia,
     database_path: &Path,
 ) -> Result<(), JournalIoError> {
+    recreate_missing_active_with_media_and_capacity(media, database_path, EXTENT_DATA_BYTES)
+}
+
+pub(crate) fn recreate_missing_active_with_media_and_capacity(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    data_bytes: usize,
+) -> Result<(), JournalIoError> {
     let active = journal_path(database_path);
     let sealing = sealing_journal_path(database_path);
     if media.try_exists(&active).map_err(|_| JournalIoError::Io)?
@@ -5417,7 +5556,13 @@ pub(crate) fn recreate_missing_active_with_media(
         return Ok(());
     }
     let predecessor = inspect_extent_with_media(media, &sealing)?;
-    reset_journal_after_with_media(media, &active, &predecessor.header.logical, &sealing)?;
+    reset_journal_after_with_media_and_capacity(
+        media,
+        &active,
+        &predecessor.header.logical,
+        &sealing,
+        data_bytes,
+    )?;
     sync_parent_with_media(media, &active)
 }
 
@@ -5430,6 +5575,15 @@ pub(crate) fn normalize_active_capacity_with_media(
     database_id: DatabaseId,
 ) -> Result<(), JournalIoError> {
     normalize_active_capacity_to(media, database_path, database_id, EXTENT_DATA_BYTES)
+}
+
+pub(crate) fn normalize_active_capacity_with_media_to(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    data_bytes: usize,
+) -> Result<(), JournalIoError> {
+    normalize_active_capacity_to(media, database_path, database_id, data_bytes)
 }
 
 fn normalize_active_capacity_to(
@@ -5461,7 +5615,7 @@ fn normalize_active_capacity_to(
         .rename(&active, &sealing)
         .map_err(|_| JournalIoError::Io)?;
     sync_parent_with_media(media, &sealing)?;
-    recreate_missing_active_with_media(media, database_path)
+    recreate_missing_active_with_media_and_capacity(media, database_path, data_bytes)
 }
 
 /// Prepares one recyclable extent whose generation is strictly newer than the
@@ -5478,6 +5632,22 @@ pub(crate) fn reset_journal_after_with_media(
     header: &JournalFileHeader,
     predecessor_path: &Path,
 ) -> Result<(), JournalIoError> {
+    reset_journal_after_with_media_and_capacity(
+        media,
+        path,
+        header,
+        predecessor_path,
+        EXTENT_DATA_BYTES,
+    )
+}
+
+pub(crate) fn reset_journal_after_with_media_and_capacity(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+    predecessor_path: &Path,
+    data_bytes: usize,
+) -> Result<(), JournalIoError> {
     let mut predecessor_file = media
         .open_read(predecessor_path)
         .map_err(|_| JournalIoError::Io)?;
@@ -5485,7 +5655,13 @@ pub(crate) fn reset_journal_after_with_media(
     if predecessor.logical.database_id() != header.database_id() {
         return Err(JournalIoError::Corrupt);
     }
-    reset_journal_after_generation_with_media(media, path, header, Some(predecessor.generation))
+    reset_journal_after_generation_with_media_and_capacity(
+        media,
+        path,
+        header,
+        Some(predecessor.generation),
+        data_bytes,
+    )
 }
 
 /// Re-issues the fully checkpointed extent at `path`, empty and with the same
@@ -5638,10 +5814,26 @@ fn reset_journal_after_generation_with_media(
     header: &JournalFileHeader,
     predecessor_generation: Option<u64>,
 ) -> Result<(), JournalIoError> {
+    reset_journal_after_generation_with_media_and_capacity(
+        media,
+        path,
+        header,
+        predecessor_generation,
+        EXTENT_DATA_BYTES,
+    )
+}
+
+fn reset_journal_after_generation_with_media_and_capacity(
+    media: &dyn JournalMedia,
+    path: &Path,
+    header: &JournalFileHeader,
+    predecessor_generation: Option<u64>,
+    data_bytes: usize,
+) -> Result<(), JournalIoError> {
     let mut file = match media.open_read_write(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut initial = ExtentHeader::initial(header.clone());
+            let mut initial = ExtentHeader::initial_with_capacity(header.clone(), data_bytes);
             if let Some(predecessor) = predecessor_generation {
                 initial.generation = predecessor.checked_add(1).ok_or(JournalIoError::Corrupt)?;
             }
@@ -5660,7 +5852,9 @@ fn reset_journal_after_generation_with_media(
             return Err(JournalIoError::LegacyNonEmpty(path.to_path_buf()));
         }
         drop(file);
-        return migrate_empty_legacy_journal_with_media(media, path, header);
+        return migrate_empty_legacy_journal_with_media_and_capacity(
+            media, path, header, data_bytes,
+        );
     }
     if magic != EXTENT_MAGIC {
         return Err(JournalIoError::Corrupt);
@@ -5669,7 +5863,29 @@ fn reset_journal_after_generation_with_media(
     if current.logical.database_id() != header.database_id() {
         return Err(JournalIoError::Corrupt);
     }
+    if current.data_bytes != data_bytes {
+        let length = usize::try_from(file.len().map_err(|_| JournalIoError::Io)?)
+            .map_err(|_| JournalIoError::Corrupt)?;
+        let full = extent_file_bytes(data_bytes);
+        let zeros = [0_u8; 64 * 1024];
+        let mut offset = length.min(full);
+        let mut unsynced = 0_usize;
+        while offset < full {
+            let bytes = zeros.len().min(full - offset);
+            file.write_all_at(&zeros[..bytes], offset)
+                .map_err(|_| JournalIoError::Io)?;
+            offset += bytes;
+            unsynced += bytes;
+            if unsynced >= EXTENT_ZERO_FILL_SYNC_BYTES {
+                file.sync_data().map_err(|_| JournalIoError::Io)?;
+                unsynced = 0;
+            }
+        }
+        file.set_len(u64::try_from(full).map_err(|_| JournalIoError::Corrupt)?)
+            .map_err(|_| JournalIoError::Io)?;
+    }
     let mut successor = current.successor(header.clone())?;
+    successor.data_bytes = data_bytes;
     if let Some(predecessor) = predecessor_generation {
         successor.generation = successor
             .generation

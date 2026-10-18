@@ -435,6 +435,33 @@ impl RedbStore {
         journal_media: Arc<dyn JournalMedia>,
         repair_policy: EngineRepairPolicy,
     ) -> Result<Self, StorageError> {
+        Self::open_after_format_preflight_with_repair_policy_and_extent_profile(
+            open_mode,
+            path,
+            application_commit_profile,
+            crate::journal::JournalExtentProfile::Standard,
+            test_controller,
+            changelog_port,
+            initialize_marker_witness,
+            engine_backend,
+            journal_media,
+            repair_policy,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_after_format_preflight_with_repair_policy_and_extent_profile(
+        open_mode: OpenMode,
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        extent_profile: crate::journal::JournalExtentProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        engine_backend: Option<Box<dyn redb::StorageBackend>>,
+        journal_media: Arc<dyn JournalMedia>,
+        repair_policy: EngineRepairPolicy,
+    ) -> Result<Self, StorageError> {
         if let Some(witness) = initialize_marker_witness {
             publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
@@ -446,10 +473,11 @@ impl RedbStore {
             None => EngineMedium::File(path),
         };
         let engine = OwnedEngineOpen::create(medium, refuse_repair)?;
-        Self::finish_owned_engine_open(
+        Self::finish_owned_engine_open_with_extent_profile(
             open_mode,
             path,
             application_commit_profile,
+            extent_profile,
             test_controller,
             changelog_port,
             initialize_marker_witness,
@@ -463,6 +491,31 @@ impl RedbStore {
         open_mode: OpenMode,
         path: &Path,
         application_commit_profile: RedbCommitProfile,
+        test_controller: Option<RedbTestController>,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+        initialize_marker_witness: Option<RedbDurableFormatPreflight>,
+        journal_media: Arc<dyn JournalMedia>,
+        engine: OwnedEngineOpen,
+    ) -> Result<Self, StorageError> {
+        Self::finish_owned_engine_open_with_extent_profile(
+            open_mode,
+            path,
+            application_commit_profile,
+            crate::journal::JournalExtentProfile::Standard,
+            test_controller,
+            changelog_port,
+            initialize_marker_witness,
+            journal_media,
+            engine,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_owned_engine_open_with_extent_profile(
+        open_mode: OpenMode,
+        path: &Path,
+        application_commit_profile: RedbCommitProfile,
+        extent_profile: crate::journal::JournalExtentProfile,
         test_controller: Option<RedbTestController>,
         changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
         initialize_marker_witness: Option<RedbDurableFormatPreflight>,
@@ -537,6 +590,7 @@ impl RedbStore {
                 path: path.to_path_buf(),
                 journal_media,
                 application_commit_profile,
+                extent_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(open_mode.is_private_validation()),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire)

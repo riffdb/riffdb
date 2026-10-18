@@ -349,6 +349,10 @@ pub use format_upgrade::{
 #[cfg(feature = "test-fixtures")]
 pub use hooks::{RedbCheckpointTestPoint, RedbCheckpointTestSchedule};
 pub use hooks::{RedbTestController, RedbTestEvent, RedbTestOperation, RedbTestPhase};
+pub use journal::{
+    COMPACT_EXTENT_DATA_BYTES, COMPACT_LAZY_SPARE_THRESHOLD_BYTES, COMPACT_MAX_JOURNAL_FRAME_BYTES,
+    JournalExtentProfile,
+};
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use maintenance::validate_maintenance_receipt_fixture;

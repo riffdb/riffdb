@@ -335,10 +335,32 @@ pub(crate) fn open_redb_startup_with_commit_profile(
     database_ids: &DatabaseIdCandidateSource,
     application_commit_profile: RedbCommitProfile,
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
+    open_redb_startup_with_extent_profile(
+        path,
+        inputs,
+        database_ids,
+        application_commit_profile,
+        riffdb_storage_redb::JournalExtentProfile::Standard,
+    )
+}
+
+/// Opens and validates one database under the selected application and journal extent profiles.
+pub(crate) fn open_redb_startup_with_extent_profile(
+    path: &Path,
+    inputs: StartupValidationInputs,
+    database_ids: &DatabaseIdCandidateSource,
+    application_commit_profile: RedbCommitProfile,
+    extent_profile: riffdb_storage_redb::JournalExtentProfile,
+) -> Result<CheckedRedbStartup, RedbStartupError> {
     let (publication, reader) = crate::replication_publication::ReplicationPublication::channel();
     let store = timed(StartupStage::StoreOpen, || {
         preflight_redb_startup_format(path)?;
-        open_redb_store(path, application_commit_profile, publication.clone())
+        open_redb_store(
+            path,
+            application_commit_profile,
+            extent_profile,
+            publication.clone(),
+        )
     })?;
     complete_redb_startup_with_publication(store, inputs, database_ids, publication, reader)
 }
@@ -425,22 +447,30 @@ fn complete_redb_startup_with_publication(
 fn open_redb_store(
     path: &Path,
     application_commit_profile: RedbCommitProfile,
+    extent_profile: riffdb_storage_redb::JournalExtentProfile,
     publication: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
 ) -> Result<RedbStore, RedbStartupError> {
-    RedbStore::open_with_changelog_publication_port(path, application_commit_profile, publication)
-        .map_err(RedbStartupError::from)
+    RedbStore::open_with_extent_profile(
+        path,
+        application_commit_profile,
+        extent_profile,
+        publication,
+    )
+    .map_err(RedbStartupError::from)
 }
 
 #[cfg(feature = "test-fixtures")]
 fn open_redb_store(
     path: &Path,
     application_commit_profile: RedbCommitProfile,
+    extent_profile: riffdb_storage_redb::JournalExtentProfile,
     publication: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
 ) -> Result<RedbStore, RedbStartupError> {
     let Some(marker) = std::env::var_os(EXTERNAL_KILL_BARRIER_ENV) else {
-        return RedbStore::open_with_changelog_publication_port(
+        return RedbStore::open_with_extent_profile(
             path,
             application_commit_profile,
+            extent_profile,
             publication,
         )
         .map_err(RedbStartupError::from);

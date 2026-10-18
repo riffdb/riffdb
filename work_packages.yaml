@@ -31990,11 +31990,11 @@ work_packages:
   - Changing extent_profile drops uncheckpointed suffix frames or invalidates sealed history-stub locators.
   - Lazy spare allocation permits a checkpoint rotation to proceed without a validated, generation-monotonic replacement active extent.
   closure:
-    status: ready
-    completed_at: null
-    requirements_satisfied: []
-    evidence: null
-    decision: null
+    status: complete
+    completed_at: '2026-10-18'
+    requirements_satisfied: [STO-032, REC-001, REC-002, REC-004, PERF-019]
+    evidence: compact_extent_profile_rotates_recovers_and_transitions_capacity_without_losing_history_stubs and compact_extent_profile_defers_spare_until_utilization_threshold_or_checkpoint_rotation in crates/riffdb-storage-redb/src/store_graceful_close_tests.rs; limits_configuration_validates_bounds_and_defaults_worker_threads_to_blocking_cap in crates/riffdb-server/src/config_limits.rs
+    decision: Implemented JournalExtentProfile (Standard | Compact) with 8 MiB compact extents, 4 MiB physical checkpoint rotation threshold, lossless capacity transitions between compact and standard profiles across restarts (sealing extents that hold materialized history stubs before opening the next generation at the target capacity), lazy .riffjournal.spare allocation in Compact mode (deferring spare creation until 25% utilization or on-demand checkpoint rotation), and extent_profile = "standard" | "compact" configuration in [maintenance.limits] and [databases.<alias>.limits].
     decisions_taken: []
     known_limitations: null
     follow_ups: []
