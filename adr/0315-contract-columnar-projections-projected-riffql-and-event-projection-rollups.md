@@ -24,6 +24,10 @@ obligations:
     package: WP-874
     summary: Contract-declared scalar columnar projections compile, preserve V1 bundle hashes when omitted, and admit live upon contract activation
     proof: contract_declared_columnar_projections_compile_and_admit_live_without_restart
+  - id: OBL-0315-4
+    package: WP-875
+    summary: Named RiffQL queries with source projected over event and scalar columnar projections compile, enforce freshness, execute, and generate SDK clients across Rust, Go, TypeScript, and Python
+    proof: riffql_source_projected_executes_event_and_columnar_projections_across_sdks
 review_triggers:
   - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
   - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.
