@@ -362,6 +362,40 @@ pub enum ProjectedAggregateOp {
         /// Field name to fold.
         field: String,
     },
+    /// Exact nearest-rank 50th quantile (median) of a numeric column.
+    Median {
+        /// Field name to rank.
+        field: String,
+    },
+    /// Exact nearest-rank 90th quantile of a numeric column.
+    P90 {
+        /// Field name to rank.
+        field: String,
+    },
+    /// Exact nearest-rank 95th quantile of a numeric column.
+    P95 {
+        /// Field name to rank.
+        field: String,
+    },
+    /// Exact nearest-rank 99th quantile of a numeric column.
+    P99 {
+        /// Field name to rank.
+        field: String,
+    },
+    /// Exact population standard deviation of a numeric column.
+    Stddev {
+        /// Field name to fold.
+        field: String,
+    },
+    /// Per-measure equality filter (`where field == value`) wrapping an aggregate operation.
+    Filtered {
+        /// Inner aggregate operation.
+        op: Box<ProjectedAggregateOp>,
+        /// Field name tested for equality.
+        filter_field: String,
+        /// Required value for a row to contribute to `op`.
+        filter_value: CanonicalValue,
+    },
 }
 
 /// Name-addressed group-by specification.
@@ -1064,16 +1098,21 @@ fn field_ids_to_names(
     fields
         .iter()
         .map(|field_id| {
-            entity
+            let (base_id, bucket) = riffdb_columnar::ColumnarTimeBucket::decode_key(*field_id);
+            let name = entity
                 .record()
-                .field(*field_id)
+                .field(base_id)
                 .map(|field| field.name().to_owned())
                 .ok_or_else(|| {
                     application_validation_failure(
                         ValidationCode::InvalidValue,
                         ApplicationErrorCode::QueryInvalid,
                     )
-                })
+                })?;
+            Ok(match bucket {
+                Some(b) => format!("{}({name})", b.as_str()),
+                None => name,
+            })
         })
         .collect()
 }
@@ -1160,9 +1199,9 @@ impl ResolvedBody {
     /// oracle on the plaintext. Predicates compare without returning and
     /// stay exempt per the ADR.
     fn secret_projection_fields(&self, secret_fields: &[FieldId]) -> Vec<FieldId> {
-        fn aggregate_field(op: &AggregateOp) -> Option<FieldId> {
+        fn collect_aggregate_fields(op: &AggregateOp, out: &mut Vec<FieldId>) {
             match op {
-                AggregateOp::Count => None,
+                AggregateOp::Count => {}
                 AggregateOp::Sum { field }
                 | AggregateOp::Min { field }
                 | AggregateOp::Max { field }
@@ -1170,22 +1209,47 @@ impl ResolvedBody {
                 | AggregateOp::CountDistinct { field }
                 | AggregateOp::CountDistinctPresent { field }
                 | AggregateOp::Mean { field }
+                | AggregateOp::Median { field }
+                | AggregateOp::P90 { field }
+                | AggregateOp::P95 { field }
+                | AggregateOp::P99 { field }
+                | AggregateOp::Stddev { field }
                 | AggregateOp::Any { field }
-                | AggregateOp::All { field } => Some(*field),
+                | AggregateOp::All { field } => out.push(*field),
+                AggregateOp::Filtered {
+                    op, filter_field, ..
+                } => {
+                    out.push(*filter_field);
+                    collect_aggregate_fields(op, out);
+                }
+            }
+        }
+        let mut agg_fields = Vec::new();
+        if let Some(op) = &self.aggregate {
+            collect_aggregate_fields(op, &mut agg_fields);
+        }
+        if let Some(group) = &self.group_by {
+            for op in &group.aggregates {
+                collect_aggregate_fields(op, &mut agg_fields);
             }
         }
         let mut fields: Vec<FieldId> = self
             .select
             .iter()
             .copied()
-            .chain(self.order.iter().map(|spec| spec.field))
-            .chain(self.aggregate.as_ref().and_then(aggregate_field))
+            .chain(self.order.iter().filter_map(|spec| {
+                if OrderSpec::decode_measure_index(spec.field).is_some() {
+                    None
+                } else {
+                    Some(riffdb_columnar::ColumnarTimeBucket::decode_key(spec.field).0)
+                }
+            }))
+            .chain(agg_fields)
             .chain(self.group_by.iter().flat_map(|group| {
                 group
                     .keys
                     .iter()
-                    .copied()
-                    .chain(group.aggregates.iter().filter_map(aggregate_field))
+                    .map(|key| riffdb_columnar::ColumnarTimeBucket::decode_key(*key).0)
             }))
             .filter(|field| secret_fields.binary_search(field).is_ok())
             .collect();
@@ -1264,18 +1328,6 @@ fn resolve_body_fields(
         }
     }
 
-    let mut order = Vec::with_capacity(body.order().len());
-    for spec in body.order() {
-        let field_id = resolve_field_name(entity, &spec.field)?;
-        ensure_orderable(definition, field_id)?;
-        authz_fields.push(field_id);
-        plan_shape_fields.push(field_id);
-        order.push(OrderSpec {
-            field: field_id,
-            direction: spec.direction,
-        });
-    }
-
     let aggregate = body
         .aggregate()
         .map(|op| {
@@ -1289,23 +1341,40 @@ fn resolve_body_fields(
         })
         .transpose()?;
 
+    let mut order = Vec::with_capacity(body.order().len());
     let group_by = match body.group_by() {
-        None => None,
+        None => {
+            for spec in body.order() {
+                let field_id = resolve_field_name(entity, &spec.field)?;
+                ensure_orderable(definition, field_id)?;
+                authz_fields.push(field_id);
+                plan_shape_fields.push(field_id);
+                order.push(OrderSpec {
+                    field: field_id,
+                    direction: spec.direction,
+                });
+            }
+            None
+        }
         Some(spec) => {
             let mut keys = Vec::with_capacity(spec.keys.len());
             for name in &spec.keys {
-                let field_id = resolve_field_name(entity, name)?;
-                ensure_projected(definition, field_id)?;
-                authz_fields.push(field_id);
-                plan_shape_fields.push(field_id);
-                keys.push(field_id);
-            }
-            for order_spec in &order {
-                if !keys.contains(&order_spec.field) {
-                    return Err(application_validation_failure(
-                        ValidationCode::InvalidValue,
-                        ApplicationErrorCode::QueryInvalid,
+                if let Some((bucket, field_name)) =
+                    riffdb_columnar::ColumnarTimeBucket::parse_key_expr(name)
+                {
+                    let field_id = resolve_field_name(entity, field_name)?;
+                    ensure_projected(definition, field_id)?;
+                    authz_fields.push(field_id);
+                    plan_shape_fields.push(field_id);
+                    keys.push(riffdb_columnar::ColumnarTimeBucket::bucketed_key(
+                        field_id, bucket,
                     ));
+                } else {
+                    let field_id = resolve_field_name(entity, name)?;
+                    ensure_projected(definition, field_id)?;
+                    authz_fields.push(field_id);
+                    plan_shape_fields.push(field_id);
+                    keys.push(field_id);
                 }
             }
             let mut aggregates = Vec::with_capacity(spec.aggregates.len());
@@ -1317,6 +1386,53 @@ fn resolve_body_fields(
                     &mut authz_fields,
                     &mut plan_shape_fields,
                 )?);
+            }
+            for order_spec in body.order() {
+                if let Some(idx_str) = order_spec.field.strip_prefix('#') {
+                    let measure_idx = idx_str.parse::<usize>().map_err(|_| {
+                        application_validation_failure(
+                            ValidationCode::InvalidValue,
+                            ApplicationErrorCode::QueryInvalid,
+                        )
+                    })?;
+                    if measure_idx >= aggregates.len() {
+                        return Err(application_validation_failure(
+                            ValidationCode::InvalidValue,
+                            ApplicationErrorCode::QueryInvalid,
+                        ));
+                    }
+                    order.push(OrderSpec::measure(measure_idx, order_spec.direction));
+                } else if let Some((bucket, field_name)) =
+                    riffdb_columnar::ColumnarTimeBucket::parse_key_expr(&order_spec.field)
+                {
+                    let field_id = resolve_field_name(entity, field_name)?;
+                    let encoded =
+                        riffdb_columnar::ColumnarTimeBucket::bucketed_key(field_id, bucket);
+                    if !keys.contains(&encoded) {
+                        return Err(application_validation_failure(
+                            ValidationCode::InvalidValue,
+                            ApplicationErrorCode::QueryInvalid,
+                        ));
+                    }
+                    order.push(OrderSpec {
+                        field: encoded,
+                        direction: order_spec.direction,
+                    });
+                } else {
+                    let field_id = resolve_field_name(entity, &order_spec.field)?;
+                    if !keys.contains(&field_id) {
+                        return Err(application_validation_failure(
+                            ValidationCode::InvalidValue,
+                            ApplicationErrorCode::QueryInvalid,
+                        ));
+                    }
+                    authz_fields.push(field_id);
+                    plan_shape_fields.push(field_id);
+                    order.push(OrderSpec {
+                        field: field_id,
+                        direction: order_spec.direction,
+                    });
+                }
             }
             Some(GroupBySpec { keys, aggregates })
         }
@@ -1382,6 +1498,35 @@ fn resolve_aggregate_op(
         ProjectedAggregateOp::All { field } => AggregateOp::All {
             field: resolve_column(field)?,
         },
+        ProjectedAggregateOp::Median { field } => AggregateOp::Median {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::P90 { field } => AggregateOp::P90 {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::P95 { field } => AggregateOp::P95 {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::P99 { field } => AggregateOp::P99 {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Stddev { field } => AggregateOp::Stddev {
+            field: resolve_column(field)?,
+        },
+        ProjectedAggregateOp::Filtered {
+            op,
+            filter_field,
+            filter_value,
+        } => {
+            let filter_field_id = resolve_column(filter_field)?;
+            let inner =
+                resolve_aggregate_op(entity, definition, op, authz_fields, plan_shape_fields)?;
+            AggregateOp::Filtered {
+                op: Box::new(inner),
+                filter_field: filter_field_id,
+                filter_value: filter_value.clone(),
+            }
+        }
     })
 }
 
@@ -1529,6 +1674,21 @@ fn extend_with_aggregate_shape(payload: &mut Vec<u8>, op: &AggregateOp) {
         AggregateOp::Mean { field } => (8, Some(*field)),
         AggregateOp::Any { field } => (9, Some(*field)),
         AggregateOp::All { field } => (10, Some(*field)),
+        AggregateOp::Median { field } => (11, Some(*field)),
+        AggregateOp::P90 { field } => (12, Some(*field)),
+        AggregateOp::P95 { field } => (13, Some(*field)),
+        AggregateOp::P99 { field } => (14, Some(*field)),
+        AggregateOp::Stddev { field } => (15, Some(*field)),
+        AggregateOp::Filtered {
+            op: inner,
+            filter_field,
+            ..
+        } => {
+            payload.push(16);
+            payload.extend_from_slice(&filter_field.get().to_be_bytes());
+            extend_with_aggregate_shape(payload, inner);
+            return;
+        }
     };
     payload.push(kind);
     match field {

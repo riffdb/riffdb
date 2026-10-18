@@ -11,7 +11,15 @@ amends: [ADR-0017, ADR-0087]
 supersedes: []
 requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, PRJ-008, OQ-019, OQ-020, OQ-022, OQ-045, OQ-046, OQ-047, OQ-048]
 packages: [WP-873, WP-874, WP-875]
-obligations: []
+obligations:
+  - id: OBL-0315-1
+    package: WP-873
+    summary: Event projections support min, max, and mean measures, UTC temporal bucket key expressions, and trailing key range bounds
+    proof: event_projection_supports_min_max_mean_temporal_keys_and_trailing_range_scans
+  - id: OBL-0315-2
+    package: WP-873
+    summary: Columnar queries support UTC temporal bucket group keys, quantiles, stddev, per-measure filters, measure ordering, and 4,096 distinct values
+    proof: columnar_query_supports_temporal_buckets_quantiles_measure_order_and_4096_distinct
 review_triggers:
   - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
   - Projected RiffQL queries bypass org-scope partition routing, row-level policy admission, or declared freshness fences.

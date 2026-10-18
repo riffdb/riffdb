@@ -446,6 +446,48 @@ pub(crate) fn unary_expression(
     )
 }
 
+pub(crate) fn temporal_bucket_expression(
+    callee: Spanned<String>,
+    operand: ParsedExpression,
+    outer_span: Span,
+) -> Result<ParsedExpression, SyntaxDiagnostic> {
+    let operator = match callee.value.as_str() {
+        "hour" => UnaryOperator::TemporalHour,
+        "day" => UnaryOperator::TemporalDay,
+        "week" => UnaryOperator::TemporalWeek,
+        "month" => UnaryOperator::TemporalMonth,
+        "year" => UnaryOperator::TemporalYear,
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                callee.span,
+            ));
+        }
+    };
+    unary_expression(Spanned::new(operator, callee.span), operand, outer_span)
+}
+
+pub(crate) fn named_aggregation(
+    callee: Spanned<String>,
+    expression: ParsedExpression,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<Aggregation>, SyntaxDiagnostic> {
+    let syntax = expression.into_syntax();
+    let aggregation = match callee.value.as_str() {
+        "min" => Aggregation::Min(syntax),
+        "max" => Aggregation::Max(syntax),
+        "mean" => Aggregation::Mean(syntax),
+        _ => {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                callee.span,
+            ));
+        }
+    };
+    Ok(spanned(aggregation, lo, hi))
+}
+
 pub(crate) fn binary_expression(
     left: ParsedExpression,
     operator: Spanned<BinaryOperator>,
@@ -1635,7 +1677,11 @@ impl NodeCounter {
             self.add(2, measure.span)?;
             self.name(&measure.value.name)?;
             self.add(2, measure.value.aggregation.span)?;
-            if let Aggregation::Sum(expression) = &measure.value.aggregation.value {
+            if let Aggregation::Sum(expression)
+            | Aggregation::Min(expression)
+            | Aggregation::Max(expression)
+            | Aggregation::Mean(expression) = &measure.value.aggregation.value
+            {
                 self.expression(expression)?;
             }
         }

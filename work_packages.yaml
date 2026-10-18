@@ -31843,6 +31843,15 @@ work_packages:
   human_review_triggers:
   - Existing contracts or query modules that do not declare new projection features change their canonical bundle or plan hashes.
   - Event or columnar projection rollups accept unbounded distinct/quantile state or floating-point business arithmetic.
+  closure:
+    status: complete
+    completed_at: '2026-10-17'
+    requirements_satisfied: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005, OQ-019, OQ-020, OQ-022, OQ-045, OQ-046, OQ-047, OQ-048]
+    evidence: cargo test -p riffdb-storage-redb event_projection_supports_min_max_mean_temporal_keys_and_trailing_range_scans && cargo test -p riffdb-columnar columnar_query_supports_temporal_buckets_quantiles_measure_order_and_4096_distinct && ./scripts/acceptance --wp WP-873
+    decision: Extended event-driven .riff projections with min, max, and mean measures, UTC temporal bucket key expressions (hour, day, week, month, year), and trailing single-component range bounds on ProjectionQuerySelector; extended crates/riffdb-columnar and ProjectedQueryEngine with UTC temporal bucket group keys, exact quantiles (median/p50, p90, p95, p99), population stddev, per-measure equality filters, aggregate measure group ordering, and MAX_COLUMNAR_DISTINCT_VALUES_V1 = 4,096 while preserving V1 projection plan hashes and frozen Protobuf schemas.
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: [WP-874, WP-875]
 - id: WP-874
   name: Contract-declared scalar columnar projections and live admission
   tier: guarantee

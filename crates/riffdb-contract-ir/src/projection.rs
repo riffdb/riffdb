@@ -332,6 +332,12 @@ pub enum ProjectionAggregation {
     Count = crate::format_registry::projection_aggregation::COUNT,
     /// Checked sum retaining the exact operand type.
     Sum = crate::format_registry::projection_aggregation::SUM,
+    /// Checked minimum retaining the exact operand type.
+    Min = crate::format_registry::projection_aggregation::MIN,
+    /// Checked maximum retaining the exact operand type.
+    Max = crate::format_registry::projection_aggregation::MAX,
+    /// Checked arithmetic mean retaining the exact operand type.
+    Mean = crate::format_registry::projection_aggregation::MEAN,
 }
 
 /// One declared projection measure.
@@ -374,6 +380,57 @@ impl ProjectionMeasurePlan {
         })
     }
 
+    /// Creates a minimum measure retaining its operand's exact type.
+    pub fn min(field: FieldSchema, expression: ExprId) -> Result<Self, IrValidationError> {
+        if !matches!(
+            field.value_type().tag(),
+            ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Decimal | ValueTypeTag::Money
+        ) {
+            return Err(IrValidationError::TypeMismatch {
+                context: "projection min measure",
+            });
+        }
+        Ok(Self {
+            field,
+            aggregation: ProjectionAggregation::Min,
+            expression: Some(expression),
+        })
+    }
+
+    /// Creates a maximum measure retaining its operand's exact type.
+    pub fn max(field: FieldSchema, expression: ExprId) -> Result<Self, IrValidationError> {
+        if !matches!(
+            field.value_type().tag(),
+            ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Decimal | ValueTypeTag::Money
+        ) {
+            return Err(IrValidationError::TypeMismatch {
+                context: "projection max measure",
+            });
+        }
+        Ok(Self {
+            field,
+            aggregation: ProjectionAggregation::Max,
+            expression: Some(expression),
+        })
+    }
+
+    /// Creates an arithmetic mean measure retaining its operand's exact type.
+    pub fn mean(field: FieldSchema, expression: ExprId) -> Result<Self, IrValidationError> {
+        if !matches!(
+            field.value_type().tag(),
+            ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Decimal | ValueTypeTag::Money
+        ) {
+            return Err(IrValidationError::TypeMismatch {
+                context: "projection mean measure",
+            });
+        }
+        Ok(Self {
+            field,
+            aggregation: ProjectionAggregation::Mean,
+            expression: Some(expression),
+        })
+    }
+
     /// Stable result field.
     #[must_use]
     pub const fn field(&self) -> &FieldSchema {
@@ -386,7 +443,7 @@ impl ProjectionMeasurePlan {
         self.aggregation
     }
 
-    /// Sum operand, absent for count.
+    /// Measure operand, absent for count.
     #[must_use]
     pub const fn expression(&self) -> Option<ExprId> {
         self.expression

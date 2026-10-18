@@ -124,6 +124,14 @@ impl<'a> ExpressionLowerer<'a> {
                                     SourceUnaryOperator::Negate,
                                     ValueTypeTag::I64 | ValueTypeTag::Decimal | ValueTypeTag::Money
                                 )
+                                | (SourceUnaryOperator::TemporalHour, ValueTypeTag::Timestamp)
+                                | (
+                                    SourceUnaryOperator::TemporalDay
+                                        | SourceUnaryOperator::TemporalWeek
+                                        | SourceUnaryOperator::TemporalMonth
+                                        | SourceUnaryOperator::TemporalYear,
+                                    ValueTypeTag::Timestamp | ValueTypeTag::Date
+                                )
                         )
                     })
                 });
@@ -136,6 +144,22 @@ impl<'a> ExpressionLowerer<'a> {
                         if matches!(
                             operand_type.tag(),
                             ValueTypeTag::I64 | ValueTypeTag::Decimal | ValueTypeTag::Money
+                        ) =>
+                    {
+                        operand_type.clone()
+                    }
+                    SourceUnaryOperator::TemporalHour
+                        if operand_type.tag() == ValueTypeTag::Timestamp =>
+                    {
+                        operand_type.clone()
+                    }
+                    SourceUnaryOperator::TemporalDay
+                    | SourceUnaryOperator::TemporalWeek
+                    | SourceUnaryOperator::TemporalMonth
+                    | SourceUnaryOperator::TemporalYear
+                        if matches!(
+                            operand_type.tag(),
+                            ValueTypeTag::Timestamp | ValueTypeTag::Date
                         ) =>
                     {
                         operand_type.clone()
@@ -252,6 +276,22 @@ impl<'a> ExpressionLowerer<'a> {
                         if matches!(
                             operand_type.tag(),
                             ValueTypeTag::I64 | ValueTypeTag::Decimal | ValueTypeTag::Money
+                        ) =>
+                    {
+                        operand_type
+                    }
+                    SourceUnaryOperator::TemporalHour
+                        if operand_type.tag() == ValueTypeTag::Timestamp =>
+                    {
+                        operand_type
+                    }
+                    SourceUnaryOperator::TemporalDay
+                    | SourceUnaryOperator::TemporalWeek
+                    | SourceUnaryOperator::TemporalMonth
+                    | SourceUnaryOperator::TemporalYear
+                        if matches!(
+                            operand_type.tag(),
+                            ValueTypeTag::Timestamp | ValueTypeTag::Date
                         ) =>
                     {
                         operand_type
@@ -832,6 +872,11 @@ fn map_unary(operator: SourceUnaryOperator) -> IrUnaryOperator {
     match operator {
         SourceUnaryOperator::Not => IrUnaryOperator::Not,
         SourceUnaryOperator::Negate => IrUnaryOperator::Negate,
+        SourceUnaryOperator::TemporalHour => IrUnaryOperator::TemporalHour,
+        SourceUnaryOperator::TemporalDay => IrUnaryOperator::TemporalDay,
+        SourceUnaryOperator::TemporalWeek => IrUnaryOperator::TemporalWeek,
+        SourceUnaryOperator::TemporalMonth => IrUnaryOperator::TemporalMonth,
+        SourceUnaryOperator::TemporalYear => IrUnaryOperator::TemporalYear,
     }
 }
 

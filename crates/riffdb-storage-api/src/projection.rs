@@ -1162,11 +1162,168 @@ fn projection_snapshot_observation_semantic_bytes(
     }
 }
 
+/// One inclusive or exclusive bound on the trailing projection group component.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionComponentBound {
+    /// Includes keys whose trailing component equals the bound.
+    Included(CanonicalValue),
+    /// Excludes keys whose trailing component equals the bound.
+    Excluded(CanonicalValue),
+}
+
+impl ProjectionComponentBound {
+    /// Borrows the canonical bound scalar value.
+    #[must_use]
+    pub const fn value(&self) -> &CanonicalValue {
+        match self {
+            Self::Included(value) | Self::Excluded(value) => value,
+        }
+    }
+}
+
+/// Optional lower and upper bounds on the single component immediately after
+/// `leading_components`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectionComponentRange {
+    lower: Option<ProjectionComponentBound>,
+    upper: Option<ProjectionComponentBound>,
+}
+
+impl ProjectionComponentRange {
+    /// Constructs a checked trailing component range with at least one bound.
+    pub fn new(
+        lower: Option<ProjectionComponentBound>,
+        upper: Option<ProjectionComponentBound>,
+    ) -> Result<Self, StorageValueError> {
+        if lower.is_none() && upper.is_none() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if let (Some(lower), Some(upper)) = (&lower, &upper) {
+            let ordering = compare_projection_scalar(lower.value(), upper.value())
+                .ok_or(StorageValueError::InvalidShape)?;
+            if ordering.is_gt()
+                || (ordering.is_eq()
+                    && !matches!(
+                        (lower, upper),
+                        (
+                            ProjectionComponentBound::Included(_),
+                            ProjectionComponentBound::Included(_)
+                        )
+                    ))
+            {
+                return Err(StorageValueError::InvalidShape);
+            }
+        }
+        Ok(Self { lower, upper })
+    }
+
+    /// Returns the optional lower bound.
+    #[must_use]
+    pub const fn lower(&self) -> Option<&ProjectionComponentBound> {
+        self.lower.as_ref()
+    }
+
+    /// Returns the optional upper bound.
+    #[must_use]
+    pub const fn upper(&self) -> Option<&ProjectionComponentBound> {
+        self.upper.as_ref()
+    }
+
+    /// Returns whether a component value satisfies this range.
+    #[must_use]
+    pub fn matches(&self, value: &CanonicalValue) -> bool {
+        if let Some(lower) = &self.lower {
+            let Some(ordering) = compare_projection_scalar(value, lower.value()) else {
+                return false;
+            };
+            let matches_lower = match lower {
+                ProjectionComponentBound::Included(_) => ordering.is_ge(),
+                ProjectionComponentBound::Excluded(_) => ordering.is_gt(),
+            };
+            if !matches_lower {
+                return false;
+            }
+        }
+        if let Some(upper) = &self.upper {
+            let Some(ordering) = compare_projection_scalar(value, upper.value()) else {
+                return false;
+            };
+            let matches_upper = match upper {
+                ProjectionComponentBound::Included(_) => ordering.is_le(),
+                ProjectionComponentBound::Excluded(_) => ordering.is_lt(),
+            };
+            if !matches_upper {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn compare_projection_scalar(
+    left: &CanonicalValue,
+    right: &CanonicalValue,
+) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (CanonicalValue::Bool(left), CanonicalValue::Bool(right)) => Some(left.cmp(right)),
+        (CanonicalValue::I64(left), CanonicalValue::I64(right)) => Some(left.cmp(right)),
+        (CanonicalValue::U64(left), CanonicalValue::U64(right)) => Some(left.cmp(right)),
+        (CanonicalValue::Decimal(left), CanonicalValue::Decimal(right)) => {
+            if left.spec() == right.spec() {
+                Some(left.coefficient().cmp(&right.coefficient()))
+            } else {
+                None
+            }
+        }
+        (CanonicalValue::Money(left), CanonicalValue::Money(right)) => {
+            if left.currency() == right.currency() && left.amount().spec() == right.amount().spec()
+            {
+                Some(
+                    left.amount()
+                        .coefficient()
+                        .cmp(&right.amount().coefficient()),
+                )
+            } else {
+                None
+            }
+        }
+        (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+            Some(left.as_str().cmp(right.as_str()))
+        }
+        (CanonicalValue::Bytes(left), CanonicalValue::Bytes(right)) => {
+            Some(left.as_bytes().cmp(right.as_bytes()))
+        }
+        (CanonicalValue::Timestamp(left), CanonicalValue::Timestamp(right)) => {
+            Some(left.cmp(right))
+        }
+        (CanonicalValue::Date(left), CanonicalValue::Date(right)) => Some(left.cmp(right)),
+        (CanonicalValue::Uuid(left), CanonicalValue::Uuid(right)) => Some(left.cmp(right)),
+        (
+            CanonicalValue::Enum {
+                type_id: left_type,
+                variant_id: left_variant,
+            },
+            CanonicalValue::Enum {
+                type_id: right_type,
+                variant_id: right_variant,
+            },
+        ) => {
+            if left_type == right_type {
+                Some(left_variant.cmp(right_variant))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Generation-neutral checked selector for a complete or prefix query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectionQuerySelector {
     schema: CheckedProjectionSchema,
     leading_components: Vec<CanonicalValue>,
+    trailing_range: Option<ProjectionComponentRange>,
 }
 
 impl ProjectionQuerySelector {
@@ -1179,6 +1336,33 @@ impl ProjectionQuerySelector {
         Ok(Self {
             schema,
             leading_components,
+            trailing_range: None,
+        })
+    }
+
+    /// Validates leading components plus a single trailing component range bound.
+    pub fn with_trailing_range(
+        schema: CheckedProjectionSchema,
+        leading_components: Vec<CanonicalValue>,
+        trailing_range: ProjectionComponentRange,
+    ) -> Result<Self, StorageValueError> {
+        if leading_components.len() >= schema.group_component_count() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        schema.group_prefix(ProjectionGeneration::first(), &leading_components)?;
+        for bound in [trailing_range.lower(), trailing_range.upper()]
+            .into_iter()
+            .flatten()
+        {
+            let mut probe = Vec::with_capacity(leading_components.len() + 1);
+            probe.extend_from_slice(&leading_components);
+            probe.push(bound.value().clone());
+            schema.group_prefix(ProjectionGeneration::first(), &probe)?;
+        }
+        Ok(Self {
+            schema,
+            leading_components,
+            trailing_range: Some(trailing_range),
         })
     }
 
@@ -1198,6 +1382,24 @@ impl ProjectionQuerySelector {
     #[must_use]
     pub fn leading_components(&self) -> &[CanonicalValue] {
         &self.leading_components
+    }
+
+    /// Returns the optional single-component trailing range bound.
+    #[must_use]
+    pub const fn trailing_range(&self) -> Option<&ProjectionComponentRange> {
+        self.trailing_range.as_ref()
+    }
+
+    /// Returns whether a complete group key satisfies the optional trailing range bound.
+    #[must_use]
+    pub fn matches_trailing_component(&self, key: &ProjectionGroupKey) -> bool {
+        match &self.trailing_range {
+            None => true,
+            Some(range) => key
+                .components()
+                .get(self.leading_components.len())
+                .is_some_and(|value| range.matches(value)),
+        }
     }
 }
 
@@ -1440,6 +1642,7 @@ impl ProjectionQueryResult {
             if row.identity() != request.selector.identity()
                 || row.generation() != generation
                 || !row.key().as_bytes().starts_with(expected_prefix.as_bytes())
+                || !request.selector.matches_trailing_component(row.key())
                 || !sequence_at_or_before(row.last_changed_sequence(), frontier)
             {
                 return Err(StorageValueError::IdentityMismatch);

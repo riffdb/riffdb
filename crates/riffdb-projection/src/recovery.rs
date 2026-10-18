@@ -21,7 +21,7 @@ use riffdb_types::{
 
 use crate::{
     EvaluatedProjectionCommit, ProjectionController, ProjectionCoreErrorKind,
-    ProjectionEvaluationError, ProjectionEvaluationErrorKind, ProjectionHooks, add_measure_records,
+    ProjectionEvaluationError, ProjectionEvaluationErrorKind, ProjectionHooks,
     evaluate_projection_commit, map_storage_error, map_storage_value_error,
 };
 
@@ -418,7 +418,7 @@ where
                 None => (ProjectionRowPrior::Absent, delta.clone()),
                 Some((prior_measures, last_changed)) => (
                     ProjectionRowPrior::Present(last_changed),
-                    add_measure_records(&prior_measures, delta)?,
+                    evaluated.combine_with_prior(key, &prior_measures)?,
                 ),
             };
             updates.push(
@@ -448,7 +448,7 @@ where
             if let Some(delta) = evaluated.grouped_deltas().get(key) {
                 let measures = state.as_ref().map_or_else(
                     || Ok(delta.clone()),
-                    |(current, _)| add_measure_records(current, delta),
+                    |(current, _)| evaluated.combine_with_prior(key, current),
                 )?;
                 state = Some((measures, commit.commit_sequence()));
             }

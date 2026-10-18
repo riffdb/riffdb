@@ -8,7 +8,7 @@ use riffdb_catalog::{
     ProjectionEventMaterializationErrorKind, ProjectionEventMaterializationView,
     ResolvedProjectionPlan,
 };
-use riffdb_contract_ir::ProjectionAggregation;
+use riffdb_contract_ir::{ProjectionAggregation, ProjectionMeasurePlan};
 use riffdb_invariant::{EvaluationError, ExpressionEvaluator, ExpressionValueSource};
 use riffdb_storage_api::{
     CheckedProjectionSchema, ProjectionApplyRequestV1, ProjectionApplyRowObservation,
@@ -118,7 +118,10 @@ pub struct EvaluatedProjectionCommit {
     schema: CheckedProjectionSchema,
     generation: ProjectionGeneration,
     sequence: CommitSequence,
+    measures: Vec<ProjectionMeasurePlan>,
     grouped_deltas: BTreeMap<ProjectionGroupKey, CanonicalRecord>,
+    grouped_event_counts: BTreeMap<ProjectionGroupKey, u64>,
+    grouped_mean_totals: BTreeMap<(ProjectionGroupKey, FieldId), i128>,
 }
 
 impl EvaluatedProjectionCommit {
@@ -152,6 +155,102 @@ impl EvaluatedProjectionCommit {
 
     pub(crate) fn grouped_deltas(&self) -> &BTreeMap<ProjectionGroupKey, CanonicalRecord> {
         &self.grouped_deltas
+    }
+
+    pub(crate) fn combine_with_prior(
+        &self,
+        key: &ProjectionGroupKey,
+        prior_measures: &CanonicalRecord,
+    ) -> Result<CanonicalRecord, ProjectionEvaluationError> {
+        let Some(delta) = self.grouped_deltas.get(key) else {
+            return Err(ProjectionEvaluationError::new(
+                ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+            ));
+        };
+        if prior_measures.fields().len() != delta.fields().len()
+            || prior_measures.fields().len() != self.measures.len()
+        {
+            return Err(ProjectionEvaluationError::new(
+                ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+            ));
+        }
+        let prior_count = self.prior_event_count(prior_measures)?;
+        let delta_count = self.grouped_event_counts.get(key).copied().unwrap_or(1);
+        let mut fields = Vec::with_capacity(self.measures.len());
+        for ((measure, (current_id, current)), (delta_id, delta_val)) in self
+            .measures
+            .iter()
+            .zip(prior_measures.fields())
+            .zip(delta.fields())
+        {
+            if current_id != delta_id || *current_id != measure.field().id() {
+                return Err(ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                ));
+            }
+            let combined = match measure.aggregation() {
+                ProjectionAggregation::Count | ProjectionAggregation::Sum => {
+                    checked_add(current, delta_val)?
+                }
+                ProjectionAggregation::Min => checked_min(current, delta_val)?,
+                ProjectionAggregation::Max => checked_max(current, delta_val)?,
+                ProjectionAggregation::Mean => {
+                    if prior_count == 0 {
+                        delta_val.clone()
+                    } else {
+                        let prior_total = value_to_i128(current)?
+                            .checked_mul(i128::from(prior_count))
+                            .ok_or_else(|| {
+                                ProjectionEvaluationError::new(
+                                    ProjectionEvaluationErrorKind::ArithmeticOverflow,
+                                )
+                            })?;
+                        let delta_total = self
+                            .grouped_mean_totals
+                            .get(&(key.clone(), *current_id))
+                            .copied()
+                            .ok_or_else(|| {
+                                ProjectionEvaluationError::new(
+                                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                                )
+                            })?;
+                        let total = prior_total.checked_add(delta_total).ok_or_else(|| {
+                            ProjectionEvaluationError::new(
+                                ProjectionEvaluationErrorKind::ArithmeticOverflow,
+                            )
+                        })?;
+                        let total_count =
+                            prior_count.checked_add(delta_count).ok_or_else(|| {
+                                ProjectionEvaluationError::new(
+                                    ProjectionEvaluationErrorKind::ArithmeticOverflow,
+                                )
+                            })?;
+                        i128_to_mean_value(total, total_count, current)?
+                    }
+                }
+            };
+            fields.push((*current_id, combined));
+        }
+        CanonicalRecord::new(fields).map_err(|_| {
+            ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ProjectionStateIntegrity)
+        })
+    }
+
+    fn prior_event_count(
+        &self,
+        prior_measures: &CanonicalRecord,
+    ) -> Result<u64, ProjectionEvaluationError> {
+        for (measure, (_, value)) in self.measures.iter().zip(prior_measures.fields()) {
+            if measure.aggregation() == ProjectionAggregation::Count {
+                return match value {
+                    CanonicalValue::U64(count) => Ok(*count),
+                    _ => Err(ProjectionEvaluationError::new(
+                        ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                    )),
+                };
+            }
+        }
+        Ok(1)
     }
 }
 
@@ -190,7 +289,10 @@ pub fn evaluate_projection_commit(
     }
 
     let transaction_date = transaction_date(commit.logical_time())?;
-    let mut grouped_deltas = BTreeMap::new();
+    let mut grouped_deltas: BTreeMap<ProjectionGroupKey, CanonicalRecord> = BTreeMap::new();
+    let mut grouped_event_counts: BTreeMap<ProjectionGroupKey, u64> = BTreeMap::new();
+    let mut grouped_mean_totals: BTreeMap<(ProjectionGroupKey, FieldId), i128> = BTreeMap::new();
+    let measures = plan.measures().to_vec();
     // Every event materialized below reports this same resolved plan, so the
     // expression arena is identical for the whole pass and the memo cache is
     // allocated once rather than once per event. Each batch clears the entries
@@ -226,13 +328,34 @@ pub fn evaluate_projection_commit(
         };
 
         if let Some(current) = grouped_deltas.get_mut(&key) {
-            *current = add_measure_records(current, &delta)?;
+            let count = grouped_event_counts.get_mut(&key).ok_or_else(|| {
+                ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                )
+            })?;
+            *count = count.checked_add(1).ok_or_else(|| {
+                ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+            })?;
+            *current = combine_commit_measure_records(
+                &key,
+                &measures,
+                current,
+                &delta,
+                *count,
+                &mut grouped_mean_totals,
+            )?;
         } else {
             if grouped_deltas.len() == MAX_PROJECTION_ROW_UPDATES {
                 return Err(ProjectionEvaluationError::new(
                     ProjectionEvaluationErrorKind::HardLimitExceeded,
                 ));
             }
+            for (measure, (field_id, value)) in measures.iter().zip(delta.fields()) {
+                if measure.aggregation() == ProjectionAggregation::Mean {
+                    grouped_mean_totals.insert((key.clone(), *field_id), value_to_i128(value)?);
+                }
+            }
+            grouped_event_counts.insert(key.clone(), 1);
             grouped_deltas.insert(key, delta);
         }
     }
@@ -241,7 +364,10 @@ pub fn evaluate_projection_commit(
         schema,
         generation,
         sequence: commit.commit_sequence(),
+        measures,
         grouped_deltas,
+        grouped_event_counts,
+        grouped_mean_totals,
     })
 }
 
@@ -270,7 +396,7 @@ pub fn prepare_projection_apply(
             ProjectionApplyRowObservation::Absent(_) => (ProjectionRowPrior::Absent, delta.clone()),
             ProjectionApplyRowObservation::Present(row) => (
                 ProjectionRowPrior::Present(row.last_changed_sequence()),
-                add_measure_records(row.measures(), delta)?,
+                evaluated.combine_with_prior(key, row.measures())?,
             ),
         };
         updates.push(
@@ -338,7 +464,10 @@ fn evaluate_materialized_event(
         .map(|measure| {
             let value = match measure.aggregation() {
                 ProjectionAggregation::Count => CanonicalValue::U64(1),
-                ProjectionAggregation::Sum => batch
+                ProjectionAggregation::Sum
+                | ProjectionAggregation::Min
+                | ProjectionAggregation::Max
+                | ProjectionAggregation::Mean => batch
                     .evaluate(measure.expression().ok_or_else(|| {
                         ProjectionEvaluationError::new(
                             ProjectionEvaluationErrorKind::PlanOrSchemaUnavailable,
@@ -358,28 +487,54 @@ fn evaluate_materialized_event(
     Ok(Some((key, measures)))
 }
 
-pub(crate) fn add_measure_records(
+fn combine_commit_measure_records(
+    key: &ProjectionGroupKey,
+    measures: &[ProjectionMeasurePlan],
     current: &CanonicalRecord,
     delta: &CanonicalRecord,
+    event_count: u64,
+    mean_totals: &mut BTreeMap<(ProjectionGroupKey, FieldId), i128>,
 ) -> Result<CanonicalRecord, ProjectionEvaluationError> {
-    if current.fields().len() != delta.fields().len() {
+    if current.fields().len() != delta.fields().len() || current.fields().len() != measures.len() {
         return Err(ProjectionEvaluationError::new(
             ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
         ));
     }
-    let fields = current
-        .fields()
-        .iter()
-        .zip(delta.fields())
-        .map(|((current_id, current), (delta_id, delta))| {
-            if current_id != delta_id {
-                return Err(ProjectionEvaluationError::new(
-                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
-                ));
+    let mut fields = Vec::with_capacity(measures.len());
+    for ((measure, (current_id, current_val)), (delta_id, delta_val)) in
+        measures.iter().zip(current.fields()).zip(delta.fields())
+    {
+        if current_id != delta_id || *current_id != measure.field().id() {
+            return Err(ProjectionEvaluationError::new(
+                ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+            ));
+        }
+        let next = match measure.aggregation() {
+            ProjectionAggregation::Count | ProjectionAggregation::Sum => {
+                checked_add(current_val, delta_val)?
             }
-            Ok((*current_id, checked_add(current, delta)?))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            ProjectionAggregation::Min => checked_min(current_val, delta_val)?,
+            ProjectionAggregation::Max => checked_max(current_val, delta_val)?,
+            ProjectionAggregation::Mean => {
+                let total = mean_totals
+                    .get_mut(&(key.clone(), *current_id))
+                    .ok_or_else(|| {
+                        ProjectionEvaluationError::new(
+                            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                        )
+                    })?;
+                *total = total
+                    .checked_add(value_to_i128(delta_val)?)
+                    .ok_or_else(|| {
+                        ProjectionEvaluationError::new(
+                            ProjectionEvaluationErrorKind::ArithmeticOverflow,
+                        )
+                    })?;
+                i128_to_mean_value(*total, event_count, current_val)?
+            }
+        };
+        fields.push((*current_id, next));
+    }
     CanonicalRecord::new(fields).map_err(|_| {
         ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ProjectionStateIntegrity)
     })
@@ -412,6 +567,159 @@ fn checked_add(
     value.ok_or_else(|| {
         ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
     })
+}
+
+fn checked_min(
+    current: &CanonicalValue,
+    delta: &CanonicalValue,
+) -> Result<CanonicalValue, ProjectionEvaluationError> {
+    match (current, delta) {
+        (CanonicalValue::I64(current), CanonicalValue::I64(delta)) => {
+            Ok(CanonicalValue::I64((*current).min(*delta)))
+        }
+        (CanonicalValue::U64(current), CanonicalValue::U64(delta)) => {
+            Ok(CanonicalValue::U64((*current).min(*delta)))
+        }
+        (CanonicalValue::Decimal(current), CanonicalValue::Decimal(delta))
+            if current.spec() == delta.spec() =>
+        {
+            riffdb_types::Decimal::new(
+                current.spec(),
+                current.coefficient().min(delta.coefficient()),
+            )
+            .map(CanonicalValue::Decimal)
+            .map_err(|_| {
+                ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                )
+            })
+        }
+        (CanonicalValue::Money(current), CanonicalValue::Money(delta))
+            if current.currency() == delta.currency()
+                && current.amount().spec() == delta.amount().spec() =>
+        {
+            let amount = riffdb_types::Decimal::new(
+                current.amount().spec(),
+                current
+                    .amount()
+                    .coefficient()
+                    .min(delta.amount().coefficient()),
+            )
+            .map_err(|_| {
+                ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                )
+            })?;
+            Ok(CanonicalValue::Money(riffdb_types::Money::new(
+                current.currency(),
+                amount,
+            )))
+        }
+        _ => Err(ProjectionEvaluationError::new(
+            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+        )),
+    }
+}
+
+fn checked_max(
+    current: &CanonicalValue,
+    delta: &CanonicalValue,
+) -> Result<CanonicalValue, ProjectionEvaluationError> {
+    match (current, delta) {
+        (CanonicalValue::I64(current), CanonicalValue::I64(delta)) => {
+            Ok(CanonicalValue::I64((*current).max(*delta)))
+        }
+        (CanonicalValue::U64(current), CanonicalValue::U64(delta)) => {
+            Ok(CanonicalValue::U64((*current).max(*delta)))
+        }
+        (CanonicalValue::Decimal(current), CanonicalValue::Decimal(delta))
+            if current.spec() == delta.spec() =>
+        {
+            riffdb_types::Decimal::new(
+                current.spec(),
+                current.coefficient().max(delta.coefficient()),
+            )
+            .map(CanonicalValue::Decimal)
+            .map_err(|_| {
+                ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                )
+            })
+        }
+        (CanonicalValue::Money(current), CanonicalValue::Money(delta))
+            if current.currency() == delta.currency()
+                && current.amount().spec() == delta.amount().spec() =>
+        {
+            let amount = riffdb_types::Decimal::new(
+                current.amount().spec(),
+                current
+                    .amount()
+                    .coefficient()
+                    .max(delta.amount().coefficient()),
+            )
+            .map_err(|_| {
+                ProjectionEvaluationError::new(
+                    ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+                )
+            })?;
+            Ok(CanonicalValue::Money(riffdb_types::Money::new(
+                current.currency(),
+                amount,
+            )))
+        }
+        _ => Err(ProjectionEvaluationError::new(
+            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+        )),
+    }
+}
+
+fn value_to_i128(value: &CanonicalValue) -> Result<i128, ProjectionEvaluationError> {
+    match value {
+        CanonicalValue::I64(v) => Ok(i128::from(*v)),
+        CanonicalValue::U64(v) => Ok(i128::from(*v)),
+        CanonicalValue::Decimal(v) => Ok(v.coefficient()),
+        CanonicalValue::Money(v) => Ok(v.amount().coefficient()),
+        _ => Err(ProjectionEvaluationError::new(
+            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+        )),
+    }
+}
+
+fn i128_to_mean_value(
+    total: i128,
+    count: u64,
+    prototype: &CanonicalValue,
+) -> Result<CanonicalValue, ProjectionEvaluationError> {
+    let divisor = i128::from(count);
+    if divisor <= 0 {
+        return Err(ProjectionEvaluationError::new(
+            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+        ));
+    }
+    let mean = total.checked_div(divisor).ok_or_else(|| {
+        ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+    })?;
+    match prototype {
+        CanonicalValue::I64(_) => i64::try_from(mean).map(CanonicalValue::I64).map_err(|_| {
+            ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+        }),
+        CanonicalValue::U64(_) => u64::try_from(mean).map(CanonicalValue::U64).map_err(|_| {
+            ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+        }),
+        CanonicalValue::Decimal(d) => riffdb_types::Decimal::new(d.spec(), mean)
+            .map(CanonicalValue::Decimal)
+            .map_err(|_| {
+                ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+            }),
+        CanonicalValue::Money(m) => riffdb_types::Decimal::new(m.amount().spec(), mean)
+            .map(|amount| CanonicalValue::Money(riffdb_types::Money::new(m.currency(), amount)))
+            .map_err(|_| {
+                ProjectionEvaluationError::new(ProjectionEvaluationErrorKind::ArithmeticOverflow)
+            }),
+        _ => Err(ProjectionEvaluationError::new(
+            ProjectionEvaluationErrorKind::ProjectionStateIntegrity,
+        )),
+    }
 }
 
 fn transaction_date(logical_time: LogicalTime) -> Result<Date, ProjectionEvaluationError> {

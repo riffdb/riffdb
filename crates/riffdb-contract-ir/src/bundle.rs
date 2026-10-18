@@ -5656,6 +5656,11 @@ fn decode_unary_operator(tag: u8) -> Result<UnaryOperator, IrValidationError> {
     match tag {
         unary_tag::NOT => Ok(UnaryOperator::Not),
         unary_tag::NEGATE => Ok(UnaryOperator::Negate),
+        unary_tag::TEMPORAL_HOUR => Ok(UnaryOperator::TemporalHour),
+        unary_tag::TEMPORAL_DAY => Ok(UnaryOperator::TemporalDay),
+        unary_tag::TEMPORAL_WEEK => Ok(UnaryOperator::TemporalWeek),
+        unary_tag::TEMPORAL_MONTH => Ok(UnaryOperator::TemporalMonth),
+        unary_tag::TEMPORAL_YEAR => Ok(UnaryOperator::TemporalYear),
         tag => Err(IrValidationError::UnknownTag {
             kind: "unary operator",
             tag,
@@ -6826,11 +6831,26 @@ fn decode_projection_measure(
         (ProjectionAggregation::Sum, Some(expression)) => {
             ProjectionMeasurePlan::sum(field, expression)
         }
+        (ProjectionAggregation::Min, Some(expression)) => {
+            ProjectionMeasurePlan::min(field, expression)
+        }
+        (ProjectionAggregation::Max, Some(expression)) => {
+            ProjectionMeasurePlan::max(field, expression)
+        }
+        (ProjectionAggregation::Mean, Some(expression)) => {
+            ProjectionMeasurePlan::mean(field, expression)
+        }
         (ProjectionAggregation::Count, Some(_)) => Err(IrValidationError::InvalidProjection {
             reason: "count measure carries an expression",
         }),
-        (ProjectionAggregation::Sum, None) => Err(IrValidationError::InvalidProjection {
-            reason: "sum measure omits its expression",
+        (
+            ProjectionAggregation::Sum
+            | ProjectionAggregation::Min
+            | ProjectionAggregation::Max
+            | ProjectionAggregation::Mean,
+            None,
+        ) => Err(IrValidationError::InvalidProjection {
+            reason: "measure omits its expression",
         }),
     }
 }
@@ -6839,12 +6859,18 @@ fn decode_projection_measure(
 enum ProjectionAggregation {
     Count,
     Sum,
+    Min,
+    Max,
+    Mean,
 }
 
 fn decode_projection_aggregation(tag: u8) -> Result<ProjectionAggregation, IrValidationError> {
     match tag {
         aggregation_tag::COUNT => Ok(ProjectionAggregation::Count),
         aggregation_tag::SUM => Ok(ProjectionAggregation::Sum),
+        aggregation_tag::MIN => Ok(ProjectionAggregation::Min),
+        aggregation_tag::MAX => Ok(ProjectionAggregation::Max),
+        aggregation_tag::MEAN => Ok(ProjectionAggregation::Mean),
         tag => Err(IrValidationError::UnknownTag {
             kind: "projection aggregation",
             tag,

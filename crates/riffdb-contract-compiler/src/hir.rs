@@ -671,6 +671,9 @@ pub(crate) struct HirCollectionExpansion {
 pub(crate) enum HirMeasureKind {
     Count,
     Sum(HirExpressionRoot),
+    Min(HirExpressionRoot),
+    Max(HirExpressionRoot),
+    Mean(HirExpressionRoot),
 }
 
 #[derive(Clone, Debug)]
@@ -4353,6 +4356,27 @@ fn lower_projections(
                 let kind = match &measure.value.aggregation.value {
                     Aggregation::Count => HirMeasureKind::Count,
                     Aggregation::Sum(expression) => HirMeasureKind::Sum(lower_root(
+                        &mut resolver,
+                        expression,
+                        None,
+                        false,
+                        diagnostics,
+                    )?),
+                    Aggregation::Min(expression) => HirMeasureKind::Min(lower_root(
+                        &mut resolver,
+                        expression,
+                        None,
+                        false,
+                        diagnostics,
+                    )?),
+                    Aggregation::Max(expression) => HirMeasureKind::Max(lower_root(
+                        &mut resolver,
+                        expression,
+                        None,
+                        false,
+                        diagnostics,
+                    )?),
+                    Aggregation::Mean(expression) => HirMeasureKind::Mean(lower_root(
                         &mut resolver,
                         expression,
                         None,

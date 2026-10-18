@@ -115,6 +115,11 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 |---:|---|
 | `0x01` | not |
 | `0x02` | negate |
+| `0x03` | hour |
+| `0x04` | day |
+| `0x05` | week |
+| `0x06` | month |
+| `0x07` | year |
 
 ### Binary operator
 
@@ -237,6 +242,9 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 |---:|---|
 | `0x01` | count |
 | `0x02` | sum |
+| `0x03` | min |
+| `0x04` | max |
+| `0x05` | mean |
 
 ### Projection frontier
 
@@ -439,6 +447,9 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 |---:|---|---|
 | `0x01` | count | `expression_present`: Boolean = 0x00 |
 | `0x02` | sum | `expression_present`: Boolean = 0x01; `expression`: ExprId as u32 |
+| `0x03` | min | `expression_present`: Boolean = 0x01; `expression`: ExprId as u32 |
+| `0x04` | max | `expression_present`: Boolean = 0x01; `expression`: ExprId as u32 |
+| `0x05` | mean | `expression_present`: Boolean = 0x01; `expression`: ExprId as u32 |
 
 ### SchemaArtifactKey
 

@@ -924,4 +924,299 @@ contract ProjectionEvaluation version 1 {
                 .unwrap();
         }
     }
+
+    // req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PRJ-005
+    #[test]
+    fn event_projection_supports_min_max_mean_temporal_keys_and_trailing_range_scans() {
+        use riffdb_storage_api::{ProjectionComponentBound, ProjectionComponentRange};
+
+        const TRACE_ROLLUP_CONTRACT: &str = r#"
+contract TraceRollupContract version 1 {
+  entity Trace {
+    key (org_id: i64, trace_id: i64)
+    field seen: u64
+  }
+
+  event SpanRecorded {
+    org_id: i64
+    recorded_at: timestamp
+    latency_ms: i64
+  }
+
+  aggregate Traces {
+    root Trace
+    partition_by org_id
+    conflict_key (org_id, trace_id)
+  }
+
+  command RecordSpan {
+    input request_key: string<128>
+    input org_id: i64
+    input trace_id: i64
+    input recorded_at: timestamp
+    input latency_ms: i64
+    idempotency_key request_key
+    create Trace(org_id, trace_id) as trace else Exists { trace_id: trace_id }
+    set trace.seen = 1
+    emit SpanRecorded { org_id: org_id, recorded_at: recorded_at, latency_ms: latency_ms }
+    return Recorded { trace: trace }
+  }
+
+  projection HourlyLatency {
+    source event SpanRecorded
+    key (org_id, day(recorded_at), hour(recorded_at))
+    measure span_count = count()
+    measure total_latency = sum(latency_ms)
+    measure min_latency = min(latency_ms)
+    measure max_latency = max(latency_ms)
+    measure mean_latency = mean(latency_ms)
+    frontier transactionally_ordered
+  }
+}
+"#;
+
+        let compiled = compile_contract_source(TRACE_ROLLUP_CONTRACT).expect("rollup contract");
+        let bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("validated rollup bundle");
+        let stored = bundle.to_stored().expect("stored rollup bundle");
+        let repository = ProjectionCatalogRepository {
+            active: ActiveCatalogPointerV1::from_bundle(&stored),
+            bundle: stored,
+        };
+        let active = ActiveCatalogSnapshot::read(&repository)
+            .expect("catalog read")
+            .expect("active catalog");
+        let projection = bundle
+            .bundle()
+            .projections()
+            .first()
+            .expect("projection plan");
+        let identity = ProjectionIdentity::new(
+            bundle.lineage().clone(),
+            projection.projection_id(),
+            projection.plan_hash(),
+        );
+        let resolved = active
+            .resolve_projection(&identity)
+            .expect("resolved projection");
+        let schema = CheckedProjectionSchema::new(
+            bundle
+                .bundle()
+                .bound_projection_group_schema(projection.projection_id())
+                .expect("bound group schema"),
+        );
+        let event = bundle
+            .bundle()
+            .schema()
+            .event(projection.source_event())
+            .expect("source event");
+        let field = |name: &str| {
+            event
+                .payload()
+                .fields()
+                .iter()
+                .find(|f| f.name() == name)
+                .map(|f| f.id())
+                .expect("event field")
+        };
+        let org_field = field("org_id");
+        let recorded_at_field = field("recorded_at");
+        let latency_field = field("latency_ms");
+
+        let (_path, mut ports) = operational_fixture("event-projection-rollup-range", true);
+        let generation = ProjectionGeneration::first();
+        let initial = StoredProjectionControlV1::new(
+            schema.identity().clone(),
+            generation,
+            None,
+            Some(riffdb_storage_api::ProjectionGenerationPosition::new(
+                generation,
+                FrontierPosition::BeforeFirst,
+            )),
+            None,
+            ProjectionLifecycleV1::CatchingUp,
+            None,
+        )
+        .unwrap();
+        install_control(&ports, schema.identity(), &initial);
+
+        let command = bundle.bundle().commands().first().expect("command");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            command.command_id(),
+            command.plan_hash(),
+        );
+        let make_commit = |seq: u64, spans: &[(i64, i64, i64)]| {
+            let sequence = CommitSequence::new(seq).unwrap();
+            let events = spans
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (org, ts_sec, latency))| {
+                    let event_id = EventId::new(sequence, u32::try_from(ordinal).unwrap());
+                    let payload = CanonicalRecord::new(vec![
+                        (org_field, CanonicalValue::I64(*org)),
+                        (
+                            recorded_at_field,
+                            CanonicalValue::Timestamp(Timestamp::new(*ts_sec, 0).unwrap()),
+                        ),
+                        (latency_field, CanonicalValue::I64(*latency)),
+                    ])
+                    .unwrap();
+                    let event_type = resolved.projection_plan().source_event();
+                    let event_hash = derive_event_hash_v1(event_id, event_type, &payload).unwrap();
+                    StoredDurableEventV1::new(event_id, event_type, payload, event_hash).unwrap()
+                })
+                .collect::<Vec<_>>();
+            let event_ids = events
+                .iter()
+                .map(StoredDurableEventV1::event_id)
+                .collect::<Vec<_>>();
+            let actor = AdmittedActorContext::new(
+                ActorId::new("projection-rollup-test").unwrap(),
+                ActorKind::Service,
+                TenantScope::Global,
+                None,
+            );
+            let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+            partition.push_i64(7).unwrap();
+            let partition_hash = hash_partition_key(partition.finish().unwrap().as_bytes());
+            let dependencies =
+                StoredReadDependenciesV1::from_live(&ReadDependencies::new(Vec::new()).unwrap())
+                    .unwrap();
+            StoredCommitRecordV1::new(
+                sequence,
+                RequestId::from_bytes(evaluator_uuid_bytes(u8::try_from(seq).unwrap())).unwrap(),
+                plan.clone(),
+                CanonicalInputHash::from_bytes([0x42; 32]),
+                actor,
+                LogicalTime::new(Timestamp::new(1_767_323_700, 0).unwrap()),
+                partition_hash,
+                Vec::new(),
+                dependencies,
+                Vec::new(),
+                events,
+                DeclaredOutcome::new(
+                    OutcomeId::first(),
+                    CanonicalRecord::new(Vec::new()).unwrap(),
+                )
+                .unwrap(),
+                ProvenanceId::from_bytes(evaluator_uuid_bytes(u8::try_from(seq + 32).unwrap()))
+                    .unwrap(),
+                event_ids,
+                DurabilityMode::Memory,
+            )
+            .unwrap()
+        };
+
+        // 2026-01-02T03:00:00Z = 1_767_322_800, 04:00:00Z = 1_767_326_400, 05:00:00Z = 1_767_330_000
+        let commit1 = make_commit(
+            1,
+            &[
+                (7, 1_767_323_700, 10),
+                (7, 1_767_324_000, 30),
+                (7, 1_767_327_000, 50),
+            ],
+        );
+        let commit2 = make_commit(2, &[(7, 1_767_325_500, 20), (7, 1_767_330_300, 100)]);
+
+        let mut latest_control = initial;
+        for commit in [&commit1, &commit2] {
+            seed_commit(&ports, commit);
+            let request = evaluate_and_prepare_projection_commit(
+                &resolved,
+                schema.clone(),
+                generation,
+                commit,
+                &ports,
+            )
+            .unwrap();
+            let ProjectionApplyResult::Applied { control, .. } =
+                ports.apply_projection(&request).unwrap()
+            else {
+                panic!("projection apply must succeed");
+            };
+            latest_control = control;
+        }
+
+        let ProjectionControlResult::Updated(_) = ports
+            .transition_projection_control(ProjectionControlOperation::PublishCandidate {
+                expected: latest_control,
+            })
+            .unwrap()
+        else {
+            panic!("publish candidate must succeed");
+        };
+
+        let day_val = CanonicalValue::Timestamp(
+            Timestamp::new(1_767_322_800_i64.div_euclid(86_400) * 86_400, 0).unwrap(),
+        );
+        let hour_03 = CanonicalValue::Timestamp(Timestamp::new(1_767_322_800, 0).unwrap());
+        let hour_04 = CanonicalValue::Timestamp(Timestamp::new(1_767_326_400, 0).unwrap());
+        let hour_05 = CanonicalValue::Timestamp(Timestamp::new(1_767_330_000, 0).unwrap());
+
+        let range = ProjectionComponentRange::new(
+            Some(ProjectionComponentBound::Included(hour_03.clone())),
+            Some(ProjectionComponentBound::Excluded(hour_05)),
+        )
+        .unwrap();
+        let selector = ProjectionQuerySelector::with_trailing_range(
+            schema.clone(),
+            vec![CanonicalValue::I64(7), day_val.clone()],
+            range,
+        )
+        .unwrap();
+        let query =
+            ProjectionQueryRequest::new(selector, NonZeroU16::new(10).unwrap(), None).unwrap();
+        let ProjectionQueryResult::Ready { rows, .. } = ports.query_projection(&query).unwrap()
+        else {
+            panic!("published projection must be ready");
+        };
+        assert_eq!(
+            rows.len(),
+            2,
+            "only 03:00 and 04:00 buckets match [03:00, 05:00)"
+        );
+
+        let expected_key_03 = schema
+            .group_key(
+                generation,
+                &[CanonicalValue::I64(7), day_val.clone(), hour_03],
+            )
+            .expect("encode key 03");
+        assert_eq!(rows[0].value().key(), &expected_key_03);
+        let measure_val = |row_idx: usize, name: &str| {
+            let measure_id = projection
+                .measures()
+                .iter()
+                .find(|m| m.field().name() == name)
+                .expect("measure")
+                .field()
+                .id();
+            rows[row_idx]
+                .value()
+                .measures()
+                .fields()
+                .iter()
+                .find(|(id, _)| *id == measure_id)
+                .map(|(_, v)| v.clone())
+                .expect("measure value")
+        };
+        assert_eq!(measure_val(0, "span_count"), CanonicalValue::U64(3));
+        assert_eq!(measure_val(0, "total_latency"), CanonicalValue::I64(60));
+        assert_eq!(measure_val(0, "min_latency"), CanonicalValue::I64(10));
+        assert_eq!(measure_val(0, "max_latency"), CanonicalValue::I64(30));
+        assert_eq!(measure_val(0, "mean_latency"), CanonicalValue::I64(20));
+
+        let expected_key_04 = schema
+            .group_key(generation, &[CanonicalValue::I64(7), day_val, hour_04])
+            .expect("encode key 04");
+        assert_eq!(rows[1].value().key(), &expected_key_04);
+        assert_eq!(measure_val(1, "span_count"), CanonicalValue::U64(1));
+        assert_eq!(measure_val(1, "total_latency"), CanonicalValue::I64(50));
+        assert_eq!(measure_val(1, "min_latency"), CanonicalValue::I64(50));
+        assert_eq!(measure_val(1, "max_latency"), CanonicalValue::I64(50));
+        assert_eq!(measure_val(1, "mean_latency"), CanonicalValue::I64(50));
+    }
 }

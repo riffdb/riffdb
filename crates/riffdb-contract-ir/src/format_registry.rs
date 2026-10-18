@@ -110,6 +110,11 @@ tag_registry!(expression, "Expression", {
 tag_registry!(unary_operator, "Unary operator", {
     NOT = 0x01 => "not",
     NEGATE = 0x02 => "negate",
+    TEMPORAL_HOUR = 0x03 => "hour",
+    TEMPORAL_DAY = 0x04 => "day",
+    TEMPORAL_WEEK = 0x05 => "week",
+    TEMPORAL_MONTH = 0x06 => "month",
+    TEMPORAL_YEAR = 0x07 => "year",
 });
 tag_registry!(binary_operator, "Binary operator", {
     MULTIPLY = 0x01 => "multiply",
@@ -197,6 +202,9 @@ tag_registry!(capability_requirement, "Capability requirement", {
 tag_registry!(projection_aggregation, "Projection aggregation", {
     COUNT = 0x01 => "count",
     SUM = 0x02 => "sum",
+    MIN = 0x03 => "min",
+    MAX = 0x04 => "max",
+    MEAN = 0x05 => "mean",
 });
 tag_registry!(projection_frontier, "Projection frontier", {
     TRANSACTIONALLY_ORDERED = 0x01 => "transactionally ordered",
@@ -597,6 +605,18 @@ pub(crate) const PROJECTION_AGGREGATION_VARIANTS: &[TaggedVariantLayout] = &[
         "expression_present" => "Boolean = 0x00",
     }),
     tagged_variant!(projection_aggregation::SUM, "sum", {
+        "expression_present" => "Boolean = 0x01",
+        "expression" => "ExprId as u32",
+    }),
+    tagged_variant!(projection_aggregation::MIN, "min", {
+        "expression_present" => "Boolean = 0x01",
+        "expression" => "ExprId as u32",
+    }),
+    tagged_variant!(projection_aggregation::MAX, "max", {
+        "expression_present" => "Boolean = 0x01",
+        "expression" => "ExprId as u32",
+    }),
+    tagged_variant!(projection_aggregation::MEAN, "mean", {
         "expression_present" => "Boolean = 0x01",
         "expression" => "ExprId as u32",
     }),
@@ -2257,7 +2277,16 @@ mod tests {
             registry_values(value_type::REGISTRY).as_slice()
         );
         assert_eq!(
-            [UnaryOperator::Not, UnaryOperator::Negate].map(|value| value as u8),
+            [
+                UnaryOperator::Not,
+                UnaryOperator::Negate,
+                UnaryOperator::TemporalHour,
+                UnaryOperator::TemporalDay,
+                UnaryOperator::TemporalWeek,
+                UnaryOperator::TemporalMonth,
+                UnaryOperator::TemporalYear,
+            ]
+            .map(|value| value as u8),
             registry_values(unary_operator::REGISTRY).as_slice()
         );
         assert_eq!(
@@ -2299,7 +2328,14 @@ mod tests {
             registry_values(retry_policy::REGISTRY).as_slice()
         );
         assert_eq!(
-            [ProjectionAggregation::Count, ProjectionAggregation::Sum].map(|value| value as u8),
+            [
+                ProjectionAggregation::Count,
+                ProjectionAggregation::Sum,
+                ProjectionAggregation::Min,
+                ProjectionAggregation::Max,
+                ProjectionAggregation::Mean,
+            ]
+            .map(|value| value as u8),
             registry_values(projection_aggregation::REGISTRY).as_slice()
         );
         assert_eq!(

@@ -334,6 +334,48 @@ pub fn evaluate_commit_checks(
     Ok(CommitCheckResult::Satisfied)
 }
 
+const fn civil_from_days_utc(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    (year, m, d)
+}
+
+const fn days_from_civil_utc(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let m = month as u64;
+    let d = day as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + (doe as i64) - 719_468
+}
+
+fn truncate_days_bucket(days: i64, operator: UnaryOperator) -> Result<i64, EvaluationError> {
+    match operator {
+        UnaryOperator::TemporalDay => Ok(days),
+        UnaryOperator::TemporalWeek => Ok(days - (days + 3).rem_euclid(7)),
+        UnaryOperator::TemporalMonth => {
+            let (year, month, _) = civil_from_days_utc(days);
+            Ok(days_from_civil_utc(year, month, 1))
+        }
+        UnaryOperator::TemporalYear => {
+            let (year, _, _) = civil_from_days_utc(days);
+            Ok(days_from_civil_utc(year, 1, 1))
+        }
+        _ => Err(EvaluationError::Integrity),
+    }
+}
+
 fn evaluate_unary(
     operator: UnaryOperator,
     operand: &CanonicalValue,
@@ -364,6 +406,46 @@ fn evaluate_unary(
             Ok(CanonicalValue::Money(riffdb_types::Money::new(
                 value.currency(),
                 amount,
+            )))
+        }
+        (UnaryOperator::TemporalHour, CanonicalValue::Timestamp(ts)) => {
+            let bucket_seconds = ts
+                .seconds()
+                .checked_sub(ts.seconds().rem_euclid(3_600))
+                .ok_or(EvaluationError::Arithmetic)?;
+            riffdb_types::Timestamp::new(bucket_seconds, 0)
+                .map(CanonicalValue::Timestamp)
+                .map_err(|_| EvaluationError::Arithmetic)
+        }
+        (
+            UnaryOperator::TemporalDay
+            | UnaryOperator::TemporalWeek
+            | UnaryOperator::TemporalMonth
+            | UnaryOperator::TemporalYear,
+            CanonicalValue::Timestamp(ts),
+        ) => {
+            let days = ts.seconds().div_euclid(86_400);
+            let bucket_days = truncate_days_bucket(days, operator)?;
+            let bucket_seconds = bucket_days
+                .checked_mul(86_400)
+                .ok_or(EvaluationError::Arithmetic)?;
+            riffdb_types::Timestamp::new(bucket_seconds, 0)
+                .map(CanonicalValue::Timestamp)
+                .map_err(|_| EvaluationError::Arithmetic)
+        }
+        (
+            UnaryOperator::TemporalDay
+            | UnaryOperator::TemporalWeek
+            | UnaryOperator::TemporalMonth
+            | UnaryOperator::TemporalYear,
+            CanonicalValue::Date(date),
+        ) => {
+            let days = i64::from(date.days_since_unix_epoch());
+            let bucket_days = truncate_days_bucket(days, operator)?;
+            let bucket_days_i32 =
+                i32::try_from(bucket_days).map_err(|_| EvaluationError::Arithmetic)?;
+            Ok(CanonicalValue::Date(riffdb_types::Date::new(
+                bucket_days_i32,
             )))
         }
         _ => Err(EvaluationError::Integrity),

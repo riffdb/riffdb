@@ -864,7 +864,7 @@ ProjectionDeclaration: ProjectionDeclaration = {
     "projection" <name:Identifier> "{"
         "source" "event" <source_event:Identifier>
         <filter:WhereClause?>
-        "key" "(" <key:ExpressionList> ")"
+        "key" "(" <key:ProjectionKeyList> ")"
         <measures:Measure+>
         <frontier:FrontierClause>
     "}" => ProjectionDeclaration {
@@ -875,6 +875,21 @@ ProjectionDeclaration: ProjectionDeclaration = {
         measures,
         frontier,
     },
+};
+
+ProjectionKeyList: Vec<Spanned<Expression>> = {
+    <head:ProjectionKeyExpression> <tail:("," <ProjectionKeyExpression>)*> <trailing:Comma?> => {
+        let _ = trailing;
+        let mut values = vec![head.into_syntax()];
+        values.extend(tail.into_iter().map(ParsedExpression::into_syntax));
+        values
+    },
+};
+
+ProjectionKeyExpression: ParsedExpression = {
+    <lo:@L> <callee:Identifier> "(" <operand:Expression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::temporal_bucket_expression(callee, operand, parser::span(lo, hi))),
+    Expression,
 };
 
 WhereClause: Spanned<Expression> = {
@@ -891,6 +906,8 @@ Aggregation: Spanned<Aggregation> = {
         => parser::spanned(Aggregation::Count, lo, hi),
     <lo:@L> "sum" "(" <expression:Expression> ")" <hi:@R>
         => parser::spanned(Aggregation::Sum(expression.into_syntax()), lo, hi),
+    <lo:@L> <callee:Identifier> "(" <expression:Expression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::named_aggregation(callee, expression, lo, hi)),
 };
 
 FrontierClause: Spanned<Frontier> = {

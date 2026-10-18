@@ -1138,6 +1138,12 @@ pub enum Aggregation {
     Count,
     /// Sum an expression over matching source events.
     Sum(Spanned<Expression>),
+    /// Minimum of an expression over matching source events.
+    Min(Spanned<Expression>),
+    /// Maximum of an expression over matching source events.
+    Max(Spanned<Expression>),
+    /// Arithmetic mean of an expression over matching source events.
+    Mean(Spanned<Expression>),
 }
 
 /// A grammar-version-1 projection frontier declaration.
@@ -1203,6 +1209,16 @@ pub enum UnaryOperator {
     Not,
     /// Numeric negation (`-`).
     Negate,
+    /// UTC hour truncation (`hour(expr)`).
+    TemporalHour,
+    /// UTC day truncation (`day(expr)`).
+    TemporalDay,
+    /// UTC ISO Monday week truncation (`week(expr)`).
+    TemporalWeek,
+    /// UTC month truncation (`month(expr)`).
+    TemporalMonth,
+    /// UTC year truncation (`year(expr)`).
+    TemporalYear,
 }
 
 /// A grammar-version-1 binary operator in parsed precedence order.

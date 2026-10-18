@@ -119,10 +119,10 @@ pub use outcome::{
 pub use prepared_generation::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 pub use query::{
     AggregateOp, AggregateValue, AnnExecutionStats, ColumnPredicate, ColumnarQueryRequest,
-    GroupBySpec, NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError,
-    NearestQueryRequest, NearestQueryResult, NearestResultRow, NearestSearchKind, OrderSpec,
-    QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection,
-    nearest_query_snapshot, nearest_query_snapshot_with_admission,
+    ColumnarTimeBucket, GroupBySpec, MAX_COLUMNAR_DISTINCT_VALUES_V1, NearestCandidate,
+    NearestCandidateAdmission, NearestQueryAdmissionError, NearestQueryRequest, NearestQueryResult,
+    NearestResultRow, NearestSearchKind, OrderSpec, QueryBudget, QueryError, QueryResult, QueryRow,
+    QueryRows, SortDirection, nearest_query_snapshot, nearest_query_snapshot_with_admission,
     nearest_query_snapshot_with_cache, query_snapshot, query_snapshot_with_policy_admission,
 };
 pub use riffdb_types::ColumnarProjectionSourceV1;

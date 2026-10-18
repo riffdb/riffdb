@@ -39,9 +39,12 @@ pub(crate) fn lower_projections(
         }
         let mut measures_by_id = Vec::new();
         for measure in &projection.measures {
-            let (value_type, expression) = match &measure.kind {
-                HirMeasureKind::Count => (ValueType::u64(), None),
+            let value_type = match &measure.kind {
+                HirMeasureKind::Count => ValueType::u64(),
                 HirMeasureKind::Sum(expression)
+                | HirMeasureKind::Min(expression)
+                | HirMeasureKind::Max(expression)
+                | HirMeasureKind::Mean(expression)
                     if matches!(
                         expression.value_type.tag(),
                         ValueTypeTag::I64
@@ -50,9 +53,12 @@ pub(crate) fn lower_projections(
                             | ValueTypeTag::Money
                     ) =>
                 {
-                    (expression.value_type.clone(), Some(expression.id))
+                    expression.value_type.clone()
                 }
-                HirMeasureKind::Sum(expression) => {
+                HirMeasureKind::Sum(expression)
+                | HirMeasureKind::Min(expression)
+                | HirMeasureKind::Max(expression)
+                | HirMeasureKind::Mean(expression) => {
                     diagnostics.push(CompilerDiagnostic::new(
                         CompilerDiagnosticCode::InvalidProjection,
                         expression.span,
@@ -72,9 +78,20 @@ pub(crate) fn lower_projections(
                     continue;
                 }
             };
-            let plan = match expression {
-                Some(expression) => ProjectionMeasurePlan::sum(field.clone(), expression),
-                None => ProjectionMeasurePlan::count(field.clone()),
+            let plan = match &measure.kind {
+                HirMeasureKind::Count => ProjectionMeasurePlan::count(field.clone()),
+                HirMeasureKind::Sum(expression) => {
+                    ProjectionMeasurePlan::sum(field.clone(), expression.id)
+                }
+                HirMeasureKind::Min(expression) => {
+                    ProjectionMeasurePlan::min(field.clone(), expression.id)
+                }
+                HirMeasureKind::Max(expression) => {
+                    ProjectionMeasurePlan::max(field.clone(), expression.id)
+                }
+                HirMeasureKind::Mean(expression) => {
+                    ProjectionMeasurePlan::mean(field.clone(), expression.id)
+                }
             };
             match plan {
                 Ok(plan) => measures_by_id.push((measure.id, field, plan)),

@@ -906,6 +906,8 @@ Aggregation: Spanned<Aggregation> = {
         => parser::spanned(Aggregation::Count, lo, hi),
     <lo:@L> "sum" "(" <expression:Expression> ")" <hi:@R>
         => parser::spanned(Aggregation::Sum(expression.into_syntax()), lo, hi),
+    <lo:@L> <callee:Identifier> "(" <expression:Expression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::named_aggregation(callee, expression, lo, hi)),
 };
 
 FrontierClause: Spanned<Frontier> = {
@@ -958,6 +960,8 @@ UnaryExpression: ParsedExpression = {
 PrimaryExpression: ParsedExpression = {
     <literal:Literal> => parser::literal_expression(literal),
     <path:Path> => parser::path_expression(path),
+    <lo:@L> <callee:Identifier> "(" <operand:Expression> ")" <hi:@R>
+        =>? parser::grammar_result(parser::temporal_bucket_expression(callee, operand, parser::span(lo, hi))),
     <lo:@L> "(" <expression:Expression> ")" <hi:@R>
         =>? parser::grammar_result(parser::parenthesized_expression(expression, parser::span(lo, hi))),
 };
