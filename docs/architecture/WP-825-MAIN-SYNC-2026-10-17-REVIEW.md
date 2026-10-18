@@ -11,7 +11,7 @@ retention, and startup fixes already on this branch.
 Main owns ADR-0314. The previously accepted locator decision moves to ADR-0319
 under the maintainer's standing identifier-only reconciliation approval. Its
 original acceptance and entire Decision are unchanged. Obligation identifiers,
-ADR-0315's locator references, WP-825 registration and architecture references
+ADR-0323's locator references, WP-825 registration and architecture references
 follow the move; main's ADR-0314 and its four packages keep their identities.
 
 Both retention tests survive the append conflict. Pending native admission

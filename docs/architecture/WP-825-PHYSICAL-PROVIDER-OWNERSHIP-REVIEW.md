@@ -41,7 +41,7 @@ WP-825 adds OQ-040 and these source paths for the numerical ownership primitive:
 
 The existing storage-redb source scope covers shared engine custody, native
 allocation ownership and focused tests. This registration does not authorize
-the separate initial-admission audit exception proposed in ADR-0315.
+the separate initial-admission audit exception proposed in ADR-0323.
 
 ## Implementation boundary
 
@@ -125,7 +125,7 @@ workspace formatting, scope, handbook, version topology and source guards.
 Compatibility: durable encodings, fixtures, command outcomes, authorization,
 ordering and compiled ceilings are unchanged. Corrected overlay metadata bounds
 can refuse capacity earlier. Hazards and follow-ups: public restored-source
-initial admission still requires the separate ADR-0315 decision; the accepted
+initial admission still requires the separate ADR-0323 decision; the accepted
 ADR-0313 form correction remains under review. Complete source CI, full workload
 preparation and both rehearsals remain unqualified. Updated handbook:
 [Startup Integrity](../operations/STARTUP-INTEGRITY.md) and

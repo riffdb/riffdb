@@ -1,6 +1,6 @@
 # WP-825: Initial native dependency admission review
 
-Status: ADR-0315, SPEC section 13.5 and the package registration were accepted
+Status: ADR-0323, SPEC section 13.5 and the package registration were accepted
 in session on 2026-10-16. The implementation passes the original service
 replay regression, all 10 service admission checks, the server bridge check,
 13 native admission/cancellation checks, and scoped Clippy on the required host.
@@ -35,7 +35,7 @@ these boundaries; it is not an implementation deviation.
 
 ## Exact proposal
 
-Read [ADR-0315](../../adr/0315-request-scoped-native-dependency-admission-before-durable-audit.md)
+Read [ADR-0323](../../adr/0323-request-scoped-native-dependency-admission-before-durable-audit.md)
 with the [SPEC section 13.5](../../SPEC.md) and [WP-825 registration](../../work_packages.yaml).
 
 - Every ordinary authenticated request entering the live-source writer-service
@@ -63,7 +63,7 @@ with the [SPEC section 13.5](../../SPEC.md) and [WP-825 registration](../../work
 
 The package-owned requirement SEC-005 records the new phase and narrow audit
 exception. WP-825 additionally binds API-001 and SEC-001, retains REC-001 and
-TXN-042, and requires ADR-0007, ADR-0071 and ADR-0315 alongside ADR-0319.
+TXN-042, and requires ADR-0007, ADR-0071 and ADR-0323 alongside ADR-0319.
 Its scope gains SPEC.md, work_packages.yaml, adr/README.md, the new ADR,
 tests/service/** and crates/riffdb-service/Cargo.toml. These last two paths own
 the genuine service regression and its existing test-only commit simulator;
