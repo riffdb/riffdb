@@ -22,3 +22,18 @@ reserved:
     status: abandoned
     note: >-
       As ADR-0067.
+  - adr: "0320"
+    status: in-progress
+    note: >-
+      Symbolic public audit classification for native storage administration is
+      being prepared separately for WP-825; its proposed record has not landed.
+  - adr: "0321"
+    status: in-progress
+    note: >-
+      Sealed projection-owned native replay source driver is held separately in
+      WP-825 implementation review; its accepted record has not landed.
+  - adr: "0322"
+    status: in-progress
+    note: >-
+      Vendored native resource plans and bounded reclamation is held separately
+      in WP-825 implementation review; its accepted proposal has not landed.

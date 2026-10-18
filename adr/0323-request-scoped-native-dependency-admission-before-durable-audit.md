@@ -1,5 +1,5 @@
 ---
-adr: "0315"
+adr: "0323"
 title: Request-Scoped Native Dependency Admission Before Durable Audit
 status: accepted
 tier: guarantee
@@ -21,7 +21,7 @@ review_triggers:
   - An accepted audit failure, authorization rule, admission deadline or compiled ceiling would change.
   - Follower, archive/static, pre-bootstrap health or recovery-only authority would change.
 ---
-# ADR-0315: Request-Scoped Native Dependency Admission Before Durable Audit
+# ADR-0323: Request-Scoped Native Dependency Admission Before Durable Audit
 
 ## Context
 

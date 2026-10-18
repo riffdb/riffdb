@@ -5694,7 +5694,7 @@ a denial, cancellation or policy audit obligation can require their first audit.
 Native metadata-only ports, bounded daemon Ready, existing pre-bootstrap health
 and recovery-only access retain their boundaries. Follower and archive/static
 reader authority remains unchanged. No caller bypass, new timeout, increased
-budget, deferred Ready population walk or harness retry is permitted; ADR-0315
+budget, deferred Ready population walk or harness retry is permitted; ADR-0323
 owns this narrow exception and its exact source and lifetime rules.
 
 `riffdb-service` owns the concrete checked pre-sequence `ServiceAuditInput` and
