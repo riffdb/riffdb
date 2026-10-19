@@ -32036,3 +32036,42 @@ work_packages:
     decisions_taken: []
     known_limitations: null
     follow_ups: []
+- id: WP-879
+  name: Online dynamic multi-database provisioning and high-density hosting
+  tier: surface
+  depends_on: [WP-878]
+  objective: Implement ADR-0319. Raise MAX_DATABASES_PER_PROCESS to 512 and
+    MAX_CONFIG_DOCUMENT_BYTES to 512 KiB, add dynamic insert and remove operations
+    on GrpcDatabaseRoutes and HostedMcp, and implement live multi-database
+    configuration file reconciliation in riffdb-server so newly added
+    [databases.<alias>] sections are provisioned online and removed aliases are
+    cleanly closed and deprovisioned without interrupting peer databases.
+  requirements: [NET-005, CFG-001, CFG-002, REC-001, PERF-007, PERF-019]
+  required_adrs: [ADR-0319, ADR-0156, ADR-0188, ADR-0292, ADR-0316, ADR-0317, ADR-0318]
+  allowed_paths: [work_packages.yaml, adr/**, crates/riffdb-types/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**, docs/**]
+  deliverables:
+  - Raised MAX_DATABASES_PER_PROCESS (512) in crates/riffdb-types/src/database.rs and MAX_CONFIG_DOCUMENT_BYTES (512 KiB) in crates/riffdb-server/src/config.rs
+  - Dynamic route insertion and removal on GrpcDatabaseRoutes (crates/riffdb-api-grpc/src/server.rs) and HostedMcp (crates/riffdb-server/src/hosted_mcp.rs)
+  - Online multi-database inventory reconciliation in crates/riffdb-server/src/inventory_reload.rs and supervisor integration in crates/riffdb-server/src/daemon.rs
+  - Updated multi-database hosting documentation in docs/configuration.md and docs/operations/MULTIPLE-DATABASES.md
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-879
+  exit_gate: Reloading a multi-database configuration dynamically provisions added
+    [databases.<alias>] sections and cleanly closes and unpublishes removed aliases
+    without interrupting active peer databases, while invalid or incompatible
+    reloads fail closed and retain the active inventory unchanged.
+  standing_design_tests:
+    interface_safety: Added databases undergo full startup validation, disjoint-path verification, and capability/idempotency isolation before route publication; removed databases drain in-flight work and commit CleanCloseState::Clean before releasing storage locks; invalid reloads fail closed without disturbing live databases.
+    scale: Raises per-process hosting capacity 16x (32 -> 512 databases) with O(delta) online provisioning and deprovisioning and zero downtime for peer databases.
+  human_review_triggers:
+  - Online deprovisioning removes an alias without completing complete_graceful_close or drops the last remaining database in the process.
+  - Online provisioning admits traffic to a newly added alias before startup validation and disjoint-path checks succeed, or mutates an existing alias's immutable storage paths in place.
+  closure:
+    status: ready
+    completed_at: null
+    requirements_satisfied: []
+    evidence: null
+    decision: null
+    decisions_taken: []
+    known_limitations: null
+    follow_ups: []

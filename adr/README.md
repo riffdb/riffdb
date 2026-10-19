@@ -353,6 +353,7 @@ record with no front matter.
 | [0316](0316-database-resource-quotas-system-trust-tls-and-direct-tls-hosted-mcp.md) | Database Resource Quotas, System-Trust TLS, and Direct-TLS Hosted MCP | Accepted | guarantee |
 | [0317](0317-compact-journal-extent-profile-and-lazy-spare-allocation.md) | Compact Journal Extent Profile and Lazy Spare Allocation | Accepted | guarantee |
 | [0318](0318-scale-to-zero-idle-database-hibernation-and-transparent-wake-on-request.md) | Scale-to-Zero Idle Database Hibernation and Transparent Wake-on-Request | Accepted | surface |
+| [0319](0319-online-dynamic-multi-database-provisioning-and-high-density-hosting.md) | Online Dynamic Multi-Database Provisioning and High-Density Hosting | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
